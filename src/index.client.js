@@ -114,7 +114,8 @@ export default function clientPlugin() {
 .kg-launcher .kg-primary { white-space: nowrap; }
 .kg-sidebar-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: 0; border-radius: 8px; color: inherit; cursor: pointer; padding: 5px 8px; font-size: 12px; font-family: inherit; }
 .kg-sidebar-btn:hover { background: rgba(127,127,127,0.16); }
-.kg-sidebar-btn-icon { width: 28px; height: 28px; padding: 0; flex: none; }
+.kg-header-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 10px; font-size: 12.5px; font-family: inherit; }
+.kg-header-btn:hover { background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.28); }
 .kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .kg-history-head .kg-section-title { margin: 0; }
 .kg-history-list { display: flex; flex-direction: column; gap: 8px; }
@@ -956,16 +957,18 @@ export default function clientPlugin() {
         )
       }
 
-      // Icon-only launcher: the sidebar footer row is shared with other
-      // plugins' buttons, so keep our footprint minimal (never show the
-      // label text, regardless of the rail width).
-      function SidebarLauncher() {
+      // Header launcher: rendered in the conversation header action row
+      // (beside the session title), NOT in the sidebar footer row — the
+      // footer row is shared with other plugins' buttons (Cordis Plugin etc.)
+      // and gets crowded. Every conversation gets its own copy of this button.
+      function HeaderLauncher() {
         return h('button', {
-          type: 'button', className: 'kg-sidebar-btn kg-sidebar-btn-icon',
+          type: 'button', className: 'kg-header-btn',
           'aria-label': '打开知识图工作台', title: '打开知识图工作台（浮动窗口）',
           onClick: () => winStore.setOpen(true),
         },
-          GraphIcon(18),
+          GraphIcon(14),
+          h('span', null, '知识图'),
         )
       }
 
@@ -1503,9 +1506,9 @@ export default function clientPlugin() {
         () => h(FloatingWindow, { ctx }),
       ))
 
-      slots.inject('sidebar.footer.action', () => slots.register(
-        { name: 'sidebar.footer.action', id: 'kg-workbench-launcher', label: '知识图' },
-        (props) => h(SidebarLauncher, props),
+      slots.inject('conversation.session.header.actions', () => slots.register(
+        { name: 'conversation.session.header.actions', id: 'kg-workbench-launcher', label: '知识图' },
+        () => h(HeaderLauncher, null),
       ))
     },
   }
