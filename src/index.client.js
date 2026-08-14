@@ -99,6 +99,13 @@ export default function clientPlugin() {
 .kg-node-name { fill: var(--kg-text); }
 .kg-node:hover rect { stroke-width: 2.5 !important; }
 .kg-node:focus-visible rect { stroke: #3b82f6; stroke-width: 3; }
+.kg-edge-label { pointer-events: none; }
+.kg-edge-label rect { fill: var(--kg-win-bg); stroke: var(--kg-border); stroke-width: 1; }
+.kg-edge-label text { fill: var(--kg-text-dim); font-size: 10px; font-weight: 500; }
+.kg-edge-label.sel rect { fill: rgba(99,102,241,0.16); stroke: #6366f1; }
+.kg-edge-label.sel text { fill: #6366f1; font-weight: 600; }
+.kg-edge-label.hov rect { stroke: #6366f1; }
+.kg-edge-label.hov text { fill: #6366f1; }
 .kg-node-flash { animation: kg-node-pulse 1.4s ease; }
 @keyframes kg-node-pulse { 0%, 100% { opacity: 1; } 35% { opacity: 0.3; } }
 .kg-tooltip { position: absolute; z-index: 5; max-width: 300px; pointer-events: none; background: rgba(17,24,39,0.95); color: #f9fafb; border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.55; box-shadow: 0 4px 14px rgba(0,0,0,0.28); transform: translate(10px, 10px); }
@@ -462,6 +469,15 @@ export default function clientPlugin() {
         }
         return out
       }
+      let labelMeasurer = null
+      function measureLabel(text) {
+        if (!labelMeasurer) {
+          const canvas = document.createElement('canvas')
+          labelMeasurer = canvas.getContext('2d')
+          labelMeasurer.font = '500 10px system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
+        }
+        return labelMeasurer.measureText(text).width
+      }
       function layoutGraph(nodes, edges, sizes) {
         const n = nodes.length
         const pos = new Map()
@@ -775,6 +791,31 @@ export default function clientPlugin() {
               strokeWidth: sel || hover ? 2.5 : 1.5,
               markerEnd: 'url(#' + markerId + ')',
             }),
+            // relation-type label chip at the edge midpoint, offset
+            // perpendicular so it does not sit on the line
+            h('g', {
+              key: 'lbl' + i,
+              className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
+              'aria-hidden': 'true',
+            },
+              (function () {
+                const mx = (pts.x1 + pts.x2) / 2
+                const my = (pts.y1 + pts.y2) / 2
+                const ex = pts.x2 - pts.x1
+                const ey = pts.y2 - pts.y1
+                const elen = Math.max(Math.hypot(ex, ey), 0.001)
+                const lx = mx - (ey / elen) * 11
+                const ly = my + (ex / elen) * 11
+                const lw = measureLabel(rel) + 10
+                const lh = 15
+                return [
+                  h('rect', {
+                    x: lx - lw / 2, y: ly - lh / 2, width: lw, height: lh, rx: 4,
+                  }),
+                  h('text', { x: lx, y: ly + 3.5, textAnchor: 'middle' }, rel),
+                ]
+              })(),
+            ),
           )
         })
 
