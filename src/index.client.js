@@ -166,6 +166,8 @@ export default function clientPlugin() {
       const LS_HEIGHT = 'dsh-kg-height-v1'
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
+      const LAYER_Y_GAP = 210
+      const LAYER_X_GAP = 220
       const LAYOUT_MODES = [
         { id: 'force', label: '力导向' },
         { id: 'circular', label: '圆形' },
@@ -744,13 +746,11 @@ export default function clientPlugin() {
           if (!groups.has(l)) groups.set(l, [])
           groups.get(l).push(node)
         }
-        const X_GAP = 210
-        const Y_GAP = 200
         for (const [l, list] of groups) {
           list.sort((a, b) => deg.get(b.id) - deg.get(a.id))
-          const totalW = (list.length - 1) * X_GAP
+          const totalW = (list.length - 1) * LAYER_X_GAP
           list.forEach((node, i) => {
-            pos.set(node.id, { x: i * X_GAP - totalW / 2, y: l * Y_GAP })
+            pos.set(node.id, { x: i * LAYER_X_GAP - totalW / 2, y: l * LAYER_Y_GAP })
           })
         }
         return pos
@@ -789,6 +789,66 @@ export default function clientPlugin() {
           if (moved === 0) break
         }
         return pos
+      }
+
+      // ---- orthogonal (right-angle) edge routing for the layered layout ----
+      // Rows are horizontal bands separated by empty channels. Every cross-row
+      // edge runs: vertical inside its own row band -> horizontal in a channel
+      // -> vertical through a node-free corridor -> horizontal in a channel ->
+      // vertical into the target. Same-row edges detour through the channel
+      // below (or above, for the last row). Every bend is 90 degrees and no
+      // segment crosses a node rect.
+      function corridorFree(x, r1, r2, nodes, sizes, pos) {
+        for (const n of nodes) {
+          const r = Math.round(pos.get(n.id).y / LAYER_Y_GAP)
+          if (r <= r1 || r >= r2) continue
+          const s = sizes.get(n.id)
+          const half = (s ? s.w : 120) / 2 + 16
+          if (Math.abs(x - pos.get(n.id).x) < half) return false
+        }
+        return true
+      }
+      function findCorridor(fromX, r1, r2, nodes, sizes, pos) {
+        let step = 44
+        let dir = 1
+        let i = 1
+        while (i < 40) {
+          for (const sign of [dir, -dir]) {
+            const x = fromX + sign * i * step
+            if (corridorFree(x, r1, r2, nodes, sizes, pos)) return x
+          }
+          i += 1
+        }
+        return fromX
+      }
+      function layeredOrthoPath(edge, a, b, sizes, pos, nodes) {
+        const r1 = Math.round(a.y / LAYER_Y_GAP)
+        const r2 = Math.round(b.y / LAYER_Y_GAP)
+        if (r1 === r2) {
+          let maxRow = 0
+          for (const n of nodes) maxRow = Math.max(maxRow, Math.round(pos.get(n.id).y / LAYER_Y_GAP))
+          const cy = r1 >= maxRow ? r1 * LAYER_Y_GAP - LAYER_Y_GAP / 2 : r1 * LAYER_Y_GAP + LAYER_Y_GAP / 2
+          const d = 'M ' + a.x + ' ' + a.y + ' L ' + a.x + ' ' + cy + ' L ' + b.x + ' ' + cy + ' L ' + b.x + ' ' + b.y
+          const lblY = cy + (cy > a.y ? 14 : -14)
+          return { d, lblX: (a.x + b.x) / 2, lblY }
+        }
+        // Direction-aware: edges may run upward (deeper row to shallower row),
+        // so each endpoint exits/enters through the channel on ITS OWN side.
+        const lo = Math.min(r1, r2)
+        const hi = Math.max(r1, r2)
+        const ch1 = r1 < r2 ? r1 * LAYER_Y_GAP + LAYER_Y_GAP / 2 : (r1 - 1) * LAYER_Y_GAP + LAYER_Y_GAP / 2
+        const ch2 = r1 < r2 ? (r2 - 1) * LAYER_Y_GAP + LAYER_Y_GAP / 2 : r2 * LAYER_Y_GAP + LAYER_Y_GAP / 2
+        let xc = a.x
+        if (!corridorFree(xc, lo, hi, nodes, sizes, pos)) {
+          xc = b.x
+          if (!corridorFree(xc, lo, hi, nodes, sizes, pos)) {
+            xc = findCorridor(a.x, lo, hi, nodes, sizes, pos)
+          }
+        }
+        const d = 'M ' + a.x + ' ' + a.y + ' L ' + a.x + ' ' + ch1
+          + ' L ' + xc + ' ' + ch1 + ' L ' + xc + ' ' + ch2
+          + ' L ' + b.x + ' ' + ch2 + ' L ' + b.x + ' ' + b.y
+        return { d, lblX: xc + 14, lblY: (ch1 + ch2) / 2 }
       }
 
       function layoutGraph(nodes, edges, sizes, mode) {
@@ -1009,7 +1069,12 @@ export default function clientPlugin() {
           let d
           let lblX
           let lblY
-          if (layoutMode === 'radial') {
+          if (layoutMode === 'layered') {
+            const o = layeredOrthoPath(edge, a, b, sizes, layout.pos, nodes)
+            d = o.d
+            lblX = o.lblX
+            lblY = o.lblY
+          } else if (layoutMode === 'radial') {
             const ra = Math.hypot(a.x, a.y)
             const rb = Math.hypot(b.x, b.y)
             if (ra < 1 || rb < 1) {
