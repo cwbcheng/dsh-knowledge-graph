@@ -2,7 +2,10 @@
 
 **DSH（DeepSeek Harness）Cordis 插件**：把任意一段资料正文用 AI 拆解成一张**知识图**，并在**知识图与原文之间双向定位**。
 
-> 贴原文 → AI 异步拆图 → 双向锚点定位。是 NovelStudio「资料 ⇄ 知识图」落地为独立、可复用插件的形态（付费/额度模块已排除）。
+<img width="1538" height="945" alt="image" src="https://github.com/user-attachments/assets/824ab99b-d291-4d06-8eb7-b91e947b1af4" />
+
+
+> 贴原文 → AI 异步拆图 → 双向锚点定位。是 NovelStudio「资料 ⇄ 知识图」落地为独立、可复用插件的形态。
 
 ---
 
