@@ -108,8 +108,8 @@ export default function clientPlugin() {
 .kg-node:hover rect { stroke-width: 2.5 !important; }
 .kg-node:focus-visible rect { stroke: #3b82f6; stroke-width: 3; }
 .kg-edge-label { pointer-events: none; }
-.kg-edge-label rect { fill: var(--kg-win-bg); stroke: var(--kg-border); stroke-width: 1; }
-.kg-edge-label text { fill: var(--kg-text-dim); font-size: 10px; font-weight: 500; }
+.kg-edge-label rect { fill: #ffffff; stroke: var(--kg-border); stroke-width: 1; }
+.kg-edge-label text { fill: #334155; font-size: 10px; font-weight: 500; }
 .kg-edge-label.sel rect { fill: rgba(99,102,241,0.16); stroke: #6366f1; }
 .kg-edge-label.sel text { fill: #6366f1; font-weight: 600; }
 .kg-edge-label.hov rect { stroke: #6366f1; }
@@ -2983,7 +2983,7 @@ export default function clientPlugin() {
       ))
 
       slots.inject('conversation.view', () => slots.register(
-        { name: 'conversation.view', id: 'kg-trajectory', order: 20, label: '知识图' },
+        { name: 'conversation.view', id: 'kg-trajectory', order: 20, label: '轨迹知识图' },
         (props) => h(TrajectoryTab, { sessionId: props ? props.sessionId : undefined }),
       ))
     },
