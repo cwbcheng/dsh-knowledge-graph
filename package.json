@@ -41,7 +41,8 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "scripts": {
-    "readme": "node scripts/build-readme.mjs"
+    "readme": "node scripts/build-readme.mjs",
+    "build:lib": "node scripts/build-lib.mjs && node scripts/build-client.mjs"
   },
   "engines": {
     "node": ">=18"
