@@ -924,6 +924,41 @@ export default function clientPlugin() {
         return pos
       }
 
+      // Row-preserving overlap resolution for the LAYERED layout: pushes
+      // overlapping pairs apart along the ROW axis (x) only, so nodes never
+      // drift off their row centers. Drifted rows would put the channel lines
+      // inside node rects, making edges appear to start inside the node.
+      function resolveLayeredOverlaps(nodes, sizes, pos, gap) {
+        const n = nodes.length
+        if (n < 2) return pos
+        const ids = nodes.map((x) => x.id)
+        for (let iter = 0; iter < 120; iter++) {
+          let moved = 0
+          for (let i = 0; i < n; i++) {
+            for (let j = i + 1; j < n; j++) {
+              const a = pos.get(ids[i])
+              const b = pos.get(ids[j])
+              const sa = sizes.get(ids[i])
+              const sb = sizes.get(ids[j])
+              if (!sa || !sb) continue
+              let dx = b.x - a.x
+              let dy = b.y - a.y
+              if (Math.abs(dy) > (sa.h + sb.h) / 2 + gap) continue
+              const need = (sa.w + sb.w) / 2 + gap
+              if (Math.abs(dx) >= need) continue
+              let s = dx >= 0 ? 1 : -1
+              if (dx === 0) s = Math.random() < 0.5 ? -1 : 1
+              const push = (need - Math.abs(dx)) / 2
+              a.x -= s * push
+              b.x += s * push
+              moved += 1
+            }
+          }
+          if (moved === 0) break
+        }
+        return pos
+      }
+
       // Center-line overlap resolution shared by deterministic layouts.
       function resolveNodeOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
@@ -971,13 +1006,16 @@ export default function clientPlugin() {
           const r = Math.round(pos.get(n.id).y / LAYER_Y_GAP)
           if (r <= r1 || r >= r2) continue
           const s = sizes.get(n.id)
-          const half = (s ? s.w : 120) / 2 + 16
+          // margin 6px past the rect edge: dense rows leave only ~20px gaps
+          // between 200px-wide nodes, so a w/2+16 margin made corridors
+          // impossible and the vertical run ploughed through the row
+          const half = (s ? s.w : 120) / 2 + 6
           if (Math.abs(x - pos.get(n.id).x) < half) return false
         }
         return true
       }
       function findCorridor(fromX, r1, r2, nodes, sizes, pos) {
-        let step = 44
+        let step = 24
         let dir = 1
         let i = 1
         while (i < 40) {
@@ -989,9 +1027,30 @@ export default function clientPlugin() {
         }
         return fromX
       }
+      // Vertical band (y range) of the channel between row r and r+1 that is
+      // clear of every node rect; used to clamp horizontal runs and lane
+      // offsets so they can never enter a node body or a row band.
+      function channelBand(r, nodes, sizes, pos) {
+        let lo = -Infinity
+        let hi = Infinity
+        for (const n of nodes) {
+          const nr = Math.round(pos.get(n.id).y / LAYER_Y_GAP)
+          const s = sizes.get(n.id)
+          const half = s ? s.h / 2 : 40
+          if (nr === r) lo = Math.max(lo, pos.get(n.id).y + half)
+          if (nr === r + 1) hi = Math.min(hi, pos.get(n.id).y - half)
+        }
+        if (!isFinite(lo)) lo = r * LAYER_Y_GAP + LAYER_Y_GAP / 2
+        if (!isFinite(hi)) hi = (r + 1) * LAYER_Y_GAP + LAYER_Y_GAP / 2
+        lo += 4
+        hi -= 4
+        if (lo > hi) { const m = (lo + hi) / 2; lo = m; hi = m }
+        return [lo, hi]
+      }
+
       function layeredOrthoPath(edge, a, b, sizes, pos, nodes, lane) {
-        const offY = lane * 10
-        const offX = lane * 14
+        const offY = lane * 8
+        const offX = lane * 12
         // Start/end on the node BORDERS, not the centers (node fills are
         // translucent, so a center-starting line shows through the body).
         const s1 = sizes.get(edge.fromNodeId)
@@ -1003,8 +1062,12 @@ export default function clientPlugin() {
         if (r1 === r2) {
           let maxRow = 0
           for (const n of nodes) maxRow = Math.max(maxRow, Math.round(pos.get(n.id).y / LAYER_Y_GAP))
+          // detour through the channel below the row (above, for the last row),
+          // clamped into that channel's node-free band so lane offsets can
+          // never push the run into a row band or a node body
+          const band = channelBand(r1 >= maxRow ? r1 - 1 : r1, nodes, sizes, pos)
           const cy = r1 >= maxRow ? r1 * LAYER_Y_GAP - LAYER_Y_GAP / 2 : r1 * LAYER_Y_GAP + LAYER_Y_GAP / 2
-          const cye = cy + offY
+          const cye = clamp(cy + offY, band[0], band[1])
           const y0 = a.y + (cye > a.y ? h1 : -h1)
           const y1 = b.y - (b.y > cye ? h2 : -h2)
           const d = 'M ' + (a.x + offX) + ' ' + y0 + ' L ' + (a.x + offX) + ' ' + cye
@@ -1026,8 +1089,12 @@ export default function clientPlugin() {
           }
         }
         const xce = corridorFree(xc + offX, lo, hi, nodes, sizes, pos) ? xc + offX : xc
-        const ch1e = ch1 + offY
-        const ch2e = ch2 + offY
+        // clamp the channel runs into their node-free bands (lane offsets and
+        // row drift must never push a run into a row band or node body)
+        const band1 = channelBand(r1 < r2 ? r1 : r1 - 1, nodes, sizes, pos)
+        const band2 = channelBand(r1 < r2 ? r2 - 1 : r2, nodes, sizes, pos)
+        const ch1e = clamp(ch1 + offY, band1[0], band1[1])
+        const ch2e = clamp(ch2 + offY, band2[0], band2[1])
         const y0 = a.y + (ch1e > a.y ? h1 : -h1)
         const y1 = b.y - (b.y > ch2e ? h2 : -h2)
         const d = 'M ' + (a.x + offX) + ' ' + y0 + ' L ' + (a.x + offX) + ' ' + ch1e
@@ -1103,8 +1170,9 @@ export default function clientPlugin() {
           return { pos: resolveNodeOverlaps(nodes, sizes, pos, 18) }
         }
         if (mode === 'layered') {
-          // channels between rows already guarantee node-free paths
-          return { pos: resolveNodeOverlaps(nodes, sizes, layoutLayered(nodes, edges, sizes), 18) }
+          // channels between rows already guarantee node-free paths; keep the
+          // rows perfectly aligned so the channel lines stay outside nodes
+          return { pos: resolveLayeredOverlaps(nodes, sizes, layoutLayered(nodes, edges, sizes), 18) }
         }
         return layoutForce(nodes, edges, sizes)
       }      function computeBBox(nodes, layout, sizes) {
