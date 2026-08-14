@@ -1511,12 +1511,14 @@ export default function clientPlugin() {
               lblX = (pxA + pxB) / 2 + ((pxA + pxB) / 2) / llen * 14
               lblY = (pyA + pyB) / 2 + ((pyA + pyB) / 2) / llen * 14
             } else {
-              // The arc sweeps OUTSIDE the outermost ring (with a per-group
-              // lane offset) so it can never cut through ring nodes; the in/out
-              // radial segments dodge intermediate ring nodes by trying small
-              // angular offsets, and start/end exactly on the node borders.
+              // The arc sweeps in the EMPTY BAND just OUTSIDE the outer of the
+              // two endpoint rings (ring radii grow by 240px, nodes extend
+              // ~60px, so band = ring+60..ring+180): every edge stays local
+              // instead of looping around the whole graph. Lane offsets spread
+              // parallel arcs within the band (clamped so they never enter a
+              // ring's node zone).
               const lane = edgeLanes.get(edge) || 0
-              const R = outerRingR + 122 + lane * 16
+              const R = Math.max(ra, rb) + 90 + Math.min(Math.abs(lane) * 16, 90)
               const ta = Math.atan2(a.y, a.x)
               const tb = Math.atan2(b.y, b.x)
               const sA = sizes.get(edge.fromNodeId)
