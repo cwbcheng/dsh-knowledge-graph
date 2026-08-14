@@ -114,6 +114,7 @@ export default function clientPlugin() {
 .kg-launcher .kg-primary { white-space: nowrap; }
 .kg-sidebar-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: 0; border-radius: 8px; color: inherit; cursor: pointer; padding: 5px 8px; font-size: 12px; font-family: inherit; }
 .kg-sidebar-btn:hover { background: rgba(127,127,127,0.16); }
+.kg-sidebar-btn-icon { width: 28px; height: 28px; padding: 0; flex: none; }
 .kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .kg-history-head .kg-section-title { margin: 0; }
 .kg-history-list { display: flex; flex-direction: column; gap: 8px; }
@@ -955,14 +956,16 @@ export default function clientPlugin() {
         )
       }
 
-      function SidebarLauncher({ wide }) {
+      // Icon-only launcher: the sidebar footer row is shared with other
+      // plugins' buttons, so keep our footprint minimal (never show the
+      // label text, regardless of the rail width).
+      function SidebarLauncher() {
         return h('button', {
-          type: 'button', className: 'kg-sidebar-btn',
+          type: 'button', className: 'kg-sidebar-btn kg-sidebar-btn-icon',
           'aria-label': '打开知识图工作台', title: '打开知识图工作台（浮动窗口）',
           onClick: () => winStore.setOpen(true),
         },
-          GraphIcon(wide ? 14 : 18),
-          wide ? h('span', null, '知识图') : null,
+          GraphIcon(18),
         )
       }
 
