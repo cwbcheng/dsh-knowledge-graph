@@ -155,7 +155,11 @@ export default function clientPlugin() {
 @container (min-width: 900px) { .kg-cols { grid-template-columns: minmax(240px, var(--kg-split, 46%)) 12px minmax(0, 1fr); align-items: start; gap: 14px 0; } .kg-split-handle { display: flex; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; user-select: none; } .kg-split-bar { width: 3px; height: 52px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; } .kg-split-handle:hover .kg-split-bar, .kg-split-handle:active .kg-split-bar { background: #3b82f6; } .kg-graph-col { position: sticky; top: 10px; } }
 .kg-traj-body { position: relative; padding: 14px 4px 24px; min-width: 0; }
 .kg-traj-cols { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; }
-@media (min-width: 860px) { .kg-traj-cols { grid-template-columns: minmax(240px, 36%) minmax(0, 1fr); } }
+@media (min-width: 860px) { .kg-traj-cols { grid-template-columns: minmax(240px, var(--kg-traj-split, 36%)) 12px minmax(0, 1fr); gap: 14px 0; } }
+.kg-traj-split-handle { display: none; }
+@media (min-width: 860px) { .kg-traj-split-handle { display: flex; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; user-select: none; } }
+.kg-traj-split-bar { width: 3px; height: 52px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; }
+.kg-traj-split-handle:hover .kg-traj-split-bar, .kg-traj-split-handle:active .kg-traj-split-bar { background: #3b82f6; }
 .kg-traj-original { display: flex; flex-direction: column; gap: 10px; overflow: auto; user-select: text; }
 .kg-traj-ev-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--kg-text-dim); margin-bottom: 4px; }
 .kg-traj-ev-chip { display: inline-flex; padding: 0 8px; border-radius: 999px; border: 1px solid var(--kg-border); background: var(--kg-panel); line-height: 18px; }
@@ -175,6 +179,10 @@ export default function clientPlugin() {
       const LS_HISTORY = 'dsh-kg-history-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
       const LS_HEIGHT = 'dsh-kg-height-v1'
+      const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v1' // + ':' + sessionId
+      const LS_TRAJ_PENDING = 'dsh-kg-traj-pending-v1' // + ':' + sessionId
+      const LS_TRAJ_SPLIT = 'dsh-kg-traj-split-v1'
+      const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
       const LAYER_Y_GAP = 210
@@ -2501,6 +2509,51 @@ export default function clientPlugin() {
         'tool/result': '工具结果',
       }
 
+      // Per-session persistence: the conversation.view tab unmounts whenever
+      // the user switches to another tab, so the last result and any running
+      // task live OUTSIDE the component — module-level cache (fast path)
+      // mirrored to localStorage (survives page reloads).
+      const trajMem = new Map()
+      const trajPendMem = new Map()
+      function readTrajResult(sessionId) {
+        if (!sessionId) return null
+        if (trajMem.has(sessionId)) return trajMem.get(sessionId)
+        let e = null
+        try { e = JSON.parse(localStorage.getItem(LS_TRAJ_RESULT + ':' + sessionId) || 'null') } catch (err) {}
+        if (e && e.graph && Array.isArray(e.graph.nodes)) trajMem.set(sessionId, e)
+        else e = null
+        return e
+      }
+      function writeTrajResult(sessionId, entry) {
+        if (!sessionId) return
+        trajMem.set(sessionId, entry)
+        try { localStorage.setItem(LS_TRAJ_RESULT + ':' + sessionId, JSON.stringify(entry)) } catch (e) {}
+      }
+      function clearTrajResult(sessionId) {
+        if (!sessionId) return
+        trajMem.delete(sessionId)
+        try { localStorage.removeItem(LS_TRAJ_RESULT + ':' + sessionId) } catch (e) {}
+      }
+      function readTrajPending(sessionId) {
+        if (!sessionId) return null
+        if (trajPendMem.has(sessionId)) return trajPendMem.get(sessionId)
+        let e = null
+        try { e = JSON.parse(localStorage.getItem(LS_TRAJ_PENDING + ':' + sessionId) || 'null') } catch (err) {}
+        if (e && e.taskId) trajPendMem.set(sessionId, e)
+        else e = null
+        return e
+      }
+      function writeTrajPending(sessionId, entry) {
+        if (!sessionId) return
+        trajPendMem.set(sessionId, entry)
+        try { localStorage.setItem(LS_TRAJ_PENDING + ':' + sessionId, JSON.stringify(entry)) } catch (e) {}
+      }
+      function clearTrajPending(sessionId) {
+        if (!sessionId) return
+        trajPendMem.delete(sessionId)
+        try { localStorage.removeItem(LS_TRAJ_PENDING + ':' + sessionId) } catch (e) {}
+      }
+
       function TrajectoryTab({ sessionId }) {
         const [phase, setPhase] = useState('idle') // idle | extracting | done
         const [taskId, setTaskId] = useState(null)
@@ -2521,8 +2574,27 @@ export default function clientPlugin() {
           } catch (e) {}
           return 'force'
         })
+        const [splitRatio, setSplitRatio] = useState(() => {
+          try {
+            const v = parseFloat(localStorage.getItem(LS_TRAJ_SPLIT))
+            if (isFinite(v) && v >= 24 && v <= 70) return v
+          } catch (e) {}
+          return 36
+        })
+        const [resultHeight, setResultHeight] = useState(() => {
+          try {
+            const v = parseInt(localStorage.getItem(LS_TRAJ_HEIGHT), 10)
+            if (isFinite(v) && v >= 320 && v <= 900) return v
+          } catch (e) {}
+          return 560
+        })
         const toastTimer = useRef(null)
         const sessionSeq = useRef(0)
+        const colsRef = useRef(null)
+        const splitDragRef = useRef(null)
+        const hHandleRef = useRef(null)
+        const hDragRef = useRef(null)
+        const mountedSessionRef = useRef(null)
 
         const showToast = (msg) => {
           setTrajToast(msg)
@@ -2530,14 +2602,46 @@ export default function clientPlugin() {
           toastTimer.current = ctx.timeout(() => { toastTimer.current = null; setTrajToast(null) }, 3000)
         }
 
-        // Reset everything when the tab's session changes.
+        // Mount / session switch: RESTORE the last result (or a still-running
+        // task) for this session instead of resetting — the tab is unmounted
+        // whenever the user switches to another conversation tab, so state
+        // must live outside the component.
         useEffect(() => {
-          setPhase('idle'); setTaskId(null); setError(null); setView(null); setTraceEvents([])
+          if (mountedSessionRef.current === sessionId) return
+          mountedSessionRef.current = sessionId
+          setError(null)
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1); setFlashPara(-1)
           setShowDiag(false); setTrajToast(null)
           sessionSeq.current += 1
-          return () => { if (toastTimer.current) { toastTimer.current(); toastTimer.current = null } }
+          if (!sessionId) return
+          const cached = readTrajResult(sessionId)
+          if (cached) {
+            try {
+              setView(makeView(cached.graph, typeof cached.traceText === 'string' ? cached.traceText : ''))
+              setTraceEvents(Array.isArray(cached.traceEvents) ? cached.traceEvents : [])
+              setPhase('done')
+              setTaskId(null)
+            } catch (err) {
+              clearTrajResult(sessionId)
+              setPhase('idle'); setView(null); setTraceEvents([])
+            }
+            return
+          }
+          const pending = readTrajPending(sessionId)
+          if (pending && pending.taskId) {
+            setTaskId(pending.taskId)
+            setPhase('extracting')
+            setView(null); setTraceEvents([])
+            return
+          }
+          setPhase('idle')
+          setView(null); setTraceEvents([])
         }, [sessionId])
+
+        // Clear the toast timer on unmount.
+        useEffect(() => () => {
+          if (toastTimer.current) { toastTimer.current(); toastTimer.current = null }
+        }, [])
 
         // ---- adaptive-backoff polling while a task runs ----
         useEffect(() => {
@@ -2564,31 +2668,43 @@ export default function clientPlugin() {
               if (g && Array.isArray(g.nodes)) {
                 const tText = typeof g.traceText === 'string' ? g.traceText : ''
                 const evs = Array.isArray(g.traceEvents) ? g.traceEvents : []
-                setView(makeView(g, tText))
-                setTraceEvents(evs)
-                setPhase('done'); setTaskId(null)
-                setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
-                showToast('轨迹知识图已生成')
+                try {
+                  setView(makeView(g, tText))
+                  setTraceEvents(evs)
+                  setPhase('done'); setTaskId(null)
+                  setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+                  clearTrajPending(sessionId)
+                  writeTrajResult(sessionId, { graph: g, traceText: tText, traceEvents: evs, ts: Date.now() })
+                  showToast('轨迹知识图已生成')
+                } catch (err) {
+                  setPhase('idle'); setTaskId(null)
+                  clearTrajPending(sessionId)
+                  setError({ message: '图数据无法渲染，请重新拆解' })
+                }
               } else {
                 setPhase('idle'); setTaskId(null)
+                clearTrajPending(sessionId)
                 setError({ message: 'AI 返回的结果缺少图数据，请重试' })
               }
               return
             }
             if (res && res.status === 'failed') {
               setPhase('idle'); setTaskId(null)
+              clearTrajPending(sessionId)
               const err = res.error || {}
               setError({ code: err.code, message: err.message || 'AI 拆分失败，请稍后重试' })
               return
             }
             if (res && res.status === 'not_found') {
               setPhase('idle'); setTaskId(null)
+              clearTrajPending(sessionId)
               setError({ message: '拆分任务已过期（服务可能已重启），请重新拆解' })
               return
             }
             if (Date.now() - start > 45 * 60 * 1000) {
               setPhase('idle'); setTaskId(null)
-              setError({ message: '等待超时，任务仍在后台运行，请稍后重新拆解' })
+              // Keep the pending record so switching back to this tab resumes polling.
+              setError({ message: '等待超时，任务仍在后台运行，切换标签页后再回来可继续等待' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -2603,10 +2719,14 @@ export default function clientPlugin() {
           setPhase('extracting')
           setView(null); setTraceEvents([])
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+          clearTrajResult(sessionId)
           try {
             const res = await host.call('trajectory-extract', { sessionId })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
-            if (res && res.taskId) setTaskId(res.taskId)
+            if (res && res.taskId) {
+              setTaskId(res.taskId)
+              writeTrajPending(sessionId, { taskId: res.taskId, ts: Date.now() })
+            }
             else { setPhase('idle'); setError({ message: '无法提交拆解任务，请重试' }) }
           } catch (e) {
             setPhase('idle')
@@ -2656,6 +2776,47 @@ export default function clientPlugin() {
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
         }
 
+        // ---- column width / result height drag handlers ----
+        const startSplitDrag = (e) => {
+          if (e.button !== 0 && e.pointerType === 'mouse') return
+          const el = colsRef.current
+          if (!el) return
+          el.setPointerCapture(e.pointerId)
+          splitDragRef.current = { id: e.pointerId, startX: e.clientX, startW: el.clientWidth, startRatio: splitRatio }
+        }
+        const onSplitMove = (e) => {
+          const d = splitDragRef.current
+          if (!d || d.id !== e.pointerId) return
+          const el = colsRef.current
+          if (!el) return
+          const dx = e.clientX - d.startX
+          setSplitRatio(clamp(d.startRatio + (dx / Math.max(d.startW, 1)) * 100, 24, 70))
+        }
+        const onSplitUp = (e) => {
+          if (splitDragRef.current && splitDragRef.current.id === e.pointerId) {
+            splitDragRef.current = null
+            try { localStorage.setItem(LS_TRAJ_SPLIT, String(Math.round(splitRatio))) } catch (err) {}
+          }
+        }
+        const startHDrag = (e) => {
+          if (e.button !== 0 && e.pointerType === 'mouse') return
+          const el = hHandleRef.current
+          if (!el) return
+          el.setPointerCapture(e.pointerId)
+          hDragRef.current = { id: e.pointerId, startY: e.clientY, startH: resultHeight }
+        }
+        const onHMove = (e) => {
+          const d = hDragRef.current
+          if (!d || d.id !== e.pointerId) return
+          setResultHeight(clamp(d.startH + (e.clientY - d.startY), 320, 900))
+        }
+        const onHUp = (e) => {
+          if (hDragRef.current && hDragRef.current.id === e.pointerId) {
+            hDragRef.current = null
+            try { localStorage.setItem(LS_TRAJ_HEIGHT, String(Math.round(resultHeight))) } catch (err) {}
+          }
+        }
+
         const paraEl = (p, i) => {
           const badges = view ? (view.paraTypes[i] || []) : []
           const ev = traceEvents[i] || null
@@ -2703,16 +2864,28 @@ export default function clientPlugin() {
                     : null,
                 ),
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
-                h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。'),
-                h('div', { className: 'kg-traj-cols' },
-                  h('div', { className: 'kg-traj-original', 'aria-label': '轨迹事件', style: { maxHeight: '560px' } },
+                h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。拖拽中间竖条调整两列宽度，拖拽下方横条调整结果区高度。'),
+                h('div', {
+                  className: 'kg-traj-cols',
+                  ref: colsRef,
+                  style: { '--kg-traj-split': splitRatio + '%' },
+                  onPointerMove: onSplitMove,
+                  onPointerUp: onSplitUp,
+                },
+                  h('div', { className: 'kg-traj-original', 'aria-label': '轨迹事件', style: { maxHeight: resultHeight + 'px' } },
                     view.paragraphs.map(paraEl)),
+                  h('div', {
+                    className: 'kg-traj-split-handle', role: 'separator', 'aria-orientation': 'vertical',
+                    'aria-label': '拖动调整轨迹事件与知识图宽度比例', title: '拖动调整宽度比例',
+                    onPointerDown: startSplitDrag,
+                  },
+                    h('div', { className: 'kg-traj-split-bar' })),
                   h('div', { className: 'kg-graph-col' },
                     h(GraphViewer, {
                       nodes: graph.nodes, edges: graph.edges, anchors: view.anchors,
                       selectedNodeId, selectedEdgeId, focusReq,
                       onSelectNode: handleSelectNode, onSelectEdge: handleSelectEdge, ctx,
-                      height: 560,
+                      height: resultHeight,
                       layoutMode, onLayoutModeChange: changeLayoutMode,
                     }),
                     h('div', { className: 'kg-legend' },
@@ -2721,6 +2894,15 @@ export default function clientPlugin() {
                         TYPE_META[t].label))),
                   ),
                 ),
+                h('div', {
+                  className: 'kg-h-handle', role: 'separator', 'aria-orientation': 'horizontal',
+                  'aria-label': '拖动调整结果区高度', title: '拖动调整高度',
+                  ref: hHandleRef,
+                  onPointerDown: startHDrag,
+                  onPointerMove: onHMove,
+                  onPointerUp: onHUp,
+                },
+                  h('div', { className: 'kg-h-bar' })),
               )
             })()
           : null
