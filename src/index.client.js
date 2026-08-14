@@ -482,116 +482,37 @@ export default function clientPlugin() {
         const n = nodes.length
         const pos = new Map()
         if (n === 0) return { pos }
+        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return { pos } }
         const deg = new Map()
         for (const node of nodes) deg.set(node.id, 0)
         for (const e of edges) {
           if (deg.has(e.fromNodeId)) deg.set(e.fromNodeId, deg.get(e.fromNodeId) + 1)
           if (deg.has(e.toNodeId)) deg.set(e.toNodeId, deg.get(e.toNodeId) + 1)
         }
-        let center = nodes[0]
-        for (const node of nodes) if (deg.get(node.id) > deg.get(center.id)) center = node
-        pos.set(center.id, { x: 0, y: 0 })
-        const rest = nodes.filter((x) => x.id !== center.id)
-        rest.sort((a, b) => deg.get(b.id) - deg.get(a.id))
-        const RING_GAP = 330
-        const CAP = 8
-        let ring = 1
-        let count = 0
-        for (const node of rest) {
-          const radius = ring * RING_GAP
-          const angle = (count / CAP) * Math.PI * 2 + (ring % 2) * (Math.PI / CAP)
-          pos.set(node.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
-          count += 1
-          if (count === CAP) { ring += 1; count = 0 }
+        // Circular layout: every node sits on the perimeter, so the interior is
+        // empty and chord edges can never slice through a node. Alternate
+        // high/low-degree nodes around the circle to shorten chords and cut
+        // crossings. Deterministic — no force jitter.
+        const sorted = [...nodes].sort((a, b) => deg.get(b.id) - deg.get(a.id))
+        const ordered = []
+        let lo = 0
+        let hi = sorted.length - 1
+        while (lo <= hi) {
+          ordered.push(sorted[lo])
+          lo += 1
+          if (lo <= hi) { ordered.push(sorted[hi]); hi -= 1 }
         }
+        const arc = 150
+        const radius = Math.max((n * arc) / (2 * Math.PI), 300)
+        for (let i = 0; i < n; i++) {
+          const angle = (i / n) * Math.PI * 2 - Math.PI / 2
+          pos.set(ordered[i].id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
+        }
+        // Safety: push overlapping rectangles apart (very wide nodes may exceed
+        // their arc slot).
         if (n > 1) {
           const ids = nodes.map((x) => x.id)
-          const ideal = 280
-          const repK = 11000
-          const spring = 0.02
-          const gravity = 0.0018
-          for (let iter = 0; iter < 80; iter++) {
-            const fx = new Map()
-            const fy = new Map()
-            for (const id of ids) { fx.set(id, 0); fy.set(id, 0) }
-            for (let i = 0; i < n; i++) {
-              for (let j = i + 1; j < n; j++) {
-                const a = pos.get(ids[i])
-                const b = pos.get(ids[j])
-                let dx = a.x - b.x
-                let dy = a.y - b.y
-                let d2 = dx * dx + dy * dy
-                if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = dx * dx + dy * dy }
-                const d = Math.sqrt(d2)
-                const f = repK / (d * d)
-                const ux = dx / d
-                const uy = dy / d
-                fx.set(ids[i], fx.get(ids[i]) + ux * f)
-                fy.set(ids[i], fy.get(ids[i]) + uy * f)
-                fx.set(ids[j], fx.get(ids[j]) - ux * f)
-                fy.set(ids[j], fy.get(ids[j]) - uy * f)
-              }
-            }
-            for (const e of edges) {
-              const a = pos.get(e.fromNodeId)
-              const b = pos.get(e.toNodeId)
-              if (!a || !b) continue
-              let dx = b.x - a.x
-              let dy = b.y - a.y
-              const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.001)
-              const f = (d - ideal) * spring
-              const ux = dx / d
-              const uy = dy / d
-              fx.set(e.fromNodeId, fx.get(e.fromNodeId) + ux * f)
-              fy.set(e.fromNodeId, fy.get(e.fromNodeId) + uy * f)
-              fx.set(e.toNodeId, fx.get(e.toNodeId) - ux * f)
-              fy.set(e.toNodeId, fy.get(e.toNodeId) - uy * f)
-            }
-            // Edge-node repulsion: push every node that does NOT touch an edge
-            // away from that edge's line, so arrows stop slicing through nodes.
-            for (const e of edges) {
-              const ea = pos.get(e.fromNodeId)
-              const eb = pos.get(e.toNodeId)
-              if (!ea || !eb) continue
-              const abx = eb.x - ea.x
-              const aby = eb.y - ea.y
-              const len2 = abx * abx + aby * aby
-              if (len2 < 1) continue
-              for (const node of nodes) {
-                if (node.id === e.fromNodeId || node.id === e.toNodeId) continue
-                const p = pos.get(node.id)
-                const s = sizes.get(node.id)
-                let t = ((p.x - ea.x) * abx + (p.y - ea.y) * aby) / len2
-                t = Math.max(0, Math.min(1, t))
-                const cx = ea.x + abx * t
-                const cy = ea.y + aby * t
-                const dx = p.x - cx
-                const dy = p.y - cy
-                const d = Math.max(Math.hypot(dx, dy), 0.001)
-                const half = s ? Math.max((s.w + s.h) / 4, 44) : 44
-                const minDist = half + 40
-                if (d < minDist) {
-                  const f = (minDist - d) * 0.028
-                  const ux = dx / d
-                  const uy = dy / d
-                  fx.set(node.id, fx.get(node.id) + ux * f)
-                  fy.set(node.id, fy.get(node.id) + uy * f)
-                }
-              }
-            }
-            for (const id of ids) {
-              if (id === center.id) continue
-              const p = pos.get(id)
-              const moveX = clamp(fx.get(id) - p.x * gravity, -40, 40)
-              const moveY = clamp(fy.get(id) - p.y * gravity, -40, 40)
-              p.x += moveX
-              p.y += moveY
-            }
-          }
-        }
-        if (n > 1) {
-          const ids = nodes.map((x) => x.id)
-          for (let iter = 0; iter < 50; iter++) {
+          for (let iter = 0; iter < 200; iter++) {
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
@@ -602,8 +523,8 @@ export default function clientPlugin() {
                 if (!sa || !sb) continue
                 const dx = b.x - a.x
                 const dy = b.y - a.y
-                const minDx = (sa.w + sb.w) / 2 + 34
-                const minDy = (sa.h + sb.h) / 2 + 34
+                const minDx = (sa.w + sb.w) / 2 + 18
+                const minDy = (sa.h + sb.h) / 2 + 18
                 const ox = minDx - Math.abs(dx)
                 const oy = minDy - Math.abs(dy)
                 if (ox <= 0 || oy <= 0) continue
@@ -703,10 +624,8 @@ export default function clientPlugin() {
               return Math.atan2(px.y - layout.pos.get(x.fromNodeId).y, px.x - layout.pos.get(x.fromNodeId).x)
                 - Math.atan2(py.y - layout.pos.get(y.fromNodeId).y, py.x - layout.pos.get(y.fromNodeId).x)
             })
-            const SPREAD = 26
             list.forEach((edge, k) => {
-              const rank = k - (n - 1) / 2
-              curve.set(edge, Math.max(-104, Math.min(104, rank * SPREAD)))
+              curve.set(edge, k - (n - 1) / 2)
             })
           }
           return curve
@@ -831,16 +750,22 @@ export default function clientPlugin() {
           const sb = sizes.get(edge.toNodeId)
           if (!a || !b || !sa || !sb) return null
           const pts = edgePoints(a, b, sa, sb)
-          // quadratic bezier with a signed perpendicular bend (0 = straight)
-          const rawBend = edgeFan.get(edge) || 0
+          // Quadratic bezier bending TOWARD the circle center: nodes all sit on
+          // the perimeter and the interior is empty, so an inward curve keeps
+          // every arrow clear of other nodes (short chords dip inside instead
+          // of grazing the rim). Same-source edges fan out by rank.
           const elen = Math.max(Math.hypot(pts.x2 - pts.x1, pts.y2 - pts.y1), 0.001)
-          const bend = rawBend === 0 ? 0 : clamp(rawBend, -elen * 0.35, elen * 0.35)
           const ex = (pts.x2 - pts.x1) / elen
           const ey = (pts.y2 - pts.y1) / elen
           const mx = (pts.x1 + pts.x2) / 2
           const my = (pts.y1 + pts.y2) / 2
-          const cxp = mx - ey * bend
-          const cyp = my + ex * bend
+          let px = -ey
+          let py = ex
+          if (px * -mx + py * -my < 0) { px = -px; py = -py }
+          const rank = edgeFan.get(edge) || 0
+          const bendIn = Math.min(22 + Math.abs(rank) * 20, elen * 0.45)
+          const cxp = mx + px * bendIn
+          const cyp = my + py * bendIn
           const d = 'M ' + pts.x1 + ' ' + pts.y1 + ' Q ' + cxp + ' ' + cyp + ' ' + pts.x2 + ' ' + pts.y2
           const sel = selectedEdgeId === i
           const hover = hoverEdge === i
@@ -864,10 +789,8 @@ export default function clientPlugin() {
               strokeWidth: sel || hover ? 2.5 : 1.5,
               markerEnd: 'url(#' + markerId + ')',
             }),
-            // relation-type label chip at the bezier midpoint (offset
-            // perpendicular along the curve normal so it does not sit on the
-            // line); the tangent at t=0.5 is parallel to the chord, so the
-            // same perpendicular works for straight and curved edges
+            // relation-type label chip at the bezier midpoint, offset a bit
+            // further along the inward normal so it stays off the curve
             h('g', {
               key: 'lbl' + i,
               className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
@@ -876,8 +799,8 @@ export default function clientPlugin() {
               (function () {
                 const bx = (pts.x1 + 2 * cxp + pts.x2) / 4
                 const by = (pts.y1 + 2 * cyp + pts.y2) / 4
-                const lx = bx - ey * 11
-                const ly = by + ex * 11
+                const lx = bx - px * 14
+                const ly = by - py * 14
                 const lw = measureLabel(rel) + 10
                 const lh = 15
                 return [
