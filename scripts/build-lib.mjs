@@ -51,6 +51,40 @@ const extractBlock = `      harness.handle('extract', async (args) => {
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
         if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
         return { status: 'running' }
+      })
+
+      harness.handle('trajectory-extract', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+        const sessions = ctx.get('sessions')
+        const session = sessions ? sessions.get(sessionId) : undefined
+        if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
+        const trace = serializeTrace(session.events)
+        if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
+        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        seq += 1
+        const task = {
+          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
+          title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+          createdAt: Date.now(),
+        }
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => runTask(task)).catch((e) => {
+          console.error('[dsh-knowledge-graph] trajectory task crashed', e)
+          failTask(task, 'failed', 'AI 拆分失败：内部错误')
+        }).finally(() => { busy = false })
+        return { taskId: task.id }
+      })
+
+      harness.handle('trajectory-status', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
+        const t = tasks.get(taskId)
+        if (!t) return { status: 'not_found' }
+        if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
+        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
+        return { status: 'running' }
       })`
 
 const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent mode) ----
@@ -83,13 +117,39 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
             }
-            if (pathname === '/api/dsh-knowledge-graph/task-status') {
+            if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
               const t = tasks.get(taskId)
               if (!t) return writeJson(res, 200, { status: 'not_found' })
               if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
               if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
               return writeJson(res, 200, { status: 'running' })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-extract') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+              const sessions = ctx.get('sessions')
+              const session = sessions ? sessions.get(sessionId) : undefined
+              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
+              const trace = serializeTrace(session.events)
+              if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
+                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+                createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] trajectory task crashed', e)
+                failTask(task, 'failed', 'AI 拆分失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
             }
             return writeJson(res, 404, { error: { code: 'not_found', message: 'unknown endpoint' } })
           } catch (error) {
