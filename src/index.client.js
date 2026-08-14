@@ -649,6 +649,37 @@ export default function clientPlugin() {
         const layout = useMemo(() => layoutGraph(nodes, edges, sizes), [nodes, edges, sizes])
         const bbox = useMemo(() => computeBBox(nodes, layout, sizes), [nodes, layout, sizes])
 
+        // Fan-out curvature: for every source node with 2+ outgoing edges,
+        // sort them by target angle and give each a signed perpendicular bend.
+        // This spreads the arrows instead of letting them overlap in a bundle.
+        const edgeFan = useMemo(() => {
+          const curve = new Map()
+          const bySource = new Map()
+          for (const edge of edges || []) {
+            const a = layout.pos.get(edge.fromNodeId)
+            if (!a) continue
+            if (!bySource.has(edge.fromNodeId)) bySource.set(edge.fromNodeId, [])
+            bySource.get(edge.fromNodeId).push(edge)
+          }
+          for (const list of bySource.values()) {
+            const n = list.length
+            if (n < 2) continue
+            list.sort((x, y) => {
+              const px = layout.pos.get(x.toNodeId)
+              const py = layout.pos.get(y.toNodeId)
+              if (!px || !py) return 0
+              return Math.atan2(px.y - layout.pos.get(x.fromNodeId).y, px.x - layout.pos.get(x.fromNodeId).x)
+                - Math.atan2(py.y - layout.pos.get(y.fromNodeId).y, py.x - layout.pos.get(y.fromNodeId).x)
+            })
+            const SPREAD = 26
+            list.forEach((edge, k) => {
+              const rank = k - (n - 1) / 2
+              curve.set(edge, Math.max(-104, Math.min(104, rank * SPREAD)))
+            })
+          }
+          return curve
+        }, [edges, layout])
+
         const fitView = useCallback(() => {
           const el = containerRef.current
           if (!el) return
@@ -768,7 +799,17 @@ export default function clientPlugin() {
           const sb = sizes.get(edge.toNodeId)
           if (!a || !b || !sa || !sb) return null
           const pts = edgePoints(a, b, sa, sb)
-          const d = 'M ' + pts.x1 + ' ' + pts.y1 + ' L ' + pts.x2 + ' ' + pts.y2
+          // quadratic bezier with a signed perpendicular bend (0 = straight)
+          const rawBend = edgeFan.get(edge) || 0
+          const elen = Math.max(Math.hypot(pts.x2 - pts.x1, pts.y2 - pts.y1), 0.001)
+          const bend = rawBend === 0 ? 0 : clamp(rawBend, -elen * 0.35, elen * 0.35)
+          const ex = (pts.x2 - pts.x1) / elen
+          const ey = (pts.y2 - pts.y1) / elen
+          const mx = (pts.x1 + pts.x2) / 2
+          const my = (pts.y1 + pts.y2) / 2
+          const cxp = mx - ey * bend
+          const cyp = my + ex * bend
+          const d = 'M ' + pts.x1 + ' ' + pts.y1 + ' Q ' + cxp + ' ' + cyp + ' ' + pts.x2 + ' ' + pts.y2
           const sel = selectedEdgeId === i
           const hover = hoverEdge === i
           const rel = REL_LABEL[edge.relation] || edge.relation
@@ -791,21 +832,20 @@ export default function clientPlugin() {
               strokeWidth: sel || hover ? 2.5 : 1.5,
               markerEnd: 'url(#' + markerId + ')',
             }),
-            // relation-type label chip at the edge midpoint, offset
-            // perpendicular so it does not sit on the line
+            // relation-type label chip at the bezier midpoint (offset
+            // perpendicular along the curve normal so it does not sit on the
+            // line); the tangent at t=0.5 is parallel to the chord, so the
+            // same perpendicular works for straight and curved edges
             h('g', {
               key: 'lbl' + i,
               className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
               'aria-hidden': 'true',
             },
               (function () {
-                const mx = (pts.x1 + pts.x2) / 2
-                const my = (pts.y1 + pts.y2) / 2
-                const ex = pts.x2 - pts.x1
-                const ey = pts.y2 - pts.y1
-                const elen = Math.max(Math.hypot(ex, ey), 0.001)
-                const lx = mx - (ey / elen) * 11
-                const ly = my + (ex / elen) * 11
+                const bx = (pts.x1 + 2 * cxp + pts.x2) / 4
+                const by = (pts.y1 + 2 * cyp + pts.y2) / 4
+                const lx = bx - ey * 11
+                const ly = by + ex * 11
                 const lw = measureLabel(rel) + 10
                 const lh = 15
                 return [
