@@ -77,7 +77,10 @@ export default function clientPlugin() {
 @media (prefers-color-scheme: dark) { .kg-diag-list { color: #fcd34d; } }
 .kg-hint { margin: 0 0 10px; font-size: 12px; color: var(--kg-text-dim); }
 .kg-cols { display: grid; gap: 14px; }
-.kg-original { display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.kg-original { display: flex; flex-direction: column; gap: 10px; overflow: auto; user-select: text; }
+.kg-select-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: -1px -1px 0; background: var(--kg-win-bg); border-bottom: 1px solid var(--kg-border); border-radius: 10px 10px 0 0; }
+.kg-select-count { font-size: 12px; color: var(--kg-text-dim); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kg-select-btn { padding: 5px 14px; font-size: 12.5px; white-space: nowrap; }
 .kg-split-handle { display: none; }
 .kg-h-handle { display: flex; align-items: center; justify-content: center; height: 10px; margin-top: 10px; cursor: row-resize; touch-action: none; user-select: none; }
 .kg-h-bar { width: 56px; height: 3px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; }
@@ -1867,6 +1870,11 @@ export default function clientPlugin() {
         const hHandleRef = useRef(null)
         const hDragRef = useRef(null)
         const submittedRef = useRef(null)
+        // ---- 划线拆分（select-text -> extract）----
+        const [selectionText, setSelectionText] = useState(null)
+        const suppressClickRef = useRef(false)
+        const taRef = useRef(null)
+        const [taSel, setTaSel] = useState(null)
 
         // ---- restore pending task / saved result / draft on mount ----
         useEffect(() => {
@@ -1979,8 +1987,8 @@ export default function clientPlugin() {
           return () => { disposed = true; if (stop) stop() }
         }, [taskId])
 
-        const submit = async () => {
-          const t = text.trim()
+        const submit = async (overrideText) => {
+          const t = (overrideText != null ? overrideText : text).trim()
           if (!t) { setError({ message: '请先粘贴资料正文' }); return }
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
           setError(null)
@@ -2006,6 +2014,43 @@ export default function clientPlugin() {
           } catch (e) {
             setPhase('idle')
             setError({ message: '无法提交拆分任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+
+        // Detect a mouse/keyboard text selection inside the original-text
+        // column and offer to split JUST that selection into a knowledge graph.
+        const detectSelection = () => {
+          const sel = window.getSelection()
+          let t = sel ? sel.toString().trim() : ''
+          if (t.length > 0) {
+            const node = sel.anchorNode
+            const el = node && node.nodeType === 3 ? node.parentElement : node
+            if (el && typeof el.closest === 'function' && el.closest('.kg-original')) {
+              suppressClickRef.current = true
+              setSelectionText(t)
+              return
+            }
+          }
+          setSelectionText(null)
+        }
+        const splitSelection = () => {
+          const t = selectionText
+          setSelectionText(null)
+          if (!t) return
+          setText(t)
+          toastStore.show('正在把选中的 ' + t.length + ' 字拆分为知识图...')
+          submit(t)
+        }
+        const onTaSelect = () => {
+          const ta = taRef.current
+          if (!ta) return
+          const start = ta.selectionStart
+          const end = ta.selectionEnd
+          if (end > start) {
+            const t = ta.value.substring(start, end).trim()
+            setTaSel(t.length > 0 ? t : null)
+          } else {
+            setTaSel(null)
           }
         }
 
@@ -2192,6 +2237,12 @@ export default function clientPlugin() {
                 }),
                 h('div', { className: 'kg-actions' },
                   h('span', { className: 'kg-counter' }, '已输入 ' + text.length + ' / ' + MAX_LEN + ' 字'),
+                  taSel
+                    ? h('button', {
+                        type: 'button', className: 'kg-secondary',
+                        onClick: () => { setTaSel(null); submit(taSel) },
+                      }, '拆分所选 ' + taSel.length + ' 字')
+                    : null,
                   text.trim().length > 0
                     ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setText(''); setTitle('') } }, '清空')
                     : null,
