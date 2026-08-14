@@ -999,22 +999,56 @@ export default function clientPlugin() {
           const sb = sizes.get(edge.toNodeId)
           if (!a || !b || !sa || !sb) return null
           const pts = edgePoints(a, b, sa, sb)
-          // Quadratic bezier with a signed perpendicular bend: same-source
-          // edges fan out symmetrically by rank so arrows never pile onto one
-          // line (0 = straight for single edges).
-          const rawBend = edgeFan.get(edge) || 0
-          const elen = Math.max(Math.hypot(pts.x2 - pts.x1, pts.y2 - pts.y1), 0.001)
-          const bend = rawBend === 0 ? 0 : clamp(rawBend, -elen * 0.35, elen * 0.35)
-          const ex = (pts.x2 - pts.x1) / elen
-          const ey = (pts.y2 - pts.y1) / elen
-          const mx = (pts.x1 + pts.x2) / 2
-          const my = (pts.y1 + pts.y2) / 2
-          const cxp = mx - ey * bend
-          const cyp = my + ex * bend
-          const d = 'M ' + pts.x1 + ' ' + pts.y1 + ' Q ' + cxp + ' ' + cyp + ' ' + pts.x2 + ' ' + pts.y2
           const sel = selectedEdgeId === i
           const hover = hoverEdge === i
           const rel = REL_LABEL[edge.relation] || edge.relation
+          // Radial mode: polylines — each edge leaves its source radially,
+          // sweeps along an arc just OUTSIDE the outer ring of its two
+          // endpoints, then enters the target radially. Hub edges stay
+          // straight spokes. Other modes keep the fanned quadratic bezier.
+          let d
+          let lblX
+          let lblY
+          if (layoutMode === 'radial') {
+            const ra = Math.hypot(a.x, a.y)
+            const rb = Math.hypot(b.x, b.y)
+            if (ra < 1 || rb < 1) {
+              d = 'M ' + pts.x1 + ' ' + pts.y1 + ' L ' + pts.x2 + ' ' + pts.y2
+              const llen = Math.max(Math.hypot(pts.x1 + pts.x2, pts.y1 + pts.y2), 0.001)
+              lblX = (pts.x1 + pts.x2) / 2 + ((pts.x1 + pts.x2) / 2) / llen * 14
+              lblY = (pts.y1 + pts.y2) / 2 + ((pts.y1 + pts.y2) / 2) / llen * 14
+            } else {
+              const R = Math.max(ra, rb) + 34
+              const ta = Math.atan2(a.y, a.x)
+              const tb = Math.atan2(b.y, b.x)
+              const ox = Math.cos(ta) * R
+              const oy = Math.sin(ta) * R
+              const qx = Math.cos(tb) * R
+              const qy = Math.sin(tb) * R
+              d = 'M ' + pts.x1 + ' ' + pts.y1 + ' L ' + ox + ' ' + oy + ' L ' + qx + ' ' + qy + ' L ' + pts.x2 + ' ' + pts.y2
+              const llen = Math.max(Math.hypot(ox + qx, oy + qy), 0.001)
+              lblX = (ox + qx) / 2 + ((ox + qx) / 2) / llen * 14
+              lblY = (oy + qy) / 2 + ((oy + qy) / 2) / llen * 14
+            }
+          } else {
+            // Quadratic bezier with a signed perpendicular bend: same-source
+            // edges fan out symmetrically by rank so arrows never pile onto
+            // one line (0 = straight for single edges).
+            const rawBend = edgeFan.get(edge) || 0
+            const elen = Math.max(Math.hypot(pts.x2 - pts.x1, pts.y2 - pts.y1), 0.001)
+            const bend = rawBend === 0 ? 0 : clamp(rawBend, -elen * 0.35, elen * 0.35)
+            const ex = (pts.x2 - pts.x1) / elen
+            const ey = (pts.y2 - pts.y1) / elen
+            const mx = (pts.x1 + pts.x2) / 2
+            const my = (pts.y1 + pts.y2) / 2
+            const cxp = mx - ey * bend
+            const cyp = my + ex * bend
+            d = 'M ' + pts.x1 + ' ' + pts.y1 + ' Q ' + cxp + ' ' + cyp + ' ' + pts.x2 + ' ' + pts.y2
+            const bx = (pts.x1 + 2 * cxp + pts.x2) / 4
+            const by = (pts.y1 + 2 * cyp + pts.y2) / 4
+            lblX = bx - ey * 11
+            lblY = by + ex * 11
+          }
           return h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: 'button', tabIndex: 0,
@@ -1034,27 +1068,21 @@ export default function clientPlugin() {
               strokeWidth: sel || hover ? 2.5 : 1.5,
               markerEnd: 'url(#' + markerId + ')',
             }),
-            // relation-type label chip at the bezier midpoint, offset
-            // perpendicular along the curve normal so it does not sit on the
-            // line; the tangent at t=0.5 is parallel to the chord, so the
-            // same perpendicular works for straight and curved edges
+            // relation-type label chip at the path's label point (curve
+            // midpoint / outer-arc midpoint), offset so it stays off the line
             h('g', {
               key: 'lbl' + i,
               className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
               'aria-hidden': 'true',
             },
               (function () {
-                const bx = (pts.x1 + 2 * cxp + pts.x2) / 4
-                const by = (pts.y1 + 2 * cyp + pts.y2) / 4
-                const lx = bx - ey * 11
-                const ly = by + ex * 11
                 const lw = measureLabel(rel) + 10
                 const lh = 15
                 return [
                   h('rect', {
-                    x: lx - lw / 2, y: ly - lh / 2, width: lw, height: lh, rx: 4,
+                    x: lblX - lw / 2, y: lblY - lh / 2, width: lw, height: lh, rx: 4,
                   }),
-                  h('text', { x: lx, y: ly + 3.5, textAnchor: 'middle' }, rel),
+                  h('text', { x: lblX, y: lblY + 3.5, textAnchor: 'middle' }, rel),
                 ]
               })(),
             ),
