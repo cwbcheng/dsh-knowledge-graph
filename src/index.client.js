@@ -493,7 +493,7 @@ export default function clientPlugin() {
         pos.set(center.id, { x: 0, y: 0 })
         const rest = nodes.filter((x) => x.id !== center.id)
         rest.sort((a, b) => deg.get(b.id) - deg.get(a.id))
-        const RING_GAP = 300
+        const RING_GAP = 330
         const CAP = 8
         let ring = 1
         let count = 0
@@ -506,10 +506,10 @@ export default function clientPlugin() {
         }
         if (n > 1) {
           const ids = nodes.map((x) => x.id)
-          const ideal = 250
-          const repK = 9000
+          const ideal = 280
+          const repK = 11000
           const spring = 0.02
-          const gravity = 0.002
+          const gravity = 0.0018
           for (let iter = 0; iter < 80; iter++) {
             const fx = new Map()
             const fy = new Map()
@@ -547,6 +547,38 @@ export default function clientPlugin() {
               fx.set(e.toNodeId, fx.get(e.toNodeId) - ux * f)
               fy.set(e.toNodeId, fy.get(e.toNodeId) - uy * f)
             }
+            // Edge-node repulsion: push every node that does NOT touch an edge
+            // away from that edge's line, so arrows stop slicing through nodes.
+            for (const e of edges) {
+              const ea = pos.get(e.fromNodeId)
+              const eb = pos.get(e.toNodeId)
+              if (!ea || !eb) continue
+              const abx = eb.x - ea.x
+              const aby = eb.y - ea.y
+              const len2 = abx * abx + aby * aby
+              if (len2 < 1) continue
+              for (const node of nodes) {
+                if (node.id === e.fromNodeId || node.id === e.toNodeId) continue
+                const p = pos.get(node.id)
+                const s = sizes.get(node.id)
+                let t = ((p.x - ea.x) * abx + (p.y - ea.y) * aby) / len2
+                t = Math.max(0, Math.min(1, t))
+                const cx = ea.x + abx * t
+                const cy = ea.y + aby * t
+                const dx = p.x - cx
+                const dy = p.y - cy
+                const d = Math.max(Math.hypot(dx, dy), 0.001)
+                const half = s ? Math.max((s.w + s.h) / 4, 44) : 44
+                const minDist = half + 40
+                if (d < minDist) {
+                  const f = (minDist - d) * 0.028
+                  const ux = dx / d
+                  const uy = dy / d
+                  fx.set(node.id, fx.get(node.id) + ux * f)
+                  fy.set(node.id, fy.get(node.id) + uy * f)
+                }
+              }
+            }
             for (const id of ids) {
               if (id === center.id) continue
               const p = pos.get(id)
@@ -559,7 +591,7 @@ export default function clientPlugin() {
         }
         if (n > 1) {
           const ids = nodes.map((x) => x.id)
-          for (let iter = 0; iter < 40; iter++) {
+          for (let iter = 0; iter < 50; iter++) {
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
@@ -570,8 +602,8 @@ export default function clientPlugin() {
                 if (!sa || !sb) continue
                 const dx = b.x - a.x
                 const dy = b.y - a.y
-                const minDx = (sa.w + sb.w) / 2 + 26
-                const minDy = (sa.h + sb.h) / 2 + 26
+                const minDx = (sa.w + sb.w) / 2 + 34
+                const minDy = (sa.h + sb.h) / 2 + 34
                 const ox = minDx - Math.abs(dx)
                 const oy = minDy - Math.abs(dy)
                 if (ox <= 0 || oy <= 0) continue
