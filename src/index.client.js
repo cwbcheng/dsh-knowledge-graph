@@ -424,6 +424,14 @@ export default function clientPlugin() {
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
         const paraNodes = paragraphs.map(() => [])
+        // Sanitize edges: drop references to unknown nodes and self-loops.
+        // d3-force throws "node not found" on a dangling edge — history data
+        // from older sessions can contain them, which crashed the whole page.
+        if (graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges)) {
+          const ids = new Set(graph.nodes.map((n) => n.id))
+          const clean = graph.edges.filter((e) => e && e.fromNodeId !== e.toNodeId && ids.has(e.fromNodeId) && ids.has(e.toNodeId))
+          if (clean.length !== graph.edges.length) graph = { ...graph, edges: clean }
+        }
         for (const n of graph.nodes) {
           // 1) precise quote match; 2) deterministic paragraph number; 3) token overlap
           let off = resolveAnchor(n.quote, sourceText, n.text)
@@ -547,7 +555,7 @@ export default function clientPlugin() {
           for (const id of ids) { pushX.set(id, 0); pushY.set(id, 0) }
           let moved = 0
           for (const e of edges) {
-            const segs = segmentsOf(e)
+            const segs = segmentsOf(e, sizes, pos)
             if (!segs) continue
             const extra = bendAware ? Math.abs(bendRank.get(e) || 0) * 13 : 0
             for (const seg of segs) {
@@ -596,9 +604,9 @@ export default function clientPlugin() {
       // Path segments for fanned bezier edges (force / circular): the curve
       // stays inside the P0-control-P2 triangle, so protecting the two control
       // edges covers the whole curve.
-      function bezierSegmentsOf(edge) {
-        const a = posOf.get(edge.fromNodeId)
-        const b = posOf.get(edge.toNodeId)
+      function bezierSegmentsOf(edge, sizes, pos) {
+        const a = pos.get(edge.fromNodeId)
+        const b = pos.get(edge.toNodeId)
         if (!a || !b) return null
         const sa = sizes.get(edge.fromNodeId)
         const sb = sizes.get(edge.toNodeId)
@@ -634,9 +642,9 @@ export default function clientPlugin() {
 
       // Path segments for radial polyline edges: the out/in radial segments
       // (the outer arc already sweeps clear of every ring).
-      function radialSegmentsOf(edge) {
-        const a = posOf.get(edge.fromNodeId)
-        const b = posOf.get(edge.toNodeId)
+      function radialSegmentsOf(edge, sizes, pos) {
+        const a = pos.get(edge.fromNodeId)
+        const b = pos.get(edge.toNodeId)
         if (!a || !b) return null
         const sa = sizes.get(edge.fromNodeId)
         const sb = sizes.get(edge.toNodeId)
@@ -647,7 +655,7 @@ export default function clientPlugin() {
         if (ra < 1 || rb < 1) {
           const target = ra < 1 ? b : a
           const tBase = Math.atan2(target.y, target.x)
-          const tFree = radialFreeAngle(tBase, 0, Math.max(ra, rb), edge.fromNodeId, edge.toNodeId, nodes, sizes, posOf)
+          const tFree = radialFreeAngle(tBase, 0, Math.max(ra, rb), edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
           const exu = Math.cos(tFree)
           const eyu = Math.sin(tFree)
           const tOut = intersectDist(sa, exu, eyu)
@@ -656,8 +664,8 @@ export default function clientPlugin() {
           return out
         }
         const R = outerR + 122
-        const tae = radialFreeAngle(Math.atan2(a.y, a.x), ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, posOf)
-        const tbe = radialFreeAngle(Math.atan2(b.y, b.x), rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, posOf)
+        const tae = radialFreeAngle(Math.atan2(a.y, a.x), ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
+        const tbe = radialFreeAngle(Math.atan2(b.y, b.x), rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
         const exu = Math.cos(tae)
         const eyu = Math.sin(tae)
         const exv = Math.cos(tbe)
@@ -711,7 +719,13 @@ export default function clientPlugin() {
         buildFanRanks(edges)
         const F = d3force
         const simNodes = nodes.map((nd) => ({ id: nd.id }))
-        const simLinks = edges.map((e) => ({ source: e.fromNodeId, target: e.toNodeId }))
+        const nodeIds = new Set(simNodes.map((nd) => nd.id))
+        const simLinks = []
+        for (const e of edges) {
+          if (nodeIds.has(e.fromNodeId) && nodeIds.has(e.toNodeId) && e.fromNodeId !== e.toNodeId) {
+            simLinks.push({ source: e.fromNodeId, target: e.toNodeId })
+          }
+        }
         const linkDistance = (l) => {
           const src = typeof l.source === 'object' ? l.source.id : l.source
           const tgt = typeof l.target === 'object' ? l.target.id : l.target
@@ -825,8 +839,9 @@ export default function clientPlugin() {
         const adj = new Map()
         for (const node of nodes) adj.set(node.id, [])
         for (const e of edges) {
-          adj.get(e.fromNodeId).push(e.toNodeId)
-          adj.get(e.toNodeId).push(e.fromNodeId)
+          const fa = adj.get(e.fromNodeId)
+          const tb = adj.get(e.toNodeId)
+          if (fa && tb) { fa.push(e.toNodeId); tb.push(e.fromNodeId) }
         }
         const level = new Map([[hub.id, 0]])
         const queue = [hub.id]
@@ -881,8 +896,9 @@ export default function clientPlugin() {
         const adj = new Map()
         for (const node of nodes) adj.set(node.id, [])
         for (const e of edges) {
-          adj.get(e.fromNodeId).push(e.toNodeId)
-          adj.get(e.toNodeId).push(e.fromNodeId)
+          const fa = adj.get(e.fromNodeId)
+          const tb = adj.get(e.toNodeId)
+          if (fa && tb) { fa.push(e.toNodeId); tb.push(e.fromNodeId) }
         }
         const level = new Map([[hub.id, 0]])
         const queue = [hub.id]
@@ -1143,7 +1159,21 @@ export default function clientPlugin() {
         const panRef = useRef(null)
 
         const sizes = useMemo(() => computeNodeSizes(nodes), [nodes])
-        const layout = useMemo(() => layoutGraph(nodes, edges, sizes, layoutMode || 'force'), [nodes, edges, sizes, layoutMode])
+        const layout = useMemo(() => {
+          try {
+            return layoutGraph(nodes, edges, sizes, layoutMode || 'force')
+          } catch (e) {
+            // A layout failure must never take down the whole page: fall back
+            // to a degenerate safe layout and keep rendering.
+            console.error('[dsh-knowledge-graph] layout failed:', e)
+            const pos = new Map()
+            for (let i = 0; i < nodes.length; i++) {
+              const ang = (i / Math.max(nodes.length, 1)) * Math.PI * 2
+              pos.set(nodes[i].id, { x: Math.cos(ang) * 320, y: Math.sin(ang) * 320 })
+            }
+            return { pos }
+          }
+        }, [nodes, edges, sizes, layoutMode])
         const bbox = useMemo(() => computeBBox(nodes, layout, sizes), [nodes, layout, sizes])
 
         // Selection focus: selecting a node highlights it, its neighbours and
