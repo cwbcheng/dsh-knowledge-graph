@@ -1,0 +1,10 @@
+# dsh-knowledge-graph bundle patch：向 web 组合挂载「资料 ⇄ 知识图」插件。
+# host 半（webServer 路由 /api/dsh-knowledge-graph）与 client 半
+# （__ModuleLoader__ UI，exports["./client"]）由官方 bundle 流程解析，
+# 无需手动双 entry。
+#
+# 安装：把本包加入 profile 的 package.json（dependencies + dsh.profile.bundles）
+# 并 pnpm install，重启 dsh web 后插件随服务常驻加载（无需动态插件审批）。
+- insert:
+    - id: dsh-knowledge-graph
+      name: dsh-knowledge-graph

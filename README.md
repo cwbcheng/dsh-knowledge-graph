@@ -79,6 +79,32 @@ Agent 会依次调用 `cordis_define`（定义）→ `cordis_run`（运行），
 
 > 不熟悉 `cordis_define` 工具的话直接用方式 A，Agent 会自动处理好上面的取函数体步骤。
 
+**方式 C：常驻安装（推荐，重启不丢）**
+
+把本仓库安装为 web profile 的组合插件（与 `dsh-hud` 相同的社区插件包形态）：Host 半走 `webServer` 路由、Client 半是 `__ModuleLoader__` 浏览器模块，随 `dsh web` 启动自动加载，**不需要每次重启后重新定义**，也无需审批。
+
+```bash
+# 1. 在 profile 目录添加依赖与 bundle（$DSH_HOME 默认 ~/.dsh）
+cd ~/.dsh/profiles/web
+#    在 package.json 的 dependencies 中加：
+#    "dsh-knowledge-graph": "github:cwbcheng/dsh-knowledge-graph#main"
+#    在 package.json 的 dsh.profile.bundles 中加：
+#    "dsh-knowledge-graph"
+pnpm install
+
+# 2. 重启 dsh web（Ctrl+C 后重新 `dsh web`）
+```
+
+重启后：对话标题右侧出现「知识图」按钮，历史记录、窗口位置等（浏览器 localStorage）原样保留。
+
+| 文件 | 作用（常驻包） |
+| --- | --- |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / GET task-status） |
+| [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
+| [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
+
+> `src/` 与 `lib/` 是同一插件的两种部署形态：`src/` 供动态插件（方式 A/B）使用，`lib/` 供常驻组合（方式 C）使用，逻辑保持一致。
+
 ### 3. 批准运行
 
 定义成功后运行会进入 **awaiting approval（等待批准）** 状态：
@@ -94,15 +120,19 @@ Agent 会依次调用 `cordis_define`（定义）→ `cordis_run`（运行），
 
 ## 更新插件
 
-仓库有更新后，重复方式 A 即可：让 Agent 重新读取两个源文件并 `cordis_define`（在同一个插件下追加新 Package），再 `cordis_run`（update 模式）切换到新版本；若你之前点了双勾，新版本会自动运行。
+- **动态安装（方式 A/B）**：仓库有更新后重复方式 A——让 Agent 重新读取两个源文件并 `cordis_define`（在同一个插件下追加新 Package），再 `cordis_run`（update 模式）切换到新版本；若你之前点了双勾，新版本会自动运行。
+- **常驻安装（方式 C）**：更新后重新 `pnpm install`（拉取最新 `#main`）并重启 `dsh web` 即可。
 
 ## 卸载插件
 
-打开 **Cordis Plugin** 面板 → 在插件行点击 **停止（Stop）** 暂停使用；需要彻底删除定义时使用 `cordis_undefine`。历史记录等数据保存在浏览器 `localStorage`，卸载不会丢失。
+- **动态安装**：打开 **Cordis Plugin** 面板 → 在插件行点击 **停止（Stop）** 暂停使用；需要彻底删除定义时使用 `cordis_undefine`。
+- **常驻安装**：从 profile 的 `package.json` 移除依赖与 bundles 条目，`pnpm install` 后重启。
+
+历史记录等数据保存在浏览器 `localStorage`，卸载不会丢失。
 
 ## 注意事项
 
-- 动态插件运行在 DSH **进程内**：进程重启后插件会消失，需要重新安装（源码都在本仓库，重来一遍方式 A 即可，历史数据仍保留在浏览器里）；
+- 动态插件运行在 DSH **进程内**：进程重启后插件会消失，需要重新安装（方式 A 或改用常驻方式 C，历史数据仍保留在浏览器里）；常驻插件随服务启动自动加载，不受重启影响；
 - Host 半依赖可用的 LLM（见前置条件）；AI 调用只发生在你自己的 DSH 环境内，是否外传取决于你配置的模型提供方；
 - 本项目**不含**付费 / 配额功能：拆分、历史、双向定位全部在本地完成。
 
