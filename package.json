@@ -1,0 +1,26 @@
+{
+  "name": "dsh-knowledge-graph",
+  "version": "1.0.0",
+  "description": "DSH Cordis plugin: turn arbitrary source text into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "knowledge-graph",
+    "knowledge-base",
+    "ai",
+    "novel",
+    "study-notes"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "readme": "node scripts/build-readme.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
