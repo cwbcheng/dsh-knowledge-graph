@@ -72,6 +72,15 @@
 .kg-issue-actions .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }
 @media (prefers-color-scheme: dark) { .kg-issue-actions .kg-primary { color: #93c5fd; } }
 .kg-issue-status { margin-left: auto; font-size: 11.5px; color: var(--kg-text-dim); }
+.kg-issue.kg-applied, .kg-issue.kg-rejected { opacity: 0.55; }
+.kg-issue.kg-applied { border-left-color: #10b981; }
+.kg-issue.kg-rejected { text-decoration: none; }
+.kg-audit { margin-top: 10px; border-top: 1px dashed var(--kg-border); padding-top: 8px; }
+.kg-audit-title { font-size: 12px; font-weight: 600; margin: 0 0 6px; }
+.kg-audit-list { display: flex; flex-direction: column; gap: 4px; }
+.kg-audit-item { font-size: 11.5px; color: var(--kg-text-dim); line-height: 1.5; }
+.kg-audit-action { display: inline-flex; margin-right: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid rgba(16,185,129,0.35); color: #047857; background: rgba(16,185,129,0.08); font-size: 10.5px; line-height: 16px; }
+@media (prefers-color-scheme: dark) { .kg-audit-action { color: #6ee7b7; } }
 .kg-question-bar { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
 .kg-question-bar .kg-primary { background: rgba(59,130,246,0.10); color: #2563eb; border: 1px solid rgba(59,130,246,0.30); font-weight: 500; }
 .kg-question-bar .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }

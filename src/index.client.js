@@ -111,6 +111,15 @@ export default function clientPlugin() {
 .kg-issue-actions .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }
 @media (prefers-color-scheme: dark) { .kg-issue-actions .kg-primary { color: #93c5fd; } }
 .kg-issue-status { margin-left: auto; font-size: 11.5px; color: var(--kg-text-dim); }
+.kg-issue.kg-applied, .kg-issue.kg-rejected { opacity: 0.55; }
+.kg-issue.kg-applied { border-left-color: #10b981; }
+.kg-issue.kg-rejected { text-decoration: none; }
+.kg-audit { margin-top: 10px; border-top: 1px dashed var(--kg-border); padding-top: 8px; }
+.kg-audit-title { font-size: 12px; font-weight: 600; margin: 0 0 6px; }
+.kg-audit-list { display: flex; flex-direction: column; gap: 4px; }
+.kg-audit-item { font-size: 11.5px; color: var(--kg-text-dim); line-height: 1.5; }
+.kg-audit-action { display: inline-flex; margin-right: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid rgba(16,185,129,0.35); color: #047857; background: rgba(16,185,129,0.08); font-size: 10.5px; line-height: 16px; }
+@media (prefers-color-scheme: dark) { .kg-audit-action { color: #6ee7b7; } }
 .kg-question-bar { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
 .kg-question-bar .kg-primary { background: rgba(59,130,246,0.10); color: #2563eb; border: 1px solid rgba(59,130,246,0.30); font-weight: 500; }
 .kg-question-bar .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }
@@ -1780,19 +1789,21 @@ export default function clientPlugin() {
           setView((v) => zoomAround(v, 1 / v.k, el.clientWidth / 2, el.clientHeight / 2))
         }
 
-        // Verification issue overlays: open issues tint their target node /
-        // edge by severity; rejected issues never tint. Selected focus still
-        // wins visually.
+        // Verification issue overlays: only OPEN (or accepted-but-not-applied)
+        // issues tint their target node / edge by severity. Once an issue is
+        // applied or dismissed, the tint disappears immediately — a visible
+        // confirmation that the fix took effect. Selected focus still wins.
         const issueMaps = useMemo(() => issueTargetsOf(issueReport), [issueReport])
+        const openIssuesOf = (list) => (list || []).filter((it) => it.status === 'open' || it.status === 'accepted')
         const issueSeverityFor = (nodeId) => {
-          const list = issueMaps.nodeMap.get(nodeId)
+          const list = openIssuesOf(issueMaps.nodeMap.get(nodeId))
           if (!list || list.length === 0) return null
           const order = { error: 0, warning: 1, suggestion: 2 }
           list.sort((a, b) => order[a.severity] - order[b.severity])
           return list[0].severity
         }
         const issueSeverityForEdge = (edge) => {
-          const list = issueMaps.edgeMap.get(edgeKeyOf(edge))
+          const list = openIssuesOf(issueMaps.edgeMap.get(edgeKeyOf(edge)))
           if (!list || list.length === 0) return null
           const order = { error: 0, warning: 1, suggestion: 2 }
           list.sort((a, b) => order[a.severity] - order[b.severity])
@@ -1970,7 +1981,7 @@ export default function clientPlugin() {
           const dim = focus ? !inFocus : false
           const neighbor = focus && inFocus && !sel
           const issueSev = issueSeverityFor(node.id)
-          const issueCount = issueMaps.nodeMap.has(node.id) ? issueMaps.nodeMap.get(node.id).filter((it) => it.status !== 'rejected').length : 0
+          const issueCount = issueMaps.nodeMap.has(node.id) ? openIssuesOf(issueMaps.nodeMap.get(node.id)).length : 0
           const off = anchors[node.id]
           const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
           return h('g', {
@@ -2136,6 +2147,8 @@ export default function clientPlugin() {
           && questionTarget && (questionTarget.kind === 'node' || questionTarget.kind === 'edge')
           && qAction !== 'delete_node' && qAction !== 'delete_edge'
           && typeof onDeleteTarget === 'function'
+        const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
+        const recentAudits = auditLog.slice(-5).reverse()
         return h('section', { className: 'kg-card', 'aria-label': '验证与质疑' },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
@@ -2177,7 +2190,7 @@ export default function clientPlugin() {
                   const hasFix = it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none'
                   return h('div', {
                     key: it.id,
-                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : ''),
+                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
                     role: 'button', tabIndex: 0,
                     onClick: () => onSelectIssue(it),
                     onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectIssue(it) } },
@@ -2214,6 +2227,15 @@ export default function clientPlugin() {
                   )
                 }),
               ),
+          recentAudits.length > 0
+            ? h('div', { className: 'kg-audit' },
+                h('p', { className: 'kg-audit-title' }, '修复记录（最近 ' + recentAudits.length + ' 条）'),
+                h('div', { className: 'kg-audit-list' },
+                  recentAudits.map((a, i) => h('div', { key: i, className: 'kg-audit-item' },
+                    h('span', { className: 'kg-audit-action' }, a.action || 'fix'),
+                    a.detail ? a.detail + (a.targetId && a.detail.indexOf(a.targetId) < 0 ? '（' + a.targetId + '）' : '') : a.targetId || '',
+                    ' · ' + formatTime(a.ts)))))
+            : null,
           h('div', { className: 'kg-question-bar' },
             h('input', {
               className: 'kg-question-input', type: 'text',
@@ -3049,10 +3071,19 @@ export default function clientPlugin() {
           const g2 = withVerification(next, report, report ? report.stale === true : false)
           setVerification(report)
           setActiveIssueId(null)
-          setSelectedNodeId(null)
-          setSelectedEdgeId(null)
+          if (issue.targetKind === 'node' && next.nodes.some((n) => n.id === issue.targetId)) {
+            setSelectedNodeId(issue.targetId)
+            setSelectedEdgeId(null)
+          } else if (issue.targetKind === 'edge' && issue.targetId != null) {
+            const idx = edgeIndexForIssue(next, issue)
+            if (idx != null) { setSelectedEdgeId(idx); setSelectedNodeId(null) }
+            else { setSelectedNodeId(null); setSelectedEdgeId(null) }
+          } else {
+            setSelectedNodeId(null)
+            setSelectedEdgeId(null)
+          }
           commitGraph(g2)
-          toastStore.show('已应用修复并写入审计记录')
+          toastStore.show('已应用修复：' + (issue.title || ''))
         }
         const handleRejectIssue = (issue) => {
           if (!verification) return
@@ -4004,10 +4035,19 @@ export default function clientPlugin() {
           const g2 = withVerification(next, report, report ? report.stale === true : false)
           setVerification(report)
           setActiveIssueId(null)
-          setSelectedNodeId(null)
-          setSelectedEdgeId(null)
+          if (issue.targetKind === 'node' && next.nodes.some((n) => n.id === issue.targetId)) {
+            setSelectedNodeId(issue.targetId)
+            setSelectedEdgeId(null)
+          } else if (issue.targetKind === 'edge' && issue.targetId != null) {
+            const idx = edgeIndexForIssue(next, issue)
+            if (idx != null) { setSelectedEdgeId(idx); setSelectedNodeId(null) }
+            else { setSelectedNodeId(null); setSelectedEdgeId(null) }
+          } else {
+            setSelectedNodeId(null)
+            setSelectedEdgeId(null)
+          }
           commitTrajGraph(g2)
-          showToast('已应用修复并写入审计记录')
+          showToast('已应用修复：' + (issue.title || ''))
         }
         const handleRejectIssue = (issue) => {
           if (!verification) return
