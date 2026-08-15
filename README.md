@@ -2,8 +2,6 @@
 
 **DSH（DeepSeek Harness）Cordis 插件**：把任意一段资料正文——或一段 AI 会话执行轨迹——用 AI 拆解成一张**知识图**，并在**知识图与原文之间双向定位**。
 
-<img width="1538" height="945" alt="image" src="https://github.com/user-attachments/assets/824ab99b-d291-4d06-8eb7-b91e947b1af4" />
-
 
 > 贴原文 → AI 异步拆图 → 双向锚点定位。是 NovelStudio「资料 ⇄ 知识图」落地为独立、可复用插件的形态。
 
@@ -28,6 +26,8 @@
 
 ## 界面一览
 
+<img width="1538" height="945" alt="image" src="https://github.com/user-attachments/assets/824ab99b-d291-4d06-8eb7-b91e947b1af4" />
+
 ```
 ┌─────────────────────────────── 浮动工作台 ───────────────────────────────┐
 │ ● 知识库 · 资料 ⇄ 知识图                                      [ × ]        │
@@ -42,6 +42,9 @@
 └─────────────────────────────────────────────────────────────────────────┘
 
 对话区「轨迹知识图」标签页：
+
+<img width="3377" height="1720" alt="image" src="https://github.com/user-attachments/assets/5dfef153-25a0-431e-970c-dc344eef53d5" />
+
 
 ```
 ┌────────────────────────── 轨迹 ⇄ 知识图 ──────────────────────────┐
