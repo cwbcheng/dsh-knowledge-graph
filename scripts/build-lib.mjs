@@ -85,6 +85,32 @@ const extractBlock = `      harness.handle('extract', async (args) => {
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
         if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
         return { status: 'running' }
+      })
+
+      harness.handle('append-extract', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
+        const text = typeof a.text === 'string' ? a.text.trim() : ''
+        if (!text) return { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } }
+        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } }
+        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+          return { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } }
+        }
+        const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
+        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        seq += 1
+        const task = {
+          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
+          title, text, existing, paragraphOffset, createdAt: Date.now(),
+        }
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => runTask(task)).catch((e) => {
+          console.error('[dsh-knowledge-graph] append task crashed', e)
+          failTask(task, 'failed', 'AI 拆分失败：内部错误')
+        }).finally(() => { busy = false })
+        return { taskId: task.id }
       })`
 
 const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent mode) ----
@@ -124,6 +150,34 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
               if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
               return writeJson(res, 200, { status: 'running' })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/append-extract') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
+              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } })
+              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } })
+              const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+              if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } })
+              }
+              const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
+                title, text, existing, paragraphOffset, createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] append task crashed', e)
+                failTask(task, 'failed', 'AI 拆分失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-extract') {
               const raw = await readBody(req, 524288)

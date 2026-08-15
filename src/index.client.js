@@ -2017,6 +2017,10 @@ export default function clientPlugin() {
         const suppressClickRef = useRef(false)
         const taRef = useRef(null)
         const [taSel, setTaSel] = useState(null)
+        // ---- 追加拆分（incremental merge）----
+        const [fullText, setFullText] = useState('') // accumulated source across appends
+        const [currentHistoryId, setCurrentHistoryId] = useState(null)
+        const [appendCount, setAppendCount] = useState(0)
 
         // ---- restore pending task / saved result / draft on mount ----
         useEffect(() => {
@@ -2031,11 +2035,17 @@ export default function clientPlugin() {
             setText(typeof pending.text === 'string' ? pending.text : '')
             setTaskId(pending.taskId)
             setPhase('extracting')
-            submittedRef.current = { title: typeof pending.title === 'string' ? pending.title : '', text: typeof pending.text === 'string' ? pending.text : '' }
+            submittedRef.current = {
+              title: typeof pending.title === 'string' ? pending.title : '',
+              text: typeof pending.text === 'string' ? pending.text : '',
+              append: pending.append === true,
+              baseText: typeof pending.baseText === 'string' ? pending.baseText : '',
+            }
           } else if (saved && saved.graph && Array.isArray(saved.graph.nodes)) {
             const src = typeof saved.text === 'string' ? saved.text : ''
             setTitle(typeof saved.title === 'string' ? saved.title : '')
             setText(src)
+            setFullText(src)
             setResultView(makeView(saved.graph, src))
             setPhase('done')
             setInputCollapsed(true)
@@ -2043,8 +2053,11 @@ export default function clientPlugin() {
               if (prev.length === 0) {
                 const seed = [{ id: 'h-seed', title: typeof saved.title === 'string' ? saved.title : '', text: src, graph: saved.graph, ts: saved.ts || Date.now() }]
                 saveHistory(seed)
+                setCurrentHistoryId('h-seed')
                 return seed
               }
+              const match = prev.find((e) => e && e.text === src)
+              setCurrentHistoryId(match ? match.id : null)
               return prev
             })
           } else if (draft) {
@@ -2064,8 +2077,13 @@ export default function clientPlugin() {
           selStore.clear()
           setTitle('')
           setText(selIn.text)
-          toastStore.show('正在把选中的 ' + selIn.text.length + ' 字拆分为知识图...')
-          submit(selIn.text)
+          if (resultView && resultView.graph && Array.isArray(resultView.graph.nodes)) {
+            toastStore.show('正在把选中的 ' + selIn.text.length + ' 字追加到当前知识图...')
+            appendSubmit(selIn.text)
+          } else {
+            toastStore.show('正在把选中的 ' + selIn.text.length + ' 字拆分为知识图...')
+            submit(selIn.text)
+          }
         }, [selIn ? selIn.seq : 0])
 
         // ---- adaptive-backoff polling while a task runs ----
@@ -2092,7 +2110,12 @@ export default function clientPlugin() {
               const g = res.result
               if (g && Array.isArray(g.nodes)) {
                 const sub = submittedRef.current || { title: '', text }
-                const rv = makeView(g, sub.text)
+                let viewText = sub.text
+                if (sub.append === true) {
+                  const base = typeof sub.baseText === 'string' ? sub.baseText : ''
+                  viewText = base ? base + NL + NL + sub.text : sub.text
+                }
+                const rv = makeView(g, viewText)
                 setResultView(rv)
                 setSelectedNodeId(null)
                 setSelectedEdgeId(null)
@@ -2100,11 +2123,29 @@ export default function clientPlugin() {
                 setPhase('done')
                 setTaskId(null)
                 setInputCollapsed(true)
+                if (sub.append === true) {
+                  setFullText(viewText)
+                  setAppendCount((c) => c + 1)
+                  const added = Array.isArray(g.addedNodeIds) ? g.addedNodeIds.length : 0
+                  const prevEdgeCount = typeof sub.prevEdgeCount === 'number' ? sub.prevEdgeCount : -1
+                  const newEdges = prevEdgeCount >= 0 ? Math.max((g.edges ? g.edges.length : 0) - prevEdgeCount, 0) : 0
+                  toastStore.show('追加完成：新增 ' + added + ' 个节点' + (newEdges > 0 ? '、' + newEdges + ' 条关系' : '') + '，全文 ' + splitParagraphs(viewText).length + ' 段')
+                  setHistory((prev) => {
+                    const next = prev.map((e) => (e.id === currentHistoryId ? { ...e, text: viewText, graph: g, ts: Date.now() } : e))
+                    saveHistory(next)
+                    return next
+                  })
+                } else {
+                  setFullText(viewText)
+                  setAppendCount(0)
+                  const entryId = 'h-' + Date.now()
+                  setCurrentHistoryId(entryId)
+                  setHistory((prev) => appendHistory(prev, { id: entryId, title: sub.title, text: viewText, graph: g, ts: Date.now() }))
+                }
                 try {
                   localStorage.removeItem(LS_PENDING)
-                  localStorage.setItem(LS_RESULT, JSON.stringify({ title: sub.title, text: sub.text, graph: g, ts: Date.now() }))
+                  localStorage.setItem(LS_RESULT, JSON.stringify({ title: sub.title, text: viewText, graph: g, ts: Date.now() }))
                 } catch (e) {}
-                setHistory((prev) => appendHistory(prev, { id: 'h-' + Date.now(), title: sub.title, text: sub.text, graph: g, ts: Date.now() }))
               } else {
                 setPhase('idle')
                 setTaskId(null)
@@ -2170,6 +2211,58 @@ export default function clientPlugin() {
           }
         }
 
+        // Incremental append: send the NEW text plus the existing graph to the
+        // host; the AI only produces new nodes (edges may reference existing
+        // node ids) and the host returns the MERGED graph.
+        const appendSubmit = async (overrideText) => {
+          const t = (overrideText != null ? overrideText : text).trim()
+          if (!t) { setError({ message: '请先粘贴要追加的资料正文' }); return }
+          if (t.length > MAX_LEN) { setError({ message: '追加正文不能超过 ' + MAX_LEN + ' 字' }); return }
+          if (!resultView || !resultView.graph || !Array.isArray(resultView.graph.nodes)) {
+            setError({ message: '请先完成一次拆分，再追加内容' })
+            return
+          }
+          setError(null)
+          const baseText = fullText || ''
+          const offset = baseText ? splitParagraphs(baseText).length : 0
+          const payload = {
+            title,
+            text: t,
+            paragraphOffset: offset,
+            existing: {
+              summary: typeof resultView.graph.summary === 'string' ? resultView.graph.summary : '',
+              nodes: resultView.graph.nodes,
+              edges: resultView.graph.edges,
+            },
+          }
+          submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: resultView.graph.edges.length }
+          setPhase('extracting')
+          setSelectedNodeId(null)
+          setSelectedEdgeId(null)
+          setActivePara(-1)
+          setHistoryOpen(false)
+          try {
+            const res = await host.call('append-extract', payload)
+            if (res && res.error) {
+              setPhase('idle')
+              setError(res.error)
+              return
+            }
+            if (!res || !res.taskId) {
+              setPhase('idle')
+              setError({ message: '无法提交追加任务，请重试' })
+              return
+            }
+            setTaskId(res.taskId)
+            try {
+              localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title, text: t, append: true, baseText, ts: Date.now() }))
+            } catch (e) {}
+          } catch (e) {
+            setPhase('idle')
+            setError({ message: '无法提交追加任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+
         // Detect a mouse/keyboard text selection inside the original-text
         // column and offer to split JUST that selection into a knowledge graph.
         const detectSelection = () => {
@@ -2214,6 +2307,7 @@ export default function clientPlugin() {
           setFocusReq({ nodeId: null, seq: 0 }); setFlashPara(-1); setActivePara(-1); setShowDiag(false)
           setHistoryOpen(false)
           setInputCollapsed(false)
+          setFullText(''); setCurrentHistoryId(null); setAppendCount(0)
         }
 
         // ---- scrolling helper that works inside the fixed window ----
@@ -2280,6 +2374,9 @@ export default function clientPlugin() {
         const loadHistoryEntry = (entry) => {
           setTitle(entry.title || '')
           setText(entry.text || '')
+          setFullText(entry.text || '')
+          setCurrentHistoryId(entry.id)
+          setAppendCount(0)
           setResultView(makeView(entry.graph, entry.text || ''))
           setPhase('done')
           setSelectedNodeId(null)
@@ -2385,11 +2482,13 @@ export default function clientPlugin() {
                   onChange: (e) => setTitle(e.target.value), 'aria-label': '资料标题（可选）',
                 }),
                 h('textarea', {
-                  className: 'kg-textarea', placeholder: '粘贴任意资料正文（章节、技术文档、学习笔记…）',
+                  className: 'kg-textarea',
+                  placeholder: resultView ? '粘贴要追加的段落或新资料（将合并进当前知识图，跨段关系自动建立）…' : '粘贴任意资料正文（章节、技术文档、学习笔记…）',
                   value: text, maxLength: MAX_LEN, onChange: (e) => setText(e.target.value), 'aria-label': '资料正文',
                 }),
                 h('div', { className: 'kg-actions' },
-                  h('span', { className: 'kg-counter' }, '已输入 ' + text.length + ' / ' + MAX_LEN + ' 字'),
+                  h('span', { className: 'kg-counter' },
+                    '已输入 ' + text.length + ' / ' + MAX_LEN + ' 字' + (resultView ? ' · 将追加到当前图' : '')),
                   taSel
                     ? h('button', {
                         type: 'button', className: 'kg-secondary',
@@ -2399,11 +2498,17 @@ export default function clientPlugin() {
                   text.trim().length > 0
                     ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setText(''); setTitle('') } }, '清空')
                     : null,
-                  h('button', {
-                    type: 'button', className: 'kg-primary',
-                    disabled: text.trim().length === 0,
-                    onClick: submit,
-                  }, 'AI 拆分'),
+                  resultView
+                    ? h('button', {
+                        type: 'button', className: 'kg-primary',
+                        disabled: text.trim().length === 0,
+                        onClick: appendSubmit,
+                      }, '追加拆分')
+                    : h('button', {
+                        type: 'button', className: 'kg-primary',
+                        disabled: text.trim().length === 0,
+                        onClick: submit,
+                      }, 'AI 拆分'),
                 ),
               ),
         )
@@ -2426,6 +2531,7 @@ export default function clientPlugin() {
                   h('span', null, graph.nodes.length + ' 个节点'),
                   h('span', null, graph.edges.length + ' 条关系'),
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
+                  appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -2533,7 +2639,7 @@ export default function clientPlugin() {
           phase === 'extracting'
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-                h('p', null, '正在用 AI 拆分资料（约 15-40 秒）...'),
+                h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分（约 15-40 秒）...' : '正在用 AI 拆分资料（约 15-40 秒）...'),
                 h('p', { className: 'kg-empty-sub' }, '可以关闭窗口或离开页面；任务会自动保存，重新打开窗口后自动恢复轮询。'),
               )
             : historyOpen
