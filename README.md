@@ -120,7 +120,7 @@ pnpm install
 
 | 文件 | 作用（常驻包） |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / POST trajectory-extract / GET task-status / GET trajectory-status） |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status） |
 | [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
 
@@ -164,22 +164,22 @@ pnpm install
 2. 在「输入资料」粘贴正文（可选填标题），点 **AI 拆分**（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
 3. 摘要 / 图出现后，**点图中节点查看详情卡片（完整内容）并定位原文**，或**点原文段落聚焦图中节点**；
 4. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；
-4. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
-5. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
+5. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
+6. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
 
 ## 架构
 
 ```
 ┌─────────────── Host（Node 进程） ───────────────┐   ┌────────── Client（浏览器）──────────┐
-│ extract / task-status / trajectory-extract /   │   │                                      │
-│   trajectory-status（Package-private RPC）      │   │  浮动窗口（shell.overlay）           │
+│ extract / append-extract / task-status /        │   │                                      │
+│   trajectory-extract / trajectory-status        │   │  浮动窗口（shell.overlay）           │
 │   split paragraphs (numbered)  ───────────────►│   │    输入区（可收起）                  │
 │   serializeTrace(会话事件) ───────────────────►│   │    原文 ⇄ 知识图（宽高可拖）         │
-│   batches → llm.stream (typed retry ×2)        │   │    历史 / 诊断 / toast(悬浮)         │
-│   schema validate → merge (dedupe/warnings)    │   │  对话头部「知识图」按钮 + run 卡片启动条│
-│   task Map; busy lock; 2h purge                │   │  会话标签页「轨迹知识图」                 │
-└────────────────────────────────────────────────┘   │    轨迹 ⇄ 知识图双向定位            │
-                                                     └──────────────────────────────────────┘
+│   append: 已有图节点清单注入提示词 ────────────►│   │    历史 / 诊断 / toast(悬浮)         │
+│   batches → llm.stream (typed retry ×2)        │   │  对话头部「知识图」按钮 + run 卡片启动条│
+│   schema validate → merge (dedupe/warnings)    │   │  会话标签页「轨迹知识图」                 │
+│   task Map; busy lock; 2h purge                │   │    轨迹 ⇄ 知识图双向定位            │
+└────────────────────────────────────────────────┘   └──────────────────────────────────────┘
 ```
 
 ### 关键设计
@@ -188,6 +188,7 @@ pnpm install
 - **typed 失败、不静默**：CLI/进程失败、非 JSON、schema 不合法（先 typed 重试 2 次）、队列忙碌、无模型等情况都有明确原因码与中文文案；无效节点/边丢弃但写入 warnings。
 - **不猜偏移**：锚点解析失败时节点在图/原文间不可回链，但绝不臆造偏移，统一暴露在诊断列表（`anchor_unresolved:node:...`）中。
 - **轨迹事件即段落**：会话执行轨迹序列化为编号段落（用户消息 / 工具调用 / 工具结果 / AI 回复），事件与段落 1:1 对齐、超长自动截断保持对齐，复用同一套「段落编号即锚点」机制做图与事件的确定性双向回链。
+- **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、段落号偏移（对齐全文编号）与边去重，客户端原地合并视图。
 - **前端自包含**：布局、力导向、双向定位、历史均在浏览器完成，Host 只做最薄的异步任务管理。
 
 ## 数据契约

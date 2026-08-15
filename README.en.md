@@ -22,6 +22,7 @@
 - **Graph rendering**: SVG canvas + 7-color node palette / **4 switchable layouts** (dropdown at the graph's top right, choice remembered): **Force** (embedded d3-force engine, zero dependencies: collision avoids node overlap, edge–node repulsion keeps arrows from crossing nodes), **Circular**, **Radial** (central hub + BFS rings; edges drawn as **polylines**: radial exit → outer arc → radial entry), **Layered** (edges drawn as **orthogonal right-angle polylines**: inter-row channels + per-row obstacle corridors; segments never cross nodes) / relation edges carry type labels, and **edges sharing a source fan out by target angle** (quadratic Bézier) / drag to pan / Ctrl+wheel to zoom / toolbar `− 100% +` (50%–200%, 10% steps) / long-press a node to see the verbatim quote / keyboard accessible.
 - **Floating workbench**: draggable, resizable window; the **width ratio** between text and graph and the **result area height** are both drag-adjustable and remembered.
 - **Select-to-split**: select any text **inside a chat message**; a "拆成知识图" (split into graph) button floats above the selection — one click opens the workbench and splits the selection; selecting text in the result's source column splits it as a sub-graph; selecting part of the input textarea also offers "split selection".
+- **Incremental append (追加拆分)**: once a result exists, the input panel's primary button becomes **追加拆分 (append split)** — paste the next passage / document and the AI extracts ONLY the new content, linking it into the existing graph via **cross-passage edges** (a concept that reappears is not duplicated — it gets an edge straight to the existing node); the result merges in place, paragraph numbering stays unified across the whole text, and the history entry updates in place. Selecting text in a chat message while a result exists appends it to the current graph automatically.
 - **History**: every successful split is stored automatically (up to 20 entries, deduped by text, deletable one-by-one or all), reloadable at any time.
 - **Persistent entry**: a permanent 「知识图」button on the right of each conversation header; run cards also get a launch bar.
 - **Trajectory knowledge graph (conversation view tab)**: a third tab 「轨迹知识图」(beside 对话 / 轨迹) that turns the **current session's full execution trace** (user messages, tool calls, tool results, assistant replies) into a knowledge graph — visualizing what the agent **found, inferred, and did** — with two-way linking between graph and trace events (click a node → scroll to the event; click an event → focus its node). Results are saved per session: **restored after tab switches or page reloads**; leaving mid-extraction and returning resumes polling automatically; the event-column / graph-column width and the result height are drag-adjustable and remembered.
@@ -117,7 +118,7 @@ After the restart: the 「知识图」button appears at the right of each conver
 
 | File | Purpose (persistent package) |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes (POST extract / POST trajectory-extract / GET task-status / GET trajectory-status) |
+| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes (POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status) |
 | [`lib/client.js`](lib/client.js) | Client half: `__ModuleLoader__` browser module (fetch RPC + manual style injection) |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch: inserts the `dsh-knowledge-graph` row into the composition |
 
@@ -160,22 +161,24 @@ History and other data live in browser `localStorage`; uninstalling does not del
 1. Click the 「知识图」button at the right of the conversation title to open the floating workbench;
 2. Paste text into 「输入资料」(title optional), click **AI 拆分** (the input area collapses; result height and text/graph width ratio are drag-adjustable and remembered);
 3. Once the summary / graph appears, **click a graph node to view the detail card (full content) and locate the source**, or **click a source paragraph to focus its node**;
-4. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
-5. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
+4. To extend the graph, paste the next passage into the input area and click **追加拆分 (append split)** (or just select text in a chat message — it appends automatically): new nodes link to existing ones via cross-passage edges, paragraph numbering stays unified, and the history entry updates in place;
+5. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
+6. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
 
 ## Architecture
 
 ```
 ┌─────────────── Host (Node process) ───────────────┐   ┌────────── Client (browser) ──────────┐
-│ extract / task-status / trajectory-extract /      │   │                                     │
-│   trajectory-status (package-private RPC)         │   │  floating window (shell.overlay)     │
+│ extract / append-extract / task-status /           │   │                                     │
+│   trajectory-extract / trajectory-status           │   │  floating window (shell.overlay)     │
 │   split paragraphs (numbered)  ──────────────────►│   │    input area (collapsible)          │
 │   serializeTrace(session events) ────────────────►│   │    source ⇄ graph (resizable)        │
-│   batches → llm.stream (typed retry ×2)           │   │    history / diagnostics / toast     │
-│   schema validate → merge (dedupe/warnings)       │   │  header 「知识图」button + run card   │
-│   task Map; busy lock; 2h purge                   │   │  conversation tab 「轨迹知识图」      │
-└───────────────────────────────────────────────────┘   │    trajectory ⇄ graph two-way link  │
-                                                         └─────────────────────────────────────┘
+│   append: existing-graph node list into the       │   │    history / diagnostics / toast     │
+│     prompt (cross-passage edges) ────────────────►│   │  header 「知识图」button + run card   │
+│   batches → llm.stream (typed retry ×2)           │   │  conversation tab 「轨迹知识图」      │
+│   schema validate → merge (dedupe/warnings)       │   │    trajectory ⇄ graph two-way link  │
+│   task Map; busy lock; 2h purge                   │   └─────────────────────────────────────┘
+└───────────────────────────────────────────────────┘
 ```
 
 ### Key design
@@ -184,6 +187,7 @@ History and other data live in browser `localStorage`; uninstalling does not del
 - **Typed failures, never silent**: CLI/process failures, non-JSON output, invalid schema (typed retry ×2 first), busy queue, missing model — all produce explicit error codes and Chinese messages; invalid nodes/edges are dropped but recorded in warnings.
 - **No offset guessing**: if anchoring fails, the node is simply not linkable between graph and text — no fabricated offsets, always surfaced in the diagnostics list (`anchor_unresolved:node:...`).
 - **Trace events are paragraphs**: the session execution trace is serialized into numbered paragraphs (user messages / tool calls / tool results / assistant replies), events and paragraphs stay 1:1 (long traces are truncated while keeping alignment), reusing the same paragraph-index anchor mechanism for deterministic two-way linking between graph and events.
+- **Incremental merge (append split)**: on append, the existing graph's node list is injected into the prompt; the AI only produces new nodes and links them into the old graph by referencing existing node ids (**cross-passage edges**); the Host renumbers new ids (avoiding collisions), offsets paragraph numbers (keeping global alignment) and dedupes edges; the client merges the view in place.
 - **Self-contained front end**: layout, force simulation, two-way linking, and history all run in the browser; the Host is only a thin async task manager.
 
 ## Data contract
