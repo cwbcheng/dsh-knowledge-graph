@@ -119,6 +119,16 @@ export default function clientPlugin() {
 .kg-tooltip { position: absolute; z-index: 5; max-width: 300px; pointer-events: none; background: rgba(17,24,39,0.95); color: #f9fafb; border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.55; box-shadow: 0 4px 14px rgba(0,0,0,0.28); transform: translate(10px, 10px); }
 .kg-tooltip-type { font-weight: 600; margin-bottom: 2px; }
 .kg-tooltip-quote { margin-top: 4px; color: #cbd5e1; }
+.kg-node-detail { position: absolute; left: 12px; right: 12px; top: 46px; z-index: 6; background: #ffffff; color: #1f2937; border: 1px solid var(--kg-border); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.28); font-size: 12.5px; line-height: 1.6; max-height: 55%; overflow: auto; user-select: text; }
+@media (prefers-color-scheme: dark) { .kg-node-detail { background: #111827; color: #e5e7eb; } }
+.kg-node-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.kg-node-detail-type { display: inline-flex; padding: 1px 8px; border-radius: 999px; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; }
+.kg-node-detail-close { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; color: inherit; opacity: 0.65; padding: 2px 4px; }
+.kg-node-detail-close:hover { opacity: 1; }
+.kg-node-detail-text { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+.kg-node-detail-quote { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--kg-border); color: var(--kg-text-dim); font-size: 12px; }
+.kg-node-detail-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
+.kg-node-detail-locate { padding: 4px 12px; font-size: 12px; }
 .kg-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; font-size: 11px; color: var(--kg-text-dim); }
 .kg-legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .kg-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -1254,6 +1264,7 @@ export default function clientPlugin() {
         const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
         const [dragging, setDragging] = useState(false)
         const [tooltip, setTooltip] = useState(null)
+        const [detail, setDetail] = useState(null) // node whose full text is shown in the detail card
         const [flashId, setFlashId] = useState(null)
         const [hoverEdge, setHoverEdge] = useState(null)
         const pressTimer = useRef(null)
@@ -1457,6 +1468,7 @@ export default function clientPlugin() {
           }
           cancelPress()
           setTooltip(null)
+          setDetail(null)
           const el = containerRef.current
           if (!el) return
           el.setPointerCapture(e.pointerId)
@@ -1670,8 +1682,8 @@ export default function clientPlugin() {
             onPointerDown: (e) => { e.stopPropagation(); startPress(e, node) },
             onPointerUp: cancelPress,
             onPointerLeave: cancelPress,
-            onClick: (e) => { e.stopPropagation(); cancelPress(); setTooltip(null); onSelectNode(node.id) },
-            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectNode(node.id) } },
+            onClick: (e) => { e.stopPropagation(); cancelPress(); setTooltip(null); onSelectNode(node.id); setDetail((d) => (d && d.id === node.id ? null : node)) },
+            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectNode(node.id); setDetail((d) => (d && d.id === node.id ? null : node)) } },
           },
             h('rect', {
               x, y, width: s.w, height: s.h, rx: 10,
@@ -1697,11 +1709,38 @@ export default function clientPlugin() {
             )
           : null
 
+        // Persistent detail card: nodes only display up to 4 lines / 36 chars
+        // in the graph, so clicking a node opens the FULL text (plus quote and
+        // a locate button) here — this is the primary way to read long nodes.
+        const detailEl = detail
+          ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '节点详情' },
+              h('div', { className: 'kg-node-detail-head' },
+                h('span', { className: 'kg-node-detail-type', style: { background: (TYPE_META[detail.type] || {}).color || '#6b7280' } },
+                  (TYPE_META[detail.type] || { label: '未知' }).label),
+                h('button', {
+                  type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
+                  onClick: () => setDetail(null),
+                }, '×'),
+              ),
+              h('div', { className: 'kg-node-detail-text' }, detail.text),
+              detail.quote
+                ? h('div', { className: 'kg-node-detail-quote' }, '原文摘录：' + detail.quote)
+                : null,
+              h('div', { className: 'kg-node-detail-actions' },
+                h('button', {
+                  type: 'button', className: 'kg-secondary kg-node-detail-locate',
+                  disabled: anchors[detail.id] == null,
+                  onClick: () => { onSelectNode(detail.id) },
+                }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+              ),
+            )
+          : null
+
         return h('div', {
           className: 'kg-graph', ref: containerRef,
           role: 'img',
           style: height ? { height: height + 'px' } : undefined,
-          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，Ctrl+滚轮缩放，点击节点定位原文，点击段落聚焦节点。',
+          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
           onPointerDown: onBgPointerDown,
           onPointerMove: onBgPointerMove,
           onPointerUp: onBgPointerUp,
@@ -1732,6 +1771,7 @@ export default function clientPlugin() {
             h('button', { type: 'button', 'aria-label': '放大（10%）', onClick: () => zoomBy(0.1) }, '+'),
           ),
           tooltipEl,
+          detailEl,
         )
       }
 
@@ -2385,7 +2425,7 @@ export default function clientPlugin() {
                     : null,
                 ),
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
-                h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看原文摘录。'),
+                h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看原文摘录。'),
                 h('div', {
                   className: 'kg-cols',
                   ref: colsRef,
@@ -2864,7 +2904,7 @@ export default function clientPlugin() {
                     : null,
                 ),
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
-                h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。拖拽中间竖条调整两列宽度，拖拽下方横条调整结果区高度。'),
+                h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。拖拽中间竖条调整两列宽度，拖拽下方横条调整结果区高度。'),
                 h('div', {
                   className: 'kg-traj-cols',
                   ref: colsRef,
