@@ -1320,7 +1320,7 @@
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge }) {
+      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge }) {
         const containerRef = useRef(null)
         const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
         const [dragging, setDragging] = useState(false)
@@ -1851,6 +1851,12 @@
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionEdge(edgeDetail, selectedEdgeId),
                     }, '质疑此关系')
+                  : null,
+                typeof onDeleteEdge === 'function'
+                  ? h('button', {
+                      type: 'button', className: 'kg-secondary kg-danger',
+                      onClick: () => onDeleteEdge(edgeDetail, selectedEdgeId),
+                    }, '删除此关系')
                   : null),
             )
           : null
@@ -1896,7 +1902,7 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const shown = issues.filter((it) => {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
@@ -1909,6 +1915,13 @@
               ? '目标：关系 ' + questionTarget.id
               : '目标：整张图')
           : ''
+        const qFix = questionResult && questionResult.proposedFix ? questionResult.proposedFix : null
+        const qAction = qFix ? qFix.action : 'none'
+        const qVerdict = questionResult ? questionResult.verdict : ''
+        const qCanDelete = (qVerdict === 'contradicted' || qVerdict === 'insufficient')
+          && questionTarget && (questionTarget.kind === 'node' || questionTarget.kind === 'edge')
+          && qAction !== 'delete_node' && qAction !== 'delete_edge'
+          && typeof onDeleteTarget === 'function'
         return h('section', { className: 'kg-card', 'aria-label': '验证与质疑' },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
@@ -2014,18 +2027,26 @@
                   ? h('div', { className: 'kg-issue-ev' },
                       questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
                   : null,
-                questionResult.proposedFix && questionResult.proposedFix.action !== 'none'
+                qFix && qFix.action !== 'none'
                   ? h('div', { className: 'kg-issue-actions' },
                       h('button', {
                         type: 'button', className: 'kg-primary',
                         onClick: () => onApplyIssue({
                           id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
                           targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
-                          title: '采纳质疑建议：' + questionResult.proposedFix.action, detail: questionResult.answer || '',
+                          title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
                           evidence: questionResult.evidence || [], confidence: 1,
-                          proposedFix: questionResult.proposedFix, status: 'open',
+                          proposedFix: qFix, status: 'open',
                         }),
                       }, '采纳修复建议'),
+                    )
+                  : null,
+                qCanDelete
+                  ? h('div', { className: 'kg-issue-actions' },
+                      h('button', {
+                        type: 'button', className: 'kg-secondary kg-danger',
+                        onClick: () => onDeleteTarget(questionTarget),
+                      }, questionTarget.kind === 'edge' ? '删除此关系' : '删除此节点'),
                     )
                   : null,
               )

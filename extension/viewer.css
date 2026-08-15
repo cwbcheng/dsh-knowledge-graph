@@ -65,6 +65,9 @@
 .kg-issue-ev { margin-top: 5px; padding: 6px 8px; border-left: 3px solid var(--kg-border); background: rgba(127,127,127,0.06); border-radius: 4px; font-size: 12px; color: var(--kg-text-dim); white-space: pre-wrap; word-break: break-word; }
 .kg-issue-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
 .kg-issue-actions button { padding: 3px 10px; font-size: 12px; }
+.kg-danger { color: #dc2626; border: 1px solid rgba(220,38,38,0.35) !important; background: rgba(220,38,38,0.05) !important; }
+.kg-danger:hover { color: #b91c1c !important; border-color: rgba(220,38,38,0.55) !important; background: rgba(220,38,38,0.10) !important; }
+@media (prefers-color-scheme: dark) { .kg-danger { color: #fca5a5 !important; } }
 .kg-issue-actions .kg-primary { background: rgba(59,130,246,0.10); color: #2563eb; border: 1px solid rgba(59,130,246,0.30); font-weight: 500; }
 .kg-issue-actions .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }
 @media (prefers-color-scheme: dark) { .kg-issue-actions .kg-primary { color: #93c5fd; } }
