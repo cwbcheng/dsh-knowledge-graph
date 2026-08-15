@@ -6,6 +6,27 @@ html, body { margin: 0; padding: 0; width: 760px; height: 580px; overflow: hidde
 .kg-ext .kg-win-body { padding: 12px 14px; overflow: auto; }
 .kg-ext .kg-textarea { min-height: 110px; }
 .kg-ext .kg-result { margin-bottom: 0; }
+.kg-ext .kg-win-max {
+  margin-left: auto; background: none; border: 1px solid var(--kg-border); border-radius: 7px;
+  color: var(--kg-text); cursor: pointer; font-size: 13px; line-height: 1;
+  padding: 3px 8px; opacity: 0.7;
+}
+.kg-ext .kg-win-max:hover { opacity: 1; background: var(--kg-panel); }
+/* standalone resizable window: web-app layout takes over — two columns with
+   draggable split inside a >=900px container, single column below */
+body.kg-full-window .kg-cols {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+@container (min-width: 900px) {
+  body.kg-full-window .kg-cols {
+    grid-template-columns: minmax(240px, var(--kg-split, 40%)) minmax(0, 1fr) !important;
+  }
+}
+body.kg-full-window .kg-original { max-height: none !important; }
+body.kg-full-window .kg-graph { height: 460px !important; }
 /* popup is narrower than the container query threshold: force side-by-side */
 .kg-ext .kg-cols { display: grid !important; grid-template-columns: minmax(180px, 40%) minmax(0, 1fr) !important; gap: 12px !important; align-items: start !important; }
 .kg-ext .kg-original { max-height: 380px !important; }

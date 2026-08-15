@@ -3,6 +3,22 @@
 // browser-trust fence), renders the graph with the KGViewer bundle.
 'use strict'
 
+// ?mode=window → standalone resizable window (opened via ⛶ button): the
+// browser popup itself cannot be resized, so this page adapts to the window.
+const IS_WINDOW = new URLSearchParams(location.search).get('mode') === 'window'
+if (IS_WINDOW) {
+  const setFull = (el) => {
+    el.style.width = '100%'
+    el.style.height = '100%'
+    el.style.overflow = 'auto'
+  }
+  setFull(document.documentElement)
+  setFull(document.body)
+  document.getElementById('root').style.width = '100%'
+  document.getElementById('root').style.height = '100%'
+  document.body.classList.add('kg-full-window')
+}
+
 const { useState, useEffect, useRef, useMemo } = React
 const h = React.createElement
 const KG = window.KGViewer
@@ -47,20 +63,41 @@ function App() {
         setBaseInput(s.kgBase)
       }
     })
-    chrome.storage.session.get({ kgText: '' }, (s) => {
-      if (s && typeof s.kgText === 'string' && s.kgText) {
-        setText(s.kgText)
-        chrome.storage.session.remove('kgText')
+    // Standalone window: restore the draft (text/title/task) the popup handed
+    // over when the ⛶ button was clicked, so work continues in the window.
+    chrome.storage.session.get({ kgDraft: null }, (s) => {
+      const d = s && s.kgDraft
+      if (d && typeof d === 'object') {
+        if (typeof d.text === 'string' && d.text) setText(d.text)
+        if (typeof d.title === 'string' && d.title) setTitle(d.title)
+        submittedRef.current = { title: typeof d.title === 'string' ? d.title : '', text: typeof d.text === 'string' ? d.text : '' }
+        if (typeof d.taskId === 'string' && d.taskId) setTaskId(d.taskId)
         return
       }
-      // Fallback: content script's last-resort storage.local stash.
-      chrome.storage.local.get({ kgText: '' }, (sl) => {
-        if (sl && typeof sl.kgText === 'string' && sl.kgText) {
-          setText(sl.kgText)
-          chrome.storage.local.remove('kgText')
+      chrome.storage.session.get({ kgText: '' }, (s2) => {
+        if (s2 && typeof s2.kgText === 'string' && s2.kgText) {
+          setText(s2.kgText)
+          chrome.storage.session.remove('kgText')
         }
       })
     })
+    // Non-window popup: consume the selection stash as before.
+    if (!IS_WINDOW) {
+      chrome.storage.session.get({ kgText: '' }, (s) => {
+        if (s && typeof s.kgText === 'string' && s.kgText) {
+          setText(s.kgText)
+          chrome.storage.session.remove('kgText')
+          return
+        }
+        // Fallback: content script's last-resort storage.local stash.
+        chrome.storage.local.get({ kgText: '' }, (sl) => {
+          if (sl && typeof sl.kgText === 'string' && sl.kgText) {
+            setText(sl.kgText)
+            chrome.storage.local.remove('kgText')
+          }
+        })
+      })
+    }
   }, [])
 
   // ---- polling ----
@@ -180,6 +217,20 @@ function App() {
     setTimeout(() => setBaseSaved(false), 1500)
   }
 
+  const openWindow = async () => {
+    // Hand the current draft (text/title/running task) to the standalone
+    // resizable window, then open it.
+    try {
+      await chrome.storage.session.set({ kgDraft: { title, text, taskId } })
+    } catch (e) {}
+    const url = chrome.runtime.getURL('popup.html') + '?mode=window'
+    try {
+      await chrome.windows.create({ url, type: 'popup', width: 1200, height: 850 })
+    } catch (e) {
+      window.open(url, '_blank')
+    }
+  }
+
   const paraEl = (p, i) => {
     const badges = view ? (view.paraTypes[i] || []) : []
     return h('div', {
@@ -237,6 +288,11 @@ function App() {
       h('div', { className: 'kg-win-bar' },
         h('span', { className: 'kg-win-dot' }),
         h('span', { className: 'kg-win-title' }, 'DSH 划线拆图'),
+        IS_WINDOW ? null : h('button', {
+          type: 'button', className: 'kg-win-max', 'aria-label': '在新窗口打开（可调整大小）',
+          title: '在新窗口打开（可调整大小）',
+          onClick: () => openWindow(),
+        }, '⛶'),
         h('button', { type: 'button', className: 'kg-win-close', 'aria-label': '关闭', onClick: () => window.close() }, '×'),
       ),
       h('div', { className: 'kg-win-body' },
