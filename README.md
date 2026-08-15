@@ -21,6 +21,12 @@
   - 图中节点只展示前 4 行（超出以 `…` 省略），**完整内容随时可在详情卡片中查看**；
   - 锚点以 AI 直接输出**段落编号**为主（确定性索引），quote 精确匹配与 token 重合度兜底；无法回链的节点不猜测偏移，统一进入诊断列表。
 - **图渲染**：SVG 画布 + 7 类配色 / **4 种可切换布局形态**（图右上角下拉，选择记忆）：**力导向**（d3-force 开源引擎内嵌零依赖：碰撞防节点重叠、边-节点排斥防箭头穿节点）、**圆形**、**放射**（中心枢纽 + BFS 环，边走**折线**：径向出线 → 外环弧 → 径向进线）、**分层**（边走**直角正交折线**：行间空通道 + 逐行避障走廊，线段保证不穿节点）/ 关系边带类型标签，且**同源边按目标角度扇形弯曲**（二次贝塞尔）/ 拖拽平移 / Ctrl+滚轮缩放 / 工具栏 `− 100% +`（50%–200% 步进 10%）/ 长按节点查看原文摘录 / 键盘可达。
+- **验证与质疑知识图**：生成图后可以检查它是否忠于原文——
+  - **⚡ 快速体检**：本地规则即时检查（自环/悬空边、quote 能否在原文定位、段落编号与摘录位置是否一致、类型-关系语义规则、重复/疑似矛盾节点、孤立节点、覆盖统计），0 秒返回问题报告；
+  - **🤖 AI 深度审校**：异步调用 LLM 逐节点/逐边**找茬**，所有 issue 必须以原文摘录为证据，标准档还会二次复核过滤误报；
+  - **人工闭环**：问题按「错误 / 警告 / 建议」列出，点击问题 → 图中相关节点/边按严重度着色高亮并滚动定位原文；每条问题可**采纳修复**（改动立即应用并写入审计记录）或**忽略**；
+  - **主动质疑**：节点详情卡可点「质疑此节点」，选中边后出现关系详情卡可点「质疑此关系」，也可在验证面板直接向整张图提问/质疑，AI 给出「图成立 / 质疑成立 / 证据不足 / 超出范围」判定与原文证据；
+  - **追加拆分后自动标记验证结果过期**，可重新验证；轨迹知识图支持同样的全部验证/质疑能力。
 - **浮动工作台**：窗口可拖动、可调整大小；原文与知识图的**宽度比例**、**结果区高度**均可拖拽调整并记忆。
 - **划线拆分**：**在聊天消息里**用鼠标选中任意一段文字，选区上方浮出「拆成知识图」按钮，点击即自动打开工作台并拆分所选文字；在结果页原文里划线选中可拆成子图；输入框里选中部分文字也可「拆分所选」。
 - **追加拆分（增量合并）**：已有拆分结果后，输入区主按钮变为「追加拆分」——粘贴下一段/下一份资料，AI 只抽取新增内容，并自动与已有图建立**跨段关系边**（同一概念不重复建节点，直接连线到已有节点）；结果原地合并、全文段落统一编号、历史记录原地更新。聊天划线选中文字时也会自动追加到当前图。
@@ -79,8 +85,8 @@ cd dsh-knowledge-graph
 
 | 文件 | 作用 |
 | --- | --- |
-| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化） |
-| [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、历史、宽高调节、轨迹知识图标签页 |
+| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎（本地体检、LLM 审校、二次复核） |
+| [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、验证与质疑面板、修复应用/审计、历史、宽高调节、轨迹知识图标签页 |
 
 ### 2. 安装（二选一）
 
@@ -163,9 +169,10 @@ pnpm install
 1. 点击对话标题右侧的「知识图」按钮，打开浮动工作台；
 2. 在「输入资料」粘贴正文（可选填标题），点 **AI 拆分**（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
 3. 摘要 / 图出现后，**点图中节点查看详情卡片（完整内容）并定位原文**，或**点原文段落聚焦图中节点**；
-4. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；
-5. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
-6. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
+4. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点击问题行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
+5. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；此前验证结果会自动标记为过期，可重新验证；
+6. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
+7. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
 
 ## Chrome 扩展（划线拆图）
 
@@ -190,13 +197,15 @@ pnpm install
 ┌─────────────── Host（Node 进程） ───────────────┐   ┌────────── Client（浏览器）──────────┐
 │ extract / append-extract / task-status /        │   │                                      │
 │   trajectory-extract / trajectory-status        │   │  浮动窗口（shell.overlay）           │
-│   split paragraphs (numbered)  ───────────────►│   │    输入区（可收起）                  │
-│   serializeTrace(会话事件) ───────────────────►│   │    原文 ⇄ 知识图（宽高可拖）         │
-│   append: 已有图节点清单注入提示词 ────────────►│   │    历史 / 诊断 / toast(悬浮)         │
-│   batches → llm.stream (typed retry ×2)        │   │  对话头部「知识图」按钮 + run 卡片启动条│
-│   schema validate → merge (dedupe/warnings)    │   │  会话标签页「轨迹知识图」                 │
-│   task Map; busy lock; 2h purge                │   │    轨迹 ⇄ 知识图双向定位            │
-└────────────────────────────────────────────────┘   └──────────────────────────────────────┘
+│   verify-graph (quick/standard)                 │   │    输入区（可收起）                  │
+│   question-graph (node/edge/graph)              │   │    原文 ⇄ 知识图（宽高可拖）         │
+│   split paragraphs (numbered)  ───────────────►│   │    验证与质疑面板 / 修复应用 / 审计   │
+│   serializeTrace(会话事件) ───────────────────►│   │    历史 / 诊断 / toast(悬浮)         │
+│   append: 已有图节点清单注入提示词 ────────────►│   │  对话头部「知识图」按钮 + run 卡片启动条│
+│   batches → llm.stream (typed retry ×2)        │   │  会话标签页「轨迹知识图」                 │
+│   schema validate → merge (dedupe/warnings)    │   │    轨迹 ⇄ 知识图双向定位            │
+│   task Map; busy lock; 2h purge                │   └──────────────────────────────────────┘
+└────────────────────────────────────────────────┘
 ```
 
 ### 关键设计
@@ -206,18 +215,47 @@ pnpm install
 - **不猜偏移**：锚点解析失败时节点在图/原文间不可回链，但绝不臆造偏移，统一暴露在诊断列表（`anchor_unresolved:node:...`）中。
 - **轨迹事件即段落**：会话执行轨迹序列化为编号段落（用户消息 / 工具调用 / 工具结果 / AI 回复），事件与段落 1:1 对齐、超长自动截断保持对齐，复用同一套「段落编号即锚点」机制做图与事件的确定性双向回链。
 - **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、段落号偏移（对齐全文编号）与边去重，客户端原地合并视图。
-- **前端自包含**：布局、力导向、双向定位、历史均在浏览器完成，Host 只做最薄的异步任务管理。
+- **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按段落分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃。
+- **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；每次应用写 `graph.verification.auditLog`（before/after 快照）；追加拆分后旧报告自动标记 `stale`。
+- **前端自包含**：布局、力导向、双向定位、历史、验证面板、补丁应用均在浏览器完成，Host 只做最薄的异步任务管理。
 
 ## 数据契约
 
 ```
-KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[] }
+KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[], verification? }
 Node  { id, type, typeLabel?, text, quote?, paragraph?, offsetHint? }
 Edge  { fromNodeId, toNodeId, relation, relationLabel? }
+
+GraphVerification {
+  lastReport?: VerificationReport,
+  stale?: boolean,
+  auditLog?: [{ ts, action, targetId, detail, reportId, before?, after? }]
+}
+VerificationReport {
+  reportId, mode: 'quick' | 'standard' | 'question',
+  createdAt, model?, scope: { kind: 'full' | 'node' | 'edge' | 'graph', ids[] },
+  summary, metrics: { checkedNodes, checkedEdges, errorCount, warningCount,
+                     suggestionCount, evidenceCoverage, paragraphCoverage },
+  issues: Issue[]
+}
+Issue {
+  id, source: 'local' | 'ai' | 'question',
+  severity: 'error' | 'warning' | 'suggestion',
+  category: 'grounding' | 'type' | 'relation' | 'duplicate' | 'contradiction'
+          | 'completeness' | 'summary' | 'other',
+  targetKind: 'node' | 'edge' | 'graph', targetId: string | null,
+  title, detail, evidence: [{ paragraph?, quote? }],
+  confidence: 0..1,
+  proposedFix: { action: 'none' | 'update_node' | 'delete_node' | 'add_node'
+               | 'update_edge' | 'delete_edge' | 'add_edge' | 'merge_nodes'
+               | 'update_summary', nodePatch?, edgePatch?, mergeIntoId?, summaryPatch? },
+  status: 'open' | 'accepted' | 'rejected' | 'applied'
+}
 ```
 
 - 7 类节点 wire 类型见上文；6 类关系边见上文。
 - 每节点优先携带 `paragraph`（段落编号，确定性回链）与 `quote`（原文逐字摘录）。
+- `verification` 可选，旧版本生成的历史数据没有该字段时按未验证处理，完全向后兼容。
 
 ## 许可
 

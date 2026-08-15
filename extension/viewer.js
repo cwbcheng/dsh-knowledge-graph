@@ -83,6 +83,20 @@
       }
       const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果' }
       const TYPE_ORDER = ['fact', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
+      const SEVERITY_META = {
+        error: { label: '错误', cls: 'kg-sev-error' },
+        warning: { label: '警告', cls: 'kg-sev-warning' },
+        suggestion: { label: '建议', cls: 'kg-sev-suggestion' },
+      }
+      const SEVERITY_ORDER = ['error', 'warning', 'suggestion']
+      const SEVERITY_COLOR = { error: '#dc2626', warning: '#d97706', suggestion: '#2563eb' }
+      const ISSUE_CATEGORY_LABEL = {
+        grounding: '事实性', type: '类型', relation: '关系', duplicate: '重复',
+        contradiction: '矛盾', completeness: '遗漏', summary: '总结', other: '其它',
+      }
+      const VERDICT_LABEL = {
+        supported: '图成立', contradicted: '质疑成立', insufficient: '证据不足', out_of_scope: '超出范围',
+      }
 
       // ------------------------ cross-component stores ------------------------
       const winListeners = new Set()
@@ -355,6 +369,141 @@
           paraTypes[i].sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b))
         }
         return { graph, sourceText, paragraphs, anchors, unresolved, paraTypes, paraNodes }
+      }
+
+      // --------------------- verification helpers ---------------------
+      const edgeKeyOf = (e) => (e && typeof e.fromNodeId === 'string' && typeof e.toNodeId === 'string') ? e.fromNodeId + '>' + e.toNodeId : ''
+      function edgeIndexForIssue(graph, issue) {
+        if (!graph || !issue) return null
+        const edges = Array.isArray(graph.edges) ? graph.edges : []
+        if (issue.targetId == null) return null
+        if (/^\d+$/.test(issue.targetId) && Number(issue.targetId) < edges.length) return Number(issue.targetId)
+        const key = String(issue.targetId)
+        for (let i = 0; i < edges.length; i++) {
+          if (edgeKeyOf(edges[i]) === key) return i
+        }
+        return null
+      }
+      function issueTargetsOf(report) {
+        const nodeMap = new Map()
+        const edgeMap = new Map()
+        const graphIssues = []
+        for (const it of (report && Array.isArray(report.issues) ? report.issues : [])) {
+          if (it && it.targetKind === 'node' && it.targetId) {
+            if (!nodeMap.has(it.targetId)) nodeMap.set(it.targetId, [])
+            nodeMap.get(it.targetId).push(it)
+          } else if (it && it.targetKind === 'edge') {
+            graphIssues.push(it) // resolved to an index by the viewer via edgeKeyOf
+            if (!edgeMap.has(String(it.targetId || ''))) edgeMap.set(String(it.targetId || ''), [])
+            edgeMap.get(String(it.targetId || '')).push(it)
+          } else if (it) {
+            graphIssues.push(it)
+          }
+        }
+        return { nodeMap, edgeMap, graphIssues }
+      }
+      function withVerification(graph, report, stale) {
+        const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
+        return { ...graph, verification: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
+      }
+      function appendAudit(graph, action, targetId, detail, reportId, before, after) {
+        const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
+        const log = [...(Array.isArray(prev.auditLog) ? prev.auditLog : []), {
+          ts: Date.now(), action, targetId: targetId || null, detail: detail || '', reportId: reportId || null,
+          before: before || null, after: after || null,
+        }].slice(-60)
+        return { ...graph, verification: { ...prev, auditLog: log } }
+      }
+      function updateIssueStatus(report, issueId, status, userNote) {
+        if (!report) return report
+        return {
+          ...report,
+          issues: (report.issues || []).map((it) => it.id === issueId ? { ...it, status, userNote: userNote || it.userNote || '' } : it),
+        }
+      }
+      function nextNodeId(graph) {
+        let max = 0
+        for (const n of graph.nodes || []) {
+          const m = /^n(\d+)$/.exec(n && n.id ? n.id : '')
+          if (m) max = Math.max(max, parseInt(m[1], 10))
+        }
+        return 'n' + (max + 1)
+      }
+      function cloneNodes(nodes) { return (nodes || []).map((n) => ({ ...n })) }
+      function cloneEdges(edges) { return (edges || []).map((e) => ({ ...e })) }
+      // Apply an issue's proposedFix to a graph. Pure function: returns a NEW
+      // graph (original untouched). Structural fixes are deterministic; text
+      // patches come from the AI and are still a user-confirmed action.
+      function applyPatch(graph, issue) {
+        const fix = issue && issue.proposedFix ? issue.proposedFix : { action: 'none' }
+        const nodes = cloneNodes(graph.nodes)
+        let edges = cloneEdges(graph.edges)
+        const ids = new Set(nodes.map((n) => n.id))
+        let changed = false
+        let auditDetail = ''
+        if (fix.action === 'update_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
+          const n = nodes.find((x) => x.id === fix.nodePatch.id)
+          const p = fix.nodePatch.patch || {}
+          if (p.type && TYPE_META[p.type]) n.type = p.type
+          if (typeof p.text === 'string' && p.text.trim()) n.text = p.text.trim()
+          if (typeof p.quote === 'string') n.quote = p.quote.trim()
+          if (Number.isInteger(p.paragraph) && p.paragraph >= 0) n.paragraph = p.paragraph
+          changed = true
+          auditDetail = 'update_node:' + n.id
+        } else if (fix.action === 'delete_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
+          const id = fix.nodePatch.id
+          edges = edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id)
+          const idx = nodes.findIndex((x) => x.id === id)
+          if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'delete_node:' + id }
+        } else if (fix.action === 'merge_nodes' && fix.nodePatch && fix.mergeIntoId && ids.has(fix.nodePatch.id) && ids.has(fix.mergeIntoId) && fix.nodePatch.id !== fix.mergeIntoId) {
+          const from = fix.nodePatch.id
+          const into = fix.mergeIntoId
+          edges = edges.map((e) => ({ ...e, fromNodeId: e.fromNodeId === from ? into : e.fromNodeId, toNodeId: e.toNodeId === from ? into : e.toNodeId }))
+          edges = edges.filter((e, i) => e.fromNodeId !== e.toNodeId && edges.findIndex((x, j) => j < i && x.fromNodeId === e.fromNodeId && x.toNodeId === e.toNodeId && x.relation === e.relation) < 0)
+          const idx = nodes.findIndex((x) => x.id === from)
+          if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'merge_nodes:' + from + '>' + into }
+        } else if ((fix.action === 'update_edge' || fix.action === 'delete_edge' || fix.action === 'add_edge') && fix.edgePatch) {
+          const p = fix.edgePatch
+          let idx = Number.isInteger(p.index) && p.index >= 0 && p.index < edges.length ? p.index : -1
+          if (idx < 0) idx = edges.findIndex((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId && (!p.relation || e.relation === p.relation))
+          if (fix.action === 'update_edge' && idx >= 0) {
+            if (p.relation && REL_LABEL[p.relation]) edges[idx] = { ...edges[idx], relation: p.relation }
+            changed = true
+            auditDetail = 'update_edge:' + edgeKeyOf(edges[idx])
+          } else if (fix.action === 'delete_edge' && idx >= 0) {
+            const key = edgeKeyOf(edges[idx])
+            edges.splice(idx, 1)
+            changed = true
+            auditDetail = 'delete_edge:' + key
+          } else if (fix.action === 'add_edge' && ids.has(p.fromNodeId) && ids.has(p.toNodeId) && p.fromNodeId !== p.toNodeId && p.relation && REL_LABEL[p.relation]) {
+            const dup = edges.some((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId && e.relation === p.relation)
+            if (!dup) {
+              edges.push({ fromNodeId: p.fromNodeId, toNodeId: p.toNodeId, relation: p.relation })
+              changed = true
+              auditDetail = 'add_edge:' + p.fromNodeId + '>' + p.toNodeId
+            }
+          }
+        } else if (fix.action === 'add_node' && fix.nodePatch) {
+          const p = fix.nodePatch.patch || {}
+          const id = fix.nodePatch.id && /^n\d+$/.test(fix.nodePatch.id) && !ids.has(fix.nodePatch.id) ? fix.nodePatch.id : nextNodeId(graph)
+          if (p.type && TYPE_META[p.type] && typeof p.text === 'string' && p.text.trim()) {
+            nodes.push({ id, type: p.type, text: p.text.trim(), quote: typeof p.quote === 'string' ? p.quote.trim() : '', paragraph: Number.isInteger(p.paragraph) ? p.paragraph : null })
+            changed = true
+            auditDetail = 'add_node:' + id
+          }
+        } else if (fix.action === 'update_summary' && fix.summaryPatch) {
+          const prev = graph.summary
+          graph = { ...graph, summary: fix.summaryPatch }
+          changed = true
+          auditDetail = 'update_summary'
+          if (prev === graph.summary) changed = false
+        }
+        if (!changed) return graph
+        let next = { ...graph, nodes, edges }
+        next = appendAudit(next, fix.action, issue.targetId || null, auditDetail, issue.reportId || null,
+          { nodes: graph.nodes, edges: graph.edges, summary: graph.summary },
+          { nodes: next.nodes, edges: next.edges, summary: next.summary })
+        return next
       }
 
       // --------------------------- graph layout ---------------------------
@@ -1171,7 +1320,7 @@
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange }) {
+      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge }) {
         const containerRef = useRef(null)
         const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
         const [dragging, setDragging] = useState(false)
@@ -1417,6 +1566,26 @@
           setView((v) => zoomAround(v, 1 / v.k, el.clientWidth / 2, el.clientHeight / 2))
         }
 
+        // Verification issue overlays: open issues tint their target node /
+        // edge by severity; rejected issues never tint. Selected focus still
+        // wins visually.
+        const issueMaps = useMemo(() => issueTargetsOf(issueReport), [issueReport])
+        const issueSeverityFor = (nodeId) => {
+          const list = issueMaps.nodeMap.get(nodeId)
+          if (!list || list.length === 0) return null
+          const order = { error: 0, warning: 1, suggestion: 2 }
+          list.sort((a, b) => order[a.severity] - order[b.severity])
+          return list[0].severity
+        }
+        const issueSeverityForEdge = (edge) => {
+          const list = issueMaps.edgeMap.get(edgeKeyOf(edge))
+          if (!list || list.length === 0) return null
+          const order = { error: 0, warning: 1, suggestion: 2 }
+          list.sort((a, b) => order[a.severity] - order[b.severity])
+          return list[0].severity
+        }
+        const edgeDetail = selectedEdgeId != null ? (edges || [])[selectedEdgeId] : null
+
         const markerId = 'kg-arrow'
         const edgeEls = (edges || []).map((edge, i) => {
           const a = layout.pos.get(edge.fromNodeId)
@@ -1430,6 +1599,7 @@
           const inFocus = focus ? related.edgeIdx.has(i) : true
           const dim = focus ? !inFocus : false
           const rel = REL_LABEL[edge.relation] || edge.relation
+          const issueSev = issueSeverityForEdge(edge)
           // Radial mode: polylines — each edge leaves its source radially,
           // sweeps along an arc just OUTSIDE the outer ring of its two
           // endpoints, then enters the target radially. Hub edges stay
@@ -1546,7 +1716,7 @@
             h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 14 }),
             h('path', {
               d, fill: 'none',
-              stroke: sel || (inFocus && focus) ? '#6366f1' : '#9ca3af',
+              stroke: sel ? '#6366f1' : (issueSev ? SEVERITY_COLOR[issueSev] : ((inFocus && focus) ? '#6366f1' : '#9ca3af')),
               strokeWidth: sel || hover ? 2.5 : (inFocus && focus ? 2 : 1.5),
               markerEnd: 'url(#' + markerId + ')',
               opacity: dim ? 0.15 : 1,
@@ -1585,6 +1755,8 @@
           const inFocus = focus ? related.ids.has(node.id) : true
           const dim = focus ? !inFocus : false
           const neighbor = focus && inFocus && !sel
+          const issueSev = issueSeverityFor(node.id)
+          const issueCount = issueMaps.nodeMap.has(node.id) ? issueMaps.nodeMap.get(node.id).filter((it) => it.status !== 'rejected').length : 0
           const off = anchors[node.id]
           const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
           return h('g', {
@@ -1600,11 +1772,16 @@
             h('rect', {
               x, y, width: s.w, height: s.h, rx: 10,
               fill: meta.fill,
-              stroke: sel ? '#3b82f6' : (flash ? '#f59e0b' : (neighbor ? '#3b82f6' : meta.color)),
-              strokeWidth: sel || flash ? 3 : (neighbor ? 2 : 1.5),
+              stroke: sel ? '#3b82f6' : (flash ? '#f59e0b' : (issueSev ? SEVERITY_COLOR[issueSev] : (neighbor ? '#3b82f6' : meta.color))),
+              strokeWidth: sel || flash ? 3 : (issueSev ? 2.5 : (neighbor ? 2 : 1.5)),
               className: flash ? 'kg-node-flash' : '',
-              style: (sel || flash || neighbor) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))' } : undefined,
+              style: (sel || flash || neighbor || issueSev) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))' } : undefined,
             }),
+            issueCount > 0
+              ? h('g', { className: 'kg-node-issue-badge', 'aria-hidden': 'true' },
+                  h('circle', { cx: x + s.w - 6, cy: y + 6, r: 7, fill: issueSev ? SEVERITY_COLOR[issueSev] : '#6b7280', stroke: '#fff', strokeWidth: 1.5 }),
+                  h('text', { x: x + s.w - 6, y: y + 9.5, textAnchor: 'middle', fontSize: 8.5, fill: '#fff', fontWeight: 700 }, issueCount > 9 ? '9+' : String(issueCount)))
+              : null,
             h('text', { className: 'kg-node-name', x: p.x, y: y + 25, textAnchor: 'middle', fontSize: 13, fontWeight: 600 },
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
@@ -1644,7 +1821,37 @@
                   disabled: anchors[detail.id] == null,
                   onClick: () => { onSelectNode(detail.id) },
                 }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                typeof onQuestionNode === 'function'
+                  ? h('button', {
+                      type: 'button', className: 'kg-secondary',
+                      onClick: () => onQuestionNode(detail),
+                    }, '质疑此节点')
+                  : null,
               ),
+            )
+          : null
+
+        // Edge detail card: appears when an edge is selected. Edges have no
+        // long text, but the card offers a "question this relation" entry and
+        // a close button, keeping the selection UX consistent with nodes.
+        const edgeDetailEl = edgeDetail
+          ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '关系详情' },
+              h('div', { className: 'kg-node-detail-head' },
+                h('span', { className: 'kg-node-detail-type', style: { background: '#6366f1' } }, REL_LABEL[edgeDetail.relation] || edgeDetail.relation),
+                h('button', {
+                  type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
+                  onClick: () => { onSelectEdge(null) },
+                }, '×'),
+              ),
+              h('div', { className: 'kg-node-detail-text' }, edgeDetail.fromNodeId + ' → ' + edgeDetail.toNodeId),
+              h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)),
+              h('div', { className: 'kg-node-detail-actions' },
+                typeof onQuestionEdge === 'function'
+                  ? h('button', {
+                      type: 'button', className: 'kg-secondary',
+                      onClick: () => onQuestionEdge(edgeDetail, selectedEdgeId),
+                    }, '质疑此关系')
+                  : null),
             )
           : null
 
@@ -1684,6 +1891,145 @@
           ),
           tooltipEl,
           detailEl,
+          edgeDetailEl,
+        )
+      }
+
+      // --------------------- verification panel ---------------------
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion }) {
+        const issues = (report && Array.isArray(report.issues) ? report.issues : [])
+        const shown = issues.filter((it) => {
+          if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
+          return true
+        })
+        const targetLabel = questionTarget
+          ? (questionTarget.kind === 'node'
+            ? '目标：节点 ' + questionTarget.id + (graph && graph.nodes.find((n) => n.id === questionTarget.id) ? '「' + graph.nodes.find((n) => n.id === questionTarget.id).text.slice(0, 40) + '」' : '')
+            : questionTarget.kind === 'edge'
+              ? '目标：关系 ' + questionTarget.id
+              : '目标：整张图')
+          : ''
+        return h('section', { className: 'kg-card', 'aria-label': '验证与质疑' },
+          h('div', { className: 'kg-verify-head' },
+            h('div', { className: 'kg-verify-head-text' },
+              h('h3', { className: 'kg-verify-title' }, '验证与质疑'),
+              report && typeof report.summary === 'string'
+                ? h('p', { className: 'kg-verify-summary' }, report.summary)
+                : null,
+              report && report.stale
+                ? h('p', { className: 'kg-verify-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新验证。')
+                : null,
+            ),
+            verifying
+              ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
+              : null,
+          ),
+          report && report.metrics
+            ? h('div', { className: 'kg-verify-metrics' },
+                h('span', null, '已检查 ' + report.metrics.checkedNodes + ' 节点 / ' + report.metrics.checkedEdges + ' 关系'),
+                h('span', { style: { color: report.metrics.errorCount > 0 ? '#dc2626' : undefined } }, '错误 ' + report.metrics.errorCount),
+                h('span', { style: { color: report.metrics.warningCount > 0 ? '#d97706' : undefined } }, '警告 ' + report.metrics.warningCount),
+                h('span', { style: { color: report.metrics.suggestionCount > 0 ? '#2563eb' : undefined } }, '建议 ' + report.metrics.suggestionCount),
+                h('span', { className: report.metrics.evidenceCoverage >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + report.metrics.evidenceCoverage + '%'),
+                h('span', null, '段落覆盖 ' + report.metrics.paragraphCoverage + '%'),
+              )
+            : null,
+          h('div', { className: 'kg-verify-filters' },
+            ['all', ...SEVERITY_ORDER].map((s) => h('button', {
+              key: s, type: 'button',
+              className: 'kg-filter-chip' + (issueFilter === s ? ' on' : ''),
+              onClick: () => setIssueFilter(s),
+            }, s === 'all' ? '全部 ' + issues.length : (SEVERITY_META[s].label + ' ' + issues.filter((it) => it.severity === s).length))),
+          ),
+          shown.length === 0
+            ? h('p', { className: 'kg-hint' }, verifying ? '正在审校…' : '没有符合筛选条件的问题。')
+            : h('div', { className: 'kg-issue-list' },
+                shown.map((it) => {
+                  const nodeTarget = it.targetKind === 'node' && graph ? graph.nodes.find((n) => n.id === it.targetId) : null
+                  const edgeTarget = it.targetKind === 'edge' ? it : null
+                  const hasFix = it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none'
+                  return h('div', {
+                    key: it.id,
+                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : ''),
+                    role: 'button', tabIndex: 0,
+                    onClick: () => onSelectIssue(it),
+                    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectIssue(it) } },
+                  },
+                    h('div', { className: 'kg-issue-top' },
+                      h('span', { className: 'kg-sev-tag ' + (SEVERITY_META[it.severity] || {}).cls }, (SEVERITY_META[it.severity] || {}).label || it.severity),
+                      h('span', { className: 'kg-issue-cat' }, ISSUE_CATEGORY_LABEL[it.category] || it.category),
+                      nodeTarget ? h('span', { className: 'kg-issue-cat' }, it.targetId) : null,
+                      edgeTarget ? h('span', { className: 'kg-issue-cat' }, '关系 ' + it.targetId) : null,
+                      typeof it.confidence === 'number' ? h('span', { className: 'kg-issue-cat' }, '置信 ' + Math.round(it.confidence * 100) + '%') : null,
+                      it.source === 'local' ? h('span', { className: 'kg-issue-cat' }, '本地规则') : null,
+                    ),
+                    h('div', { className: 'kg-issue-title' }, it.title),
+                    it.detail ? h('div', { className: 'kg-issue-detail' }, it.detail) : null,
+                    (Array.isArray(it.evidence) && it.evidence.length > 0)
+                      ? h('div', { className: 'kg-issue-ev' },
+                          it.evidence.map((ev, k) => {
+                            const pi = typeof ev.paragraph === 'number' ? ev.paragraph : null
+                            return h('div', { key: k }, '原文第 ' + (pi == null ? '?' : pi + 1) + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))
+                          }))
+                      : null,
+                    h('div', { className: 'kg-issue-actions' },
+                      it.status === 'open' && hasFix
+                        ? h('button', { type: 'button', className: 'kg-primary', onClick: (e) => { e.stopPropagation(); onApplyIssue(it) } }, '采纳修复')
+                        : null,
+                      it.status === 'open'
+                        ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
+                        : null,
+                      it.status === 'open'
+                        ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, '复核')
+                        : null,
+                      h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
+                    ),
+                  )
+                }),
+              ),
+          h('div', { className: 'kg-question-bar' },
+            h('input', {
+              className: 'kg-question-input', type: 'text',
+              placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
+              value: questionDraft,
+              maxLength: 600,
+              onChange: (e) => setQuestionDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
+              'aria-label': '质疑或提问输入框',
+            }),
+            h('button', {
+              type: 'button', className: 'kg-primary',
+              disabled: questionPhase === 'running' || !questionDraft.trim(),
+              onClick: onSubmitQuestion,
+            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
+          ),
+          targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
+          questionResult
+            ? h('div', { className: 'kg-question-result' },
+                h('div', null,
+                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
+                  questionResult.answer ? ' ' + questionResult.answer : ''),
+                (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
+                  ? h('div', { className: 'kg-issue-ev' },
+                      questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
+                  : null,
+                questionResult.proposedFix && questionResult.proposedFix.action !== 'none'
+                  ? h('div', { className: 'kg-issue-actions' },
+                      h('button', {
+                        type: 'button', className: 'kg-primary',
+                        onClick: () => onApplyIssue({
+                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
+                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
+                          title: '采纳质疑建议：' + questionResult.proposedFix.action, detail: questionResult.answer || '',
+                          evidence: questionResult.evidence || [], confidence: 1,
+                          proposedFix: questionResult.proposedFix, status: 'open',
+                        }),
+                      }, '采纳修复建议'),
+                    )
+                  : null,
+              )
+            : null,
         )
       }
 

@@ -1,7 +1,20 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
 // ---------- HOST ----------
-let host = readFileSync('/tmp/kg-host-body.js', 'utf8')
+// Extract the plugin body directly from the source file (previously the
+// build depended on an externally prepared /tmp/kg-host-body.js; keeping
+// that undocumented step breaks `npm run build:lib` on a fresh clone).
+const srcHostPath = new URL('../src/index.host.js', import.meta.url)
+const srcHost = readFileSync(srcHostPath, 'utf8')
+const hostOpen = `  return {
+    inject: ['timer'],
+    apply(ctx) {`
+const hostTail = `    },
+  }`
+const hostOpenIdx = srcHost.indexOf(hostOpen)
+const hostTailIdx = srcHost.lastIndexOf(hostTail)
+if (hostOpenIdx < 0 || hostTailIdx <= hostOpenIdx) throw new Error('host source wrapper not found')
+let host = srcHost.slice(hostOpenIdx, hostTailIdx + hostTail.length)
 
 const hostHeader = `/**
  * dsh-knowledge-graph — persistent host half (Cordis composition module).
@@ -188,6 +201,69 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
               return writeJson(res, 200, { status: 'running' })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供图对应的原文' } })
+              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
+              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } })
+              }
+              const mode = a.mode === 'standard' ? 'standard' : 'quick'
+              if (mode === 'quick') return writeJson(res, 200, { report: buildLocalReport(graph, text) })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
+                text, graph, mode, model, createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runVerifyTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] verify task crashed', e)
+                failTask(task, 'failed', 'AI 审校失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/question-graph') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              const question = typeof a.question === 'string' ? a.question.trim() : ''
+              if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要质疑的问题' } })
+              if (question.length > 600) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑问题不能超过 600 字' } })
+              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供图对应的原文' } })
+              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
+              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可质疑的知识图' } })
+              }
+              const target = a.target && typeof a.target === 'object'
+                ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
+                : { kind: 'graph', id: null }
+              if (target.kind !== 'graph' && !target.id) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑目标缺少 id' } })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
+                text, graph, target, question, model, createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runQuestionTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] question task crashed', e)
+                failTask(task, 'failed', 'AI 质疑回答失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-append-extract') {
               const raw = await readBody(req, 524288)
               let payload = {}
@@ -327,8 +403,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
         handler: kgExtHandle,
       }), 'dsh-knowledge-graph: extension route')`
 
-if (!host.includes(extractBlock)) throw new Error('host extract block not found')
-host = host.replace(extractBlock, routeBlock)
+// Replace the whole harness-RPC region (extract .. append-extract) with the
+// HTTP router. Range replacement by markers keeps this script robust when new
+// RPC methods (e.g. verify-graph / question-graph) are inserted in the source.
+const rpcStartMarker = `      harness.handle('extract', async (args) => {`
+const rpcEndMarker = `      // Periodically purge finished tasks`
+const rpcStartIdx = host.indexOf(rpcStartMarker)
+const rpcEndIdx = host.indexOf(rpcEndMarker)
+if (rpcStartIdx < 0 || rpcEndIdx <= rpcStartIdx) throw new Error('host RPC region not found')
+host = host.slice(0, rpcStartIdx) + routeBlock + host.slice(rpcEndIdx)
 
 const helpers = `
 function readBody(req, limit) {

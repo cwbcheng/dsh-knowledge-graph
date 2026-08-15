@@ -20,6 +20,12 @@
   - Nodes in the graph render only the first 4 lines (overflow collapses to `…`); the **full content is always available in the detail card**;
   - Anchoring primarily uses the **paragraph index** the AI reports directly (deterministic), with exact-quote matching and token-overlap scoring as fallbacks; nodes that cannot be linked are never guessed into an offset — they go to a diagnostics list.
 - **Graph rendering**: SVG canvas + 7-color node palette / **4 switchable layouts** (dropdown at the graph's top right, choice remembered): **Force** (embedded d3-force engine, zero dependencies: collision avoids node overlap, edge–node repulsion keeps arrows from crossing nodes), **Circular**, **Radial** (central hub + BFS rings; edges drawn as **polylines**: radial exit → outer arc → radial entry), **Layered** (edges drawn as **orthogonal right-angle polylines**: inter-row channels + per-row obstacle corridors; segments never cross nodes) / relation edges carry type labels, and **edges sharing a source fan out by target angle** (quadratic Bézier) / drag to pan / Ctrl+wheel to zoom / toolbar `− 100% +` (50%–200%, 10% steps) / long-press a node to see the verbatim quote / keyboard accessible.
+- **Verify & question the graph**: once a graph exists, check whether it is faithful to the source text —
+  - **⚡ Quick check**: instant local rules (self-loops/dangling edges, quote grounding, paragraph-vs-quote mismatch, type–relation semantic rules, duplicate / suspected-contradiction nodes, isolated nodes, coverage stats);
+  - **🤖 AI deep audit**: an asynchronous LLM pass adversarially reviews each node/edge; every issue must cite verbatim source evidence, and the standard mode runs a second confirmation pass to suppress false positives;
+  - **Human-in-the-loop fix**: issues are listed by severity (error / warning / suggestion); clicking an issue tints the graph target by severity and scrolls to the source paragraph; each issue can be **applied** (patched immediately, written to an audit log) or **dismissed**;
+  - **Ask questions**: the node detail card offers **question this node**, selecting an edge shows an edge card with **question this relation**, and the verification panel lets you question the whole graph; the AI answers with one of **supported / contradicted / insufficient / out-of-scope** plus source evidence;
+  - Verification results are persisted with the graph; **appending new content marks them stale** for re-verification. The trajectory graph tab supports all of the same capabilities.
 - **Floating workbench**: draggable, resizable window; the **width ratio** between text and graph and the **result area height** are both drag-adjustable and remembered.
 - **Select-to-split**: select any text **inside a chat message**; a "拆成知识图" (split into graph) button floats above the selection — one click opens the workbench and splits the selection; selecting text in the result's source column splits it as a sub-graph; selecting part of the input textarea also offers "split selection".
 - **Incremental append (追加拆分)**: once a result exists, the input panel's primary button becomes **追加拆分 (append split)** — paste the next passage / document and the AI extracts ONLY the new content, linking it into the existing graph via **cross-passage edges** (a concept that reappears is not duplicated — it gets an edge straight to the existing node); the result merges in place, paragraph numbering stays unified across the whole text, and the history entry updates in place. Selecting text in a chat message while a result exists appends it to the current graph automatically.
@@ -77,8 +83,8 @@ cd dsh-knowledge-graph
 
 | File | Purpose |
 | --- | --- |
-| [`src/index.host.js`](src/index.host.js) | Host half: async AI extraction engine (paragraph numbering, batching, schema validation, typed diagnostics, model routing, session-trace serialization) |
-| [`src/index.client.js`](src/index.client.js) | Client half: floating workbench UI, graph rendering, two-way linking, history, width/height resizing, trajectory graph tab |
+| [`src/index.host.js`](src/index.host.js) | Host half: async AI extraction engine (paragraph numbering, batching, schema validation, typed diagnostics, model routing, session-trace serialization) + graph verification/questioning engine (local checks, LLM audit, confirmation pass) |
+| [`src/index.client.js`](src/index.client.js) | Client half: floating workbench UI, graph rendering, two-way linking, verification & questioning panel, fix application/audit, history, width/height resizing, trajectory graph tab |
 
 ### 2. Install (pick one)
 
@@ -161,9 +167,10 @@ History and other data live in browser `localStorage`; uninstalling does not del
 1. Click the 「知识图」button at the right of the conversation title to open the floating workbench;
 2. Paste text into 「输入资料」(title optional), click **AI 拆分** (the input area collapses; result height and text/graph width ratio are drag-adjustable and remembered);
 3. Once the summary / graph appears, **click a graph node to view the detail card (full content) and locate the source**, or **click a source paragraph to focus its node**;
-4. To extend the graph, paste the next passage into the input area and click **追加拆分 (append split)** (or just select text in a chat message — it appends automatically): new nodes link to existing ones via cross-passage edges, paragraph numbering stays unified, and the history entry updates in place;
-5. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
-6. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
+4. Click **⚡ 快速体检 (quick check)** for an instant deterministic report, or **🤖 AI 深度审校 (deep audit)** for an evidence-grounded adversarial LLM review; click an issue to tint its graph target and locate its source paragraph, then **apply the fix** or **dismiss**; question a node from its detail card, an edge from its selected-edge card, or the whole graph from the verification panel;
+5. To extend the graph, paste the next passage into the input area and click **追加拆分 (append split)** (or just select text in a chat message — it appends automatically): new nodes link to existing ones via cross-passage edges, paragraph numbering stays unified, and the history entry updates in place; the previous verification report is marked stale and can be re-run;
+6. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
+7. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
 
 ## Chrome extension (划线拆图)
 
@@ -188,13 +195,15 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 ┌─────────────── Host (Node process) ───────────────┐   ┌────────── Client (browser) ──────────┐
 │ extract / append-extract / task-status /           │   │                                     │
 │   trajectory-extract / trajectory-status           │   │  floating window (shell.overlay)     │
-│   split paragraphs (numbered)  ──────────────────►│   │    input area (collapsible)          │
-│   serializeTrace(session events) ────────────────►│   │    source ⇄ graph (resizable)        │
-│   append: existing-graph node list into the       │   │    history / diagnostics / toast     │
-│     prompt (cross-passage edges) ────────────────►│   │  header 「知识图」button + run card   │
-│   batches → llm.stream (typed retry ×2)           │   │  conversation tab 「轨迹知识图」      │
-│   schema validate → merge (dedupe/warnings)       │   │    trajectory ⇄ graph two-way link  │
-│   task Map; busy lock; 2h purge                   │   └─────────────────────────────────────┘
+│   verify-graph (quick / standard)                  │   │    input area (collapsible)          │
+│   question-graph (node / edge / graph)             │   │    source ⇄ graph (resizable)        │
+│   split paragraphs (numbered)  ──────────────────►│   │    verify panel / fixes / audit log   │
+│   serializeTrace(session events) ────────────────►│   │    history / diagnostics / toast     │
+│   append: existing-graph node list into the       │   │  header 「知识图」button + run card   │
+│     prompt (cross-passage edges) ────────────────►│   │  conversation tab 「轨迹知识图」      │
+│   batches → llm.stream (typed retry ×2)           │   │    trajectory ⇄ graph two-way link  │
+│   schema validate → merge (dedupe/warnings)       │   └─────────────────────────────────────┘
+│   task Map; busy lock; 2h purge                   │
 └───────────────────────────────────────────────────┘
 ```
 
@@ -205,18 +214,47 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 - **No offset guessing**: if anchoring fails, the node is simply not linkable between graph and text — no fabricated offsets, always surfaced in the diagnostics list (`anchor_unresolved:node:...`).
 - **Trace events are paragraphs**: the session execution trace is serialized into numbered paragraphs (user messages / tool calls / tool results / assistant replies), events and paragraphs stay 1:1 (long traces are truncated while keeping alignment), reusing the same paragraph-index anchor mechanism for deterministic two-way linking between graph and events.
 - **Incremental merge (append split)**: on append, the existing graph's node list is injected into the prompt; the AI only produces new nodes and links them into the old graph by referencing existing node ids (**cross-passage edges**); the Host renumbers new ids (avoiding collisions), offsets paragraph numbers (keeping global alignment) and dedupes edges; the client merges the view in place.
-- **Self-contained front end**: layout, force simulation, two-way linking, and history all run in the browser; the Host is only a thin async task manager.
+- **The source is the only ground truth**: quick checks run locally on the Host using the same anchor-matching algorithm as the Client; the deep audit batches paragraphs, reviews only the relevant sub-graph per batch, and the standard mode generates candidate issues first and then filters them with a second confirmation pass; issues without locatable evidence, with low confidence, or targeting missing graph objects are dropped Host-side.
+- **Fixes are explicit and auditable**: the AI only proposes, the user applies; every applied patch writes a before/after snapshot to `graph.verification.auditLog`; appending new content marks the previous report `stale`.
+- **Self-contained front end**: layout, force simulation, two-way linking, history, the verification panel, and patch application all run in the browser; the Host is only a thin async task manager.
 
 ## Data contract
 
 ```
-KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[] }
+KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[], verification? }
 Node  { id, type, typeLabel?, text, quote?, paragraph?, offsetHint? }
 Edge  { fromNodeId, toNodeId, relation, relationLabel? }
+
+GraphVerification {
+  lastReport?: VerificationReport,
+  stale?: boolean,
+  auditLog?: [{ ts, action, targetId, detail, reportId, before?, after? }]
+}
+VerificationReport {
+  reportId, mode: 'quick' | 'standard' | 'question',
+  createdAt, model?, scope: { kind: 'full' | 'node' | 'edge' | 'graph', ids[] },
+  summary, metrics: { checkedNodes, checkedEdges, errorCount, warningCount,
+                     suggestionCount, evidenceCoverage, paragraphCoverage },
+  issues: Issue[]
+}
+Issue {
+  id, source: 'local' | 'ai' | 'question',
+  severity: 'error' | 'warning' | 'suggestion',
+  category: 'grounding' | 'type' | 'relation' | 'duplicate' | 'contradiction'
+          | 'completeness' | 'summary' | 'other',
+  targetKind: 'node' | 'edge' | 'graph', targetId: string | null,
+  title, detail, evidence: [{ paragraph?, quote? }],
+  confidence: 0..1,
+  proposedFix: { action: 'none' | 'update_node' | 'delete_node' | 'add_node'
+               | 'update_edge' | 'delete_edge' | 'add_edge' | 'merge_nodes'
+               | 'update_summary', nodePatch?, edgePatch?, mergeIntoId?, summaryPatch? },
+  status: 'open' | 'accepted' | 'rejected' | 'applied'
+}
 ```
 
 - The 7 node wire types and 6 relation edge types are listed above.
 - Each node preferably carries `paragraph` (paragraph index, deterministic back-link) and `quote` (verbatim excerpt).
+- `verification` is optional; history entries produced by older versions simply load as unverified.
 
 ## License
 
