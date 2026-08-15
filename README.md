@@ -167,6 +167,15 @@ pnpm install
 5. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
 6. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
 
+## Chrome 扩展（划线拆图）
+
+在**任意网页**上选中文字，点浮动按钮「拆成知识图」，一键调用本机 DSH 服务生成知识图（弹窗内可直接拆分、看图、回链原文）。
+
+- 源码在仓库 `extension/` 目录，零依赖打包：`viewer.js` 由 `scripts/build-viewer.mjs` 从 `src/index.client.js` 切片生成（`d3/*.js` 为内嵌 d3 模块的独立文件——MV3 扩展页禁止 eval，popup 用 `<script src>` 预载后 viewer 自动走全局 d3 快速路径），修改源文件后运行 `node scripts/build-viewer.mjs` 重新生成。
+- **安装**：Chrome 打开 `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」→ 选择本仓库 `extension/` 目录。注意 Chrome 137+ 品牌版**不再支持 `--load-extension` 命令行加载**（Chrome for Testing / Chromium 等未品牌化构建仍支持），请走界面加载。
+- **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web；端点仅接受 `chrome-extension://` 与 `localhost/127.0.0.1` 来源，并返回 PNA 预检头）。
+- **数据流**：内容脚本（任意页面）→ `chrome.runtime.sendMessage` → Service Worker 写入 `chrome.storage.session` 并 `chrome.action.openPopup()`（Chrome 127+）；弹窗读取选中文本后调用 `http://127.0.0.1:3080/dsh-kg/extract`，轮询 `task-status` 渲染知识图。DSH 服务地址可在弹窗底部修改并记忆（`chrome.storage.local` 的 `kgBase`）。
+
 ## 架构
 
 ```

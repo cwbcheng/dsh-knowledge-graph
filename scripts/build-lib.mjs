@@ -156,10 +156,7 @@ const extractBlock = `      harness.handle('extract', async (args) => {
 const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent mode) ----
       const webServer = ctx.get('webServer')
       if (!webServer) return
-      ctx.effect(() => webServer.register({
-        kind: 'prefix',
-        path: '/api/dsh-knowledge-graph',
-        handler: async (req, res) => {
+      const kgHandle = async (req, res) => {
           try {
             const url = new URL(req.url ?? '/', 'http://dsh.local')
             const pathname = url.pathname
@@ -290,8 +287,36 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
           } catch (error) {
             writeJson(res, 500, { error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } })
           }
-        },
-      }), 'dsh-knowledge-graph: extract route')`
+        }
+      // Extension endpoint (/dsh-kg): NOT under /api, so the browser-trust
+      // fence does not gate it (chrome-extension origins would be rejected as
+      // cross-site). The Origin check below is the no-token abuse guard.
+      const kgExtHandle = async (req, res) => {
+        const origin = (req.headers && req.headers.origin) || ''
+        if (origin) {
+          const ok = /^chrome-extension:\\/\\//.test(origin)
+            || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/i.test(origin)
+          if (!ok) return writeJson(res, 403, { error: { code: 'forbidden', message: 'origin not allowed' } })
+          res.setHeader('Access-Control-Allow-Origin', origin)
+          res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+          // Chrome 142+ Private Network Access: a public/extension context
+          // calling a local server needs this preflight acknowledgement.
+          res.setHeader('Access-Control-Allow-Private-Network', 'true')
+        }
+        if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+        return kgHandle(req, res)
+      }
+      ctx.effect(() => webServer.register({
+        kind: 'prefix',
+        path: '/api/dsh-knowledge-graph',
+        handler: kgHandle,
+      }), 'dsh-knowledge-graph: extract route')
+      ctx.effect(() => webServer.register({
+        kind: 'prefix',
+        path: '/dsh-kg',
+        handler: kgExtHandle,
+      }), 'dsh-knowledge-graph: extension route')`
 
 if (!host.includes(extractBlock)) throw new Error('host extract block not found')
 host = host.replace(extractBlock, routeBlock)

@@ -165,6 +165,15 @@ History and other data live in browser `localStorage`; uninstalling does not del
 5. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
 6. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
 
+## Chrome extension (划线拆图)
+
+Select text on **any web page**, click the floating 「拆成知识图」button, and the local DSH service turns it into an AI knowledge graph right in a popup (split, view the graph, and jump back to the source text without leaving the page).
+
+- The extension source lives in `extension/`; it is dependency-free: `viewer.js` is sliced from `src/index.client.js` by `scripts/build-viewer.mjs`, and `d3/*.js` are the embedded d3 modules as standalone files (MV3 extension pages forbid eval, so the popup preloads them with `<script src>` and the viewer's d3 loader takes the global fast path). After editing the source, run `node scripts/build-viewer.mjs` to regenerate.
+- **Install**: open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo's `extension/` folder. Note: branded Chrome 137+ **no longer supports `--load-extension` on the command line** (Chrome for Testing / unbranded Chromium still do) — use the UI flow.
+- **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). The endpoint only accepts `chrome-extension://` and `localhost/127.0.0.1` origins and answers with the PNA preflight header.
+- **Data flow**: content script (any page) → `chrome.runtime.sendMessage` → service worker writes `chrome.storage.session` and calls `chrome.action.openPopup()` (Chrome 127+); the popup reads the selected text and POSTs to `http://127.0.0.1:3080/dsh-kg/extract`, then polls `task-status` to render the graph. The DSH base URL is editable at the bottom of the popup and remembered (`kgBase` in `chrome.storage.local`).
+
 ## Architecture
 
 ```
