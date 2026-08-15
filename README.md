@@ -1,5 +1,7 @@
 # dsh-knowledge-graph
 
+**[中文](README.md) | [English](README.en.md)**
+
 **DSH（DeepSeek Harness）Cordis 插件**：把任意一段资料正文——或一段 AI 会话执行轨迹——用 AI 拆解成一张**知识图**，并在**知识图与原文之间双向定位**。
 
 
