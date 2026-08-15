@@ -648,6 +648,30 @@ export default function clientPlugin() {
           issues: (report.issues || []).map((it) => it.id === issueId ? { ...it, status, userNote: userNote || it.userNote || '' } : it),
         }
       }
+      // One-click fix: apply every OPEN issue that has an applicable patch, in
+      // report order. Each successful patch writes its own audit entry. Issues
+      // without a patch (or whose target was already removed by an earlier
+      // patch) are counted as skipped and left open for manual review.
+      function applyAllFixable(graph, report) {
+        let g = graph
+        let r = report
+        let applied = 0
+        let skipped = 0
+        for (const issue of (report && Array.isArray(report.issues) ? report.issues : [])) {
+          if (!issue || issue.status !== 'open') continue
+          const hasFix = issue.proposedFix && issue.proposedFix.action && issue.proposedFix.action !== 'none'
+          if (!hasFix) { skipped += 1; continue }
+          const next = applyPatch(g, issue)
+          if (next !== g) {
+            g = next
+            r = updateIssueStatus(r, issue.id, 'applied')
+            applied += 1
+          } else {
+            skipped += 1
+          }
+        }
+        return { graph: g, report: r, applied, skipped }
+      }
       function nextNodeId(graph) {
         let max = 0
         for (const n of graph.nodes || []) {
@@ -2191,8 +2215,10 @@ export default function clientPlugin() {
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
+        const openIssues = issues.filter((it) => it.status === 'open')
+        const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
         const shown = issues.filter((it) => {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
@@ -2224,6 +2250,15 @@ export default function clientPlugin() {
                 ? h('p', { className: 'kg-verify-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新验证。')
                 : null,
             ),
+            typeof onApplyAll === 'function' && fixableCount > 0
+              ? h('button', {
+                  type: 'button', className: 'kg-primary',
+                  style: { flex: 'none', marginLeft: 'auto' },
+                  disabled: verifying,
+                  onClick: onApplyAll,
+                  title: '应用所有可自动修复的问题（' + fixableCount + ' 项）',
+                }, '一键修复 ' + fixableCount + ' 项')
+              : null,
             verifying
               ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
               : null,
@@ -3158,6 +3193,23 @@ export default function clientPlugin() {
           commitGraph(g2)
           toastStore.show('已应用修复：' + (issue.title || ''))
         }
+        const handleApplyAll = () => {
+          if (!resultView || !verification) return
+          const open = (verification.issues || []).filter((it) => it.status === 'open')
+          const fixable = open.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none')
+          if (fixable.length === 0) {
+            toastStore.show('没有可自动修复的待处理问题')
+            return
+          }
+          if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
+          const res = applyAllFixable(resultView.graph, verification)
+          setVerification(res.report)
+          setActiveIssueId(null)
+          setSelectedNodeId(null)
+          setSelectedEdgeId(null)
+          commitGraph(res.graph)
+          toastStore.show('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
+        }
         const handleRejectIssue = (issue) => {
           if (!verification) return
           const report = updateIssueStatus(verification, issue.id, 'rejected')
@@ -3591,6 +3643,7 @@ export default function clientPlugin() {
                         verifying: verifyPhase === 'running',
                         activeIssueId, onSelectIssue: handleSelectIssue,
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
+                        onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
                         questionDraft, setQuestionDraft, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null) },
@@ -4122,6 +4175,23 @@ export default function clientPlugin() {
           commitTrajGraph(g2)
           showToast('已应用修复：' + (issue.title || ''))
         }
+        const handleApplyAll = () => {
+          if (!view || !verification) return
+          const open = (verification.issues || []).filter((it) => it.status === 'open')
+          const fixable = open.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none')
+          if (fixable.length === 0) {
+            showToast('没有可自动修复的待处理问题')
+            return
+          }
+          if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
+          const res = applyAllFixable(view.graph, verification)
+          setVerification(res.report)
+          setActiveIssueId(null)
+          setSelectedNodeId(null)
+          setSelectedEdgeId(null)
+          commitTrajGraph(res.graph)
+          showToast('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
+        }
         const handleRejectIssue = (issue) => {
           if (!verification) return
           const report = updateIssueStatus(verification, issue.id, 'rejected')
@@ -4409,6 +4479,7 @@ export default function clientPlugin() {
                         verifying: verifyPhase === 'running',
                         activeIssueId, onSelectIssue: handleSelectIssue,
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
+                        onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
                         questionDraft, setQuestionDraft, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null) },

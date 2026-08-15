@@ -421,6 +421,30 @@
           issues: (report.issues || []).map((it) => it.id === issueId ? { ...it, status, userNote: userNote || it.userNote || '' } : it),
         }
       }
+      // One-click fix: apply every OPEN issue that has an applicable patch, in
+      // report order. Each successful patch writes its own audit entry. Issues
+      // without a patch (or whose target was already removed by an earlier
+      // patch) are counted as skipped and left open for manual review.
+      function applyAllFixable(graph, report) {
+        let g = graph
+        let r = report
+        let applied = 0
+        let skipped = 0
+        for (const issue of (report && Array.isArray(report.issues) ? report.issues : [])) {
+          if (!issue || issue.status !== 'open') continue
+          const hasFix = issue.proposedFix && issue.proposedFix.action && issue.proposedFix.action !== 'none'
+          if (!hasFix) { skipped += 1; continue }
+          const next = applyPatch(g, issue)
+          if (next !== g) {
+            g = next
+            r = updateIssueStatus(r, issue.id, 'applied')
+            applied += 1
+          } else {
+            skipped += 1
+          }
+        }
+        return { graph: g, report: r, applied, skipped }
+      }
       function nextNodeId(graph) {
         let max = 0
         for (const n of graph.nodes || []) {
@@ -1964,8 +1988,10 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
+        const openIssues = issues.filter((it) => it.status === 'open')
+        const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
         const shown = issues.filter((it) => {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
@@ -1997,6 +2023,15 @@
                 ? h('p', { className: 'kg-verify-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新验证。')
                 : null,
             ),
+            typeof onApplyAll === 'function' && fixableCount > 0
+              ? h('button', {
+                  type: 'button', className: 'kg-primary',
+                  style: { flex: 'none', marginLeft: 'auto' },
+                  disabled: verifying,
+                  onClick: onApplyAll,
+                  title: '应用所有可自动修复的问题（' + fixableCount + ' 项）',
+                }, '一键修复 ' + fixableCount + ' 项')
+              : null,
             verifying
               ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
               : null,

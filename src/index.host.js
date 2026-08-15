@@ -51,6 +51,10 @@ export default function hostPlugin() {
         '6. type 只能取 fact/inference/concept/definition/example/counter_example/rule 之一；relation 只能取 supports/example/counter_example/defines/infers/causes 之一；paragraph 必须是正文中真实存在的段落编号。',
         '7. 节点 id 用 n1、n2、n3... 全局唯一；edges 中的 fromNodeId/toNodeId 必须引用存在的节点 id。',
         '8. 单批节点数不超过 30 个。',
+        '9. 每个 fact/inference 节点的 text 必须能从其 quote 所在位置推出；inference 必须是可复用的结论，不能只是换句话复述事实。',
+        '10. 同一概念、同一事实只建一个节点；节点 text 要精炼，不要整段照抄原文。',
+        '11. 只在当前批次内建边，不要引用本批不存在的节点；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
+        '12. 输出前自查：先想“这段原文真的支持这个节点/这条边吗？类型对吗？方向对吗？”，确认后再输出 JSON。',
       ].join(NL)
 
       // Trajectory extraction: the input is an AGENT EXECUTION TRACE (each
@@ -80,6 +84,10 @@ export default function hostPlugin() {
         '6. type 只能取 fact/inference/concept/definition/example/counter_example/rule 之一；relation 只能取 supports/example/counter_example/defines/infers/causes 之一；paragraph 必须是轨迹中真实存在的事件编号。',
         '7. 节点 id 用 n1、n2、n3... 全局唯一；edges 中的 fromNodeId/toNodeId 必须引用存在的节点 id。',
         '8. 单批节点数不超过 30 个。',
+        '9. 每个 fact/inference 节点的 text 必须能从其 quote 所在位置推出；inference 必须是可复用的结论，不能只是换句话复述事实。',
+        '10. 同一概念、同一事实只建一个节点；节点 text 要精炼，不要整段照抄原文。',
+        '11. 只在当前批次内建边，不要引用本批不存在的节点；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
+        '12. 输出前自查：先想“这段原文真的支持这个节点/这条边吗？类型对吗？方向对吗？”，确认后再输出 JSON。',
       ].join(NL)
 
       // Incremental append: the input is NEW text plus the EXISTING graph
@@ -101,6 +109,7 @@ export default function hostPlugin() {
         '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
         '7. 节点 id 用 n1、n2、n3... 且不得与节点清单中的已有 id 重复；单批新节点不超过 30 个。',
         '8. 宁缺毋滥：与已有图重复、无关的内容不要输出节点。',
+        '9. 输出前自查：每个新节点的 text 都能从新正文 quote 推出；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
       ].join(NL)
 
       // Incremental trajectory append: NEW trace events plus the existing
@@ -122,6 +131,7 @@ export default function hostPlugin() {
         '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
         '7. 节点 id 用 n1、n2、n3... 且不得与节点清单中的已有 id 重复；单批新节点不超过 30 个。',
         '8. 宁缺毋滥：与已有图重复、无关的事件不要输出节点；优先保留「查到了什么」和「因此做出了什么判断」。',
+        '9. 输出前自查：每个新节点的 text 都能从新轨迹 quote 推出；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
       ].join(NL)
 
       // Verification / questioning prompts. The verifier is an ADVERSARIAL
@@ -711,7 +721,7 @@ export default function hostPlugin() {
         return null
       }
 
-      async function callModel(model, system, userText, timeoutMs) {
+      async function callModel(model, system, userText, timeoutMs, temperature) {
         const llm = ctx.get('llm')
         if (!llm) {
           const err = new Error('模型服务不可用')
@@ -725,7 +735,7 @@ export default function hostPlugin() {
             model: model.model,
             system,
             messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
-            temperature: 0.2,
+            temperature: typeof temperature === 'number' ? temperature : 0.2,
             maxTokens: 8000,
           })) {
             if (chunk.type === 'text-delta') out += chunk.text
@@ -906,7 +916,7 @@ export default function hostPlugin() {
             let lastErr = ''
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
-                const raw = await callModel(model, system, userText, 180000)
+                const raw = await callModel(model, system, userText, 180000, 0.1)
                 const obj = parseJson(raw)
                 const r = normalizeGraph(obj, paras.length, existingIds)
                 if (r.error) { lastErr = r.error; continue }
@@ -920,8 +930,12 @@ export default function hostPlugin() {
             if (!norm) {
               return failTask(task, 'schema_invalid', 'AI 返回结果无法解析（第 ' + (i + 1) + '/' + batches.length + ' 批，已自动重试）：' + lastErr)
             }
+            // ALWAYS renumber colliding ids. Previously this only ran in append
+            // mode, so multi-batch extractions (each batch restarts at n1) had
+            // later-batch nodes silently dropped as duplicate ids — a serious
+            // quality bug for documents longer than one batch.
+            renumberNewIds(norm, acc)
             if (isAppend) {
-              renumberNewIds(norm, acc)
               for (const n of norm.nodes) {
                 if (n.paragraph != null) n.paragraph += offset
                 addedIds.push(n.id)
