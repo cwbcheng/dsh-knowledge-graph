@@ -118,6 +118,10 @@ export default function clientPlugin() {
 .kg-audit-title { font-size: 12px; font-weight: 600; margin: 0 0 6px; }
 .kg-audit-list { display: flex; flex-direction: column; gap: 4px; }
 .kg-audit-item { font-size: 11.5px; color: var(--kg-text-dim); line-height: 1.5; }
+.kg-audit-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kg-audit-diff { margin: 3px 0 0 4px; padding: 4px 8px; border-left: 2px solid rgba(16,185,129,0.35); background: rgba(16,185,129,0.05); border-radius: 0 6px 6px 0; color: var(--kg-text); white-space: pre-wrap; word-break: break-word; }
+.kg-audit-diff div + div { margin-top: 2px; }
+.kg-audit-more { color: var(--kg-text-dim); font-size: 11px; }
 .kg-audit-action { display: inline-flex; margin-right: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid rgba(16,185,129,0.35); color: #047857; background: rgba(16,185,129,0.08); font-size: 10.5px; line-height: 16px; }
 @media (prefers-color-scheme: dark) { .kg-audit-action { color: #6ee7b7; } }
 .kg-question-bar { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
@@ -654,6 +658,66 @@ export default function clientPlugin() {
       }
       function cloneNodes(nodes) { return (nodes || []).map((n) => ({ ...n })) }
       function cloneEdges(edges) { return (edges || []).map((e) => ({ ...e })) }
+      // Compute human-readable old -> new differences from an audit entry's
+      // before/after snapshots. Used by the verification panel's "修复记录"
+      // section so every applied fix shows WHAT actually changed.
+      function auditDiffLines(before, after, maxLines) {
+        const cap = typeof maxLines === 'number' && maxLines > 0 ? maxLines : 5
+        if (!before || !after) return { lines: [], more: 0 }
+        const lines = []
+        const short = (s, n) => { const t = String(s == null ? '' : s).trim(); return t.length > (n || 44) ? t.slice(0, n || 44) + '…' : (t || '（空）') }
+        const shortQuote = (s) => { const t = String(s == null ? '' : s).trim(); return t.length > 30 ? t.slice(0, 30) + '…' : (t || '（空）') }
+        const bNodes = Array.isArray(before.nodes) ? before.nodes : []
+        const aNodes = Array.isArray(after.nodes) ? after.nodes : []
+        const bById = new Map(bNodes.map((n) => [n.id, n]))
+        const aById = new Map(aNodes.map((n) => [n.id, n]))
+        const push = (s) => { if (lines.length < cap) lines.push(s) }
+        const nodeIds = new Set([...bById.keys(), ...aById.keys()])
+        for (const id of nodeIds) {
+          const b = bById.get(id)
+          const a = aById.get(id)
+          if (b && !a) push('删除节点 ' + id + '（' + short(b.text) + '）')
+          else if (!b && a) push('新增节点 ' + id + '（' + short(a.text) + '）')
+          else if (b && a) {
+            if (String(a.text || '').trim() !== String(b.text || '').trim()) push('节点 ' + id + ' 表述：' + short(b.text, 34) + ' → ' + short(a.text, 34))
+            if (a.type !== b.type) push('节点 ' + id + ' 类型：' + ((TYPE_META[b.type] || {}).label || b.type) + ' → ' + ((TYPE_META[a.type] || {}).label || a.type))
+            if (Number.isInteger(a.paragraph) && Number.isInteger(b.paragraph) && a.paragraph !== b.paragraph) push('节点 ' + id + ' 段落：P' + (b.paragraph + 1) + ' → P' + (a.paragraph + 1))
+            if (String(a.quote || '').trim() !== String(b.quote || '').trim()) push('节点 ' + id + ' 摘录：' + shortQuote(b.quote) + ' → ' + shortQuote(a.quote))
+          }
+        }
+        const edgeCounts = (edges) => {
+          const counts = new Map()
+          for (const e of (Array.isArray(edges) ? edges : [])) {
+            if (!e || typeof e.fromNodeId !== 'string' || typeof e.toNodeId !== 'string') continue
+            const key = e.fromNodeId + '>' + e.toNodeId + ':' + e.relation
+            counts.set(key, (counts.get(key) || 0) + 1)
+          }
+          return counts
+        }
+        const bEdges = edgeCounts(before.edges)
+        const aEdges = edgeCounts(after.edges)
+        const edgeKeys = new Set([...bEdges.keys(), ...aEdges.keys()])
+        for (const key of edgeKeys) {
+          const bCount = bEdges.get(key) || 0
+          const aCount = aEdges.get(key) || 0
+          if (bCount === aCount) continue
+          const parts = key.split('>')
+          const from = parts[0] || '?'
+          const rest = parts[1] || ''
+          const relIdx = rest.lastIndexOf(':')
+          const to = relIdx >= 0 ? rest.slice(0, relIdx) : rest
+          const rel = relIdx >= 0 ? rest.slice(relIdx + 1) : '?'
+          const label = REL_LABEL[rel] || rel
+          const desc = from + ' → ' + to + '（' + label + '）'
+          if (bCount > aCount) push('删除关系 ' + desc)
+          else push('新增关系 ' + desc)
+        }
+        if (String(after.summary || '').trim() !== String(before.summary || '').trim()) {
+          push('总结：' + short(before.summary, 30) + ' → ' + short(after.summary, 30))
+        }
+        const total = lines.length
+        return { lines: lines.slice(0, cap), more: total - cap }
+      }
       // Apply an issue's proposedFix to a graph. Pure function: returns a NEW
       // graph (original untouched). Structural fixes are deterministic; text
       // patches come from the AI and are still a user-confirmed action.
@@ -2231,10 +2295,19 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-audit' },
                 h('p', { className: 'kg-audit-title' }, '修复记录（最近 ' + recentAudits.length + ' 条）'),
                 h('div', { className: 'kg-audit-list' },
-                  recentAudits.map((a, i) => h('div', { key: i, className: 'kg-audit-item' },
-                    h('span', { className: 'kg-audit-action' }, a.action || 'fix'),
-                    a.detail ? a.detail + (a.targetId && a.detail.indexOf(a.targetId) < 0 ? '（' + a.targetId + '）' : '') : a.targetId || '',
-                    ' · ' + formatTime(a.ts)))))
+                  recentAudits.map((a, i) => {
+                    const diff = auditDiffLines(a.before, a.after, 5)
+                    return h('div', { key: i, className: 'kg-audit-item' },
+                      h('div', { className: 'kg-audit-head' },
+                        h('span', { className: 'kg-audit-action' }, a.action || 'fix'),
+                        h('span', null, (a.detail || a.targetId || '') + ' · ' + formatTime(a.ts))),
+                      diff.lines.length > 0
+                        ? h('div', { className: 'kg-audit-diff' },
+                            diff.lines.map((ln, k) => h('div', { key: k }, ln)),
+                            diff.more > 0 ? h('div', { className: 'kg-audit-more' }, '… 另有 ' + diff.more + ' 处变化') : null)
+                        : null,
+                    )
+                  })))
             : null,
           h('div', { className: 'kg-question-bar' },
             h('input', {
