@@ -2502,12 +2502,12 @@ export default function clientPlugin() {
                     ? h('button', {
                         type: 'button', className: 'kg-primary',
                         disabled: text.trim().length === 0,
-                        onClick: appendSubmit,
+                        onClick: () => appendSubmit(),
                       }, '追加拆分')
                     : h('button', {
                         type: 'button', className: 'kg-primary',
                         disabled: text.trim().length === 0,
-                        onClick: submit,
+                        onClick: () => submit(),
                       }, 'AI 拆分'),
                 ),
               ),
