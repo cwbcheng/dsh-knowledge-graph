@@ -1100,6 +1100,16 @@ export default function clientPlugin() {
         const s2 = sizes.get(edge.toNodeId)
         const h1 = s1 ? s1.h / 2 : 40
         const h2 = s2 ? s2.h / 2 : 40
+        // Lane offsets separate parallel edges, but the entry/exit x must
+        // stay ON the node's border span: with many siblings (n up to ~17)
+        // the offset (lane*12, lane up to (n-1)/2) can exceed the node
+        // half-width, leaving the arrow floating BESIDE the node. Clamp to
+        // within the border (8px margin keeps the arrowhead clear of the
+        // rounded corner).
+        const w1 = s1 ? Math.max(s1.w / 2 - 8, 8) : 40
+        const w2 = s2 ? Math.max(s2.w / 2 - 8, 8) : 40
+        const ax = clamp(a.x + offX, a.x - w1, a.x + w1)
+        const bx = clamp(b.x + offX, b.x - w2, b.x + w2)
         const r1 = Math.round(a.y / LAYER_Y_GAP)
         const r2 = Math.round(b.y / LAYER_Y_GAP)
         if (r1 === r2) {
@@ -1113,8 +1123,8 @@ export default function clientPlugin() {
           const cye = clamp(cy + offY, band[0], band[1])
           const y0 = a.y + (cye > a.y ? h1 : -h1)
           const y1 = b.y - (b.y > cye ? h2 : -h2)
-          const d = 'M ' + (a.x + offX) + ' ' + y0 + ' L ' + (a.x + offX) + ' ' + cye
-            + ' L ' + (b.x + offX) + ' ' + cye + ' L ' + (b.x + offX) + ' ' + y1
+          const d = 'M ' + ax + ' ' + y0 + ' L ' + ax + ' ' + cye
+            + ' L ' + bx + ' ' + cye + ' L ' + bx + ' ' + y1
           const lblY = cye + (cy > a.y ? 14 : -14)
           return { d, lblX: (a.x + b.x) / 2, lblY }
         }
@@ -1140,9 +1150,9 @@ export default function clientPlugin() {
         const ch2e = clamp(ch2 + offY, band2[0], band2[1])
         const y0 = a.y + (ch1e > a.y ? h1 : -h1)
         const y1 = b.y - (b.y > ch2e ? h2 : -h2)
-        const d = 'M ' + (a.x + offX) + ' ' + y0 + ' L ' + (a.x + offX) + ' ' + ch1e
+        const d = 'M ' + ax + ' ' + y0 + ' L ' + ax + ' ' + ch1e
           + ' L ' + xce + ' ' + ch1e + ' L ' + xce + ' ' + ch2e
-          + ' L ' + (b.x + offX) + ' ' + ch2e + ' L ' + (b.x + offX) + ' ' + y1
+          + ' L ' + bx + ' ' + ch2e + ' L ' + bx + ' ' + y1
         return { d, lblX: xce + 14, lblY: (ch1e + ch2e) / 2 }
       }
 
