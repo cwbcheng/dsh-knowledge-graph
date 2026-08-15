@@ -87,6 +87,46 @@ const extractBlock = `      harness.handle('extract', async (args) => {
         return { status: 'running' }
       })
 
+      harness.handle('trajectory-append-extract', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+        const sessions = ctx.get('sessions')
+        const session = sessions ? sessions.get(sessionId) : undefined
+        if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
+        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+          return { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } }
+        }
+        const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
+        const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+        // Only events AFTER the last included one are serialized (incremental).
+        let fromSeq = -1
+        for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
+        const newEvents = []
+        for (const ev of session.events || []) {
+          if (typeof ev.seq === 'number' && ev.seq > fromSeq) newEvents.push(ev)
+        }
+        if (newEvents.length === 0) return { error: { code: 'empty', message: '该会话在上次拆解后没有新事件，无需追加' } }
+        const trace = serializeTrace(newEvents)
+        if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
+        const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
+        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        seq += 1
+        const task = {
+          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
+          title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+          baseTraceText, baseTraceEvents, existing, paragraphOffset,
+          createdAt: Date.now(),
+        }
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => runTask(task)).catch((e) => {
+          console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
+          failTask(task, 'failed', 'AI 拆分失败：内部错误')
+        }).finally(() => { busy = false })
+        return { taskId: task.id }
+      })
+
       harness.handle('append-extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
@@ -150,6 +190,47 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
               if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
               return writeJson(res, 200, { status: 'running' })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-append-extract') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+              const sessions = ctx.get('sessions')
+              const session = sessions ? sessions.get(sessionId) : undefined
+              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
+              const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+              if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } })
+              }
+              const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
+              const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+              let fromSeq = -1
+              for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
+              const newEvents = []
+              for (const ev of session.events || []) {
+                if (typeof ev.seq === 'number' && ev.seq > fromSeq) newEvents.push(ev)
+              }
+              if (newEvents.length === 0) return writeJson(res, 200, { error: { code: 'empty', message: '该会话在上次拆解后没有新事件，无需追加' } })
+              const trace = serializeTrace(newEvents)
+              if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
+              const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
+                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+                baseTraceText, baseTraceEvents, existing, paragraphOffset,
+                createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
+                failTask(task, 'failed', 'AI 拆分失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/append-extract') {
               const raw = await readBody(req, 524288)

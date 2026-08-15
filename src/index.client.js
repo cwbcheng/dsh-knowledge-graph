@@ -173,6 +173,7 @@ export default function clientPlugin() {
 .kg-traj-original { display: flex; flex-direction: column; gap: 10px; overflow: auto; user-select: text; }
 .kg-traj-ev-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--kg-text-dim); margin-bottom: 4px; }
 .kg-traj-ev-chip { display: inline-flex; padding: 0 8px; border-radius: 999px; border: 1px solid var(--kg-border); background: var(--kg-panel); line-height: 18px; }
+.kg-append-btn { padding: 6px 14px; font-size: 13px; }
 `)
 
       // --------------------------- constants ----------------------------
@@ -2751,6 +2752,8 @@ export default function clientPlugin() {
         const hHandleRef = useRef(null)
         const hDragRef = useRef(null)
         const mountedSessionRef = useRef(null)
+        const appendModeRef = useRef(false) // true while an append task is running
+        const [appendCount, setAppendCount] = useState(0)
 
         const showToast = (msg) => {
           setTrajToast(msg)
@@ -2768,6 +2771,8 @@ export default function clientPlugin() {
           setError(null)
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1); setFlashPara(-1)
           setShowDiag(false); setTrajToast(null)
+          setAppendCount(0)
+          appendModeRef.current = false
           sessionSeq.current += 1
           if (!sessionId) return
           const cached = readTrajResult(sessionId)
@@ -2788,6 +2793,7 @@ export default function clientPlugin() {
             setTaskId(pending.taskId)
             setPhase('extracting')
             setView(null); setTraceEvents([])
+            appendModeRef.current = pending.append === true
             return
           }
           setPhase('idle')
@@ -2824,6 +2830,8 @@ export default function clientPlugin() {
               if (g && Array.isArray(g.nodes)) {
                 const tText = typeof g.traceText === 'string' ? g.traceText : ''
                 const evs = Array.isArray(g.traceEvents) ? g.traceEvents : []
+                const wasAppend = appendModeRef.current
+                appendModeRef.current = false
                 try {
                   setView(makeView(g, tText))
                   setTraceEvents(evs)
@@ -2831,7 +2839,15 @@ export default function clientPlugin() {
                   setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
                   clearTrajPending(sessionId)
                   writeTrajResult(sessionId, { graph: g, traceText: tText, traceEvents: evs, ts: Date.now() })
-                  showToast('轨迹知识图已生成')
+                  if (wasAppend) {
+                    setAppendCount((c) => c + 1)
+                    const added = Array.isArray(g.addedNodeIds) ? g.addedNodeIds.length : 0
+                    const lastEv = evs.length > 0 ? evs[evs.length - 1] : null
+                    showToast('轨迹追加完成：新增 ' + added + ' 个节点' + (lastEv && typeof lastEv.seq === 'number' ? '，已覆盖到事件 #' + lastEv.seq : ''))
+                  } else {
+                    setAppendCount(0)
+                    showToast('轨迹知识图已生成')
+                  }
                 } catch (err) {
                   setPhase('idle'); setTaskId(null)
                   clearTrajPending(sessionId)
@@ -2875,6 +2891,8 @@ export default function clientPlugin() {
           setPhase('extracting')
           setView(null); setTraceEvents([])
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+          setAppendCount(0)
+          appendModeRef.current = false
           clearTrajResult(sessionId)
           try {
             const res = await host.call('trajectory-extract', { sessionId })
@@ -2887,6 +2905,39 @@ export default function clientPlugin() {
           } catch (e) {
             setPhase('idle')
             setError({ message: '无法提交拆解任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+
+        // Incremental trajectory append: only events AFTER the last included
+        // one are extracted (host-side), then the result is the FULLY merged
+        // graph + trace text + events — the success handler needs no merge.
+        const appendExtract = async () => {
+          if (!view || !view.graph || !Array.isArray(view.graph.nodes)) {
+            showToast('请先完成一次拆解，再追加新事件')
+            return
+          }
+          setError(null)
+          setPhase('extracting')
+          setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+          appendModeRef.current = true
+          try {
+            const existing = {
+              summary: typeof view.graph.summary === 'string' ? view.graph.summary : '',
+              nodes: view.graph.nodes,
+              edges: view.graph.edges,
+              traceText: view.sourceText || '',
+              traceEvents,
+            }
+            const res = await host.call('trajectory-append-extract', { sessionId, existing })
+            if (res && res.error) { setPhase('idle'); setError(res.error); return }
+            if (res && res.taskId) {
+              setTaskId(res.taskId)
+              writeTrajPending(sessionId, { taskId: res.taskId, append: true, ts: Date.now() })
+            }
+            else { setPhase('idle'); setError({ message: '无法提交追加任务，请重试' }) }
+          } catch (e) {
+            setPhase('idle')
+            setError({ message: '无法提交追加任务：' + (e && e.message ? e.message : '未知错误') })
           }
         }
 
@@ -3011,6 +3062,7 @@ export default function clientPlugin() {
                   h('span', null, graph.nodes.length + ' 个节点'),
                   h('span', null, graph.edges.length + ' 条关系'),
                   h('span', null, '回链事件 ' + resolvedCount + '/' + graph.nodes.length),
+                  appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -3081,7 +3133,10 @@ export default function clientPlugin() {
               ? h('section', { className: 'kg-card kg-result', 'aria-label': '轨迹 ⇄ 知识图结果' },
                   h('div', { className: 'kg-panel-head' },
                     h('h3', { className: 'kg-section-title' }, '轨迹 ⇄ 知识图'),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: extract }, '重新拆解'),
+                    h('div', { style: { display: 'flex', gap: 8 } },
+                      h('button', { type: 'button', className: 'kg-primary kg-append-btn', onClick: appendExtract }, '追加新事件'),
+                      h('button', { type: 'button', className: 'kg-secondary', onClick: extract }, '重新拆解'),
+                    ),
                   ),
                   resultPanel,
                 )

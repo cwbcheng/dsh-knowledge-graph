@@ -103,6 +103,27 @@ export default function hostPlugin() {
         '8. 宁缺毋滥：与已有图重复、无关的内容不要输出节点。',
       ].join(NL)
 
+      // Incremental trajectory append: NEW trace events plus the existing
+      // trajectory graph. Same mechanics as APPEND_SYSTEM_PROMPT, but framed
+      // for agent-execution events (tools/facts/inferences).
+      const TRAJ_APPEND_SYSTEM_PROMPT = [
+        '你是「轨迹知识图增量拆解引擎」。用户会给你一段新的 AI Agent 执行轨迹（每个 [P数字] 是一个编号事件：用户消息、工具调用、工具结果或 AI 回复），以及一张已经存在的轨迹知识图节点清单（格式：节点id|类型|文本）。请把新轨迹中引入的知识增量地加入这张图。',
+        '',
+        '节点类型与关系类型同常规拆分：',
+        '节点：fact 事实 / inference 推论 / concept 概念 / definition 定义 / example 例子 / counter_example 反例 / rule 规则',
+        '关系：supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果',
+        '',
+        '硬性要求：',
+        '1. 只输出新轨迹引入的新节点；已有概念再次出现时绝不重复建节点，而是输出指向该已有节点 id 的关系边。',
+        '2. 关系边既可以连接两个新节点，也可以连接新节点与已有节点；引用已有节点时 fromNodeId/toNodeId 必须是节点清单中真实存在的 id，禁止编造。',
+        '3. 每个新节点必须给出 paragraph 字段：[P数字] 中的数字（相对于新轨迹的事件编号，整数）；quote 字段尽量逐字摘录。',
+        '4. summary 字段输出合并后整张图的一句话总结（涵盖新旧全部内容）。',
+        '5. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
+        '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
+        '7. 节点 id 用 n1、n2、n3... 且不得与节点清单中的已有 id 重复；单批新节点不超过 30 个。',
+        '8. 宁缺毋滥：与已有图重复、无关的事件不要输出节点；优先保留「查到了什么」和「因此做出了什么判断」。',
+      ].join(NL)
+
       const TYPE_ALIASES = {
         fact: 'fact', 事实: 'fact',
         inference: 'inference', 推论: 'inference',
@@ -426,7 +447,8 @@ export default function hostPlugin() {
           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
           let summary = ''
           // ---- append mode: seed the accumulator with the existing graph ----
-          const isAppend = task.kind === 'append'
+          const isAppend = task.kind === 'append' || task.kind === 'trajectory-append'
+          const isTrajAppend = task.kind === 'trajectory-append'
           const existing = isAppend && task.existing && typeof task.existing === 'object' ? task.existing : null
           const existingIds = new Set()
           const addedIds = []
@@ -460,7 +482,7 @@ export default function hostPlugin() {
           }
           const offset = isAppend && Number.isInteger(task.paragraphOffset) && task.paragraphOffset > 0 ? task.paragraphOffset : 0
           const existingDigest = isAppend ? serializeExistingGraph(existing, 150) : ''
-          const system = isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT)
+          const system = isTrajAppend ? TRAJ_APPEND_SYSTEM_PROMPT : (isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT))
           for (let i = 0; i < batches.length; i++) {
             let userText = buildUserPrompt(task.title, batches[i], i, batches.length)
             if (existingDigest) {
@@ -505,6 +527,10 @@ export default function hostPlugin() {
           task.result = {
             summary, nodes, edges: acc.edges, warnings: acc.warnings,
             ...task.kind === 'trajectory' ? { traceText: task.traceText, traceEvents: task.traceEvents } : {},
+            ...isTrajAppend ? {
+              traceText: (typeof task.baseTraceText === 'string' && task.baseTraceText ? task.baseTraceText + NL + NL : '') + task.text,
+              traceEvents: [...(Array.isArray(task.baseTraceEvents) ? task.baseTraceEvents : []), ...(task.traceEvents || [])],
+            } : {},
             ...isAppend ? { addedNodeIds: addedIds } : {},
           }
         } catch (e) {
@@ -575,6 +601,46 @@ export default function hostPlugin() {
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
         if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
         return { status: 'running' }
+      })
+
+      harness.handle('trajectory-append-extract', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+        const sessions = ctx.get('sessions')
+        const session = sessions ? sessions.get(sessionId) : undefined
+        if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
+        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
+          return { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } }
+        }
+        const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
+        const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+        // Only events AFTER the last included one are serialized (incremental).
+        let fromSeq = -1
+        for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
+        const newEvents = []
+        for (const ev of session.events || []) {
+          if (typeof ev.seq === 'number' && ev.seq > fromSeq) newEvents.push(ev)
+        }
+        if (newEvents.length === 0) return { error: { code: 'empty', message: '该会话在上次拆解后没有新事件，无需追加' } }
+        const trace = serializeTrace(newEvents)
+        if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
+        const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
+        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        seq += 1
+        const task = {
+          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
+          title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+          baseTraceText, baseTraceEvents, existing, paragraphOffset,
+          createdAt: Date.now(),
+        }
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => runTask(task)).catch((e) => {
+          console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
+          failTask(task, 'failed', 'AI 拆分失败：内部错误')
+        }).finally(() => { busy = false })
+        return { taskId: task.id }
       })
 
       harness.handle('append-extract', async (args) => {

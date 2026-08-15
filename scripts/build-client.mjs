@@ -48,6 +48,14 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
+      if (method === "trajectory-append-extract") {
+        const res = await fetch("/api/dsh-knowledge-graph/trajectory-append-extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        return res.json()
+      }
       if (method === "append-extract") {
         const res = await fetch("/api/dsh-knowledge-graph/append-extract", {
           method: "POST",
@@ -84,11 +92,13 @@ if (!c.includes("host.call('task-status', { taskId })")) throw new Error('task-s
 if (!c.includes("host.call('trajectory-extract', { sessionId })")) throw new Error('trajectory-extract call not found')
 if (!c.includes("host.call('trajectory-status', { taskId })")) throw new Error('trajectory-status call not found')
 if (!c.includes("host.call('append-extract', payload)")) throw new Error('append-extract call not found')
+if (!c.includes("host.call('trajectory-append-extract', { sessionId, existing })")) throw new Error('trajectory-append-extract call not found')
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status', { taskId })").join("rpc('task-status', { taskId })")
 c = c.split("host.call('trajectory-extract', { sessionId })").join("rpc('trajectory-extract', { sessionId })")
 c = c.split("host.call('trajectory-status', { taskId })").join("rpc('trajectory-status', { taskId })")
 c = c.split("host.call('append-extract', payload)").join("rpc('append-extract', payload)")
+c = c.split("host.call('trajectory-append-extract', { sessionId, existing })").join("rpc('trajectory-append-extract', { sessionId, existing })")
 
 // tail: close apply + module
 const oldTail = `    },
