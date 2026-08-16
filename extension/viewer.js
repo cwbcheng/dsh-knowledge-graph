@@ -2330,7 +2330,7 @@
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId }) {
+      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -2343,6 +2343,23 @@
             ),
             verifying ? h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }) : null,
           ),
+          typeof setRulesDraft === 'function' && typeof onStartFactCheck === 'function'
+            ? h('div', { className: 'kg-fact-rules' },
+                h('textarea', {
+                  className: 'kg-question-input',
+                  style: { minHeight: 56, resize: 'vertical', display: 'block', width: '100%', boxSizing: 'border-box' },
+                  placeholder: '领域规则来源（可选）：粘贴法条、制度、教材、标准等文本。填写后核查会同时使用 Wikipedia 与这些规则。',
+                  value: rulesDraft || '',
+                  maxLength: 10000,
+                  onChange: (e) => setRulesDraft(e.target.value),
+                  'aria-label': '领域规则来源',
+                }),
+                h('div', { className: 'kg-fact-actions', style: { marginTop: 8 } },
+                  h('button', { type: 'button', className: 'kg-primary', disabled: verifying, onClick: onStartFactCheck },
+                    verifying ? '核查中…' : (report ? '重新核查' : '开始外部核查')),
+                  (rulesDraft || '').trim() ? h('span', { className: 'kg-fact-status', style: { marginLeft: 0 } }, '将附带 ' + rulesDraft.trim().split(/\n+/).length + ' 段规则') : null),
+              )
+            : null,
           report
             ? h('div', { className: 'kg-fact-metrics' },
                 h('span', null, '共 ' + (m.totalClaims || 0) + ' 条声明'),

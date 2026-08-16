@@ -101,6 +101,7 @@
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
 .kg-fact-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.kg-fact-rules { margin: 8px 0 10px; }
 .kg-fact-head-text { flex: 1; min-width: 0; }
 .kg-fact-title { margin: 0; font-size: 14px; font-weight: 600; }
 .kg-fact-summary { margin: 4px 0 0; font-size: 12.5px; color: var(--kg-text-dim); line-height: 1.6; }

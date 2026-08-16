@@ -140,6 +140,7 @@ export default function clientPlugin() {
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
 .kg-fact-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.kg-fact-rules { margin: 8px 0 10px; }
 .kg-fact-head-text { flex: 1; min-width: 0; }
 .kg-fact-title { margin: 0; font-size: 14px; font-weight: 600; }
 .kg-fact-summary { margin: 4px 0 0; font-size: 12.5px; color: var(--kg-text-dim); line-height: 1.6; }
@@ -2585,7 +2586,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId }) {
+      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -2598,6 +2599,23 @@ export default function clientPlugin() {
             ),
             verifying ? h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }) : null,
           ),
+          typeof setRulesDraft === 'function' && typeof onStartFactCheck === 'function'
+            ? h('div', { className: 'kg-fact-rules' },
+                h('textarea', {
+                  className: 'kg-question-input',
+                  style: { minHeight: 56, resize: 'vertical', display: 'block', width: '100%', boxSizing: 'border-box' },
+                  placeholder: '领域规则来源（可选）：粘贴法条、制度、教材、标准等文本。填写后核查会同时使用 Wikipedia 与这些规则。',
+                  value: rulesDraft || '',
+                  maxLength: 10000,
+                  onChange: (e) => setRulesDraft(e.target.value),
+                  'aria-label': '领域规则来源',
+                }),
+                h('div', { className: 'kg-fact-actions', style: { marginTop: 8 } },
+                  h('button', { type: 'button', className: 'kg-primary', disabled: verifying, onClick: onStartFactCheck },
+                    verifying ? '核查中…' : (report ? '重新核查' : '开始外部核查')),
+                  (rulesDraft || '').trim() ? h('span', { className: 'kg-fact-status', style: { marginLeft: 0 } }, '将附带 ' + rulesDraft.trim().split(/\n+/).length + ' 段规则') : null),
+              )
+            : null,
           report
             ? h('div', { className: 'kg-fact-metrics' },
                 h('span', null, '共 ' + (m.totalClaims || 0) + ' 条声明'),
@@ -2899,6 +2917,7 @@ export default function clientPlugin() {
         const [factPhase, setFactPhase] = useState('idle')
         const [factTaskId, setFactTaskId] = useState(null)
         const [factActiveId, setFactActiveId] = useState(null)
+        const [factRules, setFactRules] = useState('')
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -3400,7 +3419,7 @@ export default function clientPlugin() {
           setInputCollapsed(false)
           setFullText(''); setCurrentHistoryId(null); setAppendCount(0)
           setVerification(null); setActiveIssueId(null); setIssueFilter('all')
-          setFactReport(null); setFactPhase('idle'); setFactTaskId(null); setFactActiveId(null)
+          setFactReport(null); setFactPhase('idle'); setFactTaskId(null); setFactActiveId(null); setFactRules('')
           setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null)
         }
 
@@ -3493,7 +3512,8 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'deep',
-              sources: ['wikipedia'],
+              sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
+              rules: factRules.trim(),
             }
             const res = await host.call('fact-check', payload)
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
@@ -3657,6 +3677,11 @@ export default function clientPlugin() {
           const panel = document.getElementById('kg-verify-panel-workbench')
           if (panel && typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
           toastStore.show('已定位该节点的 ' + list.length + ' 个问题')
+        }
+        const handleOpenFactPanel = () => {
+          const panel = document.getElementById('kg-fact-panel-workbench')
+          if (panel && typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+          toastStore.show('在下方「外部事实核查」面板粘贴领域规则并开始核查')
         }
         const handleQuestionEdge = (edge) => {
           setQuestionTarget({ kind: 'edge', id: edgeKeyOf(edge) })
@@ -3951,7 +3976,7 @@ export default function clientPlugin() {
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: startFactCheck, disabled: factPhase === 'running' || verifyBusyRef.current }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -4086,7 +4111,7 @@ export default function clientPlugin() {
                         panelId: 'kg-verify-panel-workbench',
                       })
                     : null,
-                  resultView && (factReport || factPhase === 'running')
+                  resultView
                     ? h(FactCheckPanel, {
                         report: factReport, graph: resultView.graph, resultView,
                         verifying: factPhase === 'running',
@@ -4094,6 +4119,8 @@ export default function clientPlugin() {
                         onSelectClaim: handleSelectFactClaim,
                         onRejectClaim: handleRejectFactClaim,
                         panelId: 'kg-fact-panel-workbench',
+                        rulesDraft: factRules, setRulesDraft: setFactRules,
+                        onStartFactCheck: startFactCheck,
                       })
                     : null,
                 ),
@@ -4219,6 +4246,7 @@ export default function clientPlugin() {
         const [factPhase, setFactPhase] = useState('idle')
         const [factTaskId, setFactTaskId] = useState(null)
         const [factActiveId, setFactActiveId] = useState(null)
+        const [factRules, setFactRules] = useState('')
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -4259,7 +4287,7 @@ export default function clientPlugin() {
           setAppendCount(0)
           appendModeRef.current = false
           setVerification(null); setVerifyPhase('idle'); setVerifyTaskId(null); setQuestionTaskId(null)
-          setFactReport(null); setFactPhase('idle'); setFactTaskId(null); setFactActiveId(null)
+          setFactReport(null); setFactPhase('idle'); setFactTaskId(null); setFactActiveId(null); setFactRules('')
           setActiveIssueId(null); setIssueFilter('all'); setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null); setQuestionPhase('idle')
           verifyBusyRef.current = false
           verifyGenRef.current += 1
@@ -4688,7 +4716,8 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'deep',
-              sources: ['wikipedia'],
+              sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
+              rules: factRules.trim(),
             })
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setFactTaskId(res.taskId)
@@ -4836,6 +4865,11 @@ export default function clientPlugin() {
           const panel = document.getElementById('kg-verify-panel-traj')
           if (panel && typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
           showToast('已定位该节点的 ' + list.length + ' 个问题')
+        }
+        const handleOpenFactPanel = () => {
+          const panel = document.getElementById('kg-fact-panel-traj')
+          if (panel && typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+          showToast('在下方「外部事实核查」面板粘贴领域规则并开始核查')
         }
         const handleQuestionEdge = (edge) => {
           setQuestionTarget({ kind: 'edge', id: edgeKeyOf(edge) })
@@ -5022,7 +5056,7 @@ export default function clientPlugin() {
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: startFactCheck, disabled: factPhase === 'running' || verifyBusyRef.current }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -5118,16 +5152,16 @@ export default function clientPlugin() {
                         panelId: 'kg-verify-panel-traj',
                       })
                     : null,
-                  (factReport || factPhase === 'running')
-                    ? h(FactCheckPanel, {
+                  h(FactCheckPanel, {
                         report: factReport, graph: view.graph, resultView: view,
                         verifying: factPhase === 'running',
                         activeClaimId: factActiveId,
                         onSelectClaim: handleSelectFactClaim,
                         onRejectClaim: handleRejectFactClaim,
                         panelId: 'kg-fact-panel-traj',
+                        rulesDraft: factRules, setRulesDraft: setFactRules,
+                        onStartFactCheck: startFactCheck,
                       })
-                    : null,
                 )
               : h('section', { className: 'kg-card', 'aria-label': '轨迹知识图' },
                   h('div', { className: 'kg-kicker' }, '会话轨迹'),
