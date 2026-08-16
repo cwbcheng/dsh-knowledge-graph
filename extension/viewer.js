@@ -30,13 +30,14 @@
       const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
-      const LAYER_Y_GAP = 210
+      const LAYER_Y_GAP = 140
       const LAYER_X_GAP = 220
+      const LAYER_COL_GAP = 20
       // A single layered row must not stretch much wider than the visible
       // canvas. Wide levels are wrapped into several parallel sub-rows (each
       // still a real row for the orthogonal channel router), so a 15-child
-      // "second layer" becomes 3-4 short rows instead of one endless band.
-      const LAYER_MAX_ROW_WIDTH = 1120
+      // "second layer" becomes a few short rows instead of one endless band.
+      const LAYER_MAX_ROW_WIDTH = 900
       const LAYOUT_MODES = [
         { id: 'force', label: '力导向' },
         { id: 'circular', label: '圆形' },
@@ -1425,12 +1426,12 @@
           for (const node of list) {
             const s = sizes.get(node.id)
             const w = s ? s.w : 200
-            if (cur.length > 0 && curWidth + LAYER_X_GAP + w > LAYER_MAX_ROW_WIDTH) {
+            if (cur.length > 0 && curWidth + LAYER_COL_GAP + w > LAYER_MAX_ROW_WIDTH) {
               chunks.push(cur)
               cur = [node]
               curWidth = w
             } else {
-              if (cur.length > 0) curWidth += LAYER_X_GAP
+              if (cur.length > 0) curWidth += LAYER_COL_GAP
               cur.push(node)
               curWidth += w
             }
@@ -1459,15 +1460,16 @@
                 colW[i] = Math.max(colW[i], s ? s.w : 200)
               })
             }
-            const totalW = colW.reduce((acc, w, i) => acc + w + (i > 0 ? LAYER_X_GAP : 0), 0)
-            let colX = -totalW / 2
+            const centers = new Array(maxCols).fill(0)
+            for (let i = 1; i < maxCols; i++) {
+              centers[i] = centers[i - 1] + (colW[i - 1] + colW[i]) / 2 + LAYER_COL_GAP
+            }
+            const mid = (centers[0] + centers[maxCols - 1]) / 2
+            for (let i = 0; i < maxCols; i++) centers[i] -= mid
             for (const chunk of chunks) {
               for (let i = 0; i < chunk.length; i++) {
                 const node = chunk[i]
-                const s = sizes.get(node.id)
-                const w = s ? s.w : 200
-                pos.set(node.id, { x: colX + colW[i] / 2, y: row * LAYER_Y_GAP })
-                colX += colW[i] + LAYER_X_GAP
+                pos.set(node.id, { x: centers[i], y: row * LAYER_Y_GAP })
               }
               row += 1
             }
