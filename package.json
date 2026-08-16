@@ -1,13 +1,15 @@
 {
   "name": "dsh-knowledge-graph",
   "version": "1.0.0",
-  "description": "DSH Cordis plugin: turn arbitrary source text into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text.",
+  "description": "DSH Cordis plugin: turn arbitrary source text into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text, plus evidence-grounded verification, questioning, one-click fixes and an audit log.",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "cordis",
     "knowledge-graph",
     "knowledge-base",
+    "verification",
+    "graphrag",
     "ai",
     "novel",
     "study-notes"
@@ -24,6 +26,7 @@
   "files": [
     "src",
     "lib",
+    "scripts",
     "cordis.patch.yml"
   ],
   "dsh": {
@@ -41,8 +44,9 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "scripts": {
-    "readme": "node scripts/build-readme.mjs",
-    "build:lib": "node scripts/build-lib.mjs && node scripts/build-client.mjs"
+    "build": "node scripts/build-lib.mjs && node scripts/build-client.mjs && node scripts/build-viewer.mjs",
+    "build:lib": "node scripts/build-lib.mjs && node scripts/build-client.mjs",
+    "build:viewer": "node scripts/build-viewer.mjs"
   },
   "engines": {
     "node": ">=18"

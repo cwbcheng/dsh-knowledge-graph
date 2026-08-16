@@ -49,6 +49,15 @@ ${body}
     computeNodeSizes,
     layoutGraph,
     computeBBox,
+    // Verification helpers are available to the extension popup if it later
+    // wants to render the verification panel / apply fixes.
+    VerificationPanel,
+    issueTargetsOf,
+    applyPatch,
+    applyAllFixable,
+    auditDiffLines,
+    edgeKeyOf,
+    withVerification,
   }
 })()
 `

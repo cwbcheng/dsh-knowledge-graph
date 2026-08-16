@@ -26,6 +26,9 @@ export default function hostPlugin() {
     apply(ctx) {
       const NL = String.fromCharCode(10)
       const MAX_TEXT = 20000
+      // buildLocalReport performs O(n²) duplicate/contradiction scans; cap
+      // verification input so a crafted request cannot block the host loop.
+      const MAX_VERIFY_NODES = 800
 
       const SYSTEM_PROMPT = [
         '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记等），正文按段落编号（[P数字] 为该段落的编号），请把它拆解为一张知识图。',
@@ -184,6 +187,15 @@ export default function hostPlugin() {
         '6. JSON 结构固定为：{"verdict":"supported|contradicted|insufficient|out_of_scope","answer":"结论与解释","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"proposedFix":{"action":"none"}}',
       ].join(NL)
 
+      // Multi-batch summary consolidation: batch prompts ask for a local
+      // summary, so a second small call merges them into ONE full-text summary
+      // instead of letting the first/last batch's local summary win.
+      const SUMMARY_SYSTEM_PROMPT = [
+        '你是「摘要合并引擎」。你会收到（A）资料既有的一句话总结（可能为空）和（B）各批内容的一句话总结。请合并成一句涵盖全文要点、不超过 80 字的总结。',
+        '只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
+        'JSON 结构固定为：{"summary":"合并后的一句话总结"}',
+      ].join(NL)
+
       const TYPE_ALIASES = {
         fact: 'fact', 事实: 'fact',
         inference: 'inference', 推论: 'inference',
@@ -238,6 +250,13 @@ export default function hostPlugin() {
         if (total > 1) s += '（这是资料的 ' + (index + 1) + '/' + total + ' 部分，请只基于本部分内容拆解，不要臆测其他部分）' + NL
         s += '资料正文（按段落编号，[P数字] 为该段落编号）：' + NL
         for (const u of units) s += '[P' + u.num + '] ' + u.text + NL
+        return s
+      }
+
+      function buildSummaryUserText(existingSummary, batchSummaries) {
+        let s = '既有总结：' + (existingSummary || '（无）') + NL
+        s += '各批总结：' + NL
+        for (let i = 0; i < batchSummaries.length; i++) s += (i + 1) + '. ' + batchSummaries[i] + NL
         return s
       }
 
@@ -445,7 +464,7 @@ export default function hostPlugin() {
           if (!e || typeof e !== 'object') return
           const key = edgeKey(e)
           if (!key) {
-            addIssue('error', 'relation', 'edge', 'edge:' + i, '关系边缺少端点', '这条边缺少 fromNodeId 或 toNodeId。', [], { action: 'delete_edge', edgePatch: { index: i } })
+            addIssue('error', 'relation', 'edge', String(i), '关系边缺少端点', '这条边缺少 fromNodeId 或 toNodeId。', [], { action: 'delete_edge', edgePatch: { index: i } })
             return
           }
           if (e.fromNodeId === e.toNodeId) {
@@ -697,7 +716,7 @@ export default function hostPlugin() {
       }
 
       // ---- model routing ----
-      async function resolveModel() {
+      async function resolveModelInner() {
         const adm = ctx.get('agentDefaultModel')
         if (adm) {
           try {
@@ -720,6 +739,20 @@ export default function hostPlugin() {
         } catch (e) { /* no providers */ }
         return null
       }
+      // A hung listProviders/listModels must never leave the global `busy`
+      // lock held forever. Racing the catalog against a hard timeout means the
+      // task still settles as no_model and busy is released.
+      async function resolveModel() {
+        let disposer = null
+        const timeoutP = new Promise((resolve) => {
+          disposer = ctx.timeout(() => resolve(null), 10000)
+        })
+        try {
+          return await Promise.race([resolveModelInner(), timeoutP])
+        } finally {
+          if (disposer) disposer()
+        }
+      }
 
       async function callModel(model, system, userText, timeoutMs, temperature) {
         const llm = ctx.get('llm')
@@ -729,22 +762,35 @@ export default function hostPlugin() {
           throw err
         }
         let out = ''
+        let timedOut = false
         const collecting = (async () => {
-          for await (const chunk of llm.stream({
+          const iter = llm.stream({
             provider: model.provider,
             model: model.model,
             system,
             messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
             temperature: typeof temperature === 'number' ? temperature : 0.2,
             maxTokens: 8000,
-          })) {
-            if (chunk.type === 'text-delta') out += chunk.text
+          })
+          try {
+            for await (const chunk of iter) {
+              // After timeout the outer promise rejects, but the stream may
+              // keep yielding; stop accumulating so a stuck stream cannot
+              // balloon memory while the task is already failed.
+              if (timedOut) continue
+              if (chunk.type === 'text-delta') out += chunk.text
+            }
+          } finally {
+            if (iter && typeof iter.return === 'function') {
+              try { iter.return() } catch (e) { /* already closed */ }
+            }
           }
           return out
         })()
         let disposer = null
         const timeoutP = new Promise((_resolve, reject) => {
           disposer = ctx.timeout(() => {
+            timedOut = true
             const err = new Error('AI 拆分超时，请稍后重试')
             err.code = 'timeout'
             reject(err)
@@ -784,13 +830,14 @@ export default function hostPlugin() {
         let total = 0
         let skipped = 0
         for (const ev of events) {
+          const d = ev && typeof ev.data === 'object' ? ev.data : {}
           let line = null
-          if (ev.type === 'turn/start') line = '—— 回合 ' + ev.data.turn + ' 开始 ——'
-          else if (ev.type === 'turn/end') line = '—— 回合 ' + ev.data.turn + ' 结束（' + ev.data.reason + '）——'
-          else if (ev.type === 'user/message') line = '用户消息：' + traceClip(traceTextOf(ev.data.content), 400)
-          else if (ev.type === 'assistant/message') line = 'AI 回复：' + traceClip(traceTextOf(ev.data.message && ev.data.message.content), 600)
-          else if (ev.type === 'tool/call') line = '调用工具 ' + ev.data.name + '：' + traceClip(ev.data.arguments, 200)
-          else if (ev.type === 'tool/result') line = '工具结果：' + traceClip(traceTextOf(ev.data.message && ev.data.message.content), 400)
+          if (ev.type === 'turn/start') line = '—— 回合 ' + d.turn + ' 开始 ——'
+          else if (ev.type === 'turn/end') line = '—— 回合 ' + d.turn + ' 结束（' + d.reason + '）——'
+          else if (ev.type === 'user/message') line = '用户消息：' + traceClip(traceTextOf(d.content), 400)
+          else if (ev.type === 'assistant/message') line = 'AI 回复：' + traceClip(traceTextOf(d.message && d.message.content), 600)
+          else if (ev.type === 'tool/call') line = '调用工具 ' + d.name + '：' + traceClip(d.arguments, 200)
+          else if (ev.type === 'tool/result') line = '工具结果：' + traceClip(traceTextOf(d.message && d.message.content), 400)
           if (!line) continue
           const len = line.length
           if (total > 0 && total + len + 2 > cap) { skipped += 1; continue }
@@ -870,6 +917,7 @@ export default function hostPlugin() {
           const batches = buildBatchesByParagraph(paras, 6000)
           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
           let summary = ''
+          const batchSummaries = []
           // ---- append mode: seed the accumulator with the existing graph ----
           const isAppend = task.kind === 'append' || task.kind === 'trajectory-append'
           const isTrajAppend = task.kind === 'trajectory-append'
@@ -942,9 +990,22 @@ export default function hostPlugin() {
               }
             }
             mergeBatch(norm, acc, i)
-            // append: the AI re-summarizes the WHOLE graph, so the last batch's
-            // summary wins; regular batches keep first-wins.
+            if (norm.summary) batchSummaries.push(norm.summary)
+            // Batch prompts ask for a LOCAL summary. Keep the first as a
+            // fallback; multi-batch summaries are consolidated below so the
+            // final summary actually covers the whole text.
             if (isAppend ? norm.summary : !summary) summary = norm.summary || summary
+          }
+          if (batchSummaries.length > 1) {
+            try {
+              const raw = await callModel(model, SUMMARY_SYSTEM_PROMPT, buildSummaryUserText(summary, batchSummaries), 60000, 0.1)
+              const obj = parseJson(raw)
+              if (obj && typeof obj.summary === 'string' && obj.summary.trim()) summary = obj.summary.trim()
+            } catch (e) {
+              // Fall back to the batch-level summary; never fail extraction
+              // just because the summary-merge call failed.
+              acc.warnings.push('summary_consolidation_failed:' + (e && e.message ? e.message : String(e)))
+            }
           }
           const nodes = []
           acc.nodes.forEach((v) => nodes.push(v))
@@ -1064,9 +1125,7 @@ export default function hostPlugin() {
           clean.mergeIntoId = into
         } else if (action === 'add_node') {
           const p = cleanNodePatch(fix.nodePatch)
-          if (!p || (p.id && !/^n\d+$/.test(p.id))) {
-            if (p) delete p.id
-          }
+          if (p && p.id && (ids.has(p.id) || !/^n\d+$/.test(p.id))) delete p.id
           if (!p || !p.patch.type || !p.patch.text) return { action: 'none' }
           clean.nodePatch = p
         } else if (action === 'update_edge' || action === 'delete_edge' || action === 'add_edge') {
@@ -1219,9 +1278,9 @@ export default function hostPlugin() {
         }
       }
 
-      // buildVerifyUserText2 includes the full subgraph (batch nodes plus all
-      // of their edges into the rest of the graph) so the model can reason
-      // about cross-batch connections.
+      // buildVerifyUserText2 includes the batch's own subgraph (nodes plus the
+      // edges whose BOTH endpoints are in the batch). Cross-batch edges are
+      // reviewed in the batch that owns the other endpoint.
       function buildVerifyUserText2(batch, index, total, graph) {
         const ids = new Set((batch.nodes || []).map((n) => n.id))
         const sub = serializeGraphForVerify(graph, ids)
@@ -1371,6 +1430,9 @@ export default function hostPlugin() {
         if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } }
         }
+        if (graph.nodes.length > MAX_VERIFY_NODES) {
+          return { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } }
+        }
         const mode = a.mode === 'standard' ? 'standard' : 'quick'
         if (mode === 'quick') return { report: buildLocalReport(graph, text) }
         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
@@ -1400,6 +1462,9 @@ export default function hostPlugin() {
         const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
         if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可质疑的知识图' } }
+        }
+        if (graph.nodes.length > MAX_VERIFY_NODES) {
+          return { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } }
         }
         const target = a.target && typeof a.target === 'object'
           ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }

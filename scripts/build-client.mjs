@@ -141,5 +141,5 @@ const tail = `    }
 `
 c = c.slice(0, c.length - oldTail.length) + tail
 
-writeFileSync('/mnt/d/github/dsh-knowledge-graph/lib/client.js', c)
+writeFileSync(new URL('../lib/client.js', import.meta.url), c)
 console.log('client written, lines:', c.split('\n').length)

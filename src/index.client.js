@@ -372,11 +372,22 @@ export default function clientPlugin() {
       }
 
       // ----------------------------- history -----------------------------
+      function normalizeStoredGraph(g) {
+        if (!g || typeof g !== 'object') return { nodes: [], edges: [] }
+        return {
+          ...g,
+          nodes: Array.isArray(g.nodes) ? g.nodes : [],
+          edges: Array.isArray(g.edges) ? g.edges : [],
+        }
+      }
       function loadHistory() {
         try {
           const arr = JSON.parse(localStorage.getItem(LS_HISTORY) || 'null')
           if (Array.isArray(arr)) {
-            return arr.filter((e) => e && e.graph && Array.isArray(e.graph.nodes) && typeof e.text === 'string').slice(0, HISTORY_MAX)
+            return arr
+              .filter((e) => e && e.graph && Array.isArray(e.graph.nodes) && typeof e.text === 'string')
+              .map((e) => ({ ...e, graph: normalizeStoredGraph(e.graph) }))
+              .slice(0, HISTORY_MAX)
           }
         } catch (e) {}
         return []
@@ -551,10 +562,18 @@ export default function clientPlugin() {
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
         const paraNodes = paragraphs.map(() => [])
+        // Normalize old / malformed stored data FIRST: missing `edges` (or
+        // `nodes`) must degrade to an empty graph, never crash the render.
+        if (!graph || typeof graph !== 'object') graph = { nodes: [], edges: [] }
+        else graph = {
+          ...graph,
+          nodes: Array.isArray(graph.nodes) ? graph.nodes : [],
+          edges: Array.isArray(graph.edges) ? graph.edges : [],
+        }
         // Sanitize edges: drop references to unknown nodes and self-loops.
         // d3-force throws "node not found" on a dangling edge — history data
         // from older sessions can contain them, which crashed the whole page.
-        if (graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges)) {
+        {
           const ids = new Set(graph.nodes.map((n) => n.id))
           const clean = graph.edges.filter((e) => e && e.fromNodeId !== e.toNodeId && ids.has(e.fromNodeId) && ids.has(e.toNodeId))
           if (clean.length !== graph.edges.length) graph = { ...graph, edges: clean }
@@ -643,9 +662,15 @@ export default function clientPlugin() {
       }
       function updateIssueStatus(report, issueId, status, userNote) {
         if (!report) return report
+        const issues = (report.issues || []).map((it) => it.id === issueId ? { ...it, status, userNote: userNote || it.userNote || '' } : it)
+        const counts = { error: 0, warning: 0, suggestion: 0 }
+        for (const it of issues) {
+          if ((it.status === 'open' || it.status === 'accepted') && counts[it.severity] != null) counts[it.severity] += 1
+        }
         return {
           ...report,
-          issues: (report.issues || []).map((it) => it.id === issueId ? { ...it, status, userNote: userNote || it.userNote || '' } : it),
+          issues,
+          metrics: { ...(report.metrics || {}), errorCount: counts.error, warningCount: counts.warning, suggestionCount: counts.suggestion },
         }
       }
       // One-click fix: apply every OPEN issue that has an applicable patch, in
@@ -742,7 +767,57 @@ export default function clientPlugin() {
         const total = lines.length
         return { lines: lines.slice(0, cap), more: total - cap }
       }
-      // Apply an issue's proposedFix to a graph. Pure function: returns a NEW
+      // Build compact before/after snapshots for the audit log: only nodes and
+      // edges that actually changed are kept. Storing whole graphs in every
+      // audit entry would blow the localStorage quota after a few fixes.
+      function compactAuditSnapshots(before, after, maxNodes, maxEdges) {
+        const nodeCap = typeof maxNodes === 'number' && maxNodes > 0 ? maxNodes : 6
+        const edgeCap = typeof maxEdges === 'number' && maxEdges > 0 ? maxEdges : 12
+        const bNodes = Array.isArray(before.nodes) ? before.nodes : []
+        const aNodes = Array.isArray(after.nodes) ? after.nodes : []
+        const bById = new Map(bNodes.map((n) => [n.id, n]))
+        const aById = new Map(aNodes.map((n) => [n.id, n]))
+        const sameNode = (a, b) => !b || !a || (a.id === b.id && a.type === b.type && String(a.text || '') === String(b.text || '') && String(a.quote || '') === String(b.quote || '') && a.paragraph === b.paragraph)
+        const bOut = []
+        const aOut = []
+        const ids = new Set([...bById.keys(), ...aById.keys()])
+        for (const id of ids) {
+          const b = bById.get(id)
+          const a = aById.get(id)
+          if (sameNode(a, b)) continue
+          if (bOut.length < nodeCap) bOut.push(b ? { ...b } : null)
+          if (aOut.length < nodeCap) aOut.push(a ? { ...a } : null)
+        }
+        const edgeSig = (e) => (e && typeof e.fromNodeId === 'string' && typeof e.toNodeId === 'string') ? e.fromNodeId + '>' + e.toNodeId + ':' + e.relation : ''
+        const bEdges = (Array.isArray(before.edges) ? before.edges : []).filter((e) => edgeSig(e))
+        const aEdges = (Array.isArray(after.edges) ? after.edges : []).filter((e) => edgeSig(e))
+        const counts = (arr) => {
+          const m = new Map()
+          for (const e of arr) {
+            const k = edgeSig(e)
+            m.set(k, (m.get(k) || 0) + 1)
+          }
+          return m
+        }
+        const bc = counts(bEdges)
+        const ac = counts(aEdges)
+        const keys = new Set([...bc.keys(), ...ac.keys()])
+        const bEO = []
+        const aEO = []
+        for (const k of keys) {
+          if ((bc.get(k) || 0) === (ac.get(k) || 0)) continue
+          const fromB = bEdges.find((e) => edgeSig(e) === k)
+          const fromA = aEdges.find((e) => edgeSig(e) === k)
+          if (bEO.length < edgeCap) bEO.push(fromB ? { ...fromB } : null)
+          if (aEO.length < edgeCap) aEO.push(fromA ? { ...fromA } : null)
+        }
+        const summaryChanged = String(after.summary || '') !== String(before.summary || '')
+        return {
+          before: { nodes: bOut, edges: bEO, ...(summaryChanged ? { summary: before.summary } : {}) },
+          after: { nodes: aOut, edges: aEO, ...(summaryChanged ? { summary: after.summary } : {}) },
+        }
+      }
+
       // graph (original untouched). Structural fixes are deterministic; text
       // patches come from the AI and are still a user-confirmed action.
       function applyPatch(graph, issue) {
@@ -755,12 +830,13 @@ export default function clientPlugin() {
         if (fix.action === 'update_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
           const n = nodes.find((x) => x.id === fix.nodePatch.id)
           const p = fix.nodePatch.patch || {}
+          const before = { ...n }
           if (p.type && TYPE_META[p.type]) n.type = p.type
           if (typeof p.text === 'string' && p.text.trim()) n.text = p.text.trim()
           if (typeof p.quote === 'string') n.quote = p.quote.trim()
           if (Number.isInteger(p.paragraph) && p.paragraph >= 0) n.paragraph = p.paragraph
-          changed = true
-          auditDetail = 'update_node:' + n.id
+          changed = before.type !== n.type || before.text !== n.text || before.quote !== n.quote || before.paragraph !== n.paragraph
+          if (changed) auditDetail = 'update_node:' + n.id
         } else if (fix.action === 'delete_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
           const id = fix.nodePatch.id
           edges = edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id)
@@ -811,9 +887,9 @@ export default function clientPlugin() {
         }
         if (!changed) return graph
         let next = { ...graph, nodes, edges }
+        const compact = compactAuditSnapshots(graph, next, 6, 12)
         next = appendAudit(next, fix.action, issue.targetId || null, auditDetail, issue.reportId || null,
-          { nodes: graph.nodes, edges: graph.edges, summary: graph.summary },
-          { nodes: next.nodes, edges: next.edges, summary: next.summary })
+          compact.before, compact.after)
         return next
       }
 
@@ -1641,6 +1717,11 @@ export default function clientPlugin() {
         const [hoverEdge, setHoverEdge] = useState(null)
         const pressTimer = useRef(null)
         const panRef = useRef(null)
+        // The workbench window and the trajectory tab can render two
+        // GraphViewers in the same document; a shared marker id would make
+        // url(#kg-arrow) resolve to the wrong SVG after one unmounts.
+        const markerIdRef = useRef(null)
+        if (!markerIdRef.current) markerIdRef.current = 'kg-arrow-' + Math.random().toString(36).slice(2, 9)
 
         const sizes = useMemo(() => computeNodeSizes(nodes), [nodes])
         const layout = useMemo(() => {
@@ -1899,7 +1980,7 @@ export default function clientPlugin() {
         }
         const edgeDetail = selectedEdgeId != null ? (edges || [])[selectedEdgeId] : null
 
-        const markerId = 'kg-arrow'
+        const markerId = markerIdRef.current
         const edgeEls = (edges || []).map((edge, i) => {
           const a = layout.pos.get(edge.fromNodeId)
           const b = layout.pos.get(edge.toNodeId)
@@ -2223,9 +2304,11 @@ export default function clientPlugin() {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
         })
+        const qNode = questionTarget && questionTarget.kind === 'node' && graph && Array.isArray(graph.nodes)
+          ? graph.nodes.find((n) => n && n.id === questionTarget.id) : null
         const targetLabel = questionTarget
           ? (questionTarget.kind === 'node'
-            ? '目标：节点 ' + questionTarget.id + (graph && graph.nodes.find((n) => n.id === questionTarget.id) ? '「' + graph.nodes.find((n) => n.id === questionTarget.id).text.slice(0, 40) + '」' : '')
+            ? '目标：节点 ' + questionTarget.id + (qNode ? '「' + String(qNode.text || '').slice(0, 40) + '」' : '')
             : questionTarget.kind === 'edge'
               ? '目标：关系 ' + questionTarget.id
               : '目标：整张图')
@@ -2263,14 +2346,14 @@ export default function clientPlugin() {
               ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
               : null,
           ),
-          report && report.metrics
+          report
             ? h('div', { className: 'kg-verify-metrics' },
-                h('span', null, '已检查 ' + report.metrics.checkedNodes + ' 节点 / ' + report.metrics.checkedEdges + ' 关系'),
-                h('span', { style: { color: report.metrics.errorCount > 0 ? '#dc2626' : undefined } }, '错误 ' + report.metrics.errorCount),
-                h('span', { style: { color: report.metrics.warningCount > 0 ? '#d97706' : undefined } }, '警告 ' + report.metrics.warningCount),
-                h('span', { style: { color: report.metrics.suggestionCount > 0 ? '#2563eb' : undefined } }, '建议 ' + report.metrics.suggestionCount),
-                h('span', { className: report.metrics.evidenceCoverage >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + report.metrics.evidenceCoverage + '%'),
-                h('span', null, '段落覆盖 ' + report.metrics.paragraphCoverage + '%'),
+                h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
+                h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, '错误 ' + (report.metrics && report.metrics.errorCount || 0)),
+                h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, '警告 ' + (report.metrics && report.metrics.warningCount || 0)),
+                h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),
+                h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
+                h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
             : null,
           h('div', { className: 'kg-verify-filters' },
@@ -2647,7 +2730,20 @@ export default function clientPlugin() {
         const [questionTaskId, setQuestionTaskId] = useState(null)
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
+        const verifyGenRef = useRef(0)
         useEffect(() => { verificationRef.current = verification }, [verification])
+        // Cancel any in-flight verification/question tasks; bumping the
+        // generation invalidates their polling callbacks even if a stale
+        // response arrives after a new extraction has started.
+        const cancelVerifyTasks = () => {
+          verifyGenRef.current += 1
+          setVerifyTaskId(null)
+          setQuestionTaskId(null)
+          setVerifyPhase('idle')
+          setQuestionPhase('idle')
+          verifyBusyRef.current = false
+          setQuestionResult(null)
+        }
 
         // ---- restore pending task / saved result / draft on mount ----
         useEffect(() => {
@@ -2828,19 +2924,20 @@ export default function clientPlugin() {
           let disposed = false
           let stop = null
           let delay = 3000
+          const myGen = verifyGenRef.current
           const start = Date.now()
           const tick = async () => {
-            if (disposed) return
+            if (disposed || myGen !== verifyGenRef.current) return
             let res = null
             try {
               res = await host.call('task-status', { taskId: verifyTaskId })
             } catch (e) {
-              if (disposed) return
+              if (disposed || myGen !== verifyGenRef.current) return
               setVerifyPhase('idle'); setVerifyTaskId(null)
               setError({ message: '查询验证任务失败：' + (e && e.message ? e.message : '未知错误') })
               return
             }
-            if (disposed) return
+            if (disposed || myGen !== verifyGenRef.current) return
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.issues)) {
@@ -2885,19 +2982,20 @@ export default function clientPlugin() {
           let disposed = false
           let stop = null
           let delay = 3000
+          const myGen = verifyGenRef.current
           const start = Date.now()
           const tick = async () => {
-            if (disposed) return
+            if (disposed || myGen !== verifyGenRef.current) return
             let res = null
             try {
               res = await host.call('task-status', { taskId: questionTaskId })
             } catch (e) {
-              if (disposed) return
+              if (disposed || myGen !== verifyGenRef.current) return
               setQuestionPhase('idle'); setQuestionTaskId(null)
               setError({ message: '查询质疑任务失败：' + (e && e.message ? e.message : '未知错误') })
               return
             }
-            if (disposed) return
+            if (disposed || myGen !== verifyGenRef.current) return
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
               setQuestionPhase('idle'); setQuestionTaskId(null)
@@ -2931,6 +3029,7 @@ export default function clientPlugin() {
           const t = (overrideText != null ? overrideText : text).trim()
           if (!t) { setError({ message: '请先粘贴资料正文' }); return }
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
+          cancelVerifyTasks()
           setError(null)
           const payload = { title, text: t }
           submittedRef.current = payload
@@ -2968,6 +3067,7 @@ export default function clientPlugin() {
             setError({ message: '请先完成一次拆分，再追加内容' })
             return
           }
+          cancelVerifyTasks()
           setError(null)
           const baseText = fullText || ''
           const offset = baseText ? splitParagraphs(baseText).length : 0
@@ -2981,7 +3081,7 @@ export default function clientPlugin() {
               edges: resultView.graph.edges,
             },
           }
-          submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: resultView.graph.edges.length }
+          submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
           setPhase('extracting')
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
@@ -3047,17 +3147,16 @@ export default function clientPlugin() {
         }
 
         const resetAll = () => {
-          try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_RESULT) } catch (e) {}
+          try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_RESULT); localStorage.removeItem(LS_DRAFT) } catch (e) {}
+          cancelVerifyTasks()
           setTitle(''); setText(''); setTaskId(null); setPhase('idle'); setResultView(null)
           setError(null); toastStore.clear(); setSelectedNodeId(null); setSelectedEdgeId(null)
           setFocusReq({ nodeId: null, seq: 0 }); setFlashPara(-1); setActivePara(-1); setShowDiag(false)
           setHistoryOpen(false)
           setInputCollapsed(false)
           setFullText(''); setCurrentHistoryId(null); setAppendCount(0)
-          setVerification(null); setVerifyPhase('idle'); setVerifyTaskId(null)
-          setActiveIssueId(null); setIssueFilter('all')
-          setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null); setQuestionPhase('idle'); setQuestionTaskId(null)
-          verifyBusyRef.current = false
+          setVerification(null); setActiveIssueId(null); setIssueFilter('all')
+          setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null)
         }
 
         // ---- verification / questioning actions ----
@@ -3086,6 +3185,8 @@ export default function clientPlugin() {
         const startQuickVerify = async () => {
           if (!resultView || verifyBusyRef.current) return
           setError(null)
+          setVerifyPhase('running')
+          verifyBusyRef.current = true
           try {
             const payload = {
               title, text: fullText || resultView.sourceText || '',
@@ -3095,15 +3196,19 @@ export default function clientPlugin() {
             const res = await host.call('verify-graph', payload)
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
+              const m = res.report.metrics || {}
               setVerification(res.report)
               attachReport(res.report, false)
               setActiveIssueId(null)
-              toastStore.show('快速体检完成：' + res.report.metrics.errorCount + ' 错误 / ' + res.report.metrics.warningCount + ' 警告 / ' + res.report.metrics.suggestionCount + ' 建议')
+              toastStore.show('快速体检完成：' + (m.errorCount || 0) + ' 错误 / ' + (m.warningCount || 0) + ' 警告 / ' + (m.suggestionCount || 0) + ' 建议')
             } else {
               setError({ message: '快速体检没有返回报告，请重试' })
             }
           } catch (e) {
             setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
+          } finally {
+            setVerifyPhase('idle')
+            verifyBusyRef.current = false
           }
         }
         const startDeepVerify = async () => {
@@ -3202,12 +3307,13 @@ export default function clientPlugin() {
             return
           }
           if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
-          const res = applyAllFixable(resultView.graph, verification)
+          const res = applyAllFixable(resultView.graph, verificationRef.current || verification)
+          const g2 = withVerification(res.graph, res.report, res.report ? res.report.stale === true : false)
           setVerification(res.report)
           setActiveIssueId(null)
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
-          commitGraph(res.graph)
+          commitGraph(g2)
           toastStore.show('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
         }
         const handleRejectIssue = (issue) => {
@@ -3352,6 +3458,7 @@ export default function clientPlugin() {
         }
 
         const loadHistoryEntry = (entry) => {
+          cancelVerifyTasks()
           setTitle(entry.title || '')
           setText(entry.text || '')
           setFullText(entry.text || '')
@@ -3513,7 +3620,7 @@ export default function clientPlugin() {
                   h('strong', null, '一句话总结：'), ' ', graph.summary || '（无）'),
                 h('div', { className: 'kg-stats' },
                   h('span', null, graph.nodes.length + ' 个节点'),
-                  h('span', null, graph.edges.length + ' 条关系'),
+                  h('span', null, (graph.edges || []).length + ' 条关系'),
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
                   appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
@@ -3600,7 +3707,7 @@ export default function clientPlugin() {
                     }, '×'),
                   ),
                   h('div', { className: 'kg-history-item-meta' },
-                    formatTime(entry.ts) + ' · ' + entry.graph.nodes.length + ' 节点 · ' + entry.graph.edges.length + ' 条关系'),
+                    formatTime(entry.ts) + ' · ' + entry.graph.nodes.length + ' 节点 · ' + (entry.graph.edges || []).length + ' 条关系'),
                   h('div', { className: 'kg-history-item-summary' },
                     (entry.graph.summary || '').slice(0, 60) + ((entry.graph.summary || '').length > 60 ? '…' : '')),
                 )),
@@ -3680,8 +3787,10 @@ export default function clientPlugin() {
         if (trajMem.has(sessionId)) return trajMem.get(sessionId)
         let e = null
         try { e = JSON.parse(localStorage.getItem(LS_TRAJ_RESULT + ':' + sessionId) || 'null') } catch (err) {}
-        if (e && e.graph && Array.isArray(e.graph.nodes)) trajMem.set(sessionId, e)
-        else e = null
+        if (e && e.graph && Array.isArray(e.graph.nodes)) {
+          e = { ...e, graph: normalizeStoredGraph(e.graph) }
+          trajMem.set(sessionId, e)
+        } else e = null
         return e
       }
       function writeTrajResult(sessionId, entry) {
@@ -3770,7 +3879,18 @@ export default function clientPlugin() {
         const [questionPhase, setQuestionPhase] = useState('idle')
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
+        const verifyGenRef = useRef(0)
         useEffect(() => { verificationRef.current = verification }, [verification])
+        const cancelTrajVerifyTasks = () => {
+          sessionSeq.current += 1
+          verifyGenRef.current += 1
+          setVerifyTaskId(null)
+          setQuestionTaskId(null)
+          setVerifyPhase('idle')
+          setQuestionPhase('idle')
+          verifyBusyRef.current = false
+          setQuestionResult(null)
+        }
 
         const showToast = (msg) => {
           setTrajToast(msg)
@@ -3793,6 +3913,7 @@ export default function clientPlugin() {
           setVerification(null); setVerifyPhase('idle'); setVerifyTaskId(null); setQuestionTaskId(null)
           setActiveIssueId(null); setIssueFilter('all'); setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null); setQuestionPhase('idle')
           verifyBusyRef.current = false
+          verifyGenRef.current += 1
           sessionSeq.current += 1
           if (!sessionId) return
           const cached = readTrajResult(sessionId)
@@ -3925,18 +4046,20 @@ export default function clientPlugin() {
           let disposed = false
           let stop = null
           let delay = 3000
+          const mySeq = sessionSeq.current
+          const myGen = verifyGenRef.current
           const start = Date.now()
           const tick = async () => {
-            if (disposed) return
+            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
             let res = null
             try { res = await host.call('task-status', { taskId: verifyTaskId }) }
             catch (e) {
-              if (disposed) return
+              if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
               setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
               setError({ message: '查询验证任务失败：' + (e && e.message ? e.message : '未知错误') })
               return
             }
-            if (disposed) return
+            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.issues) && view) {
@@ -3976,18 +4099,20 @@ export default function clientPlugin() {
           let disposed = false
           let stop = null
           let delay = 3000
+          const mySeq = sessionSeq.current
+          const myGen = verifyGenRef.current
           const start = Date.now()
           const tick = async () => {
-            if (disposed) return
+            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
             let res = null
             try { res = await host.call('task-status', { taskId: questionTaskId }) }
             catch (e) {
-              if (disposed) return
+              if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
               setQuestionPhase('idle'); setQuestionTaskId(null)
               setError({ message: '查询质疑任务失败：' + (e && e.message ? e.message : '未知错误') })
               return
             }
-            if (disposed) return
+            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
               setQuestionPhase('idle'); setQuestionTaskId(null)
@@ -4018,6 +4143,7 @@ export default function clientPlugin() {
         }, [questionTaskId])
 
         const extract = async () => {
+          cancelTrajVerifyTasks()
           setError(null)
           setPhase('extracting')
           setView(null); setTraceEvents([])
@@ -4047,6 +4173,7 @@ export default function clientPlugin() {
             showToast('请先完成一次拆解，再追加新事件')
             return
           }
+          cancelTrajVerifyTasks()
           setError(null)
           setPhase('extracting')
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
@@ -4090,6 +4217,8 @@ export default function clientPlugin() {
         const startQuickVerify = async () => {
           if (!view || verifyBusyRef.current) return
           setError(null)
+          setVerifyPhase('running')
+          verifyBusyRef.current = true
           try {
             const res = await host.call('verify-graph', {
               title: '', text: view.sourceText || '',
@@ -4098,13 +4227,17 @@ export default function clientPlugin() {
             })
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
+              const m = res.report.metrics || {}
               setVerification(res.report)
               attachTrajReport(res.report, false)
               setActiveIssueId(null)
-              showToast('快速体检完成：' + res.report.metrics.errorCount + ' 错误 / ' + res.report.metrics.warningCount + ' 警告 / ' + res.report.metrics.suggestionCount + ' 建议')
+              showToast('快速体检完成：' + (m.errorCount || 0) + ' 错误 / ' + (m.warningCount || 0) + ' 警告 / ' + (m.suggestionCount || 0) + ' 建议')
             } else setError({ message: '快速体检没有返回报告，请重试' })
           } catch (e) {
             setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
+          } finally {
+            setVerifyPhase('idle')
+            verifyBusyRef.current = false
           }
         }
         const startDeepVerify = async () => {
@@ -4184,12 +4317,13 @@ export default function clientPlugin() {
             return
           }
           if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
-          const res = applyAllFixable(view.graph, verification)
+          const res = applyAllFixable(view.graph, verificationRef.current || verification)
+          const g2 = withVerification(res.graph, res.report, res.report ? res.report.stale === true : false)
           setVerification(res.report)
           setActiveIssueId(null)
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
-          commitTrajGraph(res.graph)
+          commitTrajGraph(g2)
           showToast('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
         }
         const handleRejectIssue = (issue) => {
@@ -4388,7 +4522,7 @@ export default function clientPlugin() {
                 h('p', { className: 'kg-summary' }, h('strong', null, '一句话总结：'), ' ', graph.summary || '（无）'),
                 h('div', { className: 'kg-stats' },
                   h('span', null, graph.nodes.length + ' 个节点'),
-                  h('span', null, graph.edges.length + ' 条关系'),
+                  h('span', null, (graph.edges || []).length + ' 条关系'),
                   h('span', null, '回链事件 ' + resolvedCount + '/' + graph.nodes.length),
                   appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },

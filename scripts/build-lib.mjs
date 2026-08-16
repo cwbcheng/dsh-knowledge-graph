@@ -213,6 +213,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } })
               }
+              if (graph.nodes.length > MAX_VERIFY_NODES) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } })
+              }
               const mode = a.mode === 'standard' ? 'standard' : 'quick'
               if (mode === 'quick') return writeJson(res, 200, { report: buildLocalReport(graph, text) })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
@@ -244,6 +247,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可质疑的知识图' } })
+              }
+              if (graph.nodes.length > MAX_VERIFY_NODES) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } })
               }
               const target = a.target && typeof a.target === 'object'
                 ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
@@ -420,7 +426,7 @@ function readBody(req, limit) {
     let done = false
     const onData = (chunk) => {
       data += chunk
-      if (data.length > limit) finish(new Error('body too large'))
+      if (Buffer.byteLength(data, 'utf8') > limit) finish(new Error('body too large'))
     }
     const onEnd = () => finish()
     const onError = (err) => finish(err)
@@ -451,5 +457,5 @@ function writeJson(res, status, body) {
 // insert helpers before the purge interval comment
 host = host.replace('      // Periodically purge finished tasks (kept for 2h after completion).', helpers + '\n      // Periodically purge finished tasks (kept for 2h after completion).')
 
-writeFileSync('/mnt/d/github/dsh-knowledge-graph/lib/index.js', host)
+writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 console.log('host written, lines:', host.split('\n').length)
