@@ -1119,8 +1119,9 @@ export default function hostPlugin() {
       }
 
       // No fixed wall-clock timeout: model work runs until it finishes or the
-      // user cancels. Progress is reported through `activeTask.progress` and
-      // the stream is abortable via `activeTask.cancelHooks`.
+      // user cancels. Progress reports connection state, the AbortSignal is
+      // forwarded to the provider, and stalled streams surface visible
+      // warnings instead of silently pretending everything is fine.
       async function callModel(model, system, userText, _timeoutMs, temperature, maxTokens) {
         const llm = ctx.get('llm')
         if (!llm) {
@@ -1131,39 +1132,75 @@ export default function hostPlugin() {
         const task = activeTask
         let out = ''
         let cancelled = false
+        let firstChunk = false
         const collecting = (async () => {
-          const iter = llm.stream({
-            provider: model.provider,
-            model: model.model,
-            system,
-            messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
-            temperature: typeof temperature === 'number' ? temperature : 0.2,
-            maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
-          })
+          const controller = new AbortController()
+          let iter = null
+          const abort = () => {
+            cancelled = true
+            try { controller.abort() } catch (e) { /* already aborted */ }
+            try { if (iter && typeof iter.return === 'function') iter.return() } catch (e) { /* already closed */ }
+          }
+          const warnTimers = []
+          const clearWarnTimers = () => {
+            for (const t of warnTimers) clearTimeout(t)
+            warnTimers.length = 0
+          }
+          const warnAt = (ms, text) => {
+            warnTimers.push(setTimeout(() => {
+              if (task && activeTask === task && !task.cancelled && !firstChunk) {
+                task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+                task.progress.warning = text
+                task.progress.updatedAt = Date.now()
+              }
+            }, ms))
+          }
           if (task) {
-            task.abortStream = () => {
-              cancelled = true
-              try { if (iter && typeof iter.return === 'function') iter.return() } catch (e) { /* already closed */ }
-            }
+            task.abortStream = abort
             task.cancelHooks = task.cancelHooks || []
             task.cancelHooks.push(() => { if (task.abortStream) task.abortStream() })
+            task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+            task.progress.stage = '正在发起模型请求（' + model.provider + ' · ' + model.model + '）…'
+            task.progress.updatedAt = Date.now()
+            warnAt(60000, '模型 60 秒未返回首字，连接可能较慢，仍在等待（可取消任务）')
+            warnAt(180000, '模型 180 秒未返回首字，可能卡住，建议取消并更换模型后重试')
+            warnAt(300000, '模型 5 分钟未返回首字，继续等待或取消任务')
           }
           try {
+            iter = await Promise.resolve(llm.stream({
+              provider: model.provider,
+              model: model.model,
+              system,
+              messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+              temperature: typeof temperature === 'number' ? temperature : 0.2,
+              maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
+              signal: controller.signal,
+            }))
+            if (task) {
+              task.abortStream = abort
+              task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+              task.progress.stage = '模型请求已发出，等待首个字符…'
+              task.progress.updatedAt = Date.now()
+            }
             for await (const chunk of iter) {
               if (cancelled || (task && task.cancelled)) {
                 cancelled = true
                 break
               }
-              if (chunk.type === 'text-delta') {
+              if (chunk && chunk.type === 'text-delta') {
+                firstChunk = true
                 out += chunk.text
                 if (task) {
                   task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
+                  task.progress.stage = '模型生成中…'
                   task.progress.charsReceived = out.length
+                  task.progress.warning = null
                   task.progress.updatedAt = Date.now()
                 }
               }
             }
           } finally {
+            clearWarnTimers()
             if (iter && typeof iter.return === 'function') {
               try { iter.return() } catch (e) { /* already closed */ }
             }
