@@ -314,6 +314,8 @@
       // dialogue / table / code / quote / prose) and split by that structure's
       // rules. MUST match the host's splitParagraphsOffsetsHost exactly.
       const SEG_MAX = 300
+      const SEG_SOFT_MAX = 120
+      const SEG_SENTENCE_MAX = 180
       const SEG_MIN_TOPIC = 24
       const SEG_TOPIC_SIM = 0.08
       const SENT_END = new Set(['。', '！', '？', '!', '?', '；', ';'])
@@ -326,7 +328,7 @@
         '首先是', '其次', '再次', '最后', '总之', '综上', '因此', '所以', '于是', '因而',
         '故而', '然而', '但是', '不过', '可是', '只是', '相反', '反之', '此外', '另外',
         '而且', '并且', '况且', '再说', '进一步', '然后', '接下来', '接着', '随后',
-        '首先', '第一', '第二', '第三', '最后一点',
+        '首先', '最后一点',
       ].sort((a, b) => b.length - a.length)
 
       function hasSentEnd(s) {
@@ -383,13 +385,13 @@
         if (start < line.length) ranges.push({ start, end: line.length })
         return ranges
       }
-      // Split one atomic sentence that still exceeds SEG_MAX; prefer soft
-      // punctuation, hard-cut as a last resort.
+      // Split one atomic sentence that still exceeds SEG_SENTENCE_MAX; prefer
+      // soft punctuation, hard-cut as a last resort.
       function splitLongSentence(text, absStart, out) {
         let pos = 0
-        const floor = Math.floor(SEG_MAX * 0.55)
-        while (text.length - pos > SEG_MAX) {
-          const limit = pos + SEG_MAX
+        const floor = Math.floor(SEG_SENTENCE_MAX * 0.55)
+        while (text.length - pos > SEG_SENTENCE_MAX) {
+          const limit = pos + SEG_SENTENCE_MAX
           let cut = -1
           for (let i = limit; i > pos + floor; i--) {
             if (SEG_SOFT.has(text[i - 1])) { cut = i; break }
@@ -465,7 +467,7 @@
           const piece = line.slice(s, e)
           if (piece.trim()) out.push({ text: piece, start: absStart + s, end: absStart + e })
         }
-        if (line.length <= SEG_MAX) {
+        if (line.length <= SEG_SOFT_MAX) {
           push(0, line.length)
           return
         }
@@ -476,13 +478,13 @@
           if (s != null) { push(s, e); s = null; e = null }
         }
         for (const r of ranges) {
-          if (r.end - r.start > SEG_MAX) {
+          if (r.end - r.start > SEG_SENTENCE_MAX) {
             flush()
             splitLongSentence(line.slice(r.start, r.end), absStart + r.start, out)
             continue
           }
           if (s == null) { s = r.start; e = r.end }
-          else if (r.end - s <= SEG_MAX) { e = r.end }
+          else if (r.end - s <= SEG_SOFT_MAX) { e = r.end }
           else { flush(); s = r.start; e = r.end }
         }
         flush()
@@ -495,15 +497,15 @@
           splitLongSentence(line, absStart, out)
         }
       }
-      // A quote block is one unit until it outgrows the cap, then it splits
-      // between whole lines.
+      // A quote block stays together while it fits the soft cap, then it
+      // splits between whole lines.
       function appendQuoteBlock(lines, text, out) {
         if (lines.length === 0) return
         let s = lines[0].start
         let e = lines[0].end
         for (let i = 1; i < lines.length; i++) {
           const l = lines[i]
-          if (l.end - s <= SEG_MAX) { e = l.end; continue }
+          if (l.end - s <= SEG_SOFT_MAX) { e = l.end; continue }
           pushPiece(text, s, e, out)
           s = l.start
           e = l.end
@@ -511,7 +513,8 @@
         pushPiece(text, s, e, out)
       }
       // Ordinary prose: group sentences by topic transitions (discourse
-      // markers / lexical topic drift) instead of a fixed char budget.
+      // markers / lexical topic drift), close a unit at a soft length limit,
+      // and use the hard cap only as a last resort.
       function groupProseParts(parts, text, out) {
         let s = null
         let e = null
@@ -520,6 +523,8 @@
           const mergedLen = (e - s) + (p.start - e) + (p.end - p.start)
           let boundary = false
           if (mergedLen > SEG_MAX) {
+            boundary = true
+          } else if (mergedLen > SEG_SOFT_MAX && e - s >= SEG_MIN_TOPIC) {
             boundary = true
           } else if (e - s >= SEG_MIN_TOPIC) {
             if (startsWithAny(p.text, SEG_TRANSITIONS)) boundary = true
