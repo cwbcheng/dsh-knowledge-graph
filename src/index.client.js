@@ -90,7 +90,11 @@ export default function clientPlugin() {
 .kg-filter-chip { border: 1px solid var(--kg-border); background: var(--kg-panel); color: var(--kg-text-dim); border-radius: 999px; padding: 2px 10px; font-size: 11.5px; cursor: pointer; }
 .kg-filter-chip.on { border-color: #3b82f6; color: #3b82f6; background: rgba(59,130,246,0.10); }
 .kg-issue { border: 1px solid var(--kg-border); border-left: 3px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; margin-bottom: 8px; background: var(--kg-panel); cursor: pointer; }
-.kg-issue:hover, .kg-issue.on { border-color: rgba(59,130,246,0.6); }
+.kg-issue:hover { border-color: rgba(59,130,246,0.6); }
+.kg-issue.on { border-color: #3b82f6; background: rgba(59,130,246,0.07); box-shadow: 0 0 0 1px rgba(59,130,246,0.35), 0 4px 14px rgba(59,130,246,0.12); }
+@media (prefers-color-scheme: dark) { .kg-issue.on { background: rgba(59,130,246,0.12); } }
+.kg-issue.kg-issue-flash { animation: kg-issue-locate 1.3s ease; }
+@keyframes kg-issue-locate { 0% { background: rgba(59,130,246,0.22); box-shadow: 0 0 0 3px rgba(59,130,246,0.45); } 100% { background: rgba(59,130,246,0.07); box-shadow: 0 0 0 1px rgba(59,130,246,0.35), 0 4px 14px rgba(59,130,246,0.12); } }
 .kg-issue.kg-sev-error { border-left-color: rgba(220,38,38,0.45); }
 .kg-issue.kg-sev-warning { border-left-color: rgba(217,119,6,0.45); }
 .kg-issue.kg-sev-suggestion { border-left-color: rgba(37,99,235,0.45); }
@@ -2353,6 +2357,15 @@ export default function clientPlugin() {
 
       // --------------------- verification panel ---------------------
       function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId }) {
+        const [flashIssueId, setFlashIssueId] = useState(null)
+        const prevActiveIssueRef = useRef(null)
+        useEffect(() => {
+          if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
+          prevActiveIssueRef.current = activeIssueId
+          setFlashIssueId(activeIssueId)
+          const t = setTimeout(() => setFlashIssueId(null), 1300)
+          return () => clearTimeout(t)
+        }, [activeIssueId])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
         const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
@@ -2428,7 +2441,7 @@ export default function clientPlugin() {
                   const hasFix = it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none'
                   return h('div', {
                     key: it.id,
-                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
+                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (flashIssueId === it.id ? ' kg-issue-flash' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
                     role: 'button', tabIndex: 0,
                     onClick: () => onSelectIssue(it),
                     onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectIssue(it) } },

@@ -2124,6 +2124,15 @@
 
       // --------------------- verification panel ---------------------
       function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId }) {
+        const [flashIssueId, setFlashIssueId] = useState(null)
+        const prevActiveIssueRef = useRef(null)
+        useEffect(() => {
+          if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
+          prevActiveIssueRef.current = activeIssueId
+          setFlashIssueId(activeIssueId)
+          const t = setTimeout(() => setFlashIssueId(null), 1300)
+          return () => clearTimeout(t)
+        }, [activeIssueId])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
         const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
@@ -2199,7 +2208,7 @@
                   const hasFix = it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none'
                   return h('div', {
                     key: it.id,
-                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
+                    className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (flashIssueId === it.id ? ' kg-issue-flash' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
                     role: 'button', tabIndex: 0,
                     onClick: () => onSelectIssue(it),
                     onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectIssue(it) } },
