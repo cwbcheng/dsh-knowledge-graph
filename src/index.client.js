@@ -2391,7 +2391,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         useEffect(() => {
@@ -2447,7 +2447,15 @@ export default function clientPlugin() {
                 }, '一键修复 ' + fixableCount + ' 项')
               : null,
             verifying
-              ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
+              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+                  h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
+                  progress
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  typeof onCancel === 'function'
+                    ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
+                    : null)
               : null,
           ),
           report
@@ -2586,7 +2594,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck }) {
+      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -2597,7 +2605,17 @@ export default function clientPlugin() {
               report && report.stale ? h('p', { className: 'kg-fact-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新核查。') : null,
               h('p', { className: 'kg-fact-note' }, report && report.mode === 'quick' ? '快速模式：仅基于模型知识，结论仅供提示。' : '深度模式：结论均绑定检索证据，可点击链接核对。'),
             ),
-            verifying ? h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }) : null,
+            verifying
+              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+                  h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }),
+                  progress
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  typeof onCancel === 'function'
+                    ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
+                    : null)
+              : null,
           ),
           typeof setRulesDraft === 'function' && typeof onStartFactCheck === 'function'
             ? h('div', { className: 'kg-fact-rules' },
@@ -2918,6 +2936,8 @@ export default function clientPlugin() {
         const [factTaskId, setFactTaskId] = useState(null)
         const [factActiveId, setFactActiveId] = useState(null)
         const [factRules, setFactRules] = useState('')
+        const [verifyProgress, setVerifyProgress] = useState(null)
+        const [factProgress, setFactProgress] = useState(null)
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -2938,6 +2958,8 @@ export default function clientPlugin() {
           setFactPhase('idle')
           verifyBusyRef.current = false
           setQuestionResult(null)
+          setVerifyProgress(null)
+          setFactProgress(null)
         }
 
         // ---- restore pending task / saved result / draft on mount ----
@@ -3144,6 +3166,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed || myGen !== verifyGenRef.current) return
+            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.issues)) {
@@ -3154,25 +3177,20 @@ export default function clientPlugin() {
                   persistGraph(g2)
                 }
               }
-              setVerifyPhase('idle'); setVerifyTaskId(null)
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null)
               verifyBusyRef.current = false
               toastStore.show('知识图验证完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 审校失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 审校失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               setError({ message: '验证任务已过期（服务可能已重启），请重新验证' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
-              setError({ message: '等待超时，验证任务仍在后台运行，可刷新页面后继续等待' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -3202,26 +3220,22 @@ export default function clientPlugin() {
               return
             }
             if (disposed || myGen !== verifyGenRef.current) return
+            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               toastStore.show('质疑判定完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 质疑判定失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               setError({ message: '质疑任务已过期（服务可能已重启），请重新提问' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
-              setError({ message: '等待超时，质疑任务仍在后台运行' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -3251,6 +3265,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed || myGen !== factGenRef.current) return
+            if (res && res.status === 'running') setFactProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.claims)) {
@@ -3261,24 +3276,19 @@ export default function clientPlugin() {
                   persistGraph(g2)
                 }
               }
-              setFactPhase('idle'); setFactTaskId(null)
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               toastStore.show('外部事实核查完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setFactPhase('idle'); setFactTaskId(null)
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 外部事实核查失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 外部事实核查失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setFactPhase('idle'); setFactTaskId(null)
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               setError({ message: '外部核查任务已过期（服务可能已重启），请重新核查' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setFactPhase('idle'); setFactTaskId(null)
-              setError({ message: '等待超时，外部核查任务仍在后台运行' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -3526,6 +3536,25 @@ export default function clientPlugin() {
           } catch (e) {
             setFactPhase('idle')
             setError({ message: '无法提交外部核查任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+        const handleCancelVerify = async () => {
+          const id = verifyTaskId || questionTaskId
+          if (!id) return
+          try {
+            const res = await host.call('task-cancel', { taskId: id })
+            if (res && res.status === 'cancelling') toastStore.show('正在取消任务…')
+          } catch (e) {
+            toastStore.show('取消失败：' + (e && e.message ? e.message : '未知错误'))
+          }
+        }
+        const handleCancelFact = async () => {
+          if (!factTaskId) return
+          try {
+            const res = await host.call('task-cancel', { taskId: factTaskId })
+            if (res && res.status === 'cancelling') toastStore.show('正在取消外部核查…')
+          } catch (e) {
+            toastStore.show('取消失败：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleSelectFactClaim = (claim) => {
@@ -4099,7 +4128,7 @@ export default function clientPlugin() {
                   resultView && (verification || verifyPhase === 'running' || questionResult || questionTarget)
                     ? h(VerificationPanel, {
                         report: verification, graph: resultView.graph, resultView,
-                        verifying: verifyPhase === 'running',
+                        verifying: verifyPhase === 'running' || questionPhase === 'running',
                         activeIssueId, onSelectIssue: handleSelectIssue,
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
                         onApplyAll: handleApplyAll,
@@ -4109,6 +4138,8 @@ export default function clientPlugin() {
                         questionResult, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-workbench',
+                        progress: verifyProgress,
+                        onCancel: handleCancelVerify,
                       })
                     : null,
                   resultView
@@ -4121,6 +4152,8 @@ export default function clientPlugin() {
                         panelId: 'kg-fact-panel-workbench',
                         rulesDraft: factRules, setRulesDraft: setFactRules,
                         onStartFactCheck: startFactCheck,
+                        progress: factProgress,
+                        onCancel: handleCancelFact,
                       })
                     : null,
                 ),
@@ -4247,6 +4280,8 @@ export default function clientPlugin() {
         const [factTaskId, setFactTaskId] = useState(null)
         const [factActiveId, setFactActiveId] = useState(null)
         const [factRules, setFactRules] = useState('')
+        const [verifyProgress, setVerifyProgress] = useState(null)
+        const [factProgress, setFactProgress] = useState(null)
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -4266,6 +4301,8 @@ export default function clientPlugin() {
           setFactPhase('idle')
           verifyBusyRef.current = false
           setQuestionResult(null)
+          setVerifyProgress(null)
+          setFactProgress(null)
         }
 
         const showToast = (msg) => {
@@ -4449,6 +4486,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
+            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.issues) && view) {
@@ -4457,24 +4495,19 @@ export default function clientPlugin() {
                 setView(makeView(g2, view.sourceText))
                 writeTrajResult(sessionId, { graph: g2, traceText: view.sourceText, traceEvents, ts: Date.now() })
               }
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               showToast('轨迹知识图验证完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 审校失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 审校失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               setError({ message: '验证任务已过期（服务可能已重启），请重新验证' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
-              setError({ message: '等待超时，验证任务仍在后台运行' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -4502,26 +4535,22 @@ export default function clientPlugin() {
               return
             }
             if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
+            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               showToast('质疑判定完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 质疑判定失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
+              setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               setError({ message: '质疑任务已过期（服务可能已重启），请重新提问' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setQuestionPhase('idle'); setQuestionTaskId(null)
-              setError({ message: '等待超时，质疑任务仍在后台运行' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -4551,6 +4580,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed || mySeq !== sessionSeq.current || myGen !== factGenRef.current) return
+            if (res && res.status === 'running') setFactProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               const report = res.result
               if (report && Array.isArray(report.claims) && view) {
@@ -4559,24 +4589,19 @@ export default function clientPlugin() {
                 setView(makeView(g2, view.sourceText))
                 writeTrajResult(sessionId, { graph: g2, traceText: view.sourceText, traceEvents, ts: Date.now() })
               }
-              setFactPhase('idle'); setFactTaskId(null)
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               showToast('轨迹外部事实核查完成')
               return
             }
-            if (res && res.status === 'failed') {
-              setFactPhase('idle'); setFactTaskId(null)
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 外部事实核查失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 外部事实核查失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setFactPhase('idle'); setFactTaskId(null)
+              setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               setError({ message: '外部核查任务已过期（服务可能已重启），请重新核查' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setFactPhase('idle'); setFactTaskId(null)
-              setError({ message: '等待超时，外部核查任务仍在后台运行' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -4725,6 +4750,25 @@ export default function clientPlugin() {
           } catch (e) {
             setFactPhase('idle')
             setError({ message: '无法提交外部核查任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+        const handleCancelVerify = async () => {
+          const id = verifyTaskId || questionTaskId
+          if (!id) return
+          try {
+            const res = await host.call('task-cancel', { taskId: id })
+            if (res && res.status === 'cancelling') showToast('正在取消任务…')
+          } catch (e) {
+            showToast('取消失败：' + (e && e.message ? e.message : '未知错误'))
+          }
+        }
+        const handleCancelFact = async () => {
+          if (!factTaskId) return
+          try {
+            const res = await host.call('task-cancel', { taskId: factTaskId })
+            if (res && res.status === 'cancelling') showToast('正在取消外部核查…')
+          } catch (e) {
+            showToast('取消失败：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleSelectFactClaim = (claim) => {
@@ -5140,7 +5184,7 @@ export default function clientPlugin() {
                   (verification || verifyPhase === 'running' || questionResult || questionTarget)
                     ? h(VerificationPanel, {
                         report: verification, graph: view.graph, resultView: view,
-                        verifying: verifyPhase === 'running',
+                        verifying: verifyPhase === 'running' || questionPhase === 'running',
                         activeIssueId, onSelectIssue: handleSelectIssue,
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
                         onApplyAll: handleApplyAll,
@@ -5150,6 +5194,8 @@ export default function clientPlugin() {
                         questionResult, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-traj',
+                        progress: verifyProgress,
+                        onCancel: handleCancelVerify,
                       })
                     : null,
                   h(FactCheckPanel, {
@@ -5161,6 +5207,8 @@ export default function clientPlugin() {
                         panelId: 'kg-fact-panel-traj',
                         rulesDraft: factRules, setRulesDraft: setFactRules,
                         onStartFactCheck: startFactCheck,
+                        progress: factProgress,
+                        onCancel: handleCancelFact,
                       })
                 )
               : h('section', { className: 'kg-card', 'aria-label': '轨迹知识图' },

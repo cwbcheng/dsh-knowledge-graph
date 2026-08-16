@@ -198,8 +198,32 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const t = tasks.get(taskId)
               if (!t) return writeJson(res, 200, { status: 'not_found' })
               if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
+              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } })
               if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
-              return writeJson(res, 200, { status: 'running' })
+              return writeJson(res, 200, {
+                status: 'running',
+                progress: {
+                  stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
+                  charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
+                  elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+                },
+              })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-cancel') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const taskId = typeof a.taskId === 'string' ? a.taskId : ''
+              const t = tasks.get(taskId)
+              if (!t) return writeJson(res, 200, { status: 'not_found' })
+              if (t.status !== 'running') return writeJson(res, 200, { status: t.status })
+              t.cancelled = true
+              if (Array.isArray(t.cancelHooks)) {
+                for (const hook of t.cancelHooks) { try { hook() } catch (e) {} }
+              }
+              if (typeof t.abortStream === 'function') { try { t.abortStream() } catch (e) {} }
+              return writeJson(res, 200, { status: 'cancelling' })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
               const raw = await readBody(req, 524288)

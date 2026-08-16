@@ -102,6 +102,14 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
+      if (method === "task-cancel") {
+        const res = await fetch("/api/dsh-knowledge-graph/task-cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        return res.json()
+      }
       const ep = method === "trajectory-status" ? "trajectory-status" : "task-status"
       const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId), { cache: "no-store" })
       return res.json()
@@ -129,6 +137,7 @@ if (!c.includes("host.call('trajectory-append-extract', { sessionId, existing })
 if (!c.includes("host.call('verify-graph'")) throw new Error('verify-graph call not found')
 if (!c.includes("host.call('question-graph'")) throw new Error('question-graph call not found')
 if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not found')
+if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
 c = c.split("host.call('trajectory-extract', { sessionId })").join("rpc('trajectory-extract', { sessionId })")
@@ -138,6 +147,7 @@ c = c.split("host.call('trajectory-append-extract', { sessionId, existing })").j
 c = c.split("host.call('verify-graph'").join("rpc('verify-graph'")
 c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
+c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
 
 // tail: close apply + module
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')

@@ -2135,7 +2135,7 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         useEffect(() => {
@@ -2191,7 +2191,15 @@
                 }, '一键修复 ' + fixableCount + ' 项')
               : null,
             verifying
-              ? h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' })
+              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+                  h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
+                  progress
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  typeof onCancel === 'function'
+                    ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
+                    : null)
               : null,
           ),
           report
@@ -2330,7 +2338,7 @@
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck }) {
+      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -2341,7 +2349,17 @@
               report && report.stale ? h('p', { className: 'kg-fact-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新核查。') : null,
               h('p', { className: 'kg-fact-note' }, report && report.mode === 'quick' ? '快速模式：仅基于模型知识，结论仅供提示。' : '深度模式：结论均绑定检索证据，可点击链接核对。'),
             ),
-            verifying ? h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }) : null,
+            verifying
+              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+                  h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }),
+                  progress
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  typeof onCancel === 'function'
+                    ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
+                    : null)
+              : null,
           ),
           typeof setRulesDraft === 'function' && typeof onStartFactCheck === 'function'
             ? h('div', { className: 'kg-fact-rules' },

@@ -781,26 +781,44 @@ export default function hostPlugin() {
       // lock held forever. Racing the catalog against a hard timeout means the
       // task still settles as no_model and busy is released.
       async function resolveModel() {
-        let disposer = null
-        const timeoutP = new Promise((resolve) => {
-          disposer = ctx.timeout(() => resolve(null), 10000)
+        const task = activeTask
+        if (!task) return resolveModelInner()
+        return new Promise((resolve, reject) => {
+          let settled = false
+          const cancel = () => {
+            if (settled) return
+            settled = true
+            const err = new Error('任务已取消')
+            err.code = 'cancelled'
+            reject(err)
+          }
+          task.cancelHooks = task.cancelHooks || []
+          task.cancelHooks.push(cancel)
+          resolveModelInner().then((model) => {
+            if (settled) return
+            settled = true
+            resolve(model)
+          }, (err) => {
+            if (settled) return
+            settled = true
+            reject(err)
+          })
         })
-        try {
-          return await Promise.race([resolveModelInner(), timeoutP])
-        } finally {
-          if (disposer) disposer()
-        }
       }
 
-      async function callModel(model, system, userText, timeoutMs, temperature, maxTokens) {
+      // No fixed wall-clock timeout: model work runs until it finishes or the
+      // user cancels. Progress is reported through `activeTask.progress` and
+      // the stream is abortable via `activeTask.cancelHooks`.
+      async function callModel(model, system, userText, _timeoutMs, temperature, maxTokens) {
         const llm = ctx.get('llm')
         if (!llm) {
           const err = new Error('模型服务不可用')
           err.code = 'llm_unavailable'
           throw err
         }
+        const task = activeTask
         let out = ''
-        let timedOut = false
+        let cancelled = false
         const collecting = (async () => {
           const iter = llm.stream({
             provider: model.provider,
@@ -810,35 +828,43 @@ export default function hostPlugin() {
             temperature: typeof temperature === 'number' ? temperature : 0.2,
             maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
           })
+          if (task) {
+            task.abortStream = () => {
+              cancelled = true
+              try { if (iter && typeof iter.return === 'function') iter.return() } catch (e) { /* already closed */ }
+            }
+            task.cancelHooks = task.cancelHooks || []
+            task.cancelHooks.push(() => { if (task.abortStream) task.abortStream() })
+          }
           try {
             for await (const chunk of iter) {
-              // After timeout the outer promise rejects, but the stream may
-              // keep yielding; stop accumulating so a stuck stream cannot
-              // balloon memory while the task is already failed.
-              if (timedOut) continue
-              if (chunk.type === 'text-delta') out += chunk.text
+              if (cancelled || (task && task.cancelled)) {
+                cancelled = true
+                break
+              }
+              if (chunk.type === 'text-delta') {
+                out += chunk.text
+                if (task) {
+                  task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
+                  task.progress.charsReceived = out.length
+                  task.progress.updatedAt = Date.now()
+                }
+              }
             }
           } finally {
             if (iter && typeof iter.return === 'function') {
               try { iter.return() } catch (e) { /* already closed */ }
             }
+            if (task) task.abortStream = null
+          }
+          if (cancelled || (task && task.cancelled)) {
+            const err = new Error('任务已取消')
+            err.code = 'cancelled'
+            throw err
           }
           return out
         })()
-        let disposer = null
-        const timeoutP = new Promise((_resolve, reject) => {
-          disposer = ctx.timeout(() => {
-            timedOut = true
-            const err = new Error('AI 拆分超时，请稍后重试')
-            err.code = 'timeout'
-            reject(err)
-          }, timeoutMs)
-        })
-        try {
-          return await Promise.race([collecting, timeoutP])
-        } finally {
-          if (disposer) disposer()
-        }
+        return collecting
       }
 
       // ---- trajectory serialization: Session.events -> numbered trace text ----
@@ -939,15 +965,20 @@ export default function hostPlugin() {
       const tasks = new Map()
       let seq = 0
       let busy = false
+      let activeTask = null
 
       function failTask(task, code, message) {
-        task.status = 'failed'
+        task.status = code === 'cancelled' ? 'cancelled' : 'failed'
         task.finishedAt = Date.now()
         task.errorCode = code
         task.errorMessage = message
       }
 
       async function runTask(task) {
+        if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
+        task.cancelHooks = []
+        task.progress = { stage: '准备模型', charsReceived: 0, updatedAt: Date.now() }
+        activeTask = task
         try {
           const model = await resolveModel()
           if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
@@ -1009,6 +1040,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
+                if (e && e.code === 'cancelled') throw e
                 if (e && e.code === 'timeout') { lastErr = '超时'; break }
                 lastErr = e && e.message ? e.message : String(e)
               }
@@ -1063,7 +1095,7 @@ export default function hostPlugin() {
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] extraction failed:', e)
-          if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 拆分超时，请稍后重试')
+          if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else failTask(task, 'failed', 'AI 拆分失败：' + msg)
         }
       }
@@ -1268,6 +1300,10 @@ export default function hostPlugin() {
         return issues
       }
       async function runVerifyTask(task) {
+        if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
+        task.cancelHooks = []
+        task.progress = { stage: '准备审校', charsReceived: 0, updatedAt: Date.now() }
+        activeTask = task
         try {
           const model = task.model || await resolveModel()
           if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
@@ -1291,6 +1327,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
+                if (e && e.code === 'cancelled') throw e
                 if (e && e.code === 'timeout') { lastErr = '超时'; break }
                 lastErr = e && e.message ? e.message : String(e)
               }
@@ -1321,7 +1358,8 @@ export default function hostPlugin() {
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] verification failed:', e)
-          if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 审校超时，请稍后重试')
+          if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 审校超时，请稍后重试')
           else failTask(task, 'failed', 'AI 审校失败：' + msg)
         }
       }
@@ -1387,6 +1425,10 @@ export default function hostPlugin() {
         }
       }
       async function runQuestionTask(task) {
+        if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
+        task.cancelHooks = []
+        task.progress = { stage: '准备答疑', charsReceived: 0, updatedAt: Date.now() }
+        activeTask = task
         try {
           const model = task.model || await resolveModel()
           if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
@@ -1436,7 +1478,8 @@ export default function hostPlugin() {
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] question task failed:', e)
-          if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 质疑回答超时，请稍后重试')
+          if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 质疑回答超时，请稍后重试')
           else failTask(task, 'failed', 'AI 质疑回答失败：' + msg)
         }
       }
@@ -1587,6 +1630,10 @@ export default function hostPlugin() {
         return out
       }
       async function runFactCheckTask(task) {
+        if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
+        task.cancelHooks = []
+        task.progress = { stage: '准备外部核查', charsReceived: 0, updatedAt: Date.now() }
+        activeTask = task
         try {
           const model = task.model || await resolveModel()
           if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
@@ -1626,6 +1673,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
+                if (e && e.code === 'cancelled') throw e
                 if (e && e.code === 'timeout') { lastErr = '超时'; break }
                 lastErr = e && e.message ? e.message : String(e)
               }
@@ -1659,7 +1707,8 @@ export default function hostPlugin() {
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] fact-check failed:', e)
-          if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 外部事实核查超时，请稍后重试')
+          if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 外部事实核查超时，请稍后重试')
           else failTask(task, 'failed', 'AI 外部事实核查失败：' + msg)
         }
       }
@@ -1716,14 +1765,40 @@ export default function hostPlugin() {
         return { taskId: task.id }
       })
 
+      harness.handle('task-cancel', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
+        const t = tasks.get(taskId)
+        if (!t) return { status: 'not_found' }
+        if (t.status !== 'running') return { status: t.status }
+        t.cancelled = true
+        if (Array.isArray(t.cancelHooks)) {
+          for (const hook of t.cancelHooks) {
+            try { hook() } catch (e) { /* hook already fired */ }
+          }
+        }
+        if (typeof t.abortStream === 'function') {
+          try { t.abortStream() } catch (e) { /* stream already closed */ }
+        }
+        return { status: 'cancelling' }
+      })
+
       harness.handle('task-status', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const taskId = typeof a.taskId === 'string' ? a.taskId : ''
         const t = tasks.get(taskId)
         if (!t) return { status: 'not_found' }
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
+        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } }
         if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
-        return { status: 'running' }
+        return {
+          status: 'running',
+          progress: {
+            stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
+            charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
+            elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+          },
+        }
       })
 
       harness.handle('verify-graph', async (args) => {
@@ -1821,8 +1896,16 @@ export default function hostPlugin() {
         const t = tasks.get(taskId)
         if (!t) return { status: 'not_found' }
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
+        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } }
         if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
-        return { status: 'running' }
+        return {
+          status: 'running',
+          progress: {
+            stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
+            charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
+            elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+          },
+        }
       })
 
       harness.handle('trajectory-append-extract', async (args) => {
