@@ -2197,6 +2197,9 @@
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
                         (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
                     : null,
+                  progress && progress.warning
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
+                    : null,
                   typeof onCancel === 'function'
                     ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
                     : null)
@@ -2355,6 +2358,9 @@
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
                         (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  progress && progress.warning
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
                     : null,
                   typeof onCancel === 'function'
                     ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')

@@ -2453,6 +2453,9 @@ export default function clientPlugin() {
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
                         (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
                     : null,
+                  progress && progress.warning
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
+                    : null,
                   typeof onCancel === 'function'
                     ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
                     : null)
@@ -2611,6 +2614,9 @@ export default function clientPlugin() {
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
                         (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                    : null,
+                  progress && progress.warning
+                    ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
                     : null,
                   typeof onCancel === 'function'
                     ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel }, '取消')
@@ -4134,6 +4140,9 @@ export default function clientPlugin() {
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
                   : null,
+                extractProgress && extractProgress.warning
+                  ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
+                  : null,
                 h('p', { className: 'kg-empty-sub' }, '可以关闭窗口或离开页面；任务会自动保存，重新打开窗口后自动恢复轮询。'),
                 h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),
               )
@@ -5197,6 +5206,9 @@ export default function clientPlugin() {
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
+                  : null,
+                extractProgress && extractProgress.warning
+                  ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,
                 h('p', { className: 'kg-empty-sub' }, '拆解内容：查到了什么事实、做出了什么推论、使用了哪些工具与方法。'),
                 h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),

@@ -754,6 +754,17 @@ export default function hostPlugin() {
       }
 
       // ---- model routing ----
+      async function listModelsSoft(llm, providerId, ms) {
+        let timer = null
+        const timeoutP = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), ms)
+        })
+        try {
+          return await Promise.race([llm.listModels(providerId), timeoutP])
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
+      }
       async function resolveModelInner() {
         const adm = ctx.get('agentDefaultModel')
         if (adm) {
@@ -766,15 +777,28 @@ export default function hostPlugin() {
         }
         const llm = ctx.get('llm')
         if (!llm) return null
+        if (activeTask) {
+          activeTask.progress = activeTask.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+          activeTask.progress.stage = '正在查找可用模型…'
+          activeTask.progress.updatedAt = Date.now()
+        }
         try {
           const providers = llm.listProviders()
           for (const p of providers) {
             try {
-              const models = await llm.listModels(p.id)
+              const models = await listModelsSoft(llm, p.id, 12000)
               if (models && models.length && models[0].id) return { provider: p.id, model: models[0].id }
+              if (activeTask) {
+                activeTask.progress.warning = '模型提供方 ' + p.id + ' 响应超时，正在尝试下一个'
+                activeTask.progress.updatedAt = Date.now()
+              }
             } catch (e) { /* try next provider */ }
           }
         } catch (e) { /* no providers */ }
+        if (activeTask) {
+          activeTask.progress.warning = '模型目录不可用：所有提供方均未能在限定时间内返回模型列表'
+          activeTask.progress.updatedAt = Date.now()
+        }
         return null
       }
       // A hung listProviders/listModels must never leave the global `busy`
@@ -981,7 +1005,10 @@ export default function hostPlugin() {
         activeTask = task
         try {
           const model = await resolveModel()
-          if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
+          if (!model) {
+            const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
+            return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
+          }
           const paras = splitParagraphsHost(task.text)
           const batches = buildBatchesByParagraph(paras, 6000)
           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
@@ -1306,7 +1333,10 @@ export default function hostPlugin() {
         activeTask = task
         try {
           const model = task.model || await resolveModel()
-          if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
+          if (!model) {
+            const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
+            return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
+          }
           const paras = splitParagraphsHost(task.text)
           const totalParagraphs = paras.length
           const local = buildLocalReport(task.graph, task.text)
@@ -1431,7 +1461,10 @@ export default function hostPlugin() {
         activeTask = task
         try {
           const model = task.model || await resolveModel()
-          if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
+          if (!model) {
+            const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
+            return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
+          }
           const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question)
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
@@ -1636,7 +1669,10 @@ export default function hostPlugin() {
         activeTask = task
         try {
           const model = task.model || await resolveModel()
-          if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
+          if (!model) {
+            const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
+            return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
+          }
           const claims = buildExternalClaims(task.graph, task.text, 60)
           if (claims.length === 0) return failTask(task, 'empty', '知识图中没有可外部核查的声明（需有事实/规则/定义/反例/推论类节点）')
           const mode = task.mode === 'deep' ? 'deep' : 'quick'
@@ -1797,6 +1833,7 @@ export default function hostPlugin() {
             stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
             charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+            warning: t.progress && t.progress.warning ? t.progress.warning : null,
           },
         }
       })
@@ -1904,6 +1941,7 @@ export default function hostPlugin() {
             stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
             charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+            warning: t.progress && t.progress.warning ? t.progress.warning : null,
           },
         }
       })

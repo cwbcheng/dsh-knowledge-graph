@@ -206,6 +206,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
                   charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
                   elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
+                  warning: t.progress && t.progress.warning ? t.progress.warning : null,
                 },
               })
             }
