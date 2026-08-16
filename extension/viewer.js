@@ -97,6 +97,14 @@
       const VERDICT_LABEL = {
         supported: '图成立', contradicted: '质疑成立', insufficient: '证据不足', out_of_scope: '超出范围',
       }
+      const FACT_VERDICT_META = {
+        supported: { label: '支持', color: '#059669', bg: 'rgba(5,150,105,0.08)', border: 'rgba(5,150,105,0.25)' },
+        contradicted: { label: '矛盾', color: '#dc2626', bg: 'rgba(220,38,38,0.08)', border: 'rgba(220,38,38,0.25)' },
+        partially_supported: { label: '部分支持', color: '#d97706', bg: 'rgba(217,119,6,0.08)', border: 'rgba(217,119,6,0.25)' },
+        insufficient: { label: '证据不足', color: '#64748b', bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)' },
+        unverifiable: { label: '无法核查', color: '#7c3aed', bg: 'rgba(124,58,237,0.08)', border: 'rgba(124,58,237,0.25)' },
+        out_of_scope: { label: '超出范围', color: '#475569', bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)' },
+      }
 
       // ------------------------ cross-component stores ------------------------
       const winListeners = new Set()
@@ -424,6 +432,10 @@
       function withVerification(graph, report, stale) {
         const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
         return { ...graph, verification: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
+      }
+      function withFactCheck(graph, report, stale) {
+        const prev = graph && graph.factCheck && typeof graph.factCheck === 'object' ? graph.factCheck : {}
+        return { ...graph, factCheck: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
       }
       function appendAudit(graph, action, targetId, detail, reportId, before, after) {
         const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
@@ -2314,6 +2326,70 @@
                   : null,
               )
             : null,
+        )
+      }
+
+      // --------------------- external fact-check panel ---------------------
+      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId }) {
+        const claims = (report && Array.isArray(report.claims) ? report.claims : [])
+        const m = report && report.metrics ? report.metrics : {}
+        return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
+          h('div', { className: 'kg-fact-head' },
+            h('div', { className: 'kg-fact-head-text' },
+              h('h3', { className: 'kg-fact-title' }, '外部事实核查'),
+              report && typeof report.summary === 'string' ? h('p', { className: 'kg-fact-summary' }, report.summary) : null,
+              report && report.stale ? h('p', { className: 'kg-fact-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新核查。') : null,
+              h('p', { className: 'kg-fact-note' }, report && report.mode === 'quick' ? '快速模式：仅基于模型知识，结论仅供提示。' : '深度模式：结论均绑定检索证据，可点击链接核对。'),
+            ),
+            verifying ? h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }) : null,
+          ),
+          report
+            ? h('div', { className: 'kg-fact-metrics' },
+                h('span', null, '共 ' + (m.totalClaims || 0) + ' 条声明'),
+                h('span', { style: { color: (m.supported || 0) > 0 ? '#059669' : undefined } }, '支持 ' + (m.supported || 0)),
+                h('span', { style: { color: (m.contradicted || 0) > 0 ? '#dc2626' : undefined } }, '矛盾 ' + (m.contradicted || 0)),
+                h('span', { style: { color: (m.partially_supported || 0) > 0 ? '#d97706' : undefined } }, '部分支持 ' + (m.partially_supported || 0)),
+                h('span', null, '证据不足 ' + (m.insufficient || 0)),
+                h('span', null, '无法核查 ' + (m.unverifiable || 0)),
+                h('span', { className: m.supportedRate >= 80 ? 'kg-ok' : undefined }, '支持率 ' + (m.supportedRate != null ? m.supportedRate : '?') + '%'),
+              )
+            : null,
+          claims.length === 0 && !verifying ? h('p', { className: 'kg-hint' }, '还没有外部核查报告。') : null,
+          claims.map((c) => {
+            const meta = FACT_VERDICT_META[c.verdict] || FACT_VERDICT_META.insufficient
+            return h('div', {
+              key: c.id,
+              className: 'kg-fact-claim kg-fv-' + c.verdict + (activeClaimId === c.id ? ' on' : ''),
+              role: 'button', tabIndex: 0,
+              onClick: () => onSelectClaim(c),
+              onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectClaim(c) } },
+            },
+              h('div', { className: 'kg-fact-top' },
+                h('span', { className: 'kg-fv-tag', style: { color: meta.color, background: meta.bg, borderColor: meta.border } }, meta.label),
+                h('span', { className: 'kg-issue-cat' }, c.kind),
+                c.nodeId ? h('span', { className: 'kg-issue-cat' }, c.nodeId) : null,
+                typeof c.checkworthy === 'number' ? h('span', { className: 'kg-issue-cat' }, '可核查 ' + Math.round(c.checkworthy * 100) + '%') : null,
+                typeof c.confidence === 'number' ? h('span', { className: 'kg-issue-cat' }, '置信 ' + Math.round(c.confidence * 100) + '%') : null,
+              ),
+              h('div', { className: 'kg-fact-text' }, c.claim),
+              c.rationale ? h('div', { className: 'kg-fact-rationale' }, c.rationale) : null,
+              c.evidenceQuote ? h('div', { className: 'kg-fact-quote' }, '证据引文：' + c.evidenceQuote) : null,
+              (Array.isArray(c.evidence) && c.evidence.length > 0)
+                ? h('div', { className: 'kg-issue-ev' },
+                    c.evidence.slice(0, 3).map((ev) => ev && ev.url
+                      ? h('a', { key: ev.id, className: 'kg-fact-ev', href: ev.url, target: '_blank', rel: 'noreferrer', onClick: (e) => e.stopPropagation() }, (ev.title || ev.provider) + '（' + (ev.provider || '来源') + '）')
+                      : ev ? h('div', { key: ev.id }, (ev.title || ev.provider || '来源') + '：' + (ev.snippet || '').slice(0, 120)) : null))
+                : null,
+              c.correction ? h('div', { className: 'kg-issue-ev' }, '修正建议：' + c.correction) : null,
+              h('div', { className: 'kg-fact-actions' },
+                h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onSelectClaim(c) } }, '在图中定位'),
+                c.status === 'open'
+                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectClaim(c) } }, '忽略')
+                  : null,
+                h('span', { className: 'kg-fact-status' }, c.status === 'rejected' ? '已忽略' : c.status === 'accepted' ? '已确认' : ''),
+              ),
+            )
+          }),
         )
       }
 

@@ -196,6 +196,28 @@ export default function hostPlugin() {
         'JSON 结构固定为：{"summary":"合并后的一句话总结"}',
       ].join(NL)
 
+      // External fact-checking: the SOURCE TEXT (not the graph) is now the
+      // target. Claims come from graph nodes; evidence comes from retrievers
+      // (Wikipedia is the built-in free provider) and optional user rules.
+      // The judge may only cite evidence ids that were actually provided —
+      // this makes hallucinated URLs/citations structurally impossible.
+      const FACT_JUDGE_SYSTEM_PROMPT = [
+        '你是「外部事实核查裁决员」。你会收到（A）待核查声明列表、（B）检索到的证据列表（可能为空）、（C）原文上下文。',
+        '任务：逐条判断声明与外部证据是否一致。',
+        '',
+        'verdict 只能取：',
+        'supported（证据支持声明）/ contradicted（证据与声明冲突）/ partially_supported（方向对但范围、程度、细节有误）/ insufficient（证据不足，无法判断）/ unverifiable（主观、虚构、无法外部核查）/ out_of_scope（超出配置的核查领域）',
+        '',
+        '硬性要求：',
+        '1. 只能引用 evidence 列表中真实存在的 evidenceId；禁止编造证据、URL 或引文。',
+        '2. evidenceQuote 必须从对应证据的 snippet 中逐字摘录（找不到就留空）。',
+        '3. 证据列表为空（快速模式）时，可以基于你的内部知识判断，但 confidence 不得超过 0.6，且只能给 supported / contradicted / insufficient / unverifiable。',
+        '4. 有证据（深度模式）时禁止用内部知识反驳证据；证据不足必须给 insufficient。',
+        '5. 对小说、设定、观点、比喻等内容给 unverifiable，不要强行核查。',
+        '6. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
+        '7. JSON 结构固定为：{"verdicts":[{"claimId":"c1","verdict":"supported","confidence":0.8,"rationale":"结论与理由","evidenceIds":["e1"],"evidenceQuote":"证据原文逐字摘录","correction":"如需修正原文，给出修正后的表述；否则空字符串"}]}',
+      ].join(NL)
+
       const TYPE_ALIASES = {
         fact: 'fact', 事实: 'fact',
         inference: 'inference', 推论: 'inference',
@@ -1392,6 +1414,263 @@ export default function hostPlugin() {
           else failTask(task, 'failed', 'AI 质疑回答失败：' + msg)
         }
       }
+
+      // ---- external fact-checking (source text vs outside evidence) ----
+      const FACT_VERDICTS = new Set(['supported', 'contradicted', 'partially_supported', 'insufficient', 'unverifiable', 'out_of_scope'])
+      const FACT_KINDS = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+      const FACT_CHECKWORTHY = { fact: 0.9, counter_example: 0.9, rule: 0.85, definition: 0.75, inference: 0.6 }
+      function stripHtmlHost(s) {
+        return String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+      }
+      function buildExternalClaims(graph, sourceText, maxClaims) {
+        const cap = typeof maxClaims === 'number' && maxClaims > 0 ? maxClaims : 60
+        const paras = splitParagraphsOffsetsHost(sourceText || '')
+        const claims = []
+        for (const n of (graph && Array.isArray(graph.nodes) ? graph.nodes : [])) {
+          if (!n || typeof n.id !== 'string' || !FACT_KINDS.has(n.type)) continue
+          const text = typeof n.text === 'string' ? n.text.trim() : ''
+          if (!text) continue
+          let paragraph = Number.isInteger(n.paragraph) && n.paragraph >= 0 && n.paragraph < paras.length ? n.paragraph : null
+          if (paragraph == null && n.quote) {
+            const off = resolveAnchorHost(n.quote, sourceText || '', text)
+            paragraph = off != null ? paragraphIndexOfOffset(paras, off) : null
+          }
+          const quote = (typeof n.quote === 'string' && n.quote.trim() ? n.quote : text).trim().slice(0, 300)
+          claims.push({
+            id: 'c' + (claims.length + 1),
+            nodeId: n.id,
+            kind: n.type,
+            paragraph,
+            quote,
+            claim: quote,
+            checkworthy: FACT_CHECKWORTHY[n.type] || 0.6,
+            status: 'open',
+          })
+          if (claims.length >= cap) break
+        }
+        return claims
+      }
+      async function fetchWikipediaEvidence(query, maxResults) {
+        if (typeof fetch !== 'function') return []
+        const cap = Math.min(typeof maxResults === 'number' && maxResults > 0 ? maxResults : 4, 5)
+        for (const lang of ['zh', 'en']) {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), 8000)
+          try {
+            const params = new URLSearchParams({
+              action: 'query', list: 'search', srsearch: query, srlimit: String(cap),
+              format: 'json', utf8: '1', origin: '*',
+            })
+            const res = await fetch('https://' + lang + '.wikipedia.org/w/api.php?' + params.toString(), { signal: controller.signal })
+            if (!res.ok) continue
+            const data = await res.json()
+            const hits = data && data.query && Array.isArray(data.query.search) ? data.query.search : []
+            if (hits.length === 0) continue
+            return hits.slice(0, cap).map((h, i) => ({
+              id: 'w' + (i + 1),
+              provider: 'wikipedia',
+              url: 'https://' + lang + '.wikipedia.org/wiki/' + encodeURIComponent(String(h.title || '').replace(/ /g, '_')),
+              title: String(h.title || ''),
+              snippet: stripHtmlHost(h.snippet).slice(0, 600),
+              domainAuthority: 4,
+            }))
+          } catch (e) {
+            /* try next language / give up silently */
+          } finally {
+            clearTimeout(timer)
+          }
+        }
+        return []
+      }
+      function buildRulesEvidence(rulesText) {
+        const rules = String(rulesText || '').trim()
+        if (!rules) return []
+        return splitParagraphsHost(rules).slice(0, 30).map((t, i) => ({
+          id: 'r' + (i + 1),
+          provider: 'rules',
+          url: null,
+          title: '用户规则 ' + (i + 1),
+          snippet: t.slice(0, 600),
+          domainAuthority: 3,
+        }))
+      }
+      function buildFactJudgeUserText(claims, evidenceList, summary) {
+        let s = '知识图摘要：' + (summary || '（无）') + NL
+        s += NL + '待核查声明列表（JSON）：' + NL + JSON.stringify(claims.map((c) => ({ id: c.id, kind: c.kind, claim: c.claim, paragraph: c.paragraph })))
+        s += NL + '证据列表（JSON，evidenceId 是唯一可引用标识）：' + NL + JSON.stringify(evidenceList)
+        return s
+      }
+      function normFactText(s) { return String(s || '').replace(/\s+/g, '') }
+      function normalizeFactVerdicts(obj, claims, evidenceById, mode, warnings) {
+        const byId = new Map(claims.map((c) => [c.id, c]))
+        const out = []
+        for (const raw of Array.isArray(obj && obj.verdicts) ? obj.verdicts : []) {
+          if (!raw || typeof raw !== 'object') { warnings.push('fact_verdict_dropped:not_object'); continue }
+          const claim = byId.get(String(raw.claimId || ''))
+          if (!claim) { warnings.push('fact_verdict_dropped:missing_claim:' + raw.claimId); continue }
+          let verdict = FACT_VERDICTS.has(raw.verdict) ? raw.verdict : 'insufficient'
+          let confidence = Number(raw.confidence)
+          if (!isFinite(confidence)) confidence = 0.5
+          confidence = Math.min(Math.max(confidence, 0), 1)
+          let evidence = []
+          const evidenceIds = Array.isArray(raw.evidenceIds) ? raw.evidenceIds.map(String) : []
+          for (const id of evidenceIds) {
+            const ev = evidenceById.get(id)
+            if (ev && !evidence.some((x) => x.id === ev.id)) evidence.push(ev)
+          }
+          let evidenceQuote = typeof raw.evidenceQuote === 'string' ? raw.evidenceQuote.trim().slice(0, 400) : ''
+          if (mode === 'deep') {
+            if (evidenceQuote) {
+              const q = normFactText(evidenceQuote)
+              const found = evidence.some((ev) => normFactText(ev.snippet).includes(q))
+              if (!found) {
+                warnings.push('fact_evidence_quote_not_found:' + claim.id)
+                evidenceQuote = ''
+              }
+            }
+            const needsEvidence = verdict === 'supported' || verdict === 'contradicted' || verdict === 'partially_supported'
+            if (needsEvidence && evidence.length === 0) {
+              warnings.push('fact_verdict_downgraded_no_evidence:' + claim.id)
+              verdict = 'insufficient'
+            } else if (needsEvidence && !evidenceQuote) {
+              warnings.push('fact_verdict_downgraded_no_quote:' + claim.id)
+              verdict = 'insufficient'
+            }
+          } else {
+            // Quick mode is model knowledge only: cap confidence and never
+            // claim "partially_supported" without evidence.
+            confidence = Math.min(confidence, 0.6)
+            if (verdict === 'partially_supported' || verdict === 'out_of_scope') verdict = 'insufficient'
+            evidence = []
+            evidenceQuote = ''
+          }
+          out.push({
+            ...claim,
+            verdict,
+            confidence,
+            rationale: typeof raw.rationale === 'string' ? raw.rationale.trim().slice(0, 1000) : '',
+            correction: typeof raw.correction === 'string' ? raw.correction.trim().slice(0, 500) : '',
+            evidence,
+            evidenceQuote,
+            status: 'open',
+          })
+        }
+        for (const claim of claims) {
+          if (!out.some((c) => c.id === claim.id)) out.push({ ...claim, verdict: 'insufficient', confidence: 0, rationale: '模型未返回该声明的裁决', correction: '', evidence: [], evidenceQuote: '', status: 'open' })
+        }
+        return out
+      }
+      async function runFactCheckTask(task) {
+        try {
+          const model = task.model || await resolveModel()
+          if (!model) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试')
+          const claims = buildExternalClaims(task.graph, task.text, 60)
+          if (claims.length === 0) return failTask(task, 'empty', '知识图中没有可外部核查的声明（需有事实/规则/定义/反例/推论类节点）')
+          const mode = task.mode === 'deep' ? 'deep' : 'quick'
+          const sources = Array.isArray(task.sources) ? task.sources : []
+          const rulesEvidence = sources.includes('rules') ? buildRulesEvidence(task.rules) : []
+          const finalClaims = []
+          const warnings = []
+          const batchSize = 10
+          for (let i = 0; i < claims.length; i += batchSize) {
+            const batch = claims.slice(i, i + batchSize)
+            const evidenceById = new Map()
+            if (mode === 'deep') {
+              for (const r of rulesEvidence) evidenceById.set(r.id, r)
+              for (const c of batch) {
+                if (!sources.includes('wikipedia')) continue
+                const evs = await fetchWikipediaEvidence(c.claim.slice(0, 120), 4)
+                for (const ev of evs) {
+                  const id = c.id + ':' + ev.id
+                  const withId = { ...ev, id }
+                  evidenceById.set(id, withId)
+                }
+              }
+            }
+            const evidenceList = Array.from(evidenceById.values())
+            const userText = buildFactJudgeUserText(batch, evidenceList, task.graph.summary || '')
+            let norm = null
+            let lastErr = ''
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const raw = await callModel(model, FACT_JUDGE_SYSTEM_PROMPT, userText, 240000, 0.1)
+                const obj = parseJson(raw)
+                const r = normalizeFactVerdicts(obj, batch, evidenceById, mode, warnings)
+                if (r.error) { lastErr = r.error; continue }
+                norm = r
+                break
+              } catch (e) {
+                if (e && e.code === 'timeout') { lastErr = '超时'; break }
+                lastErr = e && e.message ? e.message : String(e)
+              }
+            }
+            if (!norm) return failTask(task, 'schema_invalid', 'AI 外部核查结果无法解析（已自动重试）：' + lastErr)
+            for (const c of norm) finalClaims.push(c)
+          }
+          const counts = { supported: 0, contradicted: 0, partially_supported: 0, insufficient: 0, unverifiable: 0, out_of_scope: 0 }
+          for (const c of finalClaims) {
+            if (counts[c.verdict] != null) counts[c.verdict] += 1
+          }
+          const factualTotal = finalClaims.length - counts.unverifiable - counts.out_of_scope
+          const supportedRate = factualTotal > 0 ? Math.round((counts.supported / factualTotal) * 100) : 0
+          task.status = 'succeeded'
+          task.finishedAt = Date.now()
+          task.result = {
+            reportId: 'fc-' + Date.now().toString(36) + '-' + task.id,
+            mode,
+            createdAt: Date.now(),
+            model,
+            scope: { kind: 'full', ids: [] },
+            summary: '外部事实核查完成：' + counts.supported + ' 项支持 / ' + counts.contradicted + ' 项矛盾 / ' + counts.partially_supported + ' 项部分支持 / ' + counts.insufficient + ' 项证据不足 / ' + counts.unverifiable + ' 项无法核查。',
+            metrics: {
+              totalClaims: finalClaims.length,
+              ...counts,
+              supportedRate,
+            },
+            warnings,
+            claims: finalClaims,
+          }
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e)
+          console.error('[dsh-knowledge-graph] fact-check failed:', e)
+          if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 外部事实核查超时，请稍后重试')
+          else failTask(task, 'failed', 'AI 外部事实核查失败：' + msg)
+        }
+      }
+
+      harness.handle('fact-check', async (args) => {
+        const a = args && typeof args === 'object' ? args : {}
+        const text = typeof a.text === 'string' ? a.text.trim() : ''
+        if (!text) return { error: { code: 'invalid_input', message: '请先提供要核查的原文' } }
+        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
+        const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+        if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+          return { error: { code: 'invalid_input', message: '当前没有可核查的知识图' } }
+        }
+        if (graph.nodes.length > MAX_VERIFY_NODES) {
+          return { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } }
+        }
+        const mode = a.mode === 'quick' ? 'quick' : 'deep'
+        const requested = Array.isArray(a.sources) ? a.sources : ['wikipedia']
+        const sources = requested.filter((s) => s === 'wikipedia' || s === 'rules')
+        if (mode === 'deep' && sources.length === 0) return { error: { code: 'invalid_input', message: '深度核查至少需要一个证据来源（wikipedia 或 rules）' } }
+        const rules = typeof a.rules === 'string' ? a.rules.slice(0, 10000) : ''
+        if (sources.includes('rules') && !rules.trim()) return { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } }
+        if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
+        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+        seq += 1
+        const task = {
+          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
+          text, graph, mode, sources, rules, model, createdAt: Date.now(),
+        }
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => runFactCheckTask(task)).catch((e) => {
+          console.error('[dsh-knowledge-graph] fact-check task crashed', e)
+          failTask(task, 'failed', 'AI 外部事实核查失败：内部错误')
+        }).finally(() => { busy = false })
+        return { taskId: task.id }
+      })
 
       harness.handle('extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}

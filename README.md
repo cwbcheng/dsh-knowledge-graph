@@ -26,7 +26,8 @@
   - **🤖 AI 深度审校**：异步调用 LLM 逐节点/逐边**找茬**，所有 issue 必须以原文摘录为证据，标准档还会二次复核过滤误报；
   - **人工闭环**：问题按「错误 / 警告 / 建议」列出，点击问题 → 图中相关节点/边按严重度着色高亮并滚动定位原文；每条问题可**采纳修复**（改动立即应用并写入审计记录）或**忽略**；面板顶部提供**一键修复**，批量应用全部可自动修复的问题；修复记录逐条显示**旧值 → 新值**的具体差异；
   - **主动质疑**：节点详情卡可点「质疑此节点」，选中边后出现关系详情卡可点「质疑此关系」，也可在验证面板直接向整张图提问/质疑，AI 给出「图成立 / 质疑成立 / 证据不足 / 超出范围」判定与原文证据；
-  - **追加拆分后自动标记验证结果过期**，可重新验证；轨迹知识图支持同样的全部验证/质疑能力。
+  - **🔎 外部事实核查原文**：把知识图中的 fact/inference/rule/definition/counter_example 节点转为**可核查断言**，用 Wikipedia 等外部证据裁决原文是否可靠；判定为「支持 / 矛盾 / 部分支持 / 证据不足 / 无法核查 / 超出范围」，每条结论绑定证据链接与证据引文（引文必须能在检索结果中定位，编造引文会被自动降级）；点击断言可回链图中节点与原文段落；
+  - **追加拆分后自动标记验证/核查结果过期**，可重新验证或核查；轨迹知识图支持同样的全部验证/质疑/外部核查能力。
 - **浮动工作台**：窗口可拖动、可调整大小；原文与知识图的**宽度比例**、**结果区高度**均可拖拽调整并记忆。
 - **划线拆分**：**在聊天消息里**用鼠标选中任意一段文字，选区上方浮出「拆成知识图」按钮，点击即自动打开工作台并拆分所选文字；在结果页原文里划线选中可拆成子图；输入框里选中部分文字也可「拆分所选」。
 - **追加拆分（增量合并）**：已有拆分结果后，输入区主按钮变为「追加拆分」——粘贴下一段/下一份资料，AI 只抽取新增内容，并自动与已有图建立**跨段关系边**（同一概念不重复建节点，直接连线到已有节点）；结果原地合并、全文段落统一编号、历史记录原地更新。聊天划线选中文字时也会自动追加到当前图。
@@ -169,7 +170,7 @@ pnpm install
 1. 点击对话标题右侧的「知识图」按钮，打开浮动工作台；
 2. 在「输入资料」粘贴正文（可选填标题），点 **AI 拆分**（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
 3. 摘要 / 图出现后，**点图中节点查看详情卡片（完整内容）并定位原文**，或**点原文段落聚焦图中节点**；
-4. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点击问题行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
+4. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点 **🔎 外部事实核查** 则用外部证据核查原文本身；点击问题/断言行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
 5. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；此前验证结果会自动标记为过期，可重新验证；
 6. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
 7. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
@@ -199,7 +200,8 @@ pnpm install
 │   trajectory-extract / trajectory-status        │   │  浮动窗口（shell.overlay）           │
 │   verify-graph (quick/standard)                 │   │    输入区（可收起）                  │
 │   question-graph (node/edge/graph)              │   │    原文 ⇄ 知识图（宽高可拖）         │
-│   split paragraphs (numbered)  ───────────────►│   │    验证与质疑面板 / 修复应用 / 审计   │
+│   fact-check (quick/deep, wikipedia evidence)   │   │    验证与质疑面板 / 修复应用 / 审计   │
+│   split paragraphs (numbered)  ───────────────►│   │    外部事实核查面板                  │
 │   serializeTrace(会话事件) ───────────────────►│   │    历史 / 诊断 / toast(悬浮)         │
 │   append: 已有图节点清单注入提示词 ────────────►│   │  对话头部「知识图」按钮 + run 卡片启动条│
 │   batches → llm.stream (typed retry ×2)        │   │  会话标签页「轨迹知识图」                 │
@@ -253,11 +255,30 @@ Issue {
                | 'update_summary', nodePatch?, edgePatch?, mergeIntoId?, summaryPatch? },
   status: 'open' | 'accepted' | 'rejected' | 'applied'
 }
+
+FactCheckState { lastReport?: ExternalFactCheckReport, stale?: boolean }
+ExternalFactCheckReport {
+  reportId, mode: 'quick' | 'deep', createdAt, model?,
+  summary, metrics: { totalClaims, supported, contradicted,
+                     partially_supported, insufficient, unverifiable,
+                     out_of_scope, supportedRate },
+  claims: ExternalClaim[], warnings?
+}
+ExternalClaim {
+  id, nodeId?, kind, paragraph?, quote, claim,
+  checkworthy: 0..1,
+  verdict: 'supported' | 'contradicted' | 'partially_supported'
+         | 'insufficient' | 'unverifiable' | 'out_of_scope',
+  confidence: 0..1, rationale?, correction?,
+  evidence: [{ id, provider: 'wikipedia' | 'rules', url?, title?,
+               snippet, domainAuthority }],
+  evidenceQuote?, status: 'open' | 'accepted' | 'rejected'
+}
 ```
 
 - 7 类节点 wire 类型见上文；6 类关系边见上文。
 - 每节点优先携带 `paragraph`（段落编号，确定性回链）与 `quote`（原文逐字摘录）。
-- `verification` 可选，旧版本生成的历史数据没有该字段时按未验证处理，完全向后兼容。
+- `verification` / `factCheck` 可选，旧版本生成的历史数据没有这些字段时按未验证/未核查处理，完全向后兼容。
 
 ## 许可
 

@@ -270,6 +270,42 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/fact-check') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供要核查的原文' } })
+              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
+              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可核查的知识图' } })
+              }
+              if (graph.nodes.length > MAX_VERIFY_NODES) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } })
+              }
+              const mode = a.mode === 'quick' ? 'quick' : 'deep'
+              const requested = Array.isArray(a.sources) ? a.sources : ['wikipedia']
+              const sources = requested.filter((s) => s === 'wikipedia' || s === 'rules')
+              if (mode === 'deep' && sources.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '深度核查至少需要一个证据来源（wikipedia 或 rules）' } })
+              const rules = typeof a.rules === 'string' ? a.rules.slice(0, 10000) : ''
+              if (sources.includes('rules') && !rules.trim()) return writeJson(res, 200, { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
+                text, graph, mode, sources, rules, model, createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runFactCheckTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] fact-check task crashed', e)
+                failTask(task, 'failed', 'AI 外部事实核查失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-append-extract') {
               const raw = await readBody(req, 524288)
               let payload = {}
@@ -412,7 +448,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
 // Replace the whole harness-RPC region (extract .. append-extract) with the
 // HTTP router. Range replacement by markers keeps this script robust when new
 // RPC methods (e.g. verify-graph / question-graph) are inserted in the source.
-const rpcStartMarker = `      harness.handle('extract', async (args) => {`
+const rpcStartMarker = `      harness.handle('fact-check', async (args) => {`
 const rpcEndMarker = `      // Periodically purge finished tasks`
 const rpcStartIdx = host.indexOf(rpcStartMarker)
 const rpcEndIdx = host.indexOf(rpcEndMarker)
