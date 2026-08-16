@@ -600,18 +600,22 @@
         const ids = new Set(nodes.map((n) => n.id))
         let changed = false
         let auditDetail = ''
-        if (fix.action === 'update_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
-          const n = nodes.find((x) => x.id === fix.nodePatch.id)
+        const patchNodeId = (fix.nodePatch && typeof fix.nodePatch.id === 'string' && ids.has(fix.nodePatch.id))
+          ? fix.nodePatch.id
+          : (issue && issue.targetKind === 'node' && typeof issue.targetId === 'string' && ids.has(issue.targetId) ? issue.targetId : null)
+        if (fix.action === 'update_node' && fix.nodePatch && patchNodeId) {
+          const n = nodes.find((x) => x.id === patchNodeId)
           const p = fix.nodePatch.patch || {}
           const before = { ...n }
           if (p.type && TYPE_META[p.type]) n.type = p.type
           if (typeof p.text === 'string' && p.text.trim()) n.text = p.text.trim()
           if (typeof p.quote === 'string') n.quote = p.quote.trim()
-          if (Number.isInteger(p.paragraph) && p.paragraph >= 0) n.paragraph = p.paragraph
+          const pNum = Number(p.paragraph)
+          if (p.paragraph != null && Number.isInteger(pNum) && pNum >= 0) n.paragraph = pNum
           changed = before.type !== n.type || before.text !== n.text || before.quote !== n.quote || before.paragraph !== n.paragraph
           if (changed) auditDetail = 'update_node:' + n.id
-        } else if (fix.action === 'delete_node' && fix.nodePatch && ids.has(fix.nodePatch.id)) {
-          const id = fix.nodePatch.id
+        } else if (fix.action === 'delete_node' && fix.nodePatch && (ids.has(fix.nodePatch.id) || patchNodeId)) {
+          const id = patchNodeId || fix.nodePatch.id
           edges = edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id)
           const idx = nodes.findIndex((x) => x.id === id)
           if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'delete_node:' + id }
@@ -664,6 +668,40 @@
         next = appendAudit(next, fix.action, issue.targetId || null, auditDetail, issue.reportId || null,
           compact.before, compact.after)
         return next
+      }
+      // A patch may be a no-op because the target was already fixed elsewhere
+      // (e.g. the paragraph was corrected by an earlier action, or the graph
+      // was re-verified). Distinguish "already satisfied" from "cannot apply".
+      function patchAlreadySatisfied(graph, issue) {
+        const fix = issue && issue.proposedFix ? issue.proposedFix : null
+        if (!fix || !graph) return false
+        const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
+        const edges = Array.isArray(graph.edges) ? graph.edges : []
+        if (fix.action === 'update_node' && fix.nodePatch) {
+          const id = fix.nodePatch.id || (issue.targetKind === 'node' ? issue.targetId : null)
+          const n = nodes.find((x) => x.id === id)
+          const p = fix.nodePatch.patch || {}
+          if (!n) return false
+          let hasField = false
+          let ok = true
+          if (p.type != null) { hasField = true; ok = ok && n.type === p.type }
+          if (typeof p.text === 'string') { hasField = true; ok = ok && String(n.text || '').trim() === p.text.trim() }
+          if (typeof p.quote === 'string') { hasField = true; ok = ok && String(n.quote || '').trim() === p.quote.trim() }
+          if (p.paragraph != null) { hasField = true; ok = ok && Number(n.paragraph) === Number(p.paragraph) }
+          return hasField && ok
+        }
+        if ((fix.action === 'delete_node' || fix.action === 'merge_nodes') && fix.nodePatch) {
+          const id = fix.nodePatch.id || (issue.targetKind === 'node' ? issue.targetId : null)
+          return !nodes.some((x) => x.id === id)
+        }
+        if (fix.action === 'delete_edge' && fix.edgePatch) {
+          return !edges.some((e) => e.fromNodeId === fix.edgePatch.fromNodeId && e.toNodeId === fix.edgePatch.toNodeId && (!fix.edgePatch.relation || e.relation === fix.edgePatch.relation))
+        }
+        if (fix.action === 'update_edge' && fix.edgePatch) {
+          const target = edges.find((e) => e.fromNodeId === fix.edgePatch.fromNodeId && e.toNodeId === fix.edgePatch.toNodeId)
+          return !target || (fix.edgePatch.relation ? target.relation === fix.edgePatch.relation : true)
+        }
+        return false
       }
 
       // --------------------------- graph layout ---------------------------
