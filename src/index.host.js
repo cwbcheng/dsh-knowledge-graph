@@ -989,56 +989,109 @@ export default function hostPlugin() {
       }
 
       // ---- model routing ----
-      async function listModelsSoft(llm, providerId, ms) {
+      // Soft race: wait up to `ms` for the value, otherwise resolve null so the
+      // caller can fall through to the next source. This is a fallback, not a
+      // "task failed after timeout".
+      async function softRace(fn, ms) {
         let timer = null
         const timeoutP = new Promise((resolve) => {
           timer = setTimeout(() => resolve(null), ms)
+          if (timer && typeof timer.unref === 'function') timer.unref()
         })
         try {
-          return await Promise.race([llm.listModels(providerId), timeoutP])
+          return await Promise.race([Promise.resolve().then(fn), timeoutP])
         } finally {
           if (timer) clearTimeout(timer)
         }
       }
+      async function listModelsSoft(llm, providerId, ms) {
+        return softRace(() => llm.listModels(providerId), ms)
+      }
+      function taskStage(stage, warning) {
+        if (!activeTask || activeTask.cancelled) return
+        activeTask.progress = activeTask.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+        activeTask.progress.stage = stage
+        activeTask.progress.updatedAt = Date.now()
+        if (warning !== undefined) activeTask.progress.warning = warning
+      }
       async function resolveModelInner() {
+        taskStage('正在读取当前默认模型…')
         const adm = ctx.get('agentDefaultModel')
         if (adm) {
           try {
-            const sel = adm.currentSelection()
+            const sel = await softRace(() => adm.currentSelection(), 8000)
             if (sel && typeof sel.provider === 'string' && sel.provider && typeof sel.model === 'string' && sel.model) {
+              taskStage('已选择当前默认模型：' + sel.provider + ' · ' + sel.model)
               return { provider: sel.provider, model: sel.model }
             }
+            if (sel == null && activeTask && !activeTask.cancelled) taskStage('当前默认模型不可用或读取超时，改查模型目录…', '默认模型未配置或读取超过 8 秒，正在尝试模型目录')
           } catch (e) { /* fall through to llm catalog */ }
         }
         const llm = ctx.get('llm')
-        if (!llm) return null
-        if (activeTask) {
-          activeTask.progress = activeTask.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
-          activeTask.progress.stage = '正在查找可用模型…'
-          activeTask.progress.updatedAt = Date.now()
+        if (!llm) {
+          taskStage('模型服务不可用')
+          return null
         }
+        let providers = []
+        taskStage('正在读取模型提供商目录…')
         try {
-          const providers = llm.listProviders()
-          for (const p of providers) {
-            try {
-              const models = await listModelsSoft(llm, p.id, 12000)
-              if (models && models.length && models[0].id) return { provider: p.id, model: models[0].id }
-              if (activeTask) {
-                activeTask.progress.warning = '模型提供方 ' + p.id + ' 响应超时，正在尝试下一个'
-                activeTask.progress.updatedAt = Date.now()
-              }
-            } catch (e) { /* try next provider */ }
-          }
+          const list = llm.listProviders()
+          if (Array.isArray(list)) providers = list.filter((p) => p && typeof p.id === 'string' && p.id)
         } catch (e) { /* no providers */ }
-        if (activeTask) {
-          activeTask.progress.warning = '模型目录不可用：所有提供方均未能在限定时间内返回模型列表'
-          activeTask.progress.updatedAt = Date.now()
+        if (providers.length === 0) {
+          taskStage('没有找到可用的模型提供商', '模型目录为空，请检查模型设置或手动指定模型')
+          return null
         }
-        return null
+        // Query ALL providers concurrently and return the FIRST usable result;
+        // the others keep settling in the background but stop touching the
+        // task progress. One slow catalog can no longer serialize N × 12s.
+        const total = providers.length
+        let checked = 0
+        let won = false
+        const report = (stage, warning) => { if (!won) taskStage(stage, warning) }
+        taskStage('正在并行查询 ' + total + ' 个提供商的模型目录…')
+        return await new Promise((resolve) => {
+          let remaining = providers.length
+          const finish = (result) => {
+            if (won) return
+            if (result) {
+              won = true
+              taskStage('已选择模型：' + result.provider + ' · ' + result.model)
+              resolve({ provider: result.provider, model: result.model })
+              return
+            }
+            remaining -= 1
+            if (remaining <= 0) {
+              won = true
+              taskStage('没有找到可用模型', '模型目录不可用：所有提供商均未能在 12 秒内返回模型列表，可取消任务后重试或手动指定模型')
+              resolve(null)
+            }
+          }
+          for (const p of providers) {
+            const name = p.name || p.id
+            ;(async () => {
+              try {
+                const models = await listModelsSoft(llm, p.id, 12000)
+                checked += 1
+                report('已查询模型目录 ' + checked + '/' + total + '：' + name)
+                if (models && models.length && models[0].id) {
+                  finish({ provider: p.id, model: models[0].id, name })
+                  return
+                }
+                report('已查询模型目录 ' + checked + '/' + total + '：' + name, '模型提供方 ' + name + ' 未能在 12 秒内返回模型列表')
+                finish(null)
+              } catch (e) {
+                checked += 1
+                report('已查询模型目录 ' + checked + '/' + total + '：' + name)
+                finish(null)
+              }
+            })()
+          }
+        })
       }
-      // A hung listProviders/listModels must never leave the global `busy`
-      // lock held forever. Racing the catalog against a hard timeout means the
-      // task still settles as no_model and busy is released.
+      // Cancellation is the only way out of an in-flight resolution besides
+      // the per-provider soft fallbacks above; the global busy lock is always
+      // released by the task runner's finally.
       async function resolveModel() {
         const task = activeTask
         if (!task) return resolveModelInner()
@@ -1242,6 +1295,13 @@ export default function hostPlugin() {
         task.errorCode = code
         task.errorMessage = message
       }
+      function announceModel(task, model) {
+        if (!task || !model) return
+        task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
+        task.progress.stage = '已选择模型：' + model.provider + ' · ' + model.model + '，等待模型响应…'
+        task.progress.model = { provider: model.provider, model: model.model }
+        task.progress.updatedAt = Date.now()
+      }
 
       async function runTask(task) {
         if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
@@ -1254,6 +1314,7 @@ export default function hostPlugin() {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
+          announceModel(task, model)
           const paras = splitParagraphsHost(task.text)
           const batches = buildBatchesByParagraph(paras, 6000)
           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
@@ -1591,6 +1652,7 @@ export default function hostPlugin() {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
+          announceModel(task, model)
           const paras = splitParagraphsHost(task.text)
           const totalParagraphs = paras.length
           const local = buildLocalReport(task.graph, task.text)
@@ -1719,6 +1781,7 @@ export default function hostPlugin() {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
+          announceModel(task, model)
           const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question)
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
@@ -1927,6 +1990,7 @@ export default function hostPlugin() {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
+          announceModel(task, model)
           const claims = buildExternalClaims(task.graph, task.text, 60)
           if (claims.length === 0) return failTask(task, 'empty', '知识图中没有可外部核查的声明（需有事实/规则/定义/反例/推论类节点）')
           const mode = task.mode === 'deep' ? 'deep' : 'quick'
@@ -2122,6 +2186,7 @@ export default function hostPlugin() {
             charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
             warning: t.progress && t.progress.warning ? t.progress.warning : null,
+            model: t.progress && t.progress.model ? t.progress.model : null,
           },
         }
       })
@@ -2231,6 +2296,7 @@ export default function hostPlugin() {
             charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
             warning: t.progress && t.progress.warning ? t.progress.warning : null,
+            model: t.progress && t.progress.model ? t.progress.model : null,
           },
         }
       })

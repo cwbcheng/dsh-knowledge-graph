@@ -112,6 +112,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
                   elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
                   warning: t.progress && t.progress.warning ? t.progress.warning : null,
+                  model: t.progress && t.progress.model ? t.progress.model : null,
                 },
               })
             }

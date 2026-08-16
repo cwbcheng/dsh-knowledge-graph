@@ -2438,7 +2438,7 @@
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
@@ -2600,7 +2600,7 @@
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)

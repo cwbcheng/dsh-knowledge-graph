@@ -2701,7 +2701,7 @@ export default function clientPlugin() {
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
@@ -2863,7 +2863,7 @@ export default function clientPlugin() {
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '核查进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符')
+                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
@@ -4479,7 +4479,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…'),
-                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelDisplayName(modelChoice)),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + (extractProgress && extractProgress.model ? extractProgress.model.provider + ' · ' + extractProgress.model.model : modelDisplayName(modelChoice))),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
@@ -5578,7 +5578,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, '正在用 AI 拆解本会话轨迹…'),
-                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelDisplayName(modelChoice)),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + (extractProgress && extractProgress.model ? extractProgress.model.provider + ' · ' + extractProgress.model.model : modelDisplayName(modelChoice))),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
