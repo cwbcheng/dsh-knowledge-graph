@@ -310,29 +310,96 @@
       }
 
       // Split the source into paragraphs with [start, end) offsets.
-      // MUST match the host's splitParagraphsHost numbering exactly.
+      // Content-aware (not just blank lines): long natural paragraphs are
+      // split at sentence boundaries / soft punctuation. MUST match the
+      // host's splitParagraphsOffsetsHost algorithm exactly.
+      const SEG_TARGET = 180
+      const SEG_MAX = 300
+      const SENT_END = new Set(['。', '！', '？', '!', '?', '；', ';'])
+      const SENT_CLOSER = new Set(['”', '’', '"', "'", '」', '』', '）', ')', '】', '》', '〉'])
+      const SEG_SOFT = new Set(['，', '、', '：', ':', ',', '—', '…', ' ', '\t'])
+
+      function splitLongSentence(text, absStart, out) {
+        let pos = 0
+        const floor = Math.floor(SEG_MAX * 0.55)
+        while (text.length - pos > SEG_MAX) {
+          const limit = pos + SEG_MAX
+          let cut = -1
+          for (let i = limit; i > pos + floor; i--) {
+            if (SEG_SOFT.has(text[i - 1])) { cut = i; break }
+          }
+          if (cut < 0) cut = limit
+          const piece = text.slice(pos, cut)
+          if (piece.trim()) out.push({ text: piece, start: absStart + pos, end: absStart + cut })
+          pos = cut
+        }
+        const rest = text.slice(pos)
+        if (rest.trim()) out.push({ text: rest, start: absStart + pos, end: absStart + text.length })
+      }
+
       function splitParagraphs(source) {
         const lines = source.split(NL)
         const out = []
-        const para = []
-        let offset = 0
+        const parts = []
+        let lineStart = 0
+        // Merge the atomic parts of ONE blank-line block into numbered units.
+        // Blank lines are hard boundaries: flush before crossing them.
+        const flush = () => {
+          let curStart = null
+          let curEnd = null
+          for (const p of parts) {
+            if (curStart == null) {
+              curStart = p.start
+              curEnd = p.end
+              continue
+            }
+            const mergedLen = (curEnd - curStart) + (p.start - curEnd) + (p.end - p.start)
+            if (mergedLen <= SEG_TARGET) {
+              curEnd = p.end
+            } else {
+              const piece = source.slice(curStart, curEnd)
+              if (piece.trim()) out.push({ text: piece, start: curStart, end: curEnd })
+              curStart = p.start
+              curEnd = p.end
+            }
+          }
+          if (curStart != null) {
+            const piece = source.slice(curStart, curEnd)
+            if (piece.trim()) out.push({ text: piece, start: curStart, end: curEnd })
+          }
+          parts.length = 0
+        }
         for (const line of lines) {
           if (line.trim() === '') {
-            if (para.length > 0) {
-              const text = para.join(NL)
-              out.push({ text, start: offset - text.length - 1, end: offset - 1 })
-              para.length = 0
-            }
-          } else {
-            para.push(line)
+            flush()
+            lineStart += line.length + 1
+            continue
           }
-          offset += line.length + 1
+          // 1) split the line into sentences at hard terminators; trailing
+          // closing quotes/brackets stay attached to the sentence.
+          const sentences = []
+          let start = 0
+          let i = 0
+          while (i < line.length) {
+            if (SENT_END.has(line[i])) {
+              let end = i + 1
+              while (end < line.length && SENT_CLOSER.has(line[end])) end++
+              sentences.push({ start, end })
+              start = end
+              i = end
+            } else {
+              i += 1
+            }
+          }
+          if (start < line.length) sentences.push({ start, end: line.length })
+          // 2) hard-split any sentence still over the hard cap.
+          for (const s of sentences) {
+            splitLongSentence(line.slice(s.start, s.end), lineStart + s.start, parts)
+          }
+          lineStart += line.length + 1
         }
-        if (para.length > 0) {
-          const text = para.join(NL)
-          out.push({ text, start: offset - text.length - 1, end: offset - 1 })
-        }
-        return out.filter((p) => p.text.trim().length > 0)
+        flush()
+        return out
       }
 
       // Build the view model: anchor every node to a paragraph offset and work
