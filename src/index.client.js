@@ -295,6 +295,11 @@ export default function clientPlugin() {
       const LS_LAYOUT = 'dsh-kg-layout-v1'
       const LAYER_Y_GAP = 210
       const LAYER_X_GAP = 220
+      // A single layered row must not stretch much wider than the visible
+      // canvas. Wide levels are wrapped into several parallel sub-rows (each
+      // still a real row for the orthogonal channel router), so a 15-child
+      // "second layer" becomes 3-4 short rows instead of one endless band.
+      const LAYER_MAX_ROW_WIDTH = 1120
       const LAYOUT_MODES = [
         { id: 'force', label: '力导向' },
         { id: 'circular', label: '圆形' },
@@ -1643,8 +1648,8 @@ export default function clientPlugin() {
       function layoutLayered(nodes, edges, sizes) {
         const n = nodes.length
         const pos = new Map()
-        if (n === 0) return { pos }
-        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return { pos } }
+        if (n === 0) return pos
+        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return pos }
         const deg = new Map()
         for (const node of nodes) deg.set(node.id, 0)
         for (const e of edges) {
@@ -1674,12 +1679,45 @@ export default function clientPlugin() {
           if (!groups.has(l)) groups.set(l, [])
           groups.get(l).push(node)
         }
-        for (const [l, list] of groups) {
+        // Wrap a wide level into several sub-rows, each centered on x=0 and
+        // placed on its own y-row so the orthogonal edge channels still work.
+        const chunkLayer = (list) => {
+          const chunks = []
+          let cur = []
+          let curWidth = 0
+          for (const node of list) {
+            const s = sizes.get(node.id)
+            const w = s ? s.w : 200
+            if (cur.length > 0 && curWidth + LAYER_X_GAP + w > LAYER_MAX_ROW_WIDTH) {
+              chunks.push(cur)
+              cur = [node]
+              curWidth = w
+            } else {
+              if (cur.length > 0) curWidth += LAYER_X_GAP
+              cur.push(node)
+              curWidth += w
+            }
+          }
+          if (cur.length > 0) chunks.push(cur)
+          return chunks
+        }
+        const levels = Array.from(groups.keys()).sort((a, b) => a - b)
+        let row = 0
+        for (const l of levels) {
+          const list = groups.get(l)
           list.sort((a, b) => deg.get(b.id) - deg.get(a.id))
-          const totalW = (list.length - 1) * LAYER_X_GAP
-          list.forEach((node, i) => {
-            pos.set(node.id, { x: i * LAYER_X_GAP - totalW / 2, y: l * LAYER_Y_GAP })
-          })
+          const chunks = chunkLayer(list)
+          for (const chunk of chunks) {
+            const totalW = chunk.reduce((acc, node, i) => acc + (sizes.get(node.id) ? sizes.get(node.id).w : 200) + (i > 0 ? LAYER_X_GAP : 0), 0)
+            let x = -totalW / 2
+            for (const node of chunk) {
+              const s = sizes.get(node.id)
+              const w = s ? s.w : 200
+              pos.set(node.id, { x: x + w / 2, y: row * LAYER_Y_GAP })
+              x += w + LAYER_X_GAP
+            }
+            row += 1
+          }
         }
         return pos
       }
