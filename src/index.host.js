@@ -164,6 +164,7 @@ export default function hostPlugin() {
         '4. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
         '5. JSON 结构固定为：{"issues":[{"id":"v1","severity":"error|warning|suggestion","category":"grounding|type|relation|duplicate|contradiction|completeness|summary","targetKind":"node|edge|graph","targetId":"n3 或 fromNodeId>toNodeId","title":"一句话问题","detail":"为什么有问题","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"confidence":0.9,"proposedFix":{"action":"none|update_node|delete_node|add_node|update_edge|delete_edge|add_edge|merge_nodes|update_summary","nodePatch":{"id":"n3","patch":{"type":"fact","text":"修正后的表述","quote":"修正后的摘录","paragraph":2}},"edgePatch":{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"},"mergeIntoId":"n5"}}]}',
         '6. targetId：node 用节点 id；edge 用 "fromNodeId>toNodeId"；graph 用 null。没有修复方案时 proposedFix 用 {"action":"none"}。',
+        '7. 控制输出长度：title 不超过 80 字，detail 不超过 300 字，evidence.quote 不超过 200 字，避免输出被截断。',
       ].join(NL)
 
       const VERIFIER_SYSTEM_PROMPT = [
@@ -657,7 +658,21 @@ export default function hostPlugin() {
         const start = s.indexOf('{')
         const end = s.lastIndexOf('}')
         if (start < 0 || end <= start) throw new Error('没有找到 JSON 对象')
-        return JSON.parse(s.slice(start, end + 1))
+        s = s.slice(start, end + 1)
+        try {
+          return JSON.parse(s)
+        } catch (firstErr) {
+          // The model occasionally hits the token limit mid-array. Try a few
+          // safe completions of truncated JSON before giving up: strip a
+          // trailing comma and close the issue array + root object.
+          const candidates = [s]
+          const trimmed = s.replace(/,\s*$/, '')
+          candidates.push(trimmed + ']}', trimmed + '}', trimmed + ']', trimmed + ']}', s + ']}', s + '}')
+          for (const candidate of candidates) {
+            try { return JSON.parse(candidate) } catch (e) { /* try next */ }
+          }
+          throw firstErr
+        }
       }
 
       function normalizeGraph(obj, totalParagraphs, extraIds) {
@@ -776,7 +791,7 @@ export default function hostPlugin() {
         }
       }
 
-      async function callModel(model, system, userText, timeoutMs, temperature) {
+      async function callModel(model, system, userText, timeoutMs, temperature, maxTokens) {
         const llm = ctx.get('llm')
         if (!llm) {
           const err = new Error('模型服务不可用')
@@ -792,7 +807,7 @@ export default function hostPlugin() {
             system,
             messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
             temperature: typeof temperature === 'number' ? temperature : 0.2,
-            maxTokens: 8000,
+            maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
           })
           try {
             for await (const chunk of iter) {
@@ -1071,7 +1086,7 @@ export default function hostPlugin() {
         return { summary: graph.summary || '', nodes, edges }
       }
       function buildVerifyBatches(paras, graph) {
-        const pBatches = buildBatchesByParagraph(paras, 4500)
+        const pBatches = buildBatchesByParagraph(paras, 3500)
         const batches = pBatches.map((units) => {
           const pSet = new Set(units.map((u) => u.num))
           const nodes = (graph.nodes || []).filter((n) => n && Number.isInteger(n.paragraph) && pSet.has(n.paragraph))
@@ -1084,7 +1099,17 @@ export default function hostPlugin() {
           if (batches.length === 0) batches.push({ units: [], pSet: new Set(), nodes: [] })
           batches[0].nodes = batches[0].nodes.concat(orphan)
         }
-        return batches
+        // Keep each batch small enough that the judge's JSON cannot hit the
+        // model output limit even when every node produces an issue.
+        const final = []
+        for (const b of batches) {
+          const nodes = b.nodes || []
+          if (nodes.length <= 20) { final.push(b); continue }
+          for (let i = 0; i < nodes.length; i += 20) {
+            final.push({ units: i === 0 ? b.units : [], pSet: b.pSet, nodes: nodes.slice(i, i + 20) })
+          }
+        }
+        return final
       }
       function sanitizeEvidence(rawEvidence, sourceText, totalParagraphs, allowEmpty) {
         const out = []
@@ -1216,7 +1241,7 @@ export default function hostPlugin() {
         return s
       }
       function verifyCandidates(model, candidates, units, warnings) {
-        return callModel(model, VERIFIER_SYSTEM_PROMPT, buildVerifierUserText(candidates, units), 180000).then((raw) => {
+        return callModel(model, VERIFIER_SYSTEM_PROMPT, buildVerifierUserText(candidates, units), 180000, 0.1, 12000).then((raw) => {
           const obj = parseJson(raw)
           const kept = new Set()
           for (const k of Array.isArray(obj.kept) ? obj.kept : []) {
@@ -1258,7 +1283,7 @@ export default function hostPlugin() {
             let lastErr = ''
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
-                const raw = await callModel(model, VERIFY_SYSTEM_PROMPT, userText, 240000)
+                const raw = await callModel(model, VERIFY_SYSTEM_PROMPT, userText, 240000, 0.1, 20000)
                 const obj = parseJson(raw)
                 const r = normalizeIssues(obj, task.graph, task.text, totalParagraphs, warnings, 'b' + (i + 1) + ':')
                 if (r.error) { lastErr = r.error; continue }
