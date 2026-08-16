@@ -3151,27 +3151,56 @@ export default function clientPlugin() {
         const m = parseModelKey(key)
         return m ? (m.provider + ' · ' + m.model) : '跟随系统默认'
       }
+      function modelLabelOf(m, fallbackKey) {
+        if (m && typeof m.provider === 'string' && typeof m.model === 'string') return m.provider + ' · ' + m.model
+        return modelDisplayName(fallbackKey)
+      }
 
-      // Reads the host model catalog (providers + models + current default)
-      // once per mount; falls back to the persisted choice + a retry button.
-      function ModelPicker({ value, onChange }) {
-        const [catalog, setCatalog] = useState(null)
-        const [loadError, setLoadError] = useState(null)
-        const selectId = useMemo(() => 'kg-model-select-' + Math.random().toString(36).slice(2), [])
-        const loadCatalog = useCallback(async () => {
-          setLoadError(null)
-          try {
-            const res = await host.call('list-models', {})
+      // ---- shared model catalog store ----
+      // Fetched once by whichever panel mounts first; both the picker and the
+      // submit logic read it. If the user leaves "跟随系统默认", submit still
+      // sends the CURRENT default model explicitly, so the host never has to
+      // run model-catalog resolution for a task.
+      let modelCatalogCache = null
+      let modelCatalogLoading = false
+      const modelCatalogListeners = new Set()
+      function notifyModelCatalog() {
+        for (const cb of modelCatalogListeners) { try { cb() } catch (e) {} }
+      }
+      function loadModelCatalog(force) {
+        if (force) { modelCatalogCache = null; notifyModelCatalog() }
+        if (modelCatalogCache || modelCatalogLoading) return
+        modelCatalogLoading = true
+        host.call('list-models', {})
+          .then((res) => {
             if (res && Array.isArray(res.providers)) {
-              setCatalog({ providers: res.providers, current: res.current || null })
+              modelCatalogCache = { providers: res.providers, current: res.current || null, error: null }
             } else {
-              setLoadError(res && res.error && res.error.message ? res.error.message : '无法读取模型目录')
+              modelCatalogCache = { providers: [], current: null, error: (res && res.error && res.error.message) || '无法读取模型目录' }
             }
-          } catch (e) {
-            setLoadError('读取模型目录失败，继续使用默认或已保存模型')
-          }
-        }, [])
-        useEffect(() => { loadCatalog() }, [loadCatalog])
+          })
+          .catch(() => {
+            modelCatalogCache = { providers: [], current: null, error: '读取模型目录失败，继续使用默认或已保存模型' }
+          })
+          .finally(() => {
+            modelCatalogLoading = false
+            notifyModelCatalog()
+          })
+      }
+      function useModelCatalog() {
+        const snap = useSyncExternalStore(
+          (cb) => { modelCatalogListeners.add(cb); return () => modelCatalogListeners.delete(cb) },
+          () => modelCatalogCache,
+          () => modelCatalogCache,
+        )
+        useEffect(() => { loadModelCatalog(false) }, [])
+        return snap
+      }
+
+      function ModelPicker({ value, onChange }) {
+        const catalog = useModelCatalog()
+        const loadError = catalog && catalog.error ? catalog.error : null
+        const selectId = useMemo(() => 'kg-model-select-' + Math.random().toString(36).slice(2), [])
         const chosen = parseModelKey(value)
         const flat = []
         if (catalog) {
@@ -3197,7 +3226,7 @@ export default function clientPlugin() {
             h('option', { value: '' }, catalog ? defaultLabel : (loadError ? '跟随系统默认（目录不可用）' : '正在读取模型目录…')),
             flat.map((opt) => h('option', { key: opt.key, value: opt.key }, opt.name)),
           ),
-          loadError ? h('button', { type: 'button', className: 'kg-model-refresh', 'aria-label': '重新读取模型目录', title: '重新读取模型目录', onClick: loadCatalog }, '↻') : null,
+          loadError ? h('button', { type: 'button', className: 'kg-model-refresh', 'aria-label': '重新读取模型目录', title: '重新读取模型目录', onClick: () => loadModelCatalog(true) }, '↻') : null,
         )
       }
 
@@ -3244,11 +3273,19 @@ export default function clientPlugin() {
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
         }
         const [modelChoice, setModelChoice] = useState(readModelChoice)
+        const modelCatalog = useModelCatalog()
         const handleModelChange = (key) => {
           setModelChoice(key)
           writeModelChoice(key)
         }
         const modelArg = parseModelKey(modelChoice)
+        // "跟随系统默认" is still an explicit payload once the catalog is
+        // loaded: sending the current default avoids host-side resolution.
+        const effectiveModelArg = modelArg || (
+          modelCatalog && modelCatalog.current && typeof modelCatalog.current.provider === 'string' && typeof modelCatalog.current.model === 'string'
+            ? modelCatalog.current
+            : null
+        )
         const colsRef = useRef(null)
         const splitDragRef = useRef(null)
         const hHandleRef = useRef(null)
@@ -3648,7 +3685,7 @@ export default function clientPlugin() {
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
           cancelVerifyTasks()
           setError(null)
-          const payload = { title, text: t, ...(modelArg ? { model: modelArg } : {}) }
+          const payload = { title, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) }
           submittedRef.current = payload
           setExtractProgress(null)
           setPhase('extracting')
@@ -3698,7 +3735,7 @@ export default function clientPlugin() {
               nodes: resultView.graph.nodes,
               edges: resultView.graph.edges,
             },
-            ...(modelArg ? { model: modelArg } : {}),
+            ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
           }
           submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
           setExtractProgress(null)
@@ -3813,7 +3850,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'quick',
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) { setError(res.error); return }
@@ -3843,7 +3880,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'standard',
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) {
@@ -3873,7 +3910,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('fact-check', payload)
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
@@ -3955,7 +3992,7 @@ export default function clientPlugin() {
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('question-graph', payload)
             if (res && res.error) {
@@ -4479,7 +4516,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…'),
-                h('p', { className: 'kg-empty-sub' }, '使用模型：' + (extractProgress && extractProgress.model ? extractProgress.model.provider + ' · ' + extractProgress.model.model : modelDisplayName(modelChoice))),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
@@ -4626,7 +4663,13 @@ export default function clientPlugin() {
           return 'force'
         })
         const [modelChoice, setModelChoice] = useState(readModelChoice)
+        const modelCatalog = useModelCatalog()
         const modelArg = parseModelKey(modelChoice)
+        const effectiveModelArg = modelArg || (
+          modelCatalog && modelCatalog.current && typeof modelCatalog.current.provider === 'string' && typeof modelCatalog.current.model === 'string'
+            ? modelCatalog.current
+            : null
+        )
         const [splitRatio, setSplitRatio] = useState(() => {
           try {
             const v = parseFloat(localStorage.getItem(LS_TRAJ_SPLIT))
@@ -5005,7 +5048,7 @@ export default function clientPlugin() {
           appendModeRef.current = false
           clearTrajResult(sessionId)
           try {
-            const res = await host.call('trajectory-extract', { sessionId, ...(modelArg ? { model: modelArg } : {}) })
+            const res = await host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -5040,7 +5083,7 @@ export default function clientPlugin() {
               traceText: view.sourceText || '',
               traceEvents,
             }
-            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(modelArg ? { model: modelArg } : {}) })
+            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -5078,7 +5121,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'quick',
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
@@ -5105,7 +5148,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'standard',
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
             if (res && res.error) {
               setVerifyPhase('idle'); verifyBusyRef.current = false
@@ -5130,7 +5173,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setFactTaskId(res.taskId)
@@ -5207,7 +5250,7 @@ export default function clientPlugin() {
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
-              ...(modelArg ? { model: modelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
             if (res && res.error) { setQuestionPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setQuestionTaskId(res.taskId)
@@ -5578,7 +5621,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, '正在用 AI 拆解本会话轨迹…'),
-                h('p', { className: 'kg-empty-sub' }, '使用模型：' + (extractProgress && extractProgress.model ? extractProgress.model.provider + ' · ' + extractProgress.model.model : modelDisplayName(modelChoice))),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')

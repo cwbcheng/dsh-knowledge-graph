@@ -92,7 +92,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const adm = ctx.get('agentDefaultModel')
               if (adm) {
                 try {
-                  const sel = adm.currentSelection()
+                  const sel = await softRace(() => adm.currentSelection(), 8000)
                   if (sel && sel.provider && sel.model) current = { provider: sel.provider, model: sel.model }
                 } catch (e) { /* ignore */ }
               }
