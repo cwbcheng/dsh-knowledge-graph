@@ -46,6 +46,10 @@ window.__ModuleLoader__.load({
 
     // ---------- RPC to the host half (webServer route, replaces host.call) ----------
     async function rpc(method, body) {
+      if (method === "list-models") {
+        const res = await fetch("/api/dsh-knowledge-graph/list-models", { cache: "no-store" })
+        return res.json()
+      }
       if (method === "extract") {
         const res = await fetch("/api/dsh-knowledge-graph/extract", {
           method: "POST",
@@ -130,24 +134,26 @@ c = c.split('styles.insert(').join('insertStyles(')
 // host.call -> rpc
 if (!c.includes("host.call('extract', payload)")) throw new Error('extract call not found')
 if (!c.includes("host.call('task-status'")) throw new Error('task-status call not found')
-if (!c.includes("host.call('trajectory-extract', { sessionId })")) throw new Error('trajectory-extract call not found')
+if (!c.includes("host.call('trajectory-extract', { sessionId, ...(modelArg ? { model: modelArg } : {}) })")) throw new Error('trajectory-extract call not found')
 if (!c.includes("host.call('trajectory-status'")) throw new Error('trajectory-status call not found')
 if (!c.includes("host.call('append-extract', payload)")) throw new Error('append-extract call not found')
-if (!c.includes("host.call('trajectory-append-extract', { sessionId, existing })")) throw new Error('trajectory-append-extract call not found')
+if (!c.includes("host.call('trajectory-append-extract', { sessionId, existing, ...(modelArg ? { model: modelArg } : {}) })")) throw new Error('trajectory-append-extract call not found')
 if (!c.includes("host.call('verify-graph'")) throw new Error('verify-graph call not found')
 if (!c.includes("host.call('question-graph'")) throw new Error('question-graph call not found')
 if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not found')
 if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
+if (!c.includes("host.call('list-models'")) throw new Error('list-models call not found')
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
-c = c.split("host.call('trajectory-extract', { sessionId })").join("rpc('trajectory-extract', { sessionId })")
+c = c.split("host.call('trajectory-extract', { sessionId, ...(modelArg ? { model: modelArg } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(modelArg ? { model: modelArg } : {}) })")
 c = c.split("host.call('trajectory-status'").join("rpc('trajectory-status'")
 c = c.split("host.call('append-extract', payload)").join("rpc('append-extract', payload)")
-c = c.split("host.call('trajectory-append-extract', { sessionId, existing })").join("rpc('trajectory-append-extract', { sessionId, existing })")
+c = c.split("host.call('trajectory-append-extract', { sessionId, existing, ...(modelArg ? { model: modelArg } : {}) })").join("rpc('trajectory-append-extract', { sessionId, existing, ...(modelArg ? { model: modelArg } : {}) })")
 c = c.split("host.call('verify-graph'").join("rpc('verify-graph'")
 c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
+c = c.split("host.call('list-models'").join("rpc('list-models'")
 
 // tail: close apply + module
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')

@@ -73,7 +73,7 @@ This is a **DSH dynamic Cordis plugin**: one Host half (Node process) + one Clie
 ### 0. Prerequisites
 
 - **DSH Web** is running (`dsh web`) and you are inside a session;
-- An **AI model provider** is configured (Settings → Models, or `agentDefaultModel`). The plugin automatically uses the current default model; if none is configured, it shows a clear Chinese error message.
+- An **AI model provider** is configured (Settings → Models, or `agentDefaultModel`). The plugin follows the system default by default; both the workbench and the “Trajectory Knowledge Graph” tab include a model dropdown so you can manually choose the model used for extraction, appends, AI audit, questioning, and external fact-checking (the choice is saved in browser local storage). If none is configured, it shows a clear Chinese error message.
 
 ### 1. Get the source
 

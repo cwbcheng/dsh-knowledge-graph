@@ -38,134 +38,6 @@ host = host.replace(`  return {
 host = host.replace(`    },
   }`, '    }')
 
-const extractBlock = `      harness.handle('extract', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
-        const text = typeof a.text === 'string' ? a.text.trim() : ''
-        if (!text) return { error: { code: 'invalid_input', message: '请先粘贴资料正文' } }
-        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
-        seq += 1
-        const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, createdAt: Date.now() }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
-      })
-
-      harness.handle('task-status', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
-        const t = tasks.get(taskId)
-        if (!t) return { status: 'not_found' }
-        if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
-        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
-        return { status: 'running' }
-      })
-
-      harness.handle('trajectory-extract', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
-        const sessions = ctx.get('sessions')
-        const session = sessions ? sessions.get(sessionId) : undefined
-        if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
-        const trace = serializeTrace(session.events)
-        if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
-        seq += 1
-        const task = {
-          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
-          title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          createdAt: Date.now(),
-        }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] trajectory task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
-      })
-
-      harness.handle('trajectory-status', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
-        const t = tasks.get(taskId)
-        if (!t) return { status: 'not_found' }
-        if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
-        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
-        return { status: 'running' }
-      })
-
-      harness.handle('trajectory-append-extract', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
-        const sessions = ctx.get('sessions')
-        const session = sessions ? sessions.get(sessionId) : undefined
-        if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
-        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
-        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
-          return { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } }
-        }
-        const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
-        const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
-        // Only events AFTER the last included one are serialized (incremental).
-        let fromSeq = -1
-        for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
-        const newEvents = []
-        for (const ev of session.events || []) {
-          if (typeof ev.seq === 'number' && ev.seq > fromSeq) newEvents.push(ev)
-        }
-        if (newEvents.length === 0) return { error: { code: 'empty', message: '该会话在上次拆解后没有新事件，无需追加' } }
-        const trace = serializeTrace(newEvents)
-        if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
-        const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
-        seq += 1
-        const task = {
-          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
-          title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          baseTraceText, baseTraceEvents, existing, paragraphOffset,
-          createdAt: Date.now(),
-        }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
-      })
-
-      harness.handle('append-extract', async (args) => {
-        const a = args && typeof args === 'object' ? args : {}
-        const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
-        const text = typeof a.text === 'string' ? a.text.trim() : ''
-        if (!text) return { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } }
-        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } }
-        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
-        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
-          return { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } }
-        }
-        const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
-        seq += 1
-        const task = {
-          id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-          title, text, existing, paragraphOffset, createdAt: Date.now(),
-        }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] append task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
-      })`
-
 const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent mode) ----
       const webServer = ctx.get('webServer')
       if (!webServer) return
@@ -183,8 +55,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴资料正文' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
-              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, createdAt: Date.now() }
+              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, createdAt: Date.now() }
               tasks.set(task.id, task)
               busy = true
               Promise.resolve().then(() => runTask(task)).catch((e) => {
@@ -192,6 +65,38 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 failTask(task, 'failed', 'AI 拆分失败：内部错误')
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
+            }
+            if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/list-models') {
+              const llm = ctx.get('llm')
+              const providers = []
+              if (llm) {
+                try {
+                  const list = llm.listProviders()
+                  const results = await Promise.all(list.map(async (p) => {
+                    try {
+                      const models = await listModelsSoft(llm, p.id, 8000)
+                      return { p, models: Array.isArray(models) ? models : [] }
+                    } catch (e) { return null }
+                  }))
+                  for (const r of results) {
+                    if (!r) continue
+                    providers.push({
+                      id: r.p.id,
+                      name: r.p.name || r.p.id,
+                      models: r.models.filter((m) => m && m.id).map((m) => ({ id: m.id, name: m.name || m.id })),
+                    })
+                  }
+                } catch (e) { /* no providers */ }
+              }
+              let current = null
+              const adm = ctx.get('agentDefaultModel')
+              if (adm) {
+                try {
+                  const sel = adm.currentSelection()
+                  if (sel && sel.provider && sel.model) current = { provider: sel.provider, model: sel.model }
+                } catch (e) { /* ignore */ }
+              }
+              return writeJson(res, 200, { providers, current })
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
@@ -357,11 +262,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
               const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-                baseTraceText, baseTraceEvents, existing, paragraphOffset,
+                baseTraceText, baseTraceEvents, existing, paragraphOffset, model,
                 createdAt: Date.now(),
               }
               tasks.set(task.id, task)
@@ -387,10 +293,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-                title, text, existing, paragraphOffset, createdAt: Date.now(),
+                title, text, existing, paragraphOffset, model, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -412,10 +319,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const trace = serializeTrace(session.events)
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
-                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents, model,
                 createdAt: Date.now(),
               }
               tasks.set(task.id, task)

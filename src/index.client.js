@@ -54,6 +54,13 @@ export default function clientPlugin() {
 .kg-input-title:focus, .kg-textarea:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
 .kg-textarea { display: block; width: 100%; box-sizing: border-box; min-height: 220px; resize: vertical; border: 1px solid var(--kg-border); border-radius: 10px; padding: 10px 12px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 14px; line-height: 1.7; }
 .kg-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.kg-model-picker { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.kg-model-label { font-size: 12px; color: var(--kg-text-dim); white-space: nowrap; }
+.kg-model-select { max-width: 280px; min-width: 0; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; padding: 4px 6px; cursor: pointer; }
+.kg-model-select:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
+.kg-model-select:disabled { opacity: 0.55; cursor: wait; }
+.kg-model-refresh { background: none; border: 1px solid var(--kg-border); border-radius: 8px; color: var(--kg-text-dim); font-size: 12px; line-height: 1; padding: 4px 7px; cursor: pointer; }
+.kg-model-refresh:hover { color: var(--kg-text); border-color: var(--kg-text-dim); }
 .kg-counter { font-size: 12px; color: var(--kg-text-dim); margin-right: auto; }
 .kg-primary { background: #3b82f6; color: #fff; border: none; border-radius: 10px; padding: 8px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .kg-primary:hover:not(:disabled) { background: #2563eb; }
@@ -2870,6 +2877,87 @@ export default function clientPlugin() {
         )
       }
 
+      // ---- manual model selection (拆分 / 追加 / 审校 / 质疑 / 外部核查共用) ----
+      const LS_MODEL = 'dsh-kg-model-v1'
+      const MODEL_KEY_SEP = '::'
+
+      function modelKeyOf(m) {
+        if (!m || typeof m.provider !== 'string' || typeof m.model !== 'string') return ''
+        return m.provider + MODEL_KEY_SEP + m.model
+      }
+      function parseModelKey(key) {
+        if (typeof key !== 'string' || !key) return null
+        const i = key.indexOf(MODEL_KEY_SEP)
+        if (i <= 0 || i + MODEL_KEY_SEP.length >= key.length) return null
+        return { provider: key.slice(0, i), model: key.slice(i + MODEL_KEY_SEP.length) }
+      }
+      function readModelChoice() {
+        try {
+          const key = localStorage.getItem(LS_MODEL)
+          return parseModelKey(key) ? key : ''
+        } catch (e) {}
+        return ''
+      }
+      function writeModelChoice(key) {
+        try {
+          if (key) localStorage.setItem(LS_MODEL, key)
+          else localStorage.removeItem(LS_MODEL)
+        } catch (e) {}
+      }
+      function modelDisplayName(key) {
+        const m = parseModelKey(key)
+        return m ? (m.provider + ' · ' + m.model) : '跟随系统默认'
+      }
+
+      // Reads the host model catalog (providers + models + current default)
+      // once per mount; falls back to the persisted choice + a retry button.
+      function ModelPicker({ value, onChange }) {
+        const [catalog, setCatalog] = useState(null)
+        const [loadError, setLoadError] = useState(null)
+        const selectId = useMemo(() => 'kg-model-select-' + Math.random().toString(36).slice(2), [])
+        const loadCatalog = useCallback(async () => {
+          setLoadError(null)
+          try {
+            const res = await host.call('list-models', {})
+            if (res && Array.isArray(res.providers)) {
+              setCatalog({ providers: res.providers, current: res.current || null })
+            } else {
+              setLoadError(res && res.error && res.error.message ? res.error.message : '无法读取模型目录')
+            }
+          } catch (e) {
+            setLoadError('读取模型目录失败，继续使用默认或已保存模型')
+          }
+        }, [])
+        useEffect(() => { loadCatalog() }, [loadCatalog])
+        const chosen = parseModelKey(value)
+        const flat = []
+        if (catalog) {
+          for (const p of catalog.providers) {
+            for (const m of p.models || []) flat.push({ key: p.id + MODEL_KEY_SEP + m.id, name: p.name + ' · ' + m.name })
+          }
+        }
+        if (chosen && !flat.some((opt) => opt.key === value)) {
+          flat.push({ key: value, name: chosen.provider + ' · ' + chosen.model + '（已保存）' })
+        }
+        const current = catalog && catalog.current && typeof catalog.current.provider === 'string' && typeof catalog.current.model === 'string'
+          ? catalog.current
+          : null
+        const defaultLabel = '跟随系统默认' + (current ? '（' + current.provider + ' · ' + current.model + '）' : '')
+        return h('span', { className: 'kg-model-picker', title: loadError || '选择拆分、追加、AI 审校、质疑与外部核查使用的模型' },
+          h('label', { className: 'kg-model-label', htmlFor: selectId }, '模型'),
+          h('select', {
+            id: selectId,
+            className: 'kg-model-select', value, 'aria-label': '选择 AI 模型',
+            disabled: !catalog && !loadError,
+            onChange: (e) => onChange(e.target.value),
+          },
+            h('option', { value: '' }, catalog ? defaultLabel : (loadError ? '跟随系统默认（目录不可用）' : '正在读取模型目录…')),
+            flat.map((opt) => h('option', { key: opt.key, value: opt.key }, opt.name)),
+          ),
+          loadError ? h('button', { type: 'button', className: 'kg-model-refresh', 'aria-label': '重新读取模型目录', title: '重新读取模型目录', onClick: loadCatalog }, '↻') : null,
+        )
+      }
+
       // -------------------------- workbench body --------------------------
       function WorkbenchBody({ ctx }) {
         const [title, setTitle] = useState('')
@@ -2912,6 +3000,12 @@ export default function clientPlugin() {
           setLayoutMode(id)
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
         }
+        const [modelChoice, setModelChoice] = useState(readModelChoice)
+        const handleModelChange = (key) => {
+          setModelChoice(key)
+          writeModelChoice(key)
+        }
+        const modelArg = parseModelKey(modelChoice)
         const colsRef = useRef(null)
         const splitDragRef = useRef(null)
         const hHandleRef = useRef(null)
@@ -3311,7 +3405,7 @@ export default function clientPlugin() {
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
           cancelVerifyTasks()
           setError(null)
-          const payload = { title, text: t }
+          const payload = { title, text: t, ...(modelArg ? { model: modelArg } : {}) }
           submittedRef.current = payload
           setExtractProgress(null)
           setPhase('extracting')
@@ -3361,6 +3455,7 @@ export default function clientPlugin() {
               nodes: resultView.graph.nodes,
               edges: resultView.graph.edges,
             },
+            ...(modelArg ? { model: modelArg } : {}),
           }
           submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
           setExtractProgress(null)
@@ -3475,6 +3570,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'quick',
+              ...(modelArg ? { model: modelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) { setError(res.error); return }
@@ -3504,6 +3600,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'standard',
+              ...(modelArg ? { model: modelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) {
@@ -3533,6 +3630,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
+              ...(modelArg ? { model: modelArg } : {}),
             }
             const res = await host.call('fact-check', payload)
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
@@ -3614,6 +3712,7 @@ export default function clientPlugin() {
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
+              ...(modelArg ? { model: modelArg } : {}),
             }
             const res = await host.call('question-graph', payload)
             if (res && res.error) {
@@ -4120,7 +4219,8 @@ export default function clientPlugin() {
               h('p', { className: 'kg-subtitle' },
                 '把任意资料用 AI 拆成「事实 / 推论 / 概念 / 定义 / 例子 / 反例 / 规则」组成的知识图，并在图与原文之间双向定位。'),
             ),
-            h('div', { style: { display: 'flex', gap: 8, flex: 'none' } },
+            h('div', { style: { display: 'flex', gap: 8, flex: 'none', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } },
+              h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
               h('button', { type: 'button', className: 'kg-secondary', onClick: () => setHistoryOpen(!historyOpen) },
                 historyOpen ? '返回工作台' : '历史'),
               resultView ? h('button', { type: 'button', className: 'kg-secondary', onClick: resetAll }, '重新开始') : null,
@@ -4136,6 +4236,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…'),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelDisplayName(modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
@@ -4267,6 +4368,8 @@ export default function clientPlugin() {
           } catch (e) {}
           return 'force'
         })
+        const [modelChoice, setModelChoice] = useState(readModelChoice)
+        const modelArg = parseModelKey(modelChoice)
         const [splitRatio, setSplitRatio] = useState(() => {
           try {
             const v = parseFloat(localStorage.getItem(LS_TRAJ_SPLIT))
@@ -4645,7 +4748,7 @@ export default function clientPlugin() {
           appendModeRef.current = false
           clearTrajResult(sessionId)
           try {
-            const res = await host.call('trajectory-extract', { sessionId })
+            const res = await host.call('trajectory-extract', { sessionId, ...(modelArg ? { model: modelArg } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -4680,7 +4783,7 @@ export default function clientPlugin() {
               traceText: view.sourceText || '',
               traceEvents,
             }
-            const res = await host.call('trajectory-append-extract', { sessionId, existing })
+            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(modelArg ? { model: modelArg } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -4718,6 +4821,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'quick',
+              ...(modelArg ? { model: modelArg } : {}),
             })
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
@@ -4744,6 +4848,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'standard',
+              ...(modelArg ? { model: modelArg } : {}),
             })
             if (res && res.error) {
               setVerifyPhase('idle'); verifyBusyRef.current = false
@@ -4768,6 +4873,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
+              ...(modelArg ? { model: modelArg } : {}),
             })
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setFactTaskId(res.taskId)
@@ -4844,6 +4950,7 @@ export default function clientPlugin() {
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
+              ...(modelArg ? { model: modelArg } : {}),
             })
             if (res && res.error) { setQuestionPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setQuestionTaskId(res.taskId)
@@ -5049,6 +5156,10 @@ export default function clientPlugin() {
           setLayoutMode(id)
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
         }
+        const handleModelChange = (key) => {
+          setModelChoice(key)
+          writeModelChoice(key)
+        }
 
         // ---- column width / result height drag handlers ----
         const startSplitDrag = (e) => {
@@ -5203,6 +5314,7 @@ export default function clientPlugin() {
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, '正在用 AI 拆解本会话轨迹…'),
+                h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelDisplayName(modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
                       (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
@@ -5217,7 +5329,8 @@ export default function clientPlugin() {
               ? h('section', { className: 'kg-card kg-result', 'aria-label': '轨迹 ⇄ 知识图结果' },
                   h('div', { className: 'kg-panel-head' },
                     h('h3', { className: 'kg-section-title' }, '轨迹 ⇄ 知识图'),
-                    h('div', { style: { display: 'flex', gap: 8 } },
+                    h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                      h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
                       h('button', { type: 'button', className: 'kg-primary kg-append-btn', onClick: appendExtract }, '追加新事件'),
                       h('button', { type: 'button', className: 'kg-secondary', onClick: extract }, '重新拆解'),
                     ),
@@ -5261,6 +5374,7 @@ export default function clientPlugin() {
                       ? '自动读取本会话的完整轨迹（用户消息、工具调用、工具结果、AI 回复），用 AI 拆解出「查到了什么事实、做出了什么推论、用了什么方法」，并在图与轨迹事件之间双向定位。'
                       : '未获取到会话上下文，请先在本会话中发言后再试。'),
                   h('div', { className: 'kg-actions' },
+                    h('span', { style: { marginRight: 'auto' } }, h(ModelPicker, { value: modelChoice, onChange: handleModelChange })),
                     h('button', {
                       type: 'button', className: 'kg-primary',
                       disabled: !sessionId,

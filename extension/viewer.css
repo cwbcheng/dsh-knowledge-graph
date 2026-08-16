@@ -15,6 +15,13 @@
 .kg-input-title:focus, .kg-textarea:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
 .kg-textarea { display: block; width: 100%; box-sizing: border-box; min-height: 220px; resize: vertical; border: 1px solid var(--kg-border); border-radius: 10px; padding: 10px 12px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 14px; line-height: 1.7; }
 .kg-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.kg-model-picker { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.kg-model-label { font-size: 12px; color: var(--kg-text-dim); white-space: nowrap; }
+.kg-model-select { max-width: 280px; min-width: 0; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; padding: 4px 6px; cursor: pointer; }
+.kg-model-select:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
+.kg-model-select:disabled { opacity: 0.55; cursor: wait; }
+.kg-model-refresh { background: none; border: 1px solid var(--kg-border); border-radius: 8px; color: var(--kg-text-dim); font-size: 12px; line-height: 1; padding: 4px 7px; cursor: pointer; }
+.kg-model-refresh:hover { color: var(--kg-text); border-color: var(--kg-text-dim); }
 .kg-counter { font-size: 12px; color: var(--kg-text-dim); margin-right: auto; }
 .kg-primary { background: #3b82f6; color: #fff; border: none; border-radius: 10px; padding: 8px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .kg-primary:hover:not(:disabled) { background: #2563eb; }

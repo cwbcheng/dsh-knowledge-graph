@@ -1004,7 +1004,7 @@ export default function hostPlugin() {
         task.progress = { stage: '准备模型', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
         try {
-          const model = await resolveModel()
+          const model = task.model || await resolveModel()
           if (!model) {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
@@ -1783,6 +1783,39 @@ export default function hostPlugin() {
         return { taskId: task.id }
       })
 
+      harness.handle('list-models', async () => {
+        const llm = ctx.get('llm')
+        const providers = []
+        if (llm) {
+          try {
+            const list = llm.listProviders()
+            const results = await Promise.all(list.map(async (p) => {
+              try {
+                const models = await listModelsSoft(llm, p.id, 8000)
+                return { p, models: Array.isArray(models) ? models : [] }
+              } catch (e) { return null }
+            }))
+            for (const r of results) {
+              if (!r) continue
+              providers.push({
+                id: r.p.id,
+                name: r.p.name || r.p.id,
+                models: r.models.filter((m) => m && m.id).map((m) => ({ id: m.id, name: m.name || m.id })),
+              })
+            }
+          } catch (e) { /* no providers */ }
+        }
+        let current = null
+        const adm = ctx.get('agentDefaultModel')
+        if (adm) {
+          try {
+            const sel = adm.currentSelection()
+            if (sel && sel.provider && sel.model) current = { provider: sel.provider, model: sel.model }
+          } catch (e) { /* ignore */ }
+        }
+        return { providers, current }
+      })
+
       harness.handle('extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
@@ -1790,8 +1823,9 @@ export default function hostPlugin() {
         if (!text) return { error: { code: 'invalid_input', message: '请先粘贴资料正文' } }
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
-        const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, createdAt: Date.now() }
+        const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, createdAt: Date.now() }
         tasks.set(task.id, task)
         busy = true
         Promise.resolve().then(() => runTask(task)).catch((e) => {
@@ -1912,11 +1946,12 @@ export default function hostPlugin() {
         const trace = serializeTrace(session.events)
         if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          createdAt: Date.now(),
+          model, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -1970,11 +2005,12 @@ export default function hostPlugin() {
         if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
         const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          baseTraceText, baseTraceEvents, existing, paragraphOffset,
+          baseTraceText, baseTraceEvents, existing, paragraphOffset, model,
           createdAt: Date.now(),
         }
         tasks.set(task.id, task)
@@ -1998,10 +2034,11 @@ export default function hostPlugin() {
         }
         const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-          title, text, existing, paragraphOffset, createdAt: Date.now(),
+          title, text, existing, paragraphOffset, model, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
