@@ -1518,7 +1518,7 @@
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge }) {
+      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues }) {
         const containerRef = useRef(null)
         const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
         const [dragging, setDragging] = useState(false)
@@ -1983,7 +1983,17 @@
               style: (sel || flash || neighbor || issueSev) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))' } : undefined,
             }),
             issueCount > 0
-              ? h('g', { className: 'kg-node-issue-badge', 'aria-hidden': 'true' },
+              ? h('g', {
+                  className: 'kg-node-issue-badge',
+                  role: 'button',
+                  tabIndex: 0,
+                  'aria-label': '查看该节点的 ' + issueCount + ' 个问题',
+                  style: { cursor: 'pointer' },
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onPointerUp: (e) => e.stopPropagation(),
+                  onClick: (e) => { e.stopPropagation(); if (typeof onOpenNodeIssues === 'function') onOpenNodeIssues(node) },
+                  onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (typeof onOpenNodeIssues === 'function') onOpenNodeIssues(node) } },
+                },
                   h('circle', { cx: x + s.w - 6, cy: y + 6, r: 7, fill: issueSev ? SEVERITY_COLOR[issueSev] : '#6b7280', stroke: '#fff', strokeWidth: 1.5 }),
                   h('text', { x: x + s.w - 6, y: y + 9.5, textAnchor: 'middle', fontSize: 8.5, fill: '#fff', fontWeight: 700 }, issueCount > 9 ? '9+' : String(issueCount)))
               : null,
@@ -2026,6 +2036,12 @@
                   disabled: anchors[detail.id] == null,
                   onClick: () => { onSelectNode(detail.id) },
                 }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
+                  ? h('button', {
+                      type: 'button', className: 'kg-secondary',
+                      onClick: () => onOpenNodeIssues(detail),
+                    }, '查看 ' + openIssuesOf(issueMaps.nodeMap.get(detail.id)).length + ' 个问题')
+                  : null,
                 typeof onQuestionNode === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
@@ -2107,7 +2123,7 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget }) {
+      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId }) {
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
         const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
@@ -2133,7 +2149,7 @@
           && typeof onDeleteTarget === 'function'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
-        return h('section', { className: 'kg-card', 'aria-label': '验证与质疑' },
+        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑' },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
               h('h3', { className: 'kg-verify-title' }, '验证与质疑'),
