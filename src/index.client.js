@@ -2938,6 +2938,7 @@ export default function clientPlugin() {
         const [factRules, setFactRules] = useState('')
         const [verifyProgress, setVerifyProgress] = useState(null)
         const [factProgress, setFactProgress] = useState(null)
+        const [extractProgress, setExtractProgress] = useState(null)
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -2960,6 +2961,7 @@ export default function clientPlugin() {
           setQuestionResult(null)
           setVerifyProgress(null)
           setFactProgress(null)
+          setExtractProgress(null)
         }
 
         // ---- restore pending task / saved result / draft on mount ----
@@ -3050,6 +3052,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed) return
+            if (res && res.status === 'running') setExtractProgress(res.progress || null)
             if (res && res.status === 'succeeded') {
               const g = res.result
               if (g && Array.isArray(g.nodes)) {
@@ -3087,6 +3090,7 @@ export default function clientPlugin() {
                 setActivePara(-1)
                 setPhase('done')
                 setTaskId(null)
+                setExtractProgress(null)
                 setInputCollapsed(true)
                 if (sub.append === true) {
                   setFullText(viewText)
@@ -3114,29 +3118,26 @@ export default function clientPlugin() {
               } else {
                 setPhase('idle')
                 setTaskId(null)
+                setExtractProgress(null)
                 setError({ message: 'AI 返回的结果缺少图数据，请重试' })
               }
               return
             }
-            if (res && res.status === 'failed') {
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
               setPhase('idle')
               setTaskId(null)
+              setExtractProgress(null)
               try { localStorage.removeItem(LS_PENDING) } catch (e) {}
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 拆分失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 拆分失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
               setPhase('idle')
               setTaskId(null)
+              setExtractProgress(null)
               try { localStorage.removeItem(LS_PENDING) } catch (e) {}
               setError({ message: '拆分任务已过期（服务可能已重启），请重新提交' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setPhase('idle')
-              setTaskId(null)
-              setError({ message: '等待超时，任务仍在后台运行，可刷新页面后继续恢复轮询' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -3306,6 +3307,7 @@ export default function clientPlugin() {
           setError(null)
           const payload = { title, text: t }
           submittedRef.current = payload
+          setExtractProgress(null)
           setPhase('extracting')
           setResultView(null)
           setSelectedNodeId(null)
@@ -3355,6 +3357,7 @@ export default function clientPlugin() {
             },
           }
           submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
+          setExtractProgress(null)
           setPhase('extracting')
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
@@ -3536,6 +3539,15 @@ export default function clientPlugin() {
           } catch (e) {
             setFactPhase('idle')
             setError({ message: '无法提交外部核查任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+        const handleCancelExtract = async () => {
+          if (!taskId) return
+          try {
+            const res = await host.call('task-cancel', { taskId })
+            if (res && res.status === 'cancelling') toastStore.show('正在取消拆分任务…')
+          } catch (e) {
+            toastStore.show('取消失败：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleCancelVerify = async () => {
@@ -4117,8 +4129,13 @@ export default function clientPlugin() {
           phase === 'extracting'
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-                h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分（约 15-40 秒）...' : '正在用 AI 拆分资料（约 15-40 秒）...'),
+                h('p', null, submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…'),
+                extractProgress
+                  ? h('p', { className: 'kg-empty-sub' },
+                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
+                  : null,
                 h('p', { className: 'kg-empty-sub' }, '可以关闭窗口或离开页面；任务会自动保存，重新打开窗口后自动恢复轮询。'),
+                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),
               )
             : historyOpen
               ? historyPanel
@@ -4282,6 +4299,7 @@ export default function clientPlugin() {
         const [factRules, setFactRules] = useState('')
         const [verifyProgress, setVerifyProgress] = useState(null)
         const [factProgress, setFactProgress] = useState(null)
+        const [extractProgress, setExtractProgress] = useState(null)
         const verifyBusyRef = useRef(false)
         const verificationRef = useRef(null)
         const verifyGenRef = useRef(0)
@@ -4303,6 +4321,7 @@ export default function clientPlugin() {
           setQuestionResult(null)
           setVerifyProgress(null)
           setFactProgress(null)
+          setExtractProgress(null)
         }
 
         const showToast = (msg) => {
@@ -4385,6 +4404,7 @@ export default function clientPlugin() {
               return
             }
             if (disposed || mySeq !== sessionSeq.current) return
+            if (res && res.status === 'running') setExtractProgress(res.progress || null)
             if (res && res.status === 'succeeded') {
               const g = res.result
               if (g && Array.isArray(g.nodes)) {
@@ -4415,7 +4435,7 @@ export default function clientPlugin() {
                 try {
                   setView(makeView(g2, tText))
                   setTraceEvents(evs)
-                  setPhase('done'); setTaskId(null)
+                  setPhase('done'); setTaskId(null); setExtractProgress(null)
                   setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
                   clearTrajPending(sessionId)
                   writeTrajResult(sessionId, { graph: g2, traceText: tText, traceEvents: evs, ts: Date.now() })
@@ -4429,34 +4449,28 @@ export default function clientPlugin() {
                     showToast('轨迹知识图已生成')
                   }
                 } catch (err) {
-                  setPhase('idle'); setTaskId(null)
+                  setPhase('idle'); setTaskId(null); setExtractProgress(null)
                   clearTrajPending(sessionId)
                   setError({ message: '图数据无法渲染，请重新拆解' })
                 }
               } else {
-                setPhase('idle'); setTaskId(null)
+                setPhase('idle'); setTaskId(null); setExtractProgress(null)
                 clearTrajPending(sessionId)
                 setError({ message: 'AI 返回的结果缺少图数据，请重试' })
               }
               return
             }
-            if (res && res.status === 'failed') {
-              setPhase('idle'); setTaskId(null)
+            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
+              setPhase('idle'); setTaskId(null); setExtractProgress(null)
               clearTrajPending(sessionId)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || 'AI 拆分失败，请稍后重试' })
+              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 拆分失败，请稍后重试') })
               return
             }
             if (res && res.status === 'not_found') {
-              setPhase('idle'); setTaskId(null)
+              setPhase('idle'); setTaskId(null); setExtractProgress(null)
               clearTrajPending(sessionId)
               setError({ message: '拆分任务已过期（服务可能已重启），请重新拆解' })
-              return
-            }
-            if (Date.now() - start > 45 * 60 * 1000) {
-              setPhase('idle'); setTaskId(null)
-              // Keep the pending record so switching back to this tab resumes polling.
-              setError({ message: '等待超时，任务仍在后台运行，切换标签页后再回来可继续等待' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -4615,6 +4629,7 @@ export default function clientPlugin() {
           cancelTrajVerifyTasks()
           setError(null)
           setPhase('extracting')
+          setExtractProgress(null)
           setView(null); setTraceEvents([])
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
           setAppendCount(0)
@@ -4645,6 +4660,7 @@ export default function clientPlugin() {
           cancelTrajVerifyTasks()
           setError(null)
           setPhase('extracting')
+          setExtractProgress(null)
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
           appendModeRef.current = true
           try {
@@ -4750,6 +4766,15 @@ export default function clientPlugin() {
           } catch (e) {
             setFactPhase('idle')
             setError({ message: '无法提交外部核查任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+        const handleCancelExtract = async () => {
+          if (!taskId) return
+          try {
+            const res = await host.call('task-cancel', { taskId })
+            if (res && res.status === 'cancelling') showToast('正在取消拆解任务…')
+          } catch (e) {
+            showToast('取消失败：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleCancelVerify = async () => {
@@ -5168,8 +5193,13 @@ export default function clientPlugin() {
           phase === 'extracting'
             ? h('div', { className: 'kg-empty' },
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-                h('p', null, '正在用 AI 拆解本会话轨迹（约 15-40 秒）...'),
+                h('p', null, '正在用 AI 拆解本会话轨迹…'),
+                extractProgress
+                  ? h('p', { className: 'kg-empty-sub' },
+                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
+                  : null,
                 h('p', { className: 'kg-empty-sub' }, '拆解内容：查到了什么事实、做出了什么推论、使用了哪些工具与方法。'),
+                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),
               )
             : view
               ? h('section', { className: 'kg-card kg-result', 'aria-label': '轨迹 ⇄ 知识图结果' },
