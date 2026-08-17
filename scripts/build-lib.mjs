@@ -79,7 +79,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const collected = await collectDocumentAttachmentsHost(sessionId, session)
               if (collected.found.length === 0) {
                 return writeJson(res, 200, {
-                  error: { code: 'no_attachment', message: '当前会话没有检测到附件文档。请用附件插件（粘贴/拖拽/回形针）发送文档后再试。' },
+                  error: { code: 'no_attachment', message: '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用，发送后再试。' },
                   warnings: collected.warnings,
                 })
               }

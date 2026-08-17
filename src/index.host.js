@@ -1491,11 +1491,27 @@ export default function hostPlugin() {
         }
         return markers
       }
+      // dsh-at-file emits `<workspace-reference path="docs/x.pdf" kind="file" />`;
+      // the path is relative to the session workspace (session.header.cwd).
+      function parseWorkspaceReferencesHost(text) {
+        const refs = []
+        const re = /<workspace-reference\b[^>]*\/?>/g
+        let m
+        while ((m = re.exec(String(text || ''))) !== null) {
+          const tag = m[0]
+          const pathM = /\bpath\s*=\s*"([^"]*)"/.exec(tag)
+          const kindM = /\bkind\s*=\s*"([^"]*)"/.exec(tag)
+          if (pathM && pathM[1] && (!kindM || kindM[1] === 'file')) refs.push(pathM[1])
+        }
+        return refs
+      }
       async function collectDocumentAttachmentsHost(sessionId, session) {
         const mods = await docNodeModules()
         const found = []
         const warnings = []
         const seen = new Set()
+        const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
+        const cwdRoot = cwd ? mods.path.resolve(cwd) : ''
         for (const ev of session.events || []) {
           if (!ev || ev.type !== 'user/message') continue
           const text = traceTextOf(ev.data && ev.data.content)
@@ -1522,6 +1538,27 @@ export default function hostPlugin() {
               } catch (e) {
                 warnings.push(rel + '：读取失败（' + (e && e.message ? e.message : '未知错误') + '）')
               }
+            }
+          }
+          for (const rel of parseWorkspaceReferencesHost(text)) {
+            if (!cwdRoot) {
+              warnings.push('忽略 @文件引用 ' + rel + '：会话没有工作区目录')
+              continue
+            }
+            const abs = mods.path.resolve(cwdRoot, rel)
+            const relCheck = mods.path.relative(cwdRoot, abs)
+            if (!relCheck || relCheck.startsWith('..') || mods.path.isAbsolute(relCheck)) {
+              warnings.push('忽略越界 @文件引用：' + rel)
+              continue
+            }
+            if (seen.has(abs)) continue
+            seen.add(abs)
+            try {
+              const extracted = await readDocumentTextHost(abs, rel)
+              if (extracted.error) warnings.push(rel + '：' + extracted.error)
+              else found.push({ name: rel, path: abs, ...extracted })
+            } catch (e) {
+              warnings.push(rel + '：读取失败（' + (e && e.message ? e.message : '未知错误') + '）')
             }
           }
         }
@@ -2443,7 +2480,7 @@ export default function hostPlugin() {
           return {
             error: {
               code: 'no_attachment',
-              message: '当前会话没有检测到附件文档。请用附件插件（粘贴/拖拽/回形针）发送文档后再试。',
+              message: '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用，发送后再试。',
             },
             warnings: collected.warnings,
           }
