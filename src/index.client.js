@@ -3560,14 +3560,12 @@ export default function clientPlugin() {
         const docReq = useSyncExternalStore(docStore.subscribe, docStore.get)
         useEffect(() => {
           if (!docReq || !docReq.sessionId) return
-          docStore.clear()
-          setError(null)
-          toastStore.show('正在读取附件文档…')
           let disposed = false
           ;(async () => {
             try {
               const res = await host.call('document-import', { sessionId: docReq.sessionId })
               if (disposed) return
+              docStore.clear()
               if (res && res.error) { setError(res.error); return }
               if (!res || !res.text || !res.text.trim()) { setError({ message: '附件文档没有可用的正文' }); return }
               const warnings = Array.isArray(res.warnings) ? res.warnings : []
