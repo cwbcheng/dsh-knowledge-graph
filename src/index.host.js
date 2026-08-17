@@ -1173,7 +1173,7 @@ export default function hostPlugin() {
               provider: model.provider,
               model: model.model,
               system,
-              messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+              messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: userText }] }],
               temperature: typeof temperature === 'number' ? temperature : 0.2,
               maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
               signal: controller.signal,
