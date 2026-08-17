@@ -886,14 +886,13 @@ export default function hostPlugin() {
       // ---- JSON / schema parsing ----
       function parseJson(raw) {
         let s = String(raw || '').trim()
-        if (s.startsWith('```')) {
-          const nl = s.indexOf('\n')
-          s = s.slice(nl >= 0 ? nl + 1 : 3)
-          if (s.endsWith('```')) s = s.slice(0, s.length - 3)
-        }
+        const snippet = s.replace(/\s+/g, ' ').slice(0, 180)
+        // Strip every markdown fence line, not only a leading fence: models
+        // often preface the JSON with a sentence and then ```json ... ```.
+        s = s.split('\n').filter((line) => !line.trim().startsWith('```')).join('\n')
         const start = s.indexOf('{')
         const end = s.lastIndexOf('}')
-        if (start < 0 || end <= start) throw new Error('没有找到 JSON 对象')
+        if (start < 0 || end <= start) throw new Error('没有找到 JSON 对象（模型输出前 180 字：' + (snippet || '空') + '）')
         s = s.slice(start, end + 1)
         try {
           return JSON.parse(s)
@@ -907,7 +906,7 @@ export default function hostPlugin() {
           for (const candidate of candidates) {
             try { return JSON.parse(candidate) } catch (e) { /* try next */ }
           }
-          throw firstErr
+          throw new Error((firstErr && firstErr.message ? firstErr.message : 'JSON 解析失败') + '（模型输出前 180 字：' + snippet + '）')
         }
       }
 
@@ -1131,8 +1130,9 @@ export default function hostPlugin() {
         }
         const task = activeTask
         let out = ''
+        let reasoning = ''
         let cancelled = false
-        let firstChunk = false
+        let receivedAny = false
         const collecting = (async () => {
           const controller = new AbortController()
           let iter = null
@@ -1148,7 +1148,7 @@ export default function hostPlugin() {
           }
           const warnAt = (ms, text) => {
             warnTimers.push(setTimeout(() => {
-              if (task && activeTask === task && !task.cancelled && !firstChunk) {
+              if (task && activeTask === task && !task.cancelled && !receivedAny) {
                 task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
                 task.progress.warning = text
                 task.progress.updatedAt = Date.now()
@@ -1187,13 +1187,14 @@ export default function hostPlugin() {
                 cancelled = true
                 break
               }
-              if (chunk && chunk.type === 'text-delta') {
-                firstChunk = true
-                out += chunk.text
+              if (chunk && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')) {
+                receivedAny = true
+                if (chunk.type === 'text-delta') out += chunk.text
+                else reasoning += chunk.text
                 if (task) {
                   task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
-                  task.progress.stage = '模型生成中…'
-                  task.progress.charsReceived = out.length
+                  task.progress.stage = chunk.type === 'text-delta' ? '模型生成中…' : '模型思考中…'
+                  task.progress.charsReceived = out.length + reasoning.length
                   task.progress.warning = null
                   task.progress.updatedAt = Date.now()
                 }
@@ -1210,6 +1211,10 @@ export default function hostPlugin() {
             const err = new Error('任务已取消')
             err.code = 'cancelled'
             throw err
+          }
+          if (!out.trim()) {
+            if (reasoning.trim()) throw new Error('模型只输出了思考过程（' + reasoning.length + ' 字），没有给出 JSON；请更换模型后重试')
+            throw new Error('模型没有返回任何内容；请更换模型后重试')
           }
           return out
         })()
