@@ -174,6 +174,27 @@
         subscribe(fn) { docListeners.add(fn); return () => docListeners.delete(fn) },
       }
 
+      // J-space preference: when enabled, every AI task payload carries
+      // skills: ['j-space'] and the Host injects the installed skill into the
+      // model prompt.
+      const LS_JSPACE = 'dsh-kg-jspace-v1'
+      const jspaceListeners = new Set()
+      let jspaceOn = false
+      try { jspaceOn = localStorage.getItem(LS_JSPACE) === '1' } catch (e) {}
+      const jspaceStore = {
+        get() { return jspaceOn },
+        set(v) {
+          if (jspaceOn === !!v) return
+          jspaceOn = !!v
+          try { localStorage.setItem(LS_JSPACE, jspaceOn ? '1' : '0') } catch (e) {}
+          for (const fn of jspaceListeners) fn()
+        },
+        subscribe(fn) { jspaceListeners.add(fn); return () => jspaceListeners.delete(fn) },
+      }
+      function useJSpace() {
+        return useSyncExternalStore(jspaceStore.subscribe, jspaceStore.get)
+      }
+
       // ----------------------------- history -----------------------------
       function normalizeStoredGraph(g) {
         if (!g || typeof g !== 'object') return { nodes: [], edges: [] }

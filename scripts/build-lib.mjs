@@ -56,8 +56,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
-              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, createdAt: Date.now() }
+              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, skills, createdAt: Date.now() }
               tasks.set(task.id, task)
               busy = true
               Promise.resolve().then(() => runTask(task)).catch((e) => {
@@ -196,10 +197,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (mode === 'quick') return writeJson(res, 200, { report: buildLocalReport(graph, text) })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
-                text, graph, mode, model, createdAt: Date.now(),
+                text, graph, mode, model, skills, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -233,10 +235,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (target.kind !== 'graph' && !target.id) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑目标缺少 id' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-                text, graph, target, question, model, createdAt: Date.now(),
+                text, graph, target, question, model, skills, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -269,10 +272,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (sources.includes('rules') && !rules.trim()) return writeJson(res, 200, { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
-                text, graph, mode, sources, rules, model, createdAt: Date.now(),
+                text, graph, mode, sources, rules, model, skills, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -309,11 +313,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-                baseTraceText, baseTraceEvents, existing, paragraphOffset, model,
+                baseTraceText, baseTraceEvents, existing, paragraphOffset, model, skills,
                 createdAt: Date.now(),
               }
               tasks.set(task.id, task)
@@ -340,10 +345,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-                title, text, existing, paragraphOffset, model, createdAt: Date.now(),
+                title, text, existing, paragraphOffset, model, skills, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -366,10 +372,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
-                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents, model,
+                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents, model, skills,
                 createdAt: Date.now(),
               }
               tasks.set(task.id, task)

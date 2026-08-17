@@ -240,6 +240,8 @@ export default function clientPlugin() {
 .kg-header-btn:hover { background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.28); }
 .kg-doc-import-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 8px; font-size: 12px; font-family: inherit; white-space: nowrap; }
 .kg-doc-import-btn:hover { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
+.kg-jspace-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--kg-text-dim); cursor: pointer; white-space: nowrap; }
+.kg-jspace-toggle input { margin: 0; accent-color: #3b82f6; }
 .kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .kg-history-head .kg-section-title { margin: 0; }
 .kg-history-list { display: flex; flex-direction: column; gap: 8px; }
@@ -437,6 +439,27 @@ export default function clientPlugin() {
         },
         clear() { docRequest = null; for (const fn of docListeners) fn() },
         subscribe(fn) { docListeners.add(fn); return () => docListeners.delete(fn) },
+      }
+
+      // J-space preference: when enabled, every AI task payload carries
+      // skills: ['j-space'] and the Host injects the installed skill into the
+      // model prompt.
+      const LS_JSPACE = 'dsh-kg-jspace-v1'
+      const jspaceListeners = new Set()
+      let jspaceOn = false
+      try { jspaceOn = localStorage.getItem(LS_JSPACE) === '1' } catch (e) {}
+      const jspaceStore = {
+        get() { return jspaceOn },
+        set(v) {
+          if (jspaceOn === !!v) return
+          jspaceOn = !!v
+          try { localStorage.setItem(LS_JSPACE, jspaceOn ? '1' : '0') } catch (e) {}
+          for (const fn of jspaceListeners) fn()
+        },
+        subscribe(fn) { jspaceListeners.add(fn); return () => jspaceListeners.delete(fn) },
+      }
+      function useJSpace() {
+        return useSyncExternalStore(jspaceStore.subscribe, jspaceStore.get)
       }
 
       // ----------------------------- history -----------------------------
@@ -3264,6 +3287,23 @@ export default function clientPlugin() {
         )
       }
 
+      // J-space toggle: enables the installed j-space skill for all knowledge
+      // graph AI calls (extraction / audit / question / fact-check).
+      function JSpaceToggle() {
+        const on = useJSpace()
+        return h('label', {
+          className: 'kg-jspace-toggle',
+          title: '把已安装的 j-space 技能注入知识图的 AI 调用（需要 DSH 已安装 j-space skill）',
+        },
+          h('input', {
+            type: 'checkbox', checked: on,
+            onChange: (e) => jspaceStore.set(e.target.checked),
+            'aria-label': '使用 J-space 深度思考',
+          }),
+          ' J-space',
+        )
+      }
+
       // ---- manual model selection (拆分 / 追加 / 审校 / 质疑 / 外部核查共用) ----
       const LS_MODEL = 'dsh-kg-model-v1'
       const MODEL_KEY_SEP = '::'
@@ -3430,6 +3470,7 @@ export default function clientPlugin() {
             ? modelCatalog.current
             : null
         )
+        const jspaceOn = useJSpace()
         const colsRef = useRef(null)
         const splitDragRef = useRef(null)
         const hHandleRef = useRef(null)
@@ -3860,7 +3901,7 @@ export default function clientPlugin() {
           if (overrideText != null) setText(t)
           cancelVerifyTasks()
           setError(null)
-          const payload = { title: ti, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) }
+          const payload = { title: ti, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) }
           submittedRef.current = payload
           setExtractProgress(null)
           setPhase('extracting')
@@ -3910,7 +3951,7 @@ export default function clientPlugin() {
               nodes: resultView.graph.nodes,
               edges: resultView.graph.edges,
             },
-            ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+            ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
           }
           submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
           setExtractProgress(null)
@@ -4025,7 +4066,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'quick',
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) { setError(res.error); return }
@@ -4055,7 +4096,7 @@ export default function clientPlugin() {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               mode: 'standard',
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             }
             const res = await host.call('verify-graph', payload)
             if (res && res.error) {
@@ -4085,7 +4126,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             }
             const res = await host.call('fact-check', payload)
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
@@ -4167,7 +4208,7 @@ export default function clientPlugin() {
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             }
             const res = await host.call('question-graph', payload)
             if (res && res.error) {
@@ -4675,7 +4716,7 @@ export default function clientPlugin() {
                 '把任意资料用 AI 拆成「事实 / 推论 / 概念 / 定义 / 例子 / 反例 / 规则」组成的知识图，并在图与原文之间双向定位。'),
             ),
             h('div', { style: { display: 'flex', gap: 8, flex: 'none', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } },
-              h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
+              h(JSpaceToggle, null), h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
               h('button', { type: 'button', className: 'kg-secondary', onClick: () => setHistoryOpen(!historyOpen) },
                 historyOpen ? '返回工作台' : '历史'),
               resultView ? h('button', { type: 'button', className: 'kg-secondary', onClick: resetAll }, '重新开始') : null,
@@ -4845,6 +4886,7 @@ export default function clientPlugin() {
             ? modelCatalog.current
             : null
         )
+        const jspaceOn = useJSpace()
         const [splitRatio, setSplitRatio] = useState(() => {
           try {
             const v = parseFloat(localStorage.getItem(LS_TRAJ_SPLIT))
@@ -5223,7 +5265,7 @@ export default function clientPlugin() {
           appendModeRef.current = false
           clearTrajResult(sessionId)
           try {
-            const res = await host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
+            const res = await host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -5258,7 +5300,7 @@ export default function clientPlugin() {
               traceText: view.sourceText || '',
               traceEvents,
             }
-            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
+            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
@@ -5296,7 +5338,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'quick',
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             })
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
@@ -5323,7 +5365,7 @@ export default function clientPlugin() {
               title: '', text: view.sourceText || '',
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'standard',
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             })
             if (res && res.error) {
               setVerifyPhase('idle'); verifyBusyRef.current = false
@@ -5348,7 +5390,7 @@ export default function clientPlugin() {
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             })
             if (res && res.error) { setFactPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setFactTaskId(res.taskId)
@@ -5425,7 +5467,7 @@ export default function clientPlugin() {
               graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               target: questionTarget || { kind: 'graph', id: null },
               question: q,
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
             })
             if (res && res.error) { setQuestionPhase('idle'); setError(res.error); return }
             if (res && res.taskId) setQuestionTaskId(res.taskId)
@@ -5812,7 +5854,7 @@ export default function clientPlugin() {
                   h('div', { className: 'kg-panel-head' },
                     h('h3', { className: 'kg-section-title' }, '轨迹 ⇄ 知识图'),
                     h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                      h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
+                      h(JSpaceToggle, null), h(ModelPicker, { value: modelChoice, onChange: handleModelChange }),
                       h('button', { type: 'button', className: 'kg-primary kg-append-btn', onClick: appendExtract }, '追加新事件'),
                       h('button', { type: 'button', className: 'kg-secondary', onClick: extract }, '重新拆解'),
                     ),
@@ -5856,7 +5898,7 @@ export default function clientPlugin() {
                       ? '自动读取本会话的完整轨迹（用户消息、工具调用、工具结果、AI 回复），用 AI 拆解出「查到了什么事实、做出了什么推论、用了什么方法」，并在图与轨迹事件之间双向定位。'
                       : '未获取到会话上下文，请先在本会话中发言后再试。'),
                   h('div', { className: 'kg-actions' },
-                    h('span', { style: { marginRight: 'auto' } }, h(ModelPicker, { value: modelChoice, onChange: handleModelChange })),
+                    h('span', { style: { marginRight: 'auto', display: 'flex', alignItems: 'center', gap: 8 } }, h(JSpaceToggle, null), h(ModelPicker, { value: modelChoice, onChange: handleModelChange })),
                     h('button', {
                       type: 'button', className: 'kg-primary',
                       disabled: !sessionId,
