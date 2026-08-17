@@ -158,6 +158,22 @@
         subscribe(fn) { selListeners.add(fn); return () => selListeners.delete(fn) },
       }
 
+      // Inbox for "make a knowledge graph from this session's attached
+      // documents": the composer button pushes a session id, WorkbenchBody
+      // consumes it and auto-starts extraction from the attachment files.
+      const docListeners = new Set()
+      let docRequest = null
+      const docStore = {
+        get() { return docRequest },
+        request(sessionId) {
+          docRequest = { sessionId, seq: (docRequest ? docRequest.seq : 0) + 1 }
+          for (const fn of docListeners) fn()
+          winStore.setOpen(true)
+        },
+        clear() { docRequest = null; for (const fn of docListeners) fn() },
+        subscribe(fn) { docListeners.add(fn); return () => docListeners.delete(fn) },
+      }
+
       // ----------------------------- history -----------------------------
       function normalizeStoredGraph(g) {
         if (!g || typeof g !== 'object') return { nodes: [], edges: [] }

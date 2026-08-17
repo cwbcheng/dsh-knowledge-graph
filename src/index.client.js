@@ -238,6 +238,8 @@ export default function clientPlugin() {
 .kg-sidebar-btn:hover { background: rgba(127,127,127,0.16); }
 .kg-header-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 10px; font-size: 12.5px; font-family: inherit; }
 .kg-header-btn:hover { background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.28); }
+.kg-doc-import-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 8px; font-size: 12px; font-family: inherit; white-space: nowrap; }
+.kg-doc-import-btn:hover { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
 .kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .kg-history-head .kg-section-title { margin: 0; }
 .kg-history-list { display: flex; flex-direction: column; gap: 8px; }
@@ -419,6 +421,22 @@ export default function clientPlugin() {
         },
         clear() { selInbox = null; for (const fn of selListeners) fn() },
         subscribe(fn) { selListeners.add(fn); return () => selListeners.delete(fn) },
+      }
+
+      // Inbox for "make a knowledge graph from this session's attached
+      // documents": the composer button pushes a session id, WorkbenchBody
+      // consumes it and auto-starts extraction from the attachment files.
+      const docListeners = new Set()
+      let docRequest = null
+      const docStore = {
+        get() { return docRequest },
+        request(sessionId) {
+          docRequest = { sessionId, seq: (docRequest ? docRequest.seq : 0) + 1 }
+          for (const fn of docListeners) fn()
+          winStore.setOpen(true)
+        },
+        clear() { docRequest = null; for (const fn of docListeners) fn() },
+        subscribe(fn) { docListeners.add(fn); return () => docListeners.delete(fn) },
       }
 
       // ----------------------------- history -----------------------------
@@ -3233,6 +3251,19 @@ export default function clientPlugin() {
         )
       }
 
+      // Composer button: "make a knowledge graph from this session's attached
+      // documents". Reads the dsh-paste-input attachment marker host-side.
+      function DocImportButton({ sessionId }) {
+        return h('button', {
+          type: 'button', className: 'kg-doc-import-btn',
+          'aria-label': '把附件文档生成知识图', title: '把当前会话里已发送的附件文档生成知识图',
+          onClick: () => docStore.request(sessionId),
+        },
+          h('span', { 'aria-hidden': 'true' }, '📄'),
+          h('span', null, '知识图'),
+        )
+      }
+
       // ---- manual model selection (拆分 / 追加 / 审校 / 质疑 / 外部核查共用) ----
       const LS_MODEL = 'dsh-kg-model-v1'
       const MODEL_KEY_SEP = '::'
@@ -3525,6 +3556,36 @@ export default function clientPlugin() {
           }
         }, [selIn ? selIn.seq : 0])
 
+        // ---- consume composer attachment request (附件文档 -> knowledge graph) ----
+        const docReq = useSyncExternalStore(docStore.subscribe, docStore.get)
+        useEffect(() => {
+          if (!docReq || !docReq.sessionId) return
+          docStore.clear()
+          setError(null)
+          toastStore.show('正在读取附件文档…')
+          let disposed = false
+          ;(async () => {
+            try {
+              const res = await host.call('document-import', { sessionId: docReq.sessionId })
+              if (disposed) return
+              if (res && res.error) { setError(res.error); return }
+              if (!res || !res.text || !res.text.trim()) { setError({ message: '附件文档没有可用的正文' }); return }
+              const warnings = Array.isArray(res.warnings) ? res.warnings : []
+              resetAll()
+              setTitle(typeof res.title === 'string' ? res.title : '')
+              setText(res.text)
+              setFullText(res.text)
+              if (warnings.length > 0) setError({ message: warnings.join('；') })
+              toastStore.show('已读取 ' + (Array.isArray(res.files) ? res.files.length : 1) + ' 个附件文档，开始生成知识图…')
+              submit(res.text, typeof res.title === 'string' ? res.title : '')
+            } catch (e) {
+              if (disposed) return
+              setError({ message: '读取附件文档失败：' + (e && e.message ? e.message : '未知错误') })
+            }
+          })()
+          return () => { disposed = true }
+        }, [docReq ? docReq.seq : 0])
+
         // ---- adaptive-backoff polling while a task runs ----
         useEffect(() => {
           if (!taskId) return
@@ -3792,13 +3853,16 @@ export default function clientPlugin() {
           return () => { disposed = true; if (stop) stop() }
         }, [factTaskId])
 
-        const submit = async (overrideText) => {
+        const submit = async (overrideText, overrideTitle) => {
           const t = (overrideText != null ? overrideText : text).trim()
+          const ti = typeof overrideTitle === 'string' && overrideTitle.trim() ? overrideTitle.trim().slice(0, 200) : title
           if (!t) { setError({ message: '请先粘贴资料正文' }); return }
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
+          if (overrideTitle != null) setTitle(ti)
+          if (overrideText != null) setText(t)
           cancelVerifyTasks()
           setError(null)
-          const payload = { title, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) }
+          const payload = { title: ti, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) }
           submittedRef.current = payload
           setExtractProgress(null)
           setPhase('extracting')
@@ -5838,6 +5902,11 @@ export default function clientPlugin() {
       slots.inject('conversation.session.header.actions', () => slots.register(
         { name: 'conversation.session.header.actions', id: 'kg-workbench-launcher', label: '知识图' },
         () => h(HeaderLauncher, null),
+      ))
+
+      slots.inject('conversation.input.left', () => slots.register(
+        { name: 'conversation.input.left', id: 'kg-document-import', order: -80, label: '附件生成知识图', inject: (sessionId) => ({ sessionId }) },
+        (props) => h(DocImportButton, { sessionId: props ? props.sessionId : undefined }),
       ))
 
       slots.inject('conversation.view', () => slots.register(

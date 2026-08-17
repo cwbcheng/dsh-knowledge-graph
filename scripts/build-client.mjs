@@ -50,6 +50,14 @@ window.__ModuleLoader__.load({
         const res = await fetch("/api/dsh-knowledge-graph/list-models", { cache: "no-store" })
         return res.json()
       }
+      if (method === "document-import") {
+        const res = await fetch("/api/dsh-knowledge-graph/document-import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        return res.json()
+      }
       if (method === "extract") {
         const res = await fetch("/api/dsh-knowledge-graph/extract", {
           method: "POST",
@@ -143,6 +151,7 @@ if (!c.includes("host.call('question-graph'")) throw new Error('question-graph c
 if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not found')
 if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
 if (!c.includes("host.call('list-models'")) throw new Error('list-models call not found')
+if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
 c = c.split("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")
@@ -154,6 +163,7 @@ c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
 c = c.split("host.call('list-models'").join("rpc('list-models'")
+c = c.split("host.call('document-import'").join("rpc('document-import'")
 
 // tail: close apply + module
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')

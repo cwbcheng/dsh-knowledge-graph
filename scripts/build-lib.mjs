@@ -66,6 +66,51 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-import') {
+              const raw = await readBody(req, 524288)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+              if (!sessionId) return writeJson(res, 200, { error: { code: 'no_session', message: '缺少会话 id，无法读取附件' } })
+              const sessions = ctx.get('sessions')
+              const session = sessions ? sessions.get(sessionId) : undefined
+              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话，请先在对话中发送一条带附件的消息' } })
+              const collected = await collectDocumentAttachmentsHost(sessionId, session)
+              if (collected.found.length === 0) {
+                return writeJson(res, 200, {
+                  error: { code: 'no_attachment', message: '当前会话没有检测到附件文档。请用附件插件（粘贴/拖拽/回形针）发送文档后再试。' },
+                  warnings: collected.warnings,
+                })
+              }
+              let text = ''
+              let remaining = MAX_TEXT
+              let truncated = false
+              const files = []
+              for (const f of collected.found) {
+                const prefix = '==== 文件：' + f.name + ' ====' + NL
+                const body = f.text || ''
+                let part = prefix + body
+                if (part.length > remaining) {
+                  part = part.slice(0, remaining)
+                  truncated = true
+                }
+                text += part + NL + NL
+                remaining -= part.length + 2
+                files.push({ name: f.name, path: f.path, format: f.format || 'text', bytes: f.bytes || 0, chars: body.length, warning: f.warning || null })
+                if (remaining <= 0) break
+              }
+              const names = files.map((f) => f.name).join('、')
+              const baseTitle = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, '') : (files.length + ' 份附件')
+              return writeJson(res, 200, {
+                title: (baseTitle || '附件文档').slice(0, 60),
+                text,
+                files,
+                names,
+                truncated,
+                warnings: collected.warnings,
+              })
+            }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/list-models') {
               const llm = ctx.get('llm')
               const providers = []
