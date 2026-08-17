@@ -1129,10 +1129,11 @@ export default function hostPlugin() {
           throw err
         }
         const task = activeTask
-        let out = ''
-        let reasoning = ''
+        const outByIndex = new Map()
+        const reasonByIndex = new Map()
         let cancelled = false
         let receivedAny = false
+        let chunkTypes = ''
         const collecting = (async () => {
           const controller = new AbortController()
           let iter = null
@@ -1187,17 +1188,33 @@ export default function hostPlugin() {
                 cancelled = true
                 break
               }
-              if (chunk && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')) {
+              if (!chunk || typeof chunk !== 'object') continue
+              if (chunkTypes.length < 80 && chunk.type) chunkTypes += (chunkTypes ? ',' : '') + chunk.type
+              if (chunk.type === 'text-delta') {
                 receivedAny = true
-                if (chunk.type === 'text-delta') out += chunk.text
-                else reasoning += chunk.text
-                if (task) {
-                  task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
-                  task.progress.stage = chunk.type === 'text-delta' ? '模型生成中…' : '模型思考中…'
-                  task.progress.charsReceived = out.length + reasoning.length
-                  task.progress.warning = null
-                  task.progress.updatedAt = Date.now()
+                outByIndex.set(chunk.index, (outByIndex.get(chunk.index) || '') + chunk.text)
+              } else if (chunk.type === 'reasoning-delta') {
+                receivedAny = true
+                reasonByIndex.set(chunk.index, (reasonByIndex.get(chunk.index) || '') + chunk.text)
+              } else if (chunk.type === 'block-end' && chunk.block) {
+                // Some providers deliver the assembled block only (no deltas).
+                // Avoid double counting when deltas were already streamed.
+                if (chunk.block.type === 'text' && typeof chunk.block.text === 'string' && !outByIndex.has(chunk.index)) {
+                  receivedAny = true
+                  outByIndex.set(chunk.index, chunk.block.text)
+                } else if (chunk.block.type === 'reasoning' && typeof chunk.block.text === 'string' && !reasonByIndex.has(chunk.index)) {
+                  receivedAny = true
+                  reasonByIndex.set(chunk.index, chunk.block.text)
                 }
+              }
+              if (receivedAny && task) {
+                task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
+                task.progress.stage = chunk.type === 'reasoning-delta' || (chunk.block && chunk.block.type === 'reasoning') ? '模型思考中…' : '模型生成中…'
+                const outLen = Array.from(outByIndex.values()).reduce((n, s) => n + s.length, 0)
+                const reasonLen = Array.from(reasonByIndex.values()).reduce((n, s) => n + s.length, 0)
+                task.progress.charsReceived = outLen + reasonLen
+                task.progress.warning = null
+                task.progress.updatedAt = Date.now()
               }
             }
           } finally {
@@ -1212,9 +1229,12 @@ export default function hostPlugin() {
             err.code = 'cancelled'
             throw err
           }
+          const out = Array.from(outByIndex.values()).join('')
+          const reasoning = Array.from(reasonByIndex.values()).join('')
           if (!out.trim()) {
             if (reasoning.trim()) throw new Error('模型只输出了思考过程（' + reasoning.length + ' 字），没有给出 JSON；请更换模型后重试')
-            throw new Error('模型没有返回任何内容；请更换模型后重试')
+            const detail = chunkTypes ? '（收到流事件类型：' + chunkTypes + '）' : '（未收到任何流事件）'
+            throw new Error('模型没有返回任何内容' + detail + '；请更换模型后重试')
           }
           return out
         })()
