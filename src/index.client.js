@@ -618,6 +618,21 @@ export default function clientPlugin() {
       function csvTable(headers, rows) {
         return [headers, ...rows].map((row) => row.map(csvValue).join(',')).join(NL) + NL
       }
+      function downloadBrowserBlob(blob, filename, ctx) {
+        if (!blob || typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = filename
+        anchor.style.display = 'none'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        const revoke = () => { try { URL.revokeObjectURL(url) } catch (e) {} }
+        if (ctx && typeof ctx.timeout === 'function') ctx.timeout(revoke, 1200)
+        else revoke()
+        return true
+      }
       function exportGraphFile(graph, title, kind, ctx) {
         if (!graph || typeof graph !== 'object' || !Array.isArray(graph.nodes)) return null
         const source = graph.source && typeof graph.source === 'object' ? graph.source : {}
@@ -640,19 +655,75 @@ export default function clientPlugin() {
           )
           mime = 'text/csv;charset=utf-8'
         }
-        if (typeof Blob === 'undefined' || typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null
-        const url = URL.createObjectURL(new Blob([content], { type: mime }))
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = filename
-        anchor.style.display = 'none'
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
-        const revoke = () => { try { URL.revokeObjectURL(url) } catch (e) {} }
-        if (ctx && typeof ctx.timeout === 'function') ctx.timeout(revoke, 1200)
-        else revoke()
+        if (typeof Blob === 'undefined' || !downloadBrowserBlob(new Blob([content], { type: mime }), filename, ctx)) return null
         return filename
+      }
+      function exportRenderedGraphImage(container, title, ctx) {
+        return new Promise((resolve, reject) => {
+          try {
+            if (!container || typeof container.querySelector !== 'function' || typeof XMLSerializer === 'undefined' || typeof Image === 'undefined') {
+              resolve(null)
+              return
+            }
+            const svg = container.querySelector('svg')
+            if (!svg || typeof svg.cloneNode !== 'function') { resolve(null); return }
+            const rect = container.getBoundingClientRect()
+            const width = Math.max(320, Math.round(rect.width || 0))
+            const height = Math.max(240, Math.round(rect.height || 0))
+            const clone = svg.cloneNode(true)
+            const svgNs = 'http://www.w3.org/2000/svg'
+            clone.setAttribute('xmlns', svgNs)
+            clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
+            clone.setAttribute('width', String(width))
+            clone.setAttribute('height', String(height))
+            clone.setAttribute('viewBox', '0 0 ' + width + ' ' + height)
+            const computed = typeof getComputedStyle === 'function' ? getComputedStyle(container) : null
+            const textColor = computed && computed.getPropertyValue('--kg-text').trim() ? computed.getPropertyValue('--kg-text').trim() : '#1f2937'
+            const panelColor = computed && computed.getPropertyValue('--kg-panel').trim() ? computed.getPropertyValue('--kg-panel').trim() : '#ffffff'
+            const borderColor = computed && computed.getPropertyValue('--kg-border').trim() ? computed.getPropertyValue('--kg-border').trim() : '#cbd5e1'
+            const style = document.createElementNS(svgNs, 'style')
+            style.textContent = 'text{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.kg-node-name{fill:' + textColor + '}.kg-edge-label rect{fill:' + panelColor + ';stroke:' + borderColor + ';stroke-width:1}.kg-edge-label text{fill:' + textColor + ';font-size:10px;font-weight:500}'
+            const background = document.createElementNS(svgNs, 'rect')
+            background.setAttribute('x', '0')
+            background.setAttribute('y', '0')
+            background.setAttribute('width', String(width))
+            background.setAttribute('height', String(height))
+            background.setAttribute('fill', panelColor)
+            clone.insertBefore(background, clone.firstChild)
+            clone.insertBefore(style, clone.firstChild)
+            const svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }))
+            const image = new Image()
+            image.onload = () => {
+              try {
+                const scale = 2
+                const canvas = document.createElement('canvas')
+                canvas.width = width * scale
+                canvas.height = height * scale
+                const context = canvas.getContext('2d')
+                if (!context) throw new Error('当前浏览器不支持 Canvas')
+                context.fillStyle = panelColor
+                context.fillRect(0, 0, canvas.width, canvas.height)
+                context.drawImage(image, 0, 0, canvas.width, canvas.height)
+                canvas.toBlob((blob) => {
+                  try { URL.revokeObjectURL(svgUrl) } catch (e) {}
+                  if (!blob) { reject(new Error('PNG 生成失败')); return }
+                  const filename = exportFilePart(title, 'knowledge-graph') + '.png'
+                  resolve(downloadBrowserBlob(blob, filename, ctx) ? filename : null)
+                }, 'image/png')
+              } catch (error) {
+                try { URL.revokeObjectURL(svgUrl) } catch (e) {}
+                reject(error)
+              }
+            }
+            image.onerror = () => {
+              try { URL.revokeObjectURL(svgUrl) } catch (e) {}
+              reject(new Error('图像渲染失败'))
+            }
+            image.src = svgUrl
+          } catch (error) {
+            reject(error)
+          }
+        })
       }
       function GraphExportActions({ graph, title, ctx }) {
         const runExport = (kind) => {
@@ -2363,7 +2434,7 @@ export default function clientPlugin() {
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues }) {
+      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
         const containerRef = useRef(null)
         const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
         const [dragging, setDragging] = useState(false)
@@ -2612,6 +2683,15 @@ export default function clientPlugin() {
           const el = containerRef.current
           if (!el) return
           setView((v) => zoomAround(v, 1 / v.k, el.clientWidth / 2, el.clientHeight / 2))
+        }
+        const exportImage = async () => {
+          try {
+            const filename = await exportRenderedGraphImage(containerRef.current, exportTitle || 'knowledge-graph', ctx)
+            if (filename) toastStore.show('已导出图片 ' + filename)
+            else toastStore.show('当前浏览器不支持图片下载')
+          } catch (error) {
+            toastStore.show('图片导出失败：' + (error && error.message ? error.message : '未知错误'))
+          }
         }
 
         // Verification issue overlays: only OPEN (or accepted-but-not-applied)
@@ -2957,6 +3037,7 @@ export default function clientPlugin() {
               title: '切换布局形态',
               onChange: (e) => onLayoutModeChange(e.target.value),
             }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))),
+            h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG'),
             h('button', { type: 'button', 'aria-label': '缩小（10%）', onClick: () => zoomBy(-0.1) }, '−'),
             h('button', { type: 'button', 'aria-label': '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),
             h('button', { type: 'button', 'aria-label': '放大（10%）', onClick: () => zoomBy(0.1) }, '+'),
@@ -5141,6 +5222,7 @@ export default function clientPlugin() {
                       onQuestionNode: handleQuestionNode, onQuestionEdge: handleQuestionEdge,
                       onDeleteEdge: handleDeleteEdge,
                       onOpenNodeIssues: handleOpenNodeIssues,
+                      exportTitle: title,
                     }),
                     h('div', { className: 'kg-legend' },
                       TYPE_ORDER.map((t) => h('span', { key: t, className: 'kg-legend-item' },
@@ -6317,6 +6399,7 @@ export default function clientPlugin() {
                       onQuestionNode: handleQuestionNode, onQuestionEdge: handleQuestionEdge,
                       onDeleteEdge: handleDeleteEdge,
                       onOpenNodeIssues: handleOpenNodeIssues,
+                      exportTitle: '轨迹知识图',
                     }),
                     h('div', { className: 'kg-legend' },
                       TYPE_ORDER.map((t) => h('span', { key: t, className: 'kg-legend-item' },

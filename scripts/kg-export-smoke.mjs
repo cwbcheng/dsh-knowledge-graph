@@ -8,6 +8,7 @@ const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 
 const start = source.indexOf('function exportFilePart')
 const end = source.indexOf('function GraphExportActions')
 assert(start >= 0 && end > start, 'export helper block is missing')
+assert(source.includes('function exportRenderedGraphImage') && source.includes('导出知识图 PNG 图片'), 'PNG image export control is missing')
 const helpers = source.slice(start, end)
 const factory = new Function('NL', helpers + '\nreturn { exportGraphFile }')
 const { exportGraphFile } = factory('\n')
