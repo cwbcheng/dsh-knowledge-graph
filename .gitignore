@@ -2,3 +2,6 @@ node_modules/
 .history/
 *.log
 .DS_Store
+.dsh-knowledge-graph.sqlite*
+data/*.sqlite*
+data/*.db*

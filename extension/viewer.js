@@ -16,8 +16,11 @@
 
       const NL = String.fromCharCode(10)
       const IDEO_SPACE = String.fromCharCode(12288)
-      const MAX_LEN = 20000
+      // The host chunks book-sized sources; the client only stores the text and
+      // anchors, so keep the same source ceiling for pasted/attached material.
+      const MAX_LEN = 1000000
       const LS_PENDING = 'dsh-kg-pending-v1'
+       const LS_CHECKPOINT = 'dsh-kg-checkpoint-v1'
       const LS_RESULT = 'dsh-kg-result-v1'
       const LS_DRAFT = 'dsh-kg-draft-v1'
       const LS_WIN = 'dsh-kg-win-v1'
@@ -158,15 +161,15 @@
         subscribe(fn) { selListeners.add(fn); return () => selListeners.delete(fn) },
       }
 
-      // Inbox for "make a knowledge graph from this session's attached
-      // documents": the composer button pushes a session id, WorkbenchBody
-      // consumes it and auto-starts extraction from the attachment files.
+      // Inbox for "make a knowledge graph from the composer attachments": the
+      // button serializes the still-unsent attachment references, then
+      // WorkbenchBody consumes their host-side marker and starts extraction.
       const docListeners = new Set()
       let docRequest = null
       const docStore = {
         get() { return docRequest },
-        request(sessionId) {
-          docRequest = { sessionId, seq: (docRequest ? docRequest.seq : 0) + 1 }
+        request(sessionId, pendingText) {
+          docRequest = { sessionId, pendingText: typeof pendingText === 'string' ? pendingText : '', seq: (docRequest ? docRequest.seq : 0) + 1 }
           for (const fn of docListeners) fn()
           winStore.setOpen(true)
         },

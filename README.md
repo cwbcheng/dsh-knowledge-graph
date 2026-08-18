@@ -11,7 +11,7 @@
 
 ## 它能做什么
 
-- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。长文档自动分批处理，刷新 / 重开窗口后自动恢复轮询结果。
+- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字的书级正文；Host 按内容块分批处理，并生成确定性的来源 ID、章节地图、chunk ID 与逐节点 evidence；刷新 / 重开窗口后自动恢复轮询，Host 重启或任务失败时可从浏览器保存的 checkpoint 继续未完成内容块。
 - **7 类节点 / 6 类关系**：
   - 节点：`fact` 事实 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
   - 关系：`supports` 支持 · `example` 例子 · `counter_example` 反例 · `defines` 定义 · `infers` 推断 · `causes` 因果。
@@ -88,6 +88,7 @@ cd dsh-knowledge-graph
 | --- | --- |
 | [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎（本地体检、LLM 审校、二次复核） |
 | [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、验证与质疑面板、修复应用/审计、历史、宽高调节、轨迹知识图标签页 |
+| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite 持久化层：文档、内容块、节点、关系、证据、候选实体/声明与抽取 checkpoint |
 
 ### 2. 安装（二选一）
 
@@ -127,7 +128,7 @@ pnpm install
 
 | 文件 | 作用（常驻包） |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status） |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status）+ 自动 SQLite 图 / checkpoint 持久化 |
 | [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
 
@@ -146,6 +147,34 @@ pnpm install
 - 任意对话的**标题右侧**（对话头部操作行）出现「知识图」按钮；
 - 点击弹出**浮动工作台**，粘贴一段正文 → **AI 拆分**，约 15–40 秒后得到知识图；
 - 对话区顶部出现第三个标签页「轨迹知识图」（对话 / 轨迹 / 轨迹知识图），点击 → **拆解本会话轨迹**，约 15–40 秒后得到该会话的轨迹知识图。
+
+### 5. SQLite 持久化与 CLI
+
+CLI 使用 Node `node:sqlite`，当前要求 Node 22.5+；不需要额外 npm 依赖。它适合把浏览器或 Host 导出的 `KnowledgeGraphDto` 落盘，再进行候选实体 / 声明的人工审核。
+
+```bash
+# 初始化数据库
+npm run kg -- init --db ./data/knowledge.sqlite
+
+# 导入抽取结果（JSON 文件可直接来自 task.result）
+npm run kg -- import-graph --db ./data/knowledge.sqlite --input ./graph.json
+
+# 查看候选实体或声明
+npm run kg -- list-candidates --db ./data/knowledge.sqlite --kind entity --status candidate
+npm run kg -- list-candidates --db ./data/knowledge.sqlite --kind claim --status candidate
+
+# 接受 / 驳回候选
+npm run kg -- set-candidate --db ./data/knowledge.sqlite --kind entity --id ent_xxx --status accepted
+npm run kg -- set-candidate --db ./data/knowledge.sqlite --kind claim --id clm_xxx --status rejected
+
+# 查看已持久化文档与 checkpoint
+npm run kg -- list-documents --db ./data/knowledge.sqlite
+npm run kg -- show-document --db ./data/knowledge.sqlite --id document_xxx
+npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.json --run-id run_xxx
+npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
+```
+
+常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
 ## 更新插件
 
@@ -221,14 +250,24 @@ pnpm install
 - **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃；验证/质疑输入限制最多 800 个节点，避免恶意大图拖垮 Host。
 - **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`（仅保存变化节点的 before/after 快照，防止 localStorage 膨胀）；追加拆分后旧报告自动标记 `stale`。
 - **任务可观测、可取消，而非超时即失败**：模型任务跑到完成或由用户取消为止；进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮，慢流不会被静默判死。
+- **逐内容块 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、部分图、staging chunk 摘要和来源身份；客户端轮询时写入 `localStorage`，任务失联或失败后最多自动续跑一次，已经完成的 chunk 不会重复调用。
 - **前端自包含**：布局、力导向、双向定位、历史、验证面板、补丁应用均在浏览器完成，Host 只做最薄的异步任务管理。
+- **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；用户可以通过 CLI 将 candidate 标记为 accepted 或 rejected。
+- **可插拔声明抽取器**：Host 可选读取 `kgExtractor` 服务；它实现 `extractChunk(input)`，输入一个自有 JSON 内容块和已有节点 id，返回标准图对象或 JSON 文本。未提供时自动回退到当前 LLM 路径，因此动态插件和常驻包都不增加硬依赖。
 
 ## 数据契约
 
 ```
-KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[], verification? }
-Node  { id, type, typeLabel?, text, quote?, paragraph?, offsetHint? }
-Edge  { fromNodeId, toNodeId, relation, relationLabel? }
+KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], verification? }
+Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
+Staging { sourceId, documentId, chunkCount, chunks[] }
+Checkpoint { version: 1, sourceId, documentId, nextBatchIndex, totalBatches, graph, staging }
+EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
+ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
+ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }
+GraphExtractorService { extractChunk({ title, chunk, paragraphOffset, existingNodeIds, prompt, attempt }) -> KnowledgeGraphBatch | JSON }
+Node  { id, type, typeLabel?, text, quote?, paragraph?, evidence?, documentId?, sourceId?, chunkId?, sectionId?, sectionTitle? }
+Edge  { fromNodeId, toNodeId, relation, relationLabel?, evidence?, documentId?, sourceId?, chunkId? }
 
 GraphVerification {
   lastReport?: VerificationReport,

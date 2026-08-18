@@ -31,10 +31,12 @@
 
 export default function clientPlugin() {
   return {
-    inject: ['timer'],
+    inject: ['slots', 'timer', 'sessions', 'inputTriggers'],
     async apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
+      const sessions = ctx.get('sessions')
+      const inputTriggers = ctx.get('inputTriggers')
 
       // ----------------------------- styles -----------------------------
       styles.insert(`
@@ -239,7 +241,8 @@ export default function clientPlugin() {
 .kg-header-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 10px; font-size: 12.5px; font-family: inherit; }
 .kg-header-btn:hover { background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.28); }
 .kg-doc-import-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 8px; font-size: 12px; font-family: inherit; white-space: nowrap; }
-.kg-doc-import-btn:hover { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
+.kg-doc-import-btn:hover:not(:disabled) { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
+.kg-doc-import-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kg-jspace-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--kg-text-dim); cursor: pointer; white-space: nowrap; }
 .kg-jspace-toggle input { margin: 0; accent-color: #3b82f6; }
 .kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
@@ -283,8 +286,11 @@ export default function clientPlugin() {
 
       const NL = String.fromCharCode(10)
       const IDEO_SPACE = String.fromCharCode(12288)
-      const MAX_LEN = 20000
+      // The host chunks book-sized sources; the client only stores the text and
+      // anchors, so keep the same source ceiling for pasted/attached material.
+      const MAX_LEN = 1000000
       const LS_PENDING = 'dsh-kg-pending-v1'
+       const LS_CHECKPOINT = 'dsh-kg-checkpoint-v1'
       const LS_RESULT = 'dsh-kg-result-v1'
       const LS_DRAFT = 'dsh-kg-draft-v1'
       const LS_WIN = 'dsh-kg-win-v1'
@@ -425,15 +431,15 @@ export default function clientPlugin() {
         subscribe(fn) { selListeners.add(fn); return () => selListeners.delete(fn) },
       }
 
-      // Inbox for "make a knowledge graph from this session's attached
-      // documents": the composer button pushes a session id, WorkbenchBody
-      // consumes it and auto-starts extraction from the attachment files.
+      // Inbox for "make a knowledge graph from the composer attachments": the
+      // button serializes the still-unsent attachment references, then
+      // WorkbenchBody consumes their host-side marker and starts extraction.
       const docListeners = new Set()
       let docRequest = null
       const docStore = {
         get() { return docRequest },
-        request(sessionId) {
-          docRequest = { sessionId, seq: (docRequest ? docRequest.seq : 0) + 1 }
+        request(sessionId, pendingText) {
+          docRequest = { sessionId, pendingText: typeof pendingText === 'string' ? pendingText : '', seq: (docRequest ? docRequest.seq : 0) + 1 }
           for (const fn of docListeners) fn()
           winStore.setOpen(true)
         },
@@ -3274,16 +3280,59 @@ export default function clientPlugin() {
         )
       }
 
-      // Composer button: "make a knowledge graph from this session's attached
-      // documents". Reads the dsh-paste-input attachment marker host-side.
-      function DocImportButton({ sessionId }) {
+      // Composer button: make a knowledge graph from the attachments that are
+      // still in the composer. dsh-paste-input keeps browser File objects in
+      // its private store; serializeReference uploads the selected occurrence
+      // without sending the chat message and returns the host-side marker.
+      const PENDING_ATTACHMENT_SOURCE = 'dsh-paste-input'
+      function pendingAttachmentOccurrences(input) {
+        return input && Array.isArray(input.occurrences)
+          ? input.occurrences.filter((occurrence) => occurrence && occurrence.source === PENDING_ATTACHMENT_SOURCE && typeof occurrence.ref === 'string' && !occurrence.invalid)
+          : []
+      }
+      async function serializePendingAttachmentText(sessionId, input) {
+        const occurrences = pendingAttachmentOccurrences(input)
+        if (occurrences.length === 0) return ''
+        if (!sessions || !inputTriggers) throw new Error('附件服务尚未就绪，请稍后重试')
+        const actx = typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined
+        const controller = actx && typeof inputTriggers.sessionOf === 'function' ? inputTriggers.sessionOf(actx) : undefined
+        if (!controller || typeof controller.serializeReference !== 'function') throw new Error('当前环境不支持读取未发送附件，请刷新页面后重试')
+        const abort = typeof AbortController === 'function' ? new AbortController() : null
+        const signal = abort ? abort.signal : { aborted: false }
+        const markers = []
+        for (const occurrence of occurrences) {
+          const marker = await controller.serializeReference(occurrence.source, occurrence.ref, signal)
+          if (typeof marker === 'string' && marker.trim()) markers.push(marker)
+        }
+        return markers.join(NL + NL)
+      }
+      function DocImportButton({ sessionId, input }) {
+        const [busy, setBusy] = useState(false)
+        const pendingCount = pendingAttachmentOccurrences(input).length
+        const importPending = async () => {
+          if (busy || !sessionId || pendingCount === 0) return
+          setBusy(true)
+          try {
+            const pendingText = await serializePendingAttachmentText(sessionId, input)
+            if (!pendingText) {
+              toastStore.show('当前输入框没有可读取的未发送附件')
+              return
+            }
+            docStore.request(sessionId, pendingText)
+          } catch (e) {
+            toastStore.show('读取未发送附件失败：' + (e && e.message ? e.message : '未知错误'))
+          } finally {
+            setBusy(false)
+          }
+        }
+        const title = pendingCount > 0 ? '把输入框中未发送的附件文档生成知识图' : '请先在输入框中添加未发送的附件文档'
         return h('button', {
-          type: 'button', className: 'kg-doc-import-btn',
-          'aria-label': '把附件文档生成知识图', title: '把当前会话里已发送的附件文档生成知识图',
-          onClick: () => docStore.request(sessionId),
+          type: 'button', className: 'kg-doc-import-btn', disabled: busy || !sessionId || pendingCount === 0,
+          'aria-label': '把未发送附件文档生成知识图', title,
+          onClick: importPending,
         },
-          h('span', { 'aria-hidden': 'true' }, '📄'),
-          h('span', null, '知识图'),
+          h('span', { 'aria-hidden': 'true' }, busy ? '⏳' : '📄'),
+          h('span', null, busy ? '上传中…' : '知识图'),
         )
       }
 
@@ -3476,6 +3525,7 @@ export default function clientPlugin() {
         const hHandleRef = useRef(null)
         const hDragRef = useRef(null)
         const submittedRef = useRef(null)
+         const resumeAttemptRef = useRef(false)
         // ---- 划线拆分（select-text -> extract）----
         const [selectionText, setSelectionText] = useState(null)
         const suppressClickRef = useRef(false)
@@ -3547,6 +3597,8 @@ export default function clientPlugin() {
               text: typeof pending.text === 'string' ? pending.text : '',
               append: pending.append === true,
               baseText: typeof pending.baseText === 'string' ? pending.baseText : '',
+               documentId: typeof pending.documentId === 'string' ? pending.documentId : '',
+               prevEdgeCount: typeof pending.prevEdgeCount === 'number' ? pending.prevEdgeCount : -1,
             }
           } else if (saved && saved.graph && Array.isArray(saved.graph.nodes)) {
             const src = typeof saved.text === 'string' ? saved.text : ''
@@ -3604,7 +3656,7 @@ export default function clientPlugin() {
           let disposed = false
           ;(async () => {
             try {
-              const res = await host.call('document-import', { sessionId: docReq.sessionId })
+              const res = await host.call('document-import', { sessionId: docReq.sessionId, pending: docReq.pendingText })
               if (disposed) return
               docStore.clear()
               if (res && res.error) { setError(res.error); return }
@@ -3616,7 +3668,7 @@ export default function clientPlugin() {
               setFullText(res.text)
               if (warnings.length > 0) setError({ message: warnings.join('；') })
               toastStore.show('已读取 ' + (Array.isArray(res.files) ? res.files.length : 1) + ' 个附件文档，开始生成知识图…')
-              submit(res.text, typeof res.title === 'string' ? res.title : '')
+              submit(res.text, typeof res.title === 'string' ? res.title : '', res.manifest && typeof res.manifest.documentId === 'string' ? res.manifest.documentId : '')
             } catch (e) {
               if (disposed) return
               setError({ message: '读取附件文档失败：' + (e && e.message ? e.message : '未知错误') })
@@ -3624,6 +3676,53 @@ export default function clientPlugin() {
           })()
           return () => { disposed = true }
         }, [docReq ? docReq.seq : 0])
+         const resumeLostTask = async (statusResult) => {
+           if (resumeAttemptRef.current) return false
+           let pending = null
+           let checkpoint = statusResult && statusResult.checkpoint && statusResult.checkpoint.version === 1 ? statusResult.checkpoint : null
+           try { pending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null') } catch (e) {}
+           if (!checkpoint) {
+             try { checkpoint = JSON.parse(localStorage.getItem(LS_CHECKPOINT) || 'null') } catch (e) {}
+           }
+           const nextBatch = checkpoint && Number.isInteger(checkpoint.nextBatchIndex) ? checkpoint.nextBatchIndex : 0
+           const totalBatches = checkpoint && Number.isInteger(checkpoint.totalBatches) ? checkpoint.totalBatches : 0
+           if (!pending || !checkpoint || checkpoint.version !== 1 || nextBatch <= 0 || nextBatch > totalBatches || typeof pending.text !== 'string' || !pending.text.trim()) return false
+           resumeAttemptRef.current = true
+           const payload = {
+             title: typeof pending.title === 'string' ? pending.title : (checkpoint.title || ''),
+             text: pending.text,
+             documentId: typeof pending.documentId === 'string' && pending.documentId ? pending.documentId : (checkpoint.documentId || ''),
+             checkpoint,
+             ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+             ...(jspaceOn ? { skills: ['j-space'] } : {}),
+           }
+           try {
+             const resumed = await host.call('extract', payload)
+             if (!resumed || resumed.error || !resumed.taskId) {
+               setError(resumed && resumed.error ? resumed.error : { message: '已有 checkpoint，但无法重新提交续跑任务' })
+               return false
+             }
+             submittedRef.current = {
+               title: payload.title,
+               text: payload.text,
+               documentId: payload.documentId,
+               append: pending.append === true,
+               baseText: typeof pending.baseText === 'string' ? pending.baseText : '',
+               prevEdgeCount: typeof pending.prevEdgeCount === 'number' ? pending.prevEdgeCount : -1,
+             }
+             setTaskId(resumed.taskId)
+             setPhase('extracting')
+             setExtractProgress(null)
+             try {
+               localStorage.setItem(LS_PENDING, JSON.stringify({ ...pending, taskId: resumed.taskId, title: payload.title, documentId: payload.documentId, ts: Date.now() }))
+             } catch (e) {}
+             toastStore.show('检测到未完成 checkpoint，已从第 ' + (nextBatch + 1) + '/' + totalBatches + ' 个内容块继续')
+             return true
+           } catch (e) {
+             setError({ message: '续跑任务提交失败：' + (e && e.message ? e.message : '未知错误') })
+             return false
+           }
+         }
 
         // ---- adaptive-backoff polling while a task runs ----
         useEffect(() => {
@@ -3636,7 +3735,7 @@ export default function clientPlugin() {
             if (disposed) return
             let res = null
             try {
-              res = await host.call('task-status', { taskId })
+              res = await host.call('task-status', { taskId, includeCheckpoint: true })
             } catch (e) {
               if (disposed) return
               setPhase('idle')
@@ -3645,7 +3744,13 @@ export default function clientPlugin() {
               return
             }
             if (disposed) return
-            if (res && res.status === 'running') setExtractProgress(res.progress || null)
+            if (res && res.status === 'running') {
+               setExtractProgress(res.progress || null)
+               const checkpoint = res.checkpoint || (res.progress && res.progress.checkpoint) || null
+               if (checkpoint && checkpoint.version === 1) {
+                 try { localStorage.setItem(LS_CHECKPOINT, JSON.stringify(checkpoint)) } catch (e) {}
+               }
+             }
             if (res && res.status === 'succeeded') {
               const g = res.result
               if (g && Array.isArray(g.nodes)) {
@@ -3706,7 +3811,8 @@ export default function clientPlugin() {
                 }
                 try {
                   localStorage.removeItem(LS_PENDING)
-                  localStorage.setItem(LS_RESULT, JSON.stringify({ title: sub.title, text: viewText, graph: g2, ts: Date.now() }))
+                  localStorage.removeItem(LS_CHECKPOINT)
+                   localStorage.setItem(LS_RESULT, JSON.stringify({ title: sub.title, text: viewText, graph: g2, ts: Date.now() }))
                 } catch (e) {}
               } else {
                 setPhase('idle')
@@ -3720,7 +3826,8 @@ export default function clientPlugin() {
               setPhase('idle')
               setTaskId(null)
               setExtractProgress(null)
-              try { localStorage.removeItem(LS_PENDING) } catch (e) {}
+              if (res.status !== 'cancelled' && await resumeLostTask(res)) return
+               try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_CHECKPOINT) } catch (e) {}
               const err = res.error || {}
               setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 拆分失败，请稍后重试') })
               return
@@ -3729,7 +3836,8 @@ export default function clientPlugin() {
               setPhase('idle')
               setTaskId(null)
               setExtractProgress(null)
-              try { localStorage.removeItem(LS_PENDING) } catch (e) {}
+              if (res.status !== 'cancelled' && await resumeLostTask(res)) return
+               try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_CHECKPOINT) } catch (e) {}
               setError({ message: '拆分任务已过期（服务可能已重启），请重新提交' })
               return
             }
@@ -3892,7 +4000,7 @@ export default function clientPlugin() {
           return () => { disposed = true; if (stop) stop() }
         }, [factTaskId])
 
-        const submit = async (overrideText, overrideTitle) => {
+        const submit = async (overrideText, overrideTitle, overrideDocumentId) => {
           const t = (overrideText != null ? overrideText : text).trim()
           const ti = typeof overrideTitle === 'string' && overrideTitle.trim() ? overrideTitle.trim().slice(0, 200) : title
           if (!t) { setError({ message: '请先粘贴资料正文' }); return }
@@ -3901,8 +4009,16 @@ export default function clientPlugin() {
           if (overrideText != null) setText(t)
           cancelVerifyTasks()
           setError(null)
-          const payload = { title: ti, text: t, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) }
-          submittedRef.current = payload
+          const payload = {
+             title: ti,
+             text: t,
+             ...(typeof overrideDocumentId === 'string' && overrideDocumentId.trim() ? { documentId: overrideDocumentId.trim().slice(0, 160) } : {}),
+             ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+             ...(jspaceOn ? { skills: ['j-space'] } : {}),
+           }
+          resumeAttemptRef.current = false
+           try { localStorage.removeItem(LS_CHECKPOINT) } catch (e) {}
+           submittedRef.current = payload
           setExtractProgress(null)
           setPhase('extracting')
           setResultView(null)
@@ -3919,7 +4035,7 @@ export default function clientPlugin() {
             }
             setTaskId(res.taskId)
             try {
-              localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title, text: t, ts: Date.now() }))
+              localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title: ti, text: t, documentId: payload.documentId || '', ts: Date.now() }))
             } catch (e) {}
           } catch (e) {
             setPhase('idle')
@@ -3946,14 +4062,20 @@ export default function clientPlugin() {
             title,
             text: t,
             paragraphOffset: offset,
+             documentId: resultView.graph.source && resultView.graph.source.documentId ? resultView.graph.source.documentId : '',
             existing: {
               summary: typeof resultView.graph.summary === 'string' ? resultView.graph.summary : '',
               nodes: resultView.graph.nodes,
               edges: resultView.graph.edges,
+               source: resultView.graph.source,
+               staging: resultView.graph.staging,
+               documentId: resultView.graph.source && resultView.graph.source.documentId ? resultView.graph.source.documentId : '',
             },
             ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}),
           }
-          submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
+          resumeAttemptRef.current = false
+           try { localStorage.removeItem(LS_CHECKPOINT) } catch (e) {}
+           submittedRef.current = { title, text: t, append: true, baseText, prevEdgeCount: (resultView.graph.edges || []).length }
           setExtractProgress(null)
           setPhase('extracting')
           setSelectedNodeId(null)
@@ -3974,7 +4096,7 @@ export default function clientPlugin() {
             }
             setTaskId(res.taskId)
             try {
-              localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title, text: t, append: true, baseText, ts: Date.now() }))
+              localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title, text: t, append: true, baseText, documentId: payload.documentId || '', prevEdgeCount: (resultView.graph.edges || []).length, ts: Date.now() }))
             } catch (e) {}
           } catch (e) {
             setPhase('idle')
@@ -4020,7 +4142,8 @@ export default function clientPlugin() {
         }
 
         const resetAll = () => {
-          try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_RESULT); localStorage.removeItem(LS_DRAFT) } catch (e) {}
+          try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_CHECKPOINT); localStorage.removeItem(LS_RESULT); localStorage.removeItem(LS_DRAFT) } catch (e) {}
+           resumeAttemptRef.current = false
           cancelVerifyTasks()
           setTitle(''); setText(''); setTaskId(null); setPhase('idle'); setResultView(null)
           setError(null); toastStore.clear(); setSelectedNodeId(null); setSelectedEdgeId(null)
@@ -4601,6 +4724,8 @@ export default function clientPlugin() {
               const graph = resultView.graph
               const resolvedCount = graph.nodes.length - resultView.unresolved.length
               const diagCount = (graph.warnings ? graph.warnings.length : 0) + resultView.unresolved.length
+               const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
+               const stagingMeta = graph.staging && typeof graph.staging === 'object' ? graph.staging : null
               const diagLines = []
               for (const w of graph.warnings || []) diagLines.push('warning: ' + w)
               for (const u of resultView.unresolved) {
@@ -4614,7 +4739,9 @@ export default function clientPlugin() {
                   h('span', null, graph.nodes.length + ' 个节点'),
                   h('span', null, (graph.edges || []).length + ' 条关系'),
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
-                  appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
+                  sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
+                   stagingMeta && stagingMeta.chunkCount > 0 ? h('span', null, '已保留 ' + stagingMeta.chunkCount + ' 个分块结果') : null,
+                   appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
@@ -4735,7 +4862,7 @@ export default function clientPlugin() {
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
-                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
+                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符' + (extractProgress.batch && extractProgress.batch.total ? ' · 内容块 ' + extractProgress.batch.index + '/' + extractProgress.batch.total : ''))
                   : null,
                 extractProgress && extractProgress.warning
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
@@ -5033,7 +5160,13 @@ export default function clientPlugin() {
               return
             }
             if (disposed || mySeq !== sessionSeq.current) return
-            if (res && res.status === 'running') setExtractProgress(res.progress || null)
+            if (res && res.status === 'running') {
+               setExtractProgress(res.progress || null)
+               const checkpoint = res.checkpoint || (res.progress && res.progress.checkpoint) || null
+               if (checkpoint && checkpoint.version === 1) {
+                 try { localStorage.setItem(LS_CHECKPOINT, JSON.stringify(checkpoint)) } catch (e) {}
+               }
+             }
             if (res && res.status === 'succeeded') {
               const g = res.result
               if (g && Array.isArray(g.nodes)) {
@@ -5756,6 +5889,8 @@ export default function clientPlugin() {
               const graph = view.graph
               const resolvedCount = graph.nodes.length - view.unresolved.length
               const diagCount = (graph.warnings ? graph.warnings.length : 0) + view.unresolved.length
+               const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
+               const stagingMeta = graph.staging && typeof graph.staging === 'object' ? graph.staging : null
               const diagLines = []
               for (const w of graph.warnings || []) diagLines.push('warning: ' + w)
               for (const u of view.unresolved) diagLines.push('anchor_unresolved:node:' + u.id + (u.quote ? '（摘录：' + u.quote + '…）' : '（无摘录）'))
@@ -5765,7 +5900,9 @@ export default function clientPlugin() {
                   h('span', null, graph.nodes.length + ' 个节点'),
                   h('span', null, (graph.edges || []).length + ' 条关系'),
                   h('span', null, '回链事件 ' + resolvedCount + '/' + graph.nodes.length),
-                  appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
+                  sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
+                   stagingMeta && stagingMeta.chunkCount > 0 ? h('span', null, '已保留 ' + stagingMeta.chunkCount + ' 个分块结果') : null,
+                   appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
@@ -5841,7 +5978,7 @@ export default function clientPlugin() {
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 extractProgress
                   ? h('p', { className: 'kg-empty-sub' },
-                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符')
+                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符' + (extractProgress.batch && extractProgress.batch.total ? ' · 内容块 ' + extractProgress.batch.index + '/' + extractProgress.batch.total : ''))
                   : null,
                 extractProgress && extractProgress.warning
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
@@ -5946,7 +6083,10 @@ export default function clientPlugin() {
 
       slots.inject('conversation.input.left', () => slots.register(
         { name: 'conversation.input.left', id: 'kg-document-import', order: -80, label: '附件生成知识图', inject: (sessionId) => ({ sessionId }) },
-        (props) => h(DocImportButton, { sessionId: props ? props.sessionId : undefined }),
+        (props) => h(DocImportButton, {
+          sessionId: props ? props.sessionId : undefined,
+          input: props ? props.input : undefined,
+        }),
       ))
 
       slots.inject('conversation.view', () => slots.register(

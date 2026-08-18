@@ -10,7 +10,7 @@
 
 ## What it does
 
-- **Asynchronous AI extraction**: paste any text (chapters, technical docs, study notes…); a background task calls the LLM and returns a knowledge graph in ~15–40 s. Long documents are split into batches automatically; polling resumes automatically after a refresh / window reopen.
+- **Asynchronous AI extraction**: paste any text (chapters, technical docs, study notes…); a background task calls the LLM and returns a knowledge graph in ~15–40 s. Book-sized sources up to roughly 1 million characters are split into bounded chunks with deterministic document/source/chunk IDs, section metadata, and per-node evidence; polling resumes automatically after a refresh / window reopen, and a lost or failed task can continue unfinished chunks from a browser checkpoint.
 - **7 node types / 6 relation types**:
   - Nodes: `fact` · `inference` · `concept` · `definition` · `example` · `counter_example` · `rule`.
   - Relations: `supports` · `example` · `counter_example` · `defines` · `infers` · `causes`.
@@ -86,6 +86,7 @@ cd dsh-knowledge-graph
 | --- | --- |
 | [`src/index.host.js`](src/index.host.js) | Host half: async AI extraction engine (paragraph numbering, batching, schema validation, typed diagnostics, model routing, session-trace serialization) + graph verification/questioning engine (local checks, LLM audit, confirmation pass) |
 | [`src/index.client.js`](src/index.client.js) | Client half: floating workbench UI, graph rendering, two-way linking, verification & questioning panel, fix application/audit, history, width/height resizing, trajectory graph tab |
+| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite persistence: documents, chunks, nodes, edges, evidence, entity/claim candidates, and extraction checkpoints |
 
 ### 2. Install (pick one)
 
@@ -125,7 +126,7 @@ After the restart: the 「知识图」button appears at the right of each conver
 
 | File | Purpose (persistent package) |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes (POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status) |
+| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes (POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status) + automatic SQLite graph/checkpoint persistence |
 | [`lib/client.js`](lib/client.js) | Client half: `__ModuleLoader__` browser module (fetch RPC + manual style injection) |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch: inserts the `dsh-knowledge-graph` row into the composition |
 
@@ -144,6 +145,25 @@ After defining, the run enters **awaiting approval**:
 - The 「知识图」button appears at the **right of the conversation title** (header action row);
 - Click it → the **floating workbench** opens; paste a text → **AI 拆分**; a knowledge graph appears in ~15–40 s;
 - A third tab 「轨迹知识图」appears at the top of the conversation area (对话 / 轨迹 / 轨迹知识图); click it → **拆解本会话轨迹**; the session's trajectory graph appears in ~15–40 s.
+
+### 5. SQLite persistence and CLI
+
+The CLI uses Node `node:sqlite` and currently requires Node 22.5+; it has no extra npm dependency. It persists a `KnowledgeGraphDto`, then exposes evidence-bearing entity and claim candidates for human review.
+
+```bash
+npm run kg -- init --db ./data/knowledge.sqlite
+npm run kg -- import-graph --db ./data/knowledge.sqlite --input ./graph.json
+npm run kg -- list-candidates --db ./data/knowledge.sqlite --kind entity --status candidate
+npm run kg -- list-candidates --db ./data/knowledge.sqlite --kind claim --status candidate
+npm run kg -- set-candidate --db ./data/knowledge.sqlite --kind entity --id ent_xxx --status accepted
+npm run kg -- set-candidate --db ./data/knowledge.sqlite --kind claim --id clm_xxx --status rejected
+npm run kg -- list-documents --db ./data/knowledge.sqlite
+npm run kg -- show-document --db ./data/knowledge.sqlite --id document_xxx
+npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.json --run-id run_xxx
+npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
+```
+
+The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
 
 ## Updating
 
@@ -218,14 +238,24 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 - **The source is the only ground truth**: quick checks run locally on the Host using the same anchor-matching algorithm as the Client; the deep audit batches content units, reviews only the relevant sub-graph per batch, and the standard mode generates candidate issues first and then filters them with a second confirmation pass; issues without locatable evidence, with low confidence, or targeting missing graph objects are dropped Host-side; verify/question input is capped at 800 nodes to prevent crafted graphs from stalling the Host.
 - **Fixes are explicit and auditable**: the AI only proposes, the user applies (or applies all auto-fixable issues with one click); every patch writes a compact before/after snapshot of the CHANGED nodes/edges to `graph.verification.auditLog` (keeps localStorage small); appending new content marks the previous report `stale`.
 - **Tasks are observable and cancellable, not timeout-as-failure**: model work runs until it finishes or the user cancels; live progress (stage / elapsed / chars received / warnings) is surfaced and every long operation has a cancel button, so a slow stream never silently fails.
+- **SQLite candidate layer**: `src/kg-store.mjs` persists documents, chunks, nodes, edges, and evidence, then derives evidence-bearing entity and claim candidates from node types; the CLI lets a reviewer mark candidates accepted or rejected.
+- **Pluggable declaration extractor**: the Host optionally consumes a `kgExtractor` service implementing `extractChunk(input)`. It receives owned chunk JSON and existing node ids, and returns either the normalized graph object or JSON text; without the service, the existing LLM path remains the fallback.
+- **Per-chunk checkpoints**: every successful chunk records `nextBatchIndex`, the partial graph, staging summaries, and source identity; the client persists it during polling and automatically retries a lost or failed task at most once, without re-calling completed chunks.
 - **Self-contained front end**: layout, force simulation, two-way linking, history, the verification panel, and patch application all run in the browser; the Host is only a thin async task manager.
 
 ## Data contract
 
 ```
-KnowledgeGraphDto { summary: string, nodes[], edges[], warnings[], verification? }
-Node  { id, type, typeLabel?, text, quote?, paragraph?, offsetHint? }
-Edge  { fromNodeId, toNodeId, relation, relationLabel? }
+KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], verification? }
+Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
+Staging { sourceId, documentId, chunkCount, chunks[] }
+Checkpoint { version: 1, sourceId, documentId, nextBatchIndex, totalBatches, graph, staging }
+EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
+ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
+ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }
+GraphExtractorService { extractChunk({ title, chunk, paragraphOffset, existingNodeIds, prompt, attempt }) -> KnowledgeGraphBatch | JSON }
+Node  { id, type, typeLabel?, text, quote?, paragraph?, evidence?, documentId?, sourceId?, chunkId?, sectionId?, sectionTitle? }
+Edge  { fromNodeId, toNodeId, relation, relationLabel?, evidence?, documentId?, sourceId?, chunkId? }
 
 GraphVerification {
   lastReport?: VerificationReport,

@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 // read an externally prepared /tmp/kg-client-body.js; self-contained now).
 const srcClient = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const oldOpen = `  return {
-    inject: ['timer'],
+    inject: ['slots', 'timer', 'sessions', 'inputTriggers'],
     async apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return`
@@ -123,7 +123,8 @@ window.__ModuleLoader__.load({
         return res.json()
       }
       const ep = method === "trajectory-status" ? "trajectory-status" : "task-status"
-      const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId), { cache: "no-store" })
+       const checkpoint = body && body.includeCheckpoint ? "&includeCheckpoint=1" : ""
+      const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId) + checkpoint, { cache: "no-store" })
       return res.json()
     }
 
@@ -169,7 +170,7 @@ c = c.split("host.call('document-import'").join("rpc('document-import'")
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')
 const tail = `    }
 
-    exports.inject = ["slots", "timer"];
+    exports.inject = ["slots", "timer", "sessions", "inputTriggers"];
     exports.apply = apply;
     return module.exports;
   }

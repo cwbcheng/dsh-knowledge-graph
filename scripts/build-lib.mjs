@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 // ---------- HOST ----------
 // Extract the plugin body directly from the source file (previously the
@@ -27,8 +27,22 @@ const hostHeader = `/**
 export const name = 'dsh-knowledge-graph'
 // webServer hosts the RPC route; timer gives ctx.timeout/ctx.interval.
 export const inject = ['webServer', 'timer']
+import { openSqliteStore, defaultStorePath } from './kg-store.mjs'
 
-export function apply(ctx) {`
+export function apply(ctx) {
+  let sqliteStorePromise = null
+  const getSqliteStore = () => {
+    if (!sqliteStorePromise) sqliteStorePromise = openSqliteStore(defaultStorePath())
+    return sqliteStorePromise
+  }
+  const persistGraph = async (graph, task) => {
+    const store = await getSqliteStore()
+    return store.saveGraph(graph, { runId: task && task.id ? task.id : undefined })
+  }
+  const persistCheckpoint = async (checkpoint, task, status) => {
+    const store = await getSqliteStore()
+    return store.saveCheckpoint(checkpoint, { runId: task && task.id ? task.id : undefined, status })
+  }`
 
 // strip the dynamic wrapper: `return { inject, apply(ctx) {` -> header,
 // and the trailing `    },\n  }` (comma before the closing brace) -> `    }`
@@ -46,7 +60,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             const url = new URL(req.url ?? '/', 'http://dsh.local')
             const pathname = url.pathname
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/extract') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -58,7 +72,23 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
-              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, skills, createdAt: Date.now() }
+              const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+               const task = {
+                 id: 'kg-' + Date.now().toString(36) + '-' + seq,
+                 status: 'running',
+                 kind: checkpoint ? 'resume' : undefined,
+                 title,
+                 text,
+                 documentId: typeof a.documentId === 'string' && a.documentId.trim()
+                   ? a.documentId.trim().slice(0, 160)
+                   : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : ''),
+                 checkpoint,
+                 existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
+                 paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
+                 model,
+                 skills,
+                 createdAt: Date.now(),
+               }
               tasks.set(task.id, task)
               busy = true
               Promise.resolve().then(() => runTask(task)).catch((e) => {
@@ -68,19 +98,21 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-import') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
               const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+              const pendingProvided = Object.prototype.hasOwnProperty.call(a, 'pending')
+              const pendingText = pendingProvided && typeof a.pending === 'string' ? a.pending : ''
               if (!sessionId) return writeJson(res, 200, { error: { code: 'no_session', message: '缺少会话 id，无法读取附件' } })
               const sessions = ctx.get('sessions')
               const session = sessions ? sessions.get(sessionId) : undefined
-              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话，请先在对话中发送一条带附件的消息' } })
-              const collected = await collectDocumentAttachmentsHost(sessionId, session)
+              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话，无法读取当前输入框附件' } })
+              const collected = await collectDocumentAttachmentsHost(sessionId, session, pendingProvided ? pendingText : undefined)
               if (collected.found.length === 0) {
                 return writeJson(res, 200, {
-                  error: { code: 'no_attachment', message: '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用，发送后再试。' },
+                  error: { code: 'no_attachment', message: pendingProvided ? '当前输入框没有检测到可读取的未发送附件文档，请先添加文档附件。' : '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用。' },
                   warnings: collected.warnings,
                 })
               }
@@ -103,12 +135,28 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const names = files.map((f) => f.name).join('、')
               const baseTitle = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, '') : (files.length + ' 份附件')
+              const title = (baseTitle || '附件文档').slice(0, 60)
+              const importManifest = buildSourceManifestHost(title, text, splitParagraphsHost(text))
               return writeJson(res, 200, {
-                title: (baseTitle || '附件文档').slice(0, 60),
+                title,
                 text,
                 files,
                 names,
                 truncated,
+                manifest: {
+                  documentId: importManifest.documentId,
+                  sourceId: importManifest.sourceId,
+                  chars: importManifest.chars,
+                  paragraphCount: importManifest.paragraphCount,
+                  chunkCount: importManifest.chunkCount,
+                  sectionCount: importManifest.sectionCount,
+                  sections: importManifest.sections.map((section) => ({
+                    id: section.id,
+                    title: section.title,
+                    startParagraph: section.startParagraph,
+                    endParagraph: section.endParagraph,
+                  })),
+                },
                 warnings: collected.warnings,
               })
             }
@@ -146,11 +194,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
+               const includeCheckpoint = url.searchParams.get('includeCheckpoint') === '1'
               const t = tasks.get(taskId)
               if (!t) return writeJson(res, 200, { status: 'not_found' })
               if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
-              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } })
-              if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } })
+              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
+              if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
               return writeJson(res, 200, {
                 status: 'running',
                 progress: {
@@ -159,11 +208,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
                   warning: t.progress && t.progress.warning ? t.progress.warning : null,
                   model: t.progress && t.progress.model ? t.progress.model : null,
+                   batch: t.progress && t.progress.batch ? t.progress.batch : null,
+                   checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
                 },
               })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-cancel') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -179,7 +230,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { status: 'cancelling' })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -212,7 +263,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/question-graph') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -250,7 +301,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/fact-check') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -287,7 +338,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-append-extract') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -330,7 +381,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/append-extract') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -349,7 +400,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-                title, text, existing, paragraphOffset, model, skills, createdAt: Date.now(),
+                title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, skills, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -360,7 +411,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-extract') {
-              const raw = await readBody(req, 524288)
+              const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -480,4 +531,5 @@ function writeJson(res, status, body) {
 host = host.replace('      // Periodically purge finished tasks (kept for 2h after completion).', helpers + '\n      // Periodically purge finished tasks (kept for 2h after completion).')
 
 writeFileSync(new URL('../lib/index.js', import.meta.url), host)
+copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)

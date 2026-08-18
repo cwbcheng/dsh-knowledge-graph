@@ -20,6 +20,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./store": "./lib/kg-store.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -46,7 +47,9 @@
   "scripts": {
     "build": "node scripts/build-lib.mjs && node scripts/build-client.mjs && node scripts/build-viewer.mjs",
     "build:lib": "node scripts/build-lib.mjs && node scripts/build-client.mjs",
-    "build:viewer": "node scripts/build-viewer.mjs"
+    "build:viewer": "node scripts/build-viewer.mjs",
+    "kg": "node scripts/kg-cli.mjs",
+    "test:kg": "node scripts/kg-store-smoke.mjs"
   },
   "engines": {
     "node": ">=18"

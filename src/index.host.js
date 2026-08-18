@@ -25,10 +25,20 @@ export default function hostPlugin() {
     inject: ['timer'],
     apply(ctx) {
       const NL = String.fromCharCode(10)
-      const MAX_TEXT = 20000
+      // Extraction accepts a substantially larger source than one model prompt;
+      // runTask still processes it in bounded chunks. Keep the cap below the
+      // HTTP/body and browser-storage limits while allowing book-sized inputs.
+      const MAX_TEXT = 1000000
+      const MAX_TRACE_TEXT = 20000
       // buildLocalReport performs O(n²) duplicate/contradiction scans; cap
       // verification input so a crafted request cannot block the host loop.
       const MAX_VERIFY_NODES = 800
+      const MAX_GRAPH_NODES = 800
+       // Optional host capability: a composition may provide a declaration
+       // extractor service. It receives owned chunk JSON and may return either
+       // the normalized graph object or the JSON text expected from the LLM.
+       const kgExtractor = ctx.get('kgExtractor')
+       const hasKgExtractor = typeof kgExtractor === 'function' || Boolean(kgExtractor && typeof kgExtractor.extractChunk === 'function')
 
       const SYSTEM_PROMPT = [
         '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记等），正文已按内容切分为编号单元（一个编号单元可能是自然段里的若干句），[P数字] 为该单元的编号，请把它拆解为一张知识图。',
@@ -512,24 +522,121 @@ export default function hostPlugin() {
         return out
       }
 
-      function buildBatchesByParagraph(paras, max) {
+      function stableHashHost(value) {
+        let hash = 2166136261
+        const s = String(value == null ? '' : value)
+        for (let i = 0; i < s.length; i++) {
+          hash ^= s.charCodeAt(i)
+          hash = Math.imul(hash, 16777619)
+        }
+        return (hash >>> 0).toString(36)
+      }
+
+      // Turn heading-like content units into a lightweight book map. This is
+      // deliberately deterministic: the map is navigation/provenance data,
+      // not an LLM-generated claim about the source.
+      function buildSectionsHost(paras) {
+        const sections = []
+        let current = null
+        const makeSection = (title, start) => ({
+          id: 'section-' + String(sections.length + 1).padStart(3, '0') + '-' + stableHashHost(String(title || '全文') + '@' + start),
+          title: String(title || '全文').trim().slice(0, 120) || '全文',
+          startParagraph: start,
+          endParagraph: start,
+          summary: '',
+        })
+        for (let i = 0; i < paras.length; i++) {
+          const text = String(paras[i] || '').trim()
+          const fileHeading = /^={2,}\s*文件：.+\s*={2,}$/.test(text)
+          const structuralHeading = /^(?:#{1,6}\s+|第[一二三四五六七八九十百0-9]+[章节条款部分]|[一二三四五六七八九十]+[、.．]|\d+(?:\.\d+)*[、.．]?\s+)/.test(text)
+          const heading = fileHeading || structuralHeading || headingLineHost(text) ? text.slice(0, 120) : ''
+          if (!current) {
+            current = makeSection(heading || '全文', 0)
+          } else if (heading && i > current.startParagraph) {
+            current.endParagraph = i - 1
+            sections.push(current)
+            current = makeSection(heading, i)
+          }
+          current.endParagraph = i
+        }
+        if (current) sections.push(current)
+        if (sections.length === 0) sections.push(makeSection('全文', 0))
+        return sections
+      }
+
+      function buildBatchesByParagraph(paras, max, context) {
         const batches = []
+        const paragraphMeta = context && Array.isArray(context.paragraphMeta) ? context.paragraphMeta : []
         let cur = []
         let curLen = 0
+        const flush = () => {
+          if (cur.length === 0) return
+          const sectionIds = []
+          const sectionTitles = []
+          for (const unit of cur) {
+            const meta = paragraphMeta[unit.num]
+            if (!meta) continue
+            if (meta.sectionId && !sectionIds.includes(meta.sectionId)) sectionIds.push(meta.sectionId)
+            if (meta.sectionTitle && !sectionTitles.includes(meta.sectionTitle)) sectionTitles.push(meta.sectionTitle)
+          }
+          const index = batches.length + 1
+          batches.push({
+            chunkId: 'chunk-' + String(index).padStart(4, '0'),
+            units: cur,
+            startParagraph: cur[0].num,
+            endParagraph: cur[cur.length - 1].num,
+            sectionIds,
+            sectionTitles,
+          })
+          cur = []
+          curLen = 0
+        }
         for (let i = 0; i < paras.length; i++) {
-          const t = paras[i]
-          if (curLen > 0 && curLen + t.length + 1 > max) { batches.push(cur); cur = []; curLen = 0 }
+          const t = String(paras[i] || '')
+          if (curLen > 0 && curLen + t.length + 1 > max) flush()
           cur.push({ num: i, text: t })
           curLen += t.length + 1
         }
-        if (cur.length > 0) batches.push(cur)
+        flush()
         return batches
       }
 
-      function buildUserPrompt(title, units, index, total) {
+      function buildSourceManifestHost(title, text, paras, documentIdOverride) {
+        const sections = buildSectionsHost(paras)
+        const paragraphMeta = new Array(paras.length)
+        for (const section of sections) {
+          for (let i = section.startParagraph; i <= section.endParagraph && i < paragraphMeta.length; i++) {
+            paragraphMeta[i] = { sectionId: section.id, sectionTitle: section.title }
+          }
+        }
+        const documentId = typeof documentIdOverride === 'string' && documentIdOverride.trim()
+          ? documentIdOverride.trim().slice(0, 160)
+          : 'document-' + stableHashHost(String(title || '') + NL + String(text || '').slice(0, 4000))
+        const sourceId = 'source-' + stableHashHost(String(title || '') + NL + String(text || ''))
+        const batches = buildBatchesByParagraph(paras, 6000, { sourceId, paragraphMeta })
+        return {
+          documentId,
+          sourceId,
+          title: String(title || '').trim().slice(0, 200),
+          chars: String(text || '').length,
+          paragraphCount: paras.length,
+          chunkCount: batches.length,
+          sectionCount: sections.length,
+          sections,
+          paragraphMeta,
+          batches,
+        }
+      }
+
+      function buildUserPrompt(title, batch, index, total) {
+        const units = Array.isArray(batch) ? batch : (batch && Array.isArray(batch.units) ? batch.units : [])
         let s = ''
         if (title) s += '资料标题：' + title + NL
         if (total > 1) s += '（这是资料的 ' + (index + 1) + '/' + total + ' 部分，请只基于本部分内容拆解，不要臆测其他部分）' + NL
+        if (batch && !Array.isArray(batch)) {
+          if (batch.chunkId) s += '当前稳定块 ID：' + batch.chunkId + NL
+          if (batch.sectionTitles && batch.sectionTitles.length > 0) s += '当前章节上下文：' + batch.sectionTitles.join(' / ') + NL
+        }
         s += '资料正文（已按内容切分并编号，[P数字] 为该内容单元编号）：' + NL
         for (const u of units) s += '[P' + u.num + '] ' + u.text + NL
         return s
@@ -910,7 +1017,7 @@ export default function hostPlugin() {
         }
       }
 
-      function normalizeGraph(obj, totalParagraphs, extraIds) {
+      function normalizeGraph(obj, totalParagraphs, extraIds, sourceContext) {
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: '结果不是 JSON 对象' }
         const summary = typeof obj.summary === 'string' ? obj.summary.trim() : ''
         if (!Array.isArray(obj.nodes)) return { error: '缺少 nodes 数组' }
@@ -942,10 +1049,26 @@ export default function hostPlugin() {
           else if (pNum == null) warnings.push('node_paragraph_invalid:' + id)
           else if (pNum >= totalParagraphs) { warnings.push('node_paragraph_out_of_range:' + id); pNum = null }
 
+          const paragraphMeta = sourceContext && Array.isArray(sourceContext.paragraphMeta) && pNum != null
+            ? sourceContext.paragraphMeta[pNum]
+            : null
+          const evidence = (quote || pNum != null)
+            ? [{ paragraph: pNum, quote }]
+            : []
+          const sourceFields = sourceContext && sourceContext.sourceId
+            ? {
+              documentId: sourceContext.documentId || null,
+              sourceId: sourceContext.sourceId,
+              chunkId: sourceContext.chunkId || null,
+              sectionId: paragraphMeta && paragraphMeta.sectionId ? paragraphMeta.sectionId : null,
+              sectionTitle: paragraphMeta && paragraphMeta.sectionTitle ? paragraphMeta.sectionTitle : null,
+            }
+            : {}
           seen.add(id)
-          nodes.push({ id, type, text, quote, paragraph: pNum })
+          nodes.push({ id, type, text, quote, paragraph: pNum, evidence, ...sourceFields })
         }
 
+        const nodeById = new Map(nodes.map((node) => [node.id, node]))
         const edges = []
         for (const e of obj.edges) {
           if (!e || typeof e !== 'object') { warnings.push('edge_dropped:not_object'); continue }
@@ -956,7 +1079,25 @@ export default function hostPlugin() {
           if (!seen.has(from) && !(extraIds && extraIds.has(from))) { warnings.push('edge_dropped:missing_endpoint:' + from + '->' + to); continue }
           if (!seen.has(to) && !(extraIds && extraIds.has(to))) { warnings.push('edge_dropped:missing_endpoint:' + from + '->' + to); continue }
           if (from === to) { warnings.push('edge_dropped:self_loop:' + from); continue }
-          edges.push({ fromNodeId: from, toNodeId: to, relation })
+          const edgeEvidence = []
+          for (const nodeId of [from, to]) {
+            const node = nodeById.get(nodeId)
+            for (const evidence of node && Array.isArray(node.evidence) ? node.evidence : []) {
+              if (edgeEvidence.length >= 2) break
+              edgeEvidence.push(evidence)
+            }
+          }
+          edges.push({
+            fromNodeId: from,
+            toNodeId: to,
+            relation,
+            evidence: edgeEvidence,
+            ...(sourceContext && sourceContext.sourceId ? {
+              documentId: sourceContext.documentId || null,
+              sourceId: sourceContext.sourceId,
+              chunkId: sourceContext.chunkId || null,
+            } : {}),
+          })
         }
 
         return { summary, nodes, edges, warnings }
@@ -1313,9 +1454,10 @@ export default function hostPlugin() {
       }
 
       // ---- document attachment import ----
-      // Reads the `==== DSH_PASTE_INPUT_V1 ====` marker that the
-      // @dsh-community/dsh-paste-input plugin prefixes to user messages, then
-      // turns the referenced files into source text for the knowledge graph.
+      // Reads the `==== DSH_PASTE_INPUT_V1 ====` marker emitted by
+      // @dsh-community/dsh-paste-input for sent messages or for a composer
+      // reference serialized just before the user clicks the graph button,
+      // then turns the referenced files into source text for the knowledge graph.
       let docNodeMods = null
       async function docNodeModules() {
         if (!docNodeMods) {
@@ -1582,16 +1724,20 @@ export default function hostPlugin() {
         }
         return refs
       }
-      async function collectDocumentAttachmentsHost(sessionId, session) {
+      async function collectDocumentAttachmentsHost(sessionId, session, pendingText) {
         const mods = await docNodeModules()
         const found = []
         const warnings = []
         const seen = new Set()
         const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
         const cwdRoot = cwd ? mods.path.resolve(cwd) : ''
-        for (const ev of session.events || []) {
-          if (!ev || ev.type !== 'user/message') continue
-          const text = traceTextOf(ev.data && ev.data.content)
+        const texts = pendingText !== undefined
+          ? [String(pendingText)]
+          : (session && Array.isArray(session.events) ? session.events
+              .filter((ev) => ev && ev.type === 'user/message')
+              .map((ev) => traceTextOf(ev.data && ev.data.content))
+              .filter(Boolean) : [])
+        for (const text of texts) {
           for (const marker of parsePasteInputMarkersHost(text)) {
             const normRoot = marker.root.replace(/\\/g, '/')
             const attachIdx = normRoot.indexOf('/.dsh/tmp/attachments/')
@@ -1642,12 +1788,12 @@ export default function hostPlugin() {
         return { found, warnings }
       }
       function serializeTrace(events) {
-        // Keep the first events that fit under MAX_TEXT so the AI prompt stays
+        // Keep the first events that fit under MAX_TRACE_TEXT so the AI prompt stays
         // small. Each trace event is its own blank-line block; the content-aware
         // splitter may divide a long event into several numbered units, so each
         // meta record also carries [start, end) offsets into traceText for the
         // client to map units -> events.
-        const cap = MAX_TEXT - 400
+        const cap = MAX_TRACE_TEXT - 400
         const lines = []
         const entries = []
         let total = 0
@@ -1739,7 +1885,48 @@ export default function hostPlugin() {
         task.errorCode = code
         task.errorMessage = message
       }
-      function announceModel(task, model) {
+      // Checkpoints contain only owned JSON data. They are returned on demand
+       // by task-status and can be persisted by the client without keeping any
+       // live Host references. The next batch is always the first unfinished
+       // one, so a retry never duplicates completed chunks.
+       function buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, nextBatchIndex) {
+         const nodes = []
+         acc.nodes.forEach((node) => {
+           if (nodes.length < MAX_GRAPH_NODES) nodes.push({ ...node, evidence: Array.isArray(node.evidence) ? node.evidence.slice(0, 4) : [] })
+         })
+         const nodeIds = new Set(nodes.map((node) => node.id))
+         const edges = acc.edges
+           .filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId))
+           .slice(0, MAX_GRAPH_NODES * 6)
+           .map((edge) => ({ ...edge, evidence: Array.isArray(edge.evidence) ? edge.evidence.slice(0, 4) : [] }))
+         return {
+           version: 1,
+           title: sourceManifest.title,
+           documentId: sourceManifest.documentId,
+           sourceId: sourceManifest.sourceId,
+           chars: sourceManifest.chars,
+           paragraphCount: sourceManifest.paragraphCount,
+           totalBatches: sourceManifest.chunkCount,
+           nextBatchIndex,
+           paragraphOffset: Number.isInteger(task.paragraphOffset) ? task.paragraphOffset : 0,
+           summary: summary || '',
+           graph: { summary: summary || '', nodes, edges, warnings: acc.warnings.slice(-300) },
+           staging: {
+             sourceId: sourceManifest.sourceId,
+             documentId: sourceManifest.documentId,
+             chunkCount: chunkResults.length,
+             chunks: chunkResults.map((chunk) => ({
+               ...chunk,
+               sectionIds: Array.isArray(chunk.sectionIds) ? chunk.sectionIds.slice() : [],
+               sectionTitles: Array.isArray(chunk.sectionTitles) ? chunk.sectionTitles.slice() : [],
+               nodeIds: Array.isArray(chunk.nodeIds) ? chunk.nodeIds.slice() : [],
+               warnings: Array.isArray(chunk.warnings) ? chunk.warnings.slice(0, 20) : [],
+             })),
+           },
+         }
+       }
+
+       function announceModel(task, model) {
         if (!task || !model) return
         task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
         task.progress.stage = '已选择模型：' + model.provider + ' · ' + model.model + '，等待模型响应…'
@@ -1753,19 +1940,41 @@ export default function hostPlugin() {
         task.progress = { stage: '准备模型', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
         try {
-          const model = task.model || await resolveModel()
-          if (!model) {
+          const model = task.model || ((hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check') ? null : await resolveModel())
+          if (!model && !(hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check')) {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
-          announceModel(task, model)
+          if (model) announceModel(task, model)
           const paras = splitParagraphsHost(task.text)
-          const batches = buildBatchesByParagraph(paras, 6000)
-          const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
+                     const isResume = task.kind === 'resume'
+           const sourceManifest = buildSourceManifestHost(task.title, task.text, paras, task.documentId)
+          const batches = sourceManifest.batches
+          const sourceContext = {
+            documentId: sourceManifest.documentId,
+            sourceId: sourceManifest.sourceId,
+            paragraphMeta: sourceManifest.paragraphMeta,
+          }
+          const persistCheckpointSafe = async (status) => {
+             if (typeof persistCheckpoint !== 'function' || !task.checkpoint) return
+             try { await persistCheckpoint(task.checkpoint, task, status || task.status || 'running') } catch (error) {
+               if (task.progress) task.progress.warning = 'SQLite checkpoint 保存失败：' + (error && error.message ? error.message : String(error))
+             }
+           }
+           if (isResume) {
+             const checkpoint = task.checkpoint
+             const nextBatch = checkpoint && Number.isInteger(checkpoint.nextBatchIndex) ? checkpoint.nextBatchIndex : -1
+             if (!checkpoint || checkpoint.version !== 1 || checkpoint.sourceId !== sourceManifest.sourceId || nextBatch < 0 || nextBatch > batches.length || !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes)) {
+               return failTask(task, 'checkpoint_invalid', 'checkpoint 与当前正文不匹配，无法安全续跑；请重新拆分全文')
+             }
+           }
+           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
           let summary = ''
           const batchSummaries = []
+          const chunkResults = []
+          const sectionSummaryParts = new Map()
           // ---- append mode: seed the accumulator with the existing graph ----
-          const isAppend = task.kind === 'append' || task.kind === 'trajectory-append'
+                     const isAppend = task.kind === 'append' || task.kind === 'trajectory-append' || isResume
           const isTrajAppend = task.kind === 'trajectory-append'
           const existing = isAppend && task.existing && typeof task.existing === 'object' ? task.existing : null
           const existingIds = new Set()
@@ -1782,6 +1991,12 @@ export default function hostPlugin() {
                 text,
                 quote: typeof n.quote === 'string' ? n.quote : '',
                 paragraph: typeof n.paragraph === 'number' ? n.paragraph : null,
+                 evidence: Array.isArray(n.evidence) ? n.evidence.slice(0, 4) : [],
+                 documentId: typeof n.documentId === 'string' ? n.documentId : null,
+                 sourceId: typeof n.sourceId === 'string' ? n.sourceId : null,
+                 chunkId: typeof n.chunkId === 'string' ? n.chunkId : null,
+                 sectionId: typeof n.sectionId === 'string' ? n.sectionId : null,
+                 sectionTitle: typeof n.sectionTitle === 'string' ? n.sectionTitle : null,
               })
               existingIds.add(id)
             }
@@ -1794,15 +2009,55 @@ export default function hostPlugin() {
               const key = from + '>' + to + ':' + rel
               if (acc.edgeKeys.has(key)) continue
               acc.edgeKeys.add(key)
-              acc.edges.push({ fromNodeId: from, toNodeId: to, relation: rel })
+              acc.edges.push({
+                 fromNodeId: from,
+                 toNodeId: to,
+                 relation: rel,
+                 evidence: Array.isArray(e.evidence) ? e.evidence.slice(0, 4) : [],
+                 ...(typeof e.documentId === 'string' ? { documentId: e.documentId } : {}),
+                 ...(typeof e.sourceId === 'string' ? { sourceId: e.sourceId } : {}),
+                 ...(typeof e.chunkId === 'string' ? { chunkId: e.chunkId } : {}),
+               })
             }
             if (typeof existing.summary === 'string' && existing.summary) summary = existing.summary
           }
-          const offset = isAppend && Number.isInteger(task.paragraphOffset) && task.paragraphOffset > 0 ? task.paragraphOffset : 0
-          const existingDigest = isAppend ? serializeExistingGraph(existing, 150) : ''
-          const system = isTrajAppend ? TRAJ_APPEND_SYSTEM_PROMPT : (isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT))
-          for (let i = 0; i < batches.length; i++) {
-            let userText = buildUserPrompt(task.title, batches[i], i, batches.length)
+          if (existing && Array.isArray(existing.warnings)) acc.warnings.push(...existing.warnings.slice(-300))
+           if (isResume && task.checkpoint) {
+             summary = typeof task.checkpoint.summary === 'string' && task.checkpoint.summary ? task.checkpoint.summary : summary
+             const priorChunks = task.checkpoint.staging && Array.isArray(task.checkpoint.staging.chunks) ? task.checkpoint.staging.chunks : []
+             for (const chunk of priorChunks) {
+               if (!chunk || typeof chunk !== 'object' || !chunk.chunkId) continue
+               chunkResults.push({
+                 ...chunk,
+                 sectionIds: Array.isArray(chunk.sectionIds) ? chunk.sectionIds.slice() : [],
+                 sectionTitles: Array.isArray(chunk.sectionTitles) ? chunk.sectionTitles.slice() : [],
+                 nodeIds: Array.isArray(chunk.nodeIds) ? chunk.nodeIds.slice() : [],
+                 warnings: Array.isArray(chunk.warnings) ? chunk.warnings.slice(0, 20) : [],
+               })
+               if (chunk.summary) {
+                 batchSummaries.push(chunk.summary)
+                 for (const sectionId of chunk.sectionIds || []) {
+                   const parts = sectionSummaryParts.get(sectionId) || []
+                   parts.push(chunk.summary)
+                   sectionSummaryParts.set(sectionId, parts)
+                 }
+               }
+             }
+           }
+           const offset = isAppend && Number.isInteger(task.paragraphOffset) && task.paragraphOffset > 0 ? task.paragraphOffset : 0
+           const resumeFromBatch = isResume && task.checkpoint && Number.isInteger(task.checkpoint.nextBatchIndex) ? task.checkpoint.nextBatchIndex : 0
+          task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, resumeFromBatch)
+           await persistCheckpointSafe('running')
+           const existingDigest = isAppend ? serializeExistingGraph(existing, 150) : ''
+          const system = isTrajAppend ? TRAJ_APPEND_SYSTEM_PROMPT : (isResume ? SYSTEM_PROMPT : (isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT)))
+          for (let i = resumeFromBatch; i < batches.length; i++) {
+            const batch = batches[i]
+             const batchContext = { ...sourceContext, chunkId: batch.chunkId }
+             taskStage('正在处理第 ' + (i + 1) + '/' + batches.length + ' 个内容块（' + batch.chunkId + '）')
+             if (task.progress) {
+               task.progress.batch = { index: i + 1, total: batches.length, chunkId: batch.chunkId, startParagraph: batch.startParagraph, endParagraph: batch.endParagraph }
+             }
+             let userText = buildUserPrompt(task.title, batch, i, batches.length)
             if (existingDigest) {
               userText += NL + NL + '已有知识图节点清单（id|类型|文本，引用边时只能用这些 id）：' + NL + existingDigest
             }
@@ -1810,9 +2065,29 @@ export default function hostPlugin() {
             let lastErr = ''
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
-                const raw = await callModel(model, system, userText, 180000, 0.1)
-                const obj = parseJson(raw)
-                const r = normalizeGraph(obj, paras.length, existingIds)
+                const raw = hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check'
+                   ? await (typeof kgExtractor === 'function' ? kgExtractor({
+                     title: task.title,
+                     chunk: { ...batch, units: Array.isArray(batch.units) ? batch.units : [] },
+                     paragraphOffset: offset,
+                     existingNodeIds: Array.from(existingIds),
+                     existingDigest,
+                     systemPrompt: system,
+                     prompt: userText,
+                     attempt,
+                   }) : kgExtractor.extractChunk({
+                     title: task.title,
+                     chunk: { ...batch, units: Array.isArray(batch.units) ? batch.units : [] },
+                     paragraphOffset: offset,
+                     existingNodeIds: Array.from(existingIds),
+                     existingDigest,
+                     systemPrompt: system,
+                     prompt: userText,
+                     attempt,
+                   }))
+                   : await callModel(model, system, userText, 180000, 0.1)
+                const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
+                const r = normalizeGraph(obj, paras.length, existingIds, batchContext)
                 if (r.error) { lastErr = r.error; continue }
                 norm = r
                 break
@@ -1833,20 +2108,50 @@ export default function hostPlugin() {
             if (isAppend) {
               for (const n of norm.nodes) {
                 if (n.paragraph != null) n.paragraph += offset
+                 if (Array.isArray(n.evidence)) {
+                   for (const evidence of n.evidence) if (evidence && Number.isInteger(evidence.paragraph)) evidence.paragraph += offset
+                 }
                 addedIds.push(n.id)
               }
             }
-            mergeBatch(norm, acc, i)
-            if (norm.summary) batchSummaries.push(norm.summary)
+            if (isAppend) {
+               for (const edge of norm.edges) {
+                 if (Array.isArray(edge.evidence)) {
+                   for (const evidence of edge.evidence) if (evidence && Number.isInteger(evidence.paragraph)) evidence.paragraph += offset
+                 }
+               }
+             }
+             mergeBatch(norm, acc, i)
+            if (norm.summary) {
+               batchSummaries.push(norm.summary)
+               for (const sectionId of batch.sectionIds || []) {
+                 const parts = sectionSummaryParts.get(sectionId) || []
+                 parts.push(norm.summary)
+                 sectionSummaryParts.set(sectionId, parts)
+               }
+             }
+             chunkResults.push({
+               chunkId: batch.chunkId,
+               startParagraph: batch.startParagraph + offset,
+               endParagraph: batch.endParagraph + offset,
+               sectionIds: Array.isArray(batch.sectionIds) ? batch.sectionIds.slice() : [],
+               sectionTitles: Array.isArray(batch.sectionTitles) ? batch.sectionTitles.slice() : [],
+               summary: norm.summary || '',
+               nodeIds: norm.nodes.map((node) => node.id),
+               edgeCount: norm.edges.length,
+               warnings: norm.warnings.slice(0, 20),
+             })
             // Batch prompts ask for a LOCAL summary. Keep the first as a
             // fallback; multi-batch summaries are consolidated below so the
             // final summary actually covers the whole text.
             if (isAppend ? norm.summary : !summary) summary = norm.summary || summary
+             task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, i + 1)
+             await persistCheckpointSafe('running')
           }
           if (batchSummaries.length > 1) {
             try {
               const raw = await callModel(model, SUMMARY_SYSTEM_PROMPT, buildSummaryUserText(summary, batchSummaries), 60000, 0.1)
-              const obj = parseJson(raw)
+              const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
               if (obj && typeof obj.summary === 'string' && obj.summary.trim()) summary = obj.summary.trim()
             } catch (e) {
               // Fall back to the batch-level summary; never fail extraction
@@ -1855,12 +2160,34 @@ export default function hostPlugin() {
             }
           }
           const nodes = []
-          acc.nodes.forEach((v) => nodes.push(v))
+          task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, batches.length)
+           acc.nodes.forEach((v) => nodes.push(v))
           if (nodes.length === 0) return failTask(task, 'empty', 'AI 没有拆出任何节点，请尝试内容更明确的资料')
-          if (nodes.length > 120) return failTask(task, 'too_many_nodes', '合并后的节点过多（' + nodes.length + ' 个），请缩短追加内容后重试')
+          if (nodes.length > MAX_GRAPH_NODES) return failTask(task, 'too_many_nodes', '合并后的节点过多（' + nodes.length + ' 个，当前上限 ' + MAX_GRAPH_NODES + '），请分章节拆分或追加更小的内容')
           task.status = 'succeeded'
           task.finishedAt = Date.now()
-          const trajAppendPrefix = isTrajAppend && typeof task.baseTraceText === 'string' && task.baseTraceText ? task.baseTraceText + NL + NL : ''
+          const sourceSections = sourceManifest.sections.map((section) => {
+             const parts = sectionSummaryParts.get(section.id) || []
+             return {
+               id: section.id,
+               title: section.title,
+               startParagraph: section.startParagraph + offset,
+               endParagraph: section.endParagraph + offset,
+               summary: parts.join(' ').slice(0, 1200),
+             }
+           })
+           const source = {
+             id: sourceManifest.sourceId,
+             documentId: sourceManifest.documentId,
+             title: sourceManifest.title,
+             chars: sourceManifest.chars,
+             paragraphCount: sourceManifest.paragraphCount,
+             chunkCount: sourceManifest.chunkCount,
+             sectionCount: sourceManifest.sectionCount,
+             sections: sourceSections,
+             ...(isAppend && existing && existing.source && existing.source.id ? { previousId: existing.source.id } : {}),
+           }
+           const trajAppendPrefix = isTrajAppend && typeof task.baseTraceText === 'string' && task.baseTraceText ? task.baseTraceText + NL + NL : ''
           const trajAppendEvents = isTrajAppend ? [
             ...(Array.isArray(task.baseTraceEvents) ? task.baseTraceEvents : []),
             ...(Array.isArray(task.traceEvents) ? task.traceEvents : []).map((e) => (
@@ -1871,18 +2198,34 @@ export default function hostPlugin() {
           ] : null
           task.result = {
             summary, nodes, edges: acc.edges, warnings: acc.warnings,
+             source,
+             staging: {
+               sourceId: source.id,
+               documentId: source.documentId,
+               chunkCount: chunkResults.length,
+               chunks: chunkResults,
+             },
             ...task.kind === 'trajectory' ? { traceText: task.traceText, traceEvents: task.traceEvents } : {},
             ...isTrajAppend ? {
               traceText: trajAppendPrefix + task.text,
               traceEvents: trajAppendEvents,
             } : {},
             ...isAppend ? { addedNodeIds: addedIds } : {},
-          }
+           }
+           await persistCheckpointSafe('succeeded')
+           if (typeof persistGraph === 'function') {
+             try { await persistGraph(task.result, task) } catch (error) {
+               task.result.warnings = Array.isArray(task.result.warnings) ? task.result.warnings : []
+               task.result.warnings.push('sqlite_persist_failed:' + (error && error.message ? error.message : String(error)))
+             }
+           }
+
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] extraction failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else failTask(task, 'failed', 'AI 拆分失败：' + msg)
+           await persistCheckpointSafe(task.status)
         }
       }
 
@@ -1906,10 +2249,11 @@ export default function hostPlugin() {
       }
       function buildVerifyBatches(paras, graph) {
         const pBatches = buildBatchesByParagraph(paras, 2500)
-        const batches = pBatches.map((units) => {
+        const batches = pBatches.map((batch) => {
+           const units = Array.isArray(batch) ? batch : batch.units
           const pSet = new Set(units.map((u) => u.num))
           const nodes = (graph.nodes || []).filter((n) => n && Number.isInteger(n.paragraph) && pSet.has(n.paragraph))
-          return { units, pSet, nodes }
+          return { units, pSet, nodes, chunkId: batch.chunkId || null }
         })
         // Nodes without a usable paragraph join the first batch so they are
         // still audited instead of silently skipped.
@@ -2061,7 +2405,7 @@ export default function hostPlugin() {
       }
       function verifyCandidates(model, candidates, units, warnings) {
         return callModel(model, VERIFIER_SYSTEM_PROMPT, buildVerifierUserText(candidates, units), 240000, 0.1, 8000).then((raw) => {
-          const obj = parseJson(raw)
+          const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
           const kept = new Set()
           for (const k of Array.isArray(obj.kept) ? obj.kept : []) {
             if (k && typeof k.id === 'string') kept.add(k.id)
@@ -2091,19 +2435,20 @@ export default function hostPlugin() {
         task.progress = { stage: '准备审校', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
         try {
-          const model = task.model || await resolveModel()
-          if (!model) {
+          const model = task.model || ((hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check') ? null : await resolveModel())
+          if (!model && !(hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check')) {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
-          announceModel(task, model)
+          if (model) announceModel(task, model)
           const paras = splitParagraphsHost(task.text)
           const totalParagraphs = paras.length
           const local = buildLocalReport(task.graph, task.text)
           const batches = buildVerifyBatches(paras, task.graph)
           const aiIssues = []
+           const resumeFromBatch = 0
           const warnings = []
-          for (let i = 0; i < batches.length; i++) {
+          for (let i = resumeFromBatch; i < batches.length; i++) {
             const batch = batches[i]
             const userText = buildVerifyUserText2(batch, i, batches.length, task.graph)
             let norm = null
@@ -2111,7 +2456,7 @@ export default function hostPlugin() {
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
                 const raw = await callModel(model, VERIFY_SYSTEM_PROMPT, userText, 360000, 0.1, 12000)
-                const obj = parseJson(raw)
+                const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
                 const r = normalizeIssues(obj, task.graph, task.text, totalParagraphs, warnings, 'b' + (i + 1) + ':')
                 if (r.error) { lastErr = r.error; continue }
                 norm = r
@@ -2220,12 +2565,12 @@ export default function hostPlugin() {
         task.progress = { stage: '准备答疑', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
         try {
-          const model = task.model || await resolveModel()
-          if (!model) {
+          const model = task.model || ((hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check') ? null : await resolveModel())
+          if (!model && !(hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check')) {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
-          announceModel(task, model)
+          if (model) announceModel(task, model)
           const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question)
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
@@ -2242,7 +2587,7 @@ export default function hostPlugin() {
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
               const raw = await callModel(model, QUESTION_SYSTEM_PROMPT, userText, 180000)
-              const obj = parseJson(raw)
+              const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
               const r = normalizeQuestionResult(obj, task.graph, task.text, ctx2.paras.length, [])
               if (r.error) { lastErr = r.error; continue }
               norm = r
@@ -2429,12 +2774,12 @@ export default function hostPlugin() {
         task.progress = { stage: '准备外部核查', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
         try {
-          const model = task.model || await resolveModel()
-          if (!model) {
+          const model = task.model || ((hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check') ? null : await resolveModel())
+          if (!model && !(hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check')) {
             const warning = task.progress && task.progress.warning ? '（' + task.progress.warning + '）' : ''
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
-          announceModel(task, model)
+          if (model) announceModel(task, model)
           const claims = buildExternalClaims(task.graph, task.text, 60)
           if (claims.length === 0) return failTask(task, 'empty', '知识图中没有可外部核查的声明（需有事实/规则/定义/反例/推论类节点）')
           const mode = task.mode === 'deep' ? 'deep' : 'quick'
@@ -2465,7 +2810,7 @@ export default function hostPlugin() {
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
                 const raw = await callModel(model, FACT_JUDGE_SYSTEM_PROMPT, userText, 240000, 0.1)
-                const obj = parseJson(raw)
+                const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
                 const r = normalizeFactVerdicts(obj, batch, evidenceById, mode, warnings)
                 if (r.error) { lastErr = r.error; continue }
                 norm = r
@@ -2549,16 +2894,20 @@ export default function hostPlugin() {
       harness.handle('document-import', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+        const pendingProvided = Object.prototype.hasOwnProperty.call(a, 'pending')
+        const pendingText = pendingProvided && typeof a.pending === 'string' ? a.pending : ''
         if (!sessionId) return { error: { code: 'no_session', message: '缺少会话 id，无法读取附件' } }
         const sessions = ctx.get('sessions')
         const session = sessions ? sessions.get(sessionId) : undefined
-        if (!session) return { error: { code: 'no_session', message: '找不到该会话，请先在对话中发送一条带附件的消息' } }
-        const collected = await collectDocumentAttachmentsHost(sessionId, session)
+        if (!session) return { error: { code: 'no_session', message: '找不到该会话，无法读取当前输入框附件' } }
+        const collected = await collectDocumentAttachmentsHost(sessionId, session, pendingProvided ? pendingText : undefined)
         if (collected.found.length === 0) {
           return {
             error: {
               code: 'no_attachment',
-              message: '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用，发送后再试。',
+              message: pendingProvided
+                ? '当前输入框没有检测到可读取的未发送附件文档，请先添加文档附件。'
+                : '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用。',
             },
             warnings: collected.warnings,
           }
@@ -2590,12 +2939,27 @@ export default function hostPlugin() {
         const names = files.map((f) => f.name).join('、')
         const baseTitle = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, '') : (files.length + ' 份附件')
         const title = (baseTitle || '附件文档').slice(0, 60)
+         const importManifest = buildSourceManifestHost(title, text, splitParagraphsHost(text))
         return {
           title,
           text,
           files,
           names,
           truncated,
+           manifest: {
+             documentId: importManifest.documentId,
+             sourceId: importManifest.sourceId,
+             chars: importManifest.chars,
+             paragraphCount: importManifest.paragraphCount,
+             chunkCount: importManifest.chunkCount,
+             sectionCount: importManifest.sectionCount,
+             sections: importManifest.sections.map((section) => ({
+               id: section.id,
+               title: section.title,
+               startParagraph: section.startParagraph,
+               endParagraph: section.endParagraph,
+             })),
+           },
           warnings: collected.warnings,
         }
       })
@@ -2643,7 +3007,23 @@ export default function hostPlugin() {
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
-        const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', title, text, model, skills, createdAt: Date.now() }
+        const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+         const task = {
+           id: 'kg-' + Date.now().toString(36) + '-' + seq,
+           status: 'running',
+           kind: checkpoint ? 'resume' : undefined,
+           title,
+           text,
+           documentId: typeof a.documentId === 'string' && a.documentId.trim()
+             ? a.documentId.trim().slice(0, 160)
+             : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : ''),
+           checkpoint,
+           existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
+           paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
+           model,
+           skills,
+           createdAt: Date.now(),
+         }
         tasks.set(task.id, task)
         busy = true
         Promise.resolve().then(() => runTask(task)).catch((e) => {
@@ -2672,13 +3052,14 @@ export default function hostPlugin() {
       })
 
       harness.handle('task-status', async (args) => {
+         const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
         const a = args && typeof args === 'object' ? args : {}
         const taskId = typeof a.taskId === 'string' ? a.taskId : ''
         const t = tasks.get(taskId)
         if (!t) return { status: 'not_found' }
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
-        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } }
-        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
+        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
+        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
         return {
           status: 'running',
           progress: {
@@ -2687,6 +3068,8 @@ export default function hostPlugin() {
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
             warning: t.progress && t.progress.warning ? t.progress.warning : null,
             model: t.progress && t.progress.model ? t.progress.model : null,
+             batch: t.progress && t.progress.batch ? t.progress.batch : null,
+             checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
           },
         }
       })
@@ -2785,13 +3168,14 @@ export default function hostPlugin() {
       })
 
       harness.handle('trajectory-status', async (args) => {
+         const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
         const a = args && typeof args === 'object' ? args : {}
         const taskId = typeof a.taskId === 'string' ? a.taskId : ''
         const t = tasks.get(taskId)
         if (!t) return { status: 'not_found' }
         if (t.status === 'succeeded') return { status: 'succeeded', result: t.result }
-        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage } }
-        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage } }
+        if (t.status === 'cancelled') return { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
+        if (t.status === 'failed') return { status: 'failed', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
         return {
           status: 'running',
           progress: {
@@ -2800,6 +3184,8 @@ export default function hostPlugin() {
             elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
             warning: t.progress && t.progress.warning ? t.progress.warning : null,
             model: t.progress && t.progress.model ? t.progress.model : null,
+             batch: t.progress && t.progress.batch ? t.progress.batch : null,
+             checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
           },
         }
       })
@@ -2863,7 +3249,7 @@ export default function hostPlugin() {
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-          title, text, existing, paragraphOffset, model, skills, createdAt: Date.now(),
+          title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, skills, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
