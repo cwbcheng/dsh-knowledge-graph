@@ -33,6 +33,7 @@
       const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
+       const LS_CANDIDATE_REVIEW = 'dsh-kg-candidate-review-v1'
       const LAYER_Y_GAP = 140
       const LAYER_X_GAP = 220
       const LAYER_COL_GAP = 20
@@ -92,6 +93,64 @@
       }
       const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果' }
       const TYPE_ORDER = ['fact', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
+       const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
+       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+       const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
+       const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
+       function chapterSectionsOf(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : null
+         return source && Array.isArray(source.sections)
+           ? source.sections.filter((section) => section && typeof section.id === 'string')
+           : []
+       }
+       function nodeMatchesChapter(node, section) {
+         if (!section) return true
+         if (node && typeof node.sectionId === 'string' && node.sectionId === section.id) return true
+         const paragraph = Number(node && node.paragraph)
+         const start = Number(section.startParagraph)
+         const end = Number(section.endParagraph)
+         return Number.isInteger(paragraph) && Number.isInteger(start) && Number.isInteger(end) && paragraph >= start && paragraph <= end
+       }
+       function filterGraphByChapter(graph, sectionId) {
+         if (!graph || !sectionId || sectionId === 'all') return graph
+         const section = chapterSectionsOf(graph).find((item) => item.id === sectionId)
+         if (!section) return graph
+         const nodes = (Array.isArray(graph.nodes) ? graph.nodes : []).filter((node) => nodeMatchesChapter(node, section))
+         const ids = new Set(nodes.map((node) => node.id))
+         return {
+           ...graph,
+           nodes,
+           edges: (Array.isArray(graph.edges) ? graph.edges : []).filter((edge) => ids.has(edge.fromNodeId) && ids.has(edge.toNodeId)),
+         }
+       }
+       function reviewKeyFor(graph, node) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         const documentId = source.documentId || graph.documentId || source.id || 'local'
+         const kind = CANDIDATE_ENTITY_TYPES.has(node && node.type) ? 'entity' : 'claim'
+         return documentId + '|' + kind + '|' + String(node && node.id || '')
+       }
+       function candidateKindFor(node) {
+         if (!node || typeof node !== 'object') return null
+         if (CANDIDATE_ENTITY_TYPES.has(node.type)) return 'entity'
+         if (CANDIDATE_CLAIM_TYPES.has(node.type)) return 'claim'
+         return null
+       }
+       function loadCandidateReviews() {
+         try {
+           const parsed = JSON.parse(localStorage.getItem(LS_CANDIDATE_REVIEW) || '{}')
+           return parsed && typeof parsed === 'object' ? parsed : {}
+         } catch (e) { return {} }
+       }
+       function saveCandidateReviews(value) {
+         try { localStorage.setItem(LS_CANDIDATE_REVIEW, JSON.stringify(value || {})) } catch (e) {}
+       }
+       function candidateEvidenceText(node) {
+         if (!node) return ''
+         if (typeof node.quote === 'string' && node.quote.trim()) return node.quote.trim()
+         const evidence = Array.isArray(node.evidence) ? node.evidence : []
+         const first = evidence.find((item) => item && typeof item.quote === 'string' && item.quote.trim())
+         return first ? first.quote.trim() : ''
+       }
       const SEVERITY_META = {
         error: { label: '错误', cls: 'kg-sev-error' },
         warning: { label: '警告', cls: 'kg-sev-warning' },
@@ -2527,6 +2586,86 @@
           tooltipEl,
           detailEl,
           edgeDetailEl,
+        )
+      }
+
+      // --------------------- candidate review panel ---------------------
+      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate }) {
+        const [statusFilter, setStatusFilter] = useState('candidate')
+        const sections = chapterSectionsOf(graph)
+        const activeSectionId = chapterFilter && chapterFilter !== 'all' && sections.some((section) => section.id === chapterFilter) ? chapterFilter : 'all'
+        const activeSection = activeSectionId === 'all' ? null : sections.find((section) => section.id === activeSectionId)
+        const candidates = (Array.isArray(graph && graph.nodes) ? graph.nodes : [])
+          .filter((node) => candidateKindFor(node) && nodeMatchesChapter(node, activeSection))
+        const counts = { candidate: 0, accepted: 0, rejected: 0 }
+        for (const node of candidates) {
+          const status = REVIEW_STATUS_ORDER.includes(reviews && reviews[reviewKeyFor(graph, node)]) ? reviews[reviewKeyFor(graph, node)] : 'candidate'
+          counts[status] += 1
+        }
+        const shown = candidates.filter((node) => {
+          const status = reviews && REVIEW_STATUS_ORDER.includes(reviews[reviewKeyFor(graph, node)]) ? reviews[reviewKeyFor(graph, node)] : 'candidate'
+          return statusFilter === 'all' || status === statusFilter
+        })
+        return h('section', { className: 'kg-card', 'aria-label': '候选实体与声明审核' },
+          h('div', { className: 'kg-panel-head' },
+            h('h3', { className: 'kg-section-title' }, '章节与候选审核'),
+            h('span', { className: 'kg-section-meta' }, candidates.length + ' 个候选'),
+          ),
+          h('div', { className: 'kg-section-filter' },
+            h('label', { className: 'kg-section-meta', htmlFor: 'kg-section-select' }, '章节'),
+            h('select', {
+              id: 'kg-section-select', className: 'kg-section-select', value: activeSectionId,
+              onChange: (event) => onChapterFilter(event.target.value),
+              'aria-label': '按章节筛选知识图',
+            },
+              h('option', { value: 'all' }, '全部章节'),
+              sections.map((section) => h('option', { key: section.id, value: section.id },
+                section.title || section.id,
+                Number.isInteger(Number(section.startParagraph)) && Number.isInteger(Number(section.endParagraph))
+                  ? '（P' + (Number(section.startParagraph) + 1) + '–P' + (Number(section.endParagraph) + 1) + '）' : '')),
+            ),
+            activeSection ? h('span', { className: 'kg-section-meta' }, '当前仅显示「' + (activeSection.title || activeSection.id) + '」') : null,
+          ),
+          h('div', { className: 'kg-candidate-counts' },
+            h('span', null, '待审核 ' + counts.candidate),
+            h('span', null, '已接受 ' + counts.accepted),
+            h('span', null, '已驳回 ' + counts.rejected),
+          ),
+          h('div', { className: 'kg-candidate-toolbar' },
+            ['all', ...REVIEW_STATUS_ORDER].map((status) => h('button', {
+              key: status, type: 'button', className: 'kg-filter-chip' + (statusFilter === status ? ' on' : ''),
+              onClick: () => setStatusFilter(status),
+            }, status === 'all' ? '全部 ' + candidates.length : REVIEW_STATUS_LABEL[status] + ' ' + counts[status])),
+          ),
+          shown.length === 0
+            ? h('p', { className: 'kg-candidate-empty' }, candidates.length === 0 ? '当前章节没有可审核的候选实体或声明。' : '没有符合当前审核状态的候选。')
+            : h('div', { className: 'kg-candidate-list' }, shown.map((node) => {
+                const key = reviewKeyFor(graph, node)
+                const kind = candidateKindFor(node)
+                const status = reviews && REVIEW_STATUS_ORDER.includes(reviews[key]) ? reviews[key] : 'candidate'
+                const meta = TYPE_META[node.type] || { label: node.type || '未知', color: '#64748b' }
+                return h('div', {
+                  key, className: 'kg-candidate kg-candidate-' + status, role: 'button', tabIndex: 0,
+                  onClick: () => onLocate(node),
+                  onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onLocate(node) } },
+                },
+                  h('div', { className: 'kg-candidate-top' },
+                    h('span', { className: 'knowledge-type-badge', style: { background: meta.color } }, meta.label),
+                    h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选实体' : '候选声明'),
+                    Number.isInteger(Number(node.paragraph)) ? h('span', { className: 'kg-candidate-kind' }, 'P' + (Number(node.paragraph) + 1)) : null,
+                  ),
+                  h('div', { className: 'kg-candidate-text' }, node.text || '（无文本）'),
+                  candidateEvidenceText(node) ? h('div', { className: 'kg-candidate-evidence' }, '证据：' + candidateEvidenceText(node).slice(0, 220)) : null,
+                  h('div', { className: 'kg-candidate-actions' },
+                    REVIEW_STATUS_ORDER.map((nextStatus) => h('button', {
+                      key: nextStatus, type: 'button',
+                      className: nextStatus === status ? 'kg-primary' : 'kg-secondary',
+                      onClick: (event) => { event.stopPropagation(); onSetReview(key, nextStatus) },
+                    }, REVIEW_STATUS_LABEL[nextStatus])),
+                    h('span', { className: 'kg-candidate-status' }, REVIEW_STATUS_LABEL[status]),
+                  ),
+                )
+              })),
         )
       }
 

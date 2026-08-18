@@ -255,6 +255,25 @@ export default function clientPlugin() {
 .kg-history-item-summary { font-size: 12.5px; color: var(--kg-text-dim); margin-top: 4px; line-height: 1.6; }
 .kg-history-del { flex: none; background: none; border: none; color: var(--kg-text-dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
 .kg-history-del:hover { color: #dc2626; }
+.kg-section-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0 10px; }
+.kg-section-select { min-width: 180px; max-width: 100%; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; padding: 5px 8px; }
+.kg-section-select:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
+.kg-section-meta { font-size: 11.5px; color: var(--kg-text-dim); }
+.kg-candidate-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.kg-candidate-list { display: flex; flex-direction: column; gap: 7px; max-height: 430px; overflow: auto; }
+.kg-candidate { border: 1px solid var(--kg-border); border-left: 3px solid var(--kg-border); border-radius: 9px; padding: 8px 10px; background: var(--kg-panel); cursor: pointer; }
+.kg-candidate:hover, .kg-candidate.on { border-color: rgba(59,130,246,0.6); background: rgba(59,130,246,0.07); }
+.kg-candidate.kg-candidate-accepted { border-left-color: #10b981; }
+.kg-candidate.kg-candidate-rejected { border-left-color: #dc2626; opacity: 0.72; }
+.kg-candidate-top { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.kg-candidate-kind { font-size: 10.5px; color: var(--kg-text-dim); border: 1px solid var(--kg-border); border-radius: 999px; padding: 0 7px; line-height: 16px; }
+.kg-candidate-text { margin-top: 4px; font-size: 13px; font-weight: 600; line-height: 1.55; word-break: break-word; }
+.kg-candidate-evidence { margin-top: 4px; font-size: 11.5px; color: var(--kg-text-dim); white-space: pre-wrap; word-break: break-word; }
+.kg-candidate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; }
+.kg-candidate-actions button { padding: 3px 8px; font-size: 11.5px; }
+.kg-candidate-status { margin-left: auto; font-size: 11px; color: var(--kg-text-dim); }
+.kg-candidate-empty { margin: 0; font-size: 12px; color: var(--kg-text-dim); }
+.kg-candidate-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--kg-text-dim); }
 .kg-win { --kg-text: #1f2937; --kg-text-dim: #6b7280; --kg-border: rgba(100,116,139,0.28); --kg-panel: rgba(127,127,127,0.055); --kg-win-bg: #ffffff; position: fixed; display: flex; flex-direction: column; border: 1px solid var(--kg-border); border-radius: 14px; background: var(--kg-win-bg); color: var(--kg-text); box-shadow: 0 16px 48px rgba(0,0,0,0.30); z-index: 60; pointer-events: auto; overflow: hidden; font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; line-height: 1.5; }
 @media (prefers-color-scheme: dark) { .kg-win { --kg-text: #e5e7eb; --kg-text-dim: #9ca3af; --kg-border: rgba(148,163,184,0.30); --kg-panel: rgba(255,255,255,0.045); --kg-win-bg: #111827; } }
 .kg-win-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--kg-border); background: var(--kg-panel); cursor: grab; user-select: none; touch-action: none; }
@@ -303,6 +322,7 @@ export default function clientPlugin() {
       const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
+       const LS_CANDIDATE_REVIEW = 'dsh-kg-candidate-review-v1'
       const LAYER_Y_GAP = 140
       const LAYER_X_GAP = 220
       const LAYER_COL_GAP = 20
@@ -362,6 +382,64 @@ export default function clientPlugin() {
       }
       const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果' }
       const TYPE_ORDER = ['fact', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
+       const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
+       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+       const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
+       const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
+       function chapterSectionsOf(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : null
+         return source && Array.isArray(source.sections)
+           ? source.sections.filter((section) => section && typeof section.id === 'string')
+           : []
+       }
+       function nodeMatchesChapter(node, section) {
+         if (!section) return true
+         if (node && typeof node.sectionId === 'string' && node.sectionId === section.id) return true
+         const paragraph = Number(node && node.paragraph)
+         const start = Number(section.startParagraph)
+         const end = Number(section.endParagraph)
+         return Number.isInteger(paragraph) && Number.isInteger(start) && Number.isInteger(end) && paragraph >= start && paragraph <= end
+       }
+       function filterGraphByChapter(graph, sectionId) {
+         if (!graph || !sectionId || sectionId === 'all') return graph
+         const section = chapterSectionsOf(graph).find((item) => item.id === sectionId)
+         if (!section) return graph
+         const nodes = (Array.isArray(graph.nodes) ? graph.nodes : []).filter((node) => nodeMatchesChapter(node, section))
+         const ids = new Set(nodes.map((node) => node.id))
+         return {
+           ...graph,
+           nodes,
+           edges: (Array.isArray(graph.edges) ? graph.edges : []).filter((edge) => ids.has(edge.fromNodeId) && ids.has(edge.toNodeId)),
+         }
+       }
+       function reviewKeyFor(graph, node) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         const documentId = source.documentId || graph.documentId || source.id || 'local'
+         const kind = CANDIDATE_ENTITY_TYPES.has(node && node.type) ? 'entity' : 'claim'
+         return documentId + '|' + kind + '|' + String(node && node.id || '')
+       }
+       function candidateKindFor(node) {
+         if (!node || typeof node !== 'object') return null
+         if (CANDIDATE_ENTITY_TYPES.has(node.type)) return 'entity'
+         if (CANDIDATE_CLAIM_TYPES.has(node.type)) return 'claim'
+         return null
+       }
+       function loadCandidateReviews() {
+         try {
+           const parsed = JSON.parse(localStorage.getItem(LS_CANDIDATE_REVIEW) || '{}')
+           return parsed && typeof parsed === 'object' ? parsed : {}
+         } catch (e) { return {} }
+       }
+       function saveCandidateReviews(value) {
+         try { localStorage.setItem(LS_CANDIDATE_REVIEW, JSON.stringify(value || {})) } catch (e) {}
+       }
+       function candidateEvidenceText(node) {
+         if (!node) return ''
+         if (typeof node.quote === 'string' && node.quote.trim()) return node.quote.trim()
+         const evidence = Array.isArray(node.evidence) ? node.evidence : []
+         const first = evidence.find((item) => item && typeof item.quote === 'string' && item.quote.trim())
+         return first ? first.quote.trim() : ''
+       }
       const SEVERITY_META = {
         error: { label: '错误', cls: 'kg-sev-error' },
         warning: { label: '警告', cls: 'kg-sev-warning' },
@@ -2800,6 +2878,86 @@ export default function clientPlugin() {
         )
       }
 
+      // --------------------- candidate review panel ---------------------
+      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate }) {
+        const [statusFilter, setStatusFilter] = useState('candidate')
+        const sections = chapterSectionsOf(graph)
+        const activeSectionId = chapterFilter && chapterFilter !== 'all' && sections.some((section) => section.id === chapterFilter) ? chapterFilter : 'all'
+        const activeSection = activeSectionId === 'all' ? null : sections.find((section) => section.id === activeSectionId)
+        const candidates = (Array.isArray(graph && graph.nodes) ? graph.nodes : [])
+          .filter((node) => candidateKindFor(node) && nodeMatchesChapter(node, activeSection))
+        const counts = { candidate: 0, accepted: 0, rejected: 0 }
+        for (const node of candidates) {
+          const status = REVIEW_STATUS_ORDER.includes(reviews && reviews[reviewKeyFor(graph, node)]) ? reviews[reviewKeyFor(graph, node)] : 'candidate'
+          counts[status] += 1
+        }
+        const shown = candidates.filter((node) => {
+          const status = reviews && REVIEW_STATUS_ORDER.includes(reviews[reviewKeyFor(graph, node)]) ? reviews[reviewKeyFor(graph, node)] : 'candidate'
+          return statusFilter === 'all' || status === statusFilter
+        })
+        return h('section', { className: 'kg-card', 'aria-label': '候选实体与声明审核' },
+          h('div', { className: 'kg-panel-head' },
+            h('h3', { className: 'kg-section-title' }, '章节与候选审核'),
+            h('span', { className: 'kg-section-meta' }, candidates.length + ' 个候选'),
+          ),
+          h('div', { className: 'kg-section-filter' },
+            h('label', { className: 'kg-section-meta', htmlFor: 'kg-section-select' }, '章节'),
+            h('select', {
+              id: 'kg-section-select', className: 'kg-section-select', value: activeSectionId,
+              onChange: (event) => onChapterFilter(event.target.value),
+              'aria-label': '按章节筛选知识图',
+            },
+              h('option', { value: 'all' }, '全部章节'),
+              sections.map((section) => h('option', { key: section.id, value: section.id },
+                section.title || section.id,
+                Number.isInteger(Number(section.startParagraph)) && Number.isInteger(Number(section.endParagraph))
+                  ? '（P' + (Number(section.startParagraph) + 1) + '–P' + (Number(section.endParagraph) + 1) + '）' : '')),
+            ),
+            activeSection ? h('span', { className: 'kg-section-meta' }, '当前仅显示「' + (activeSection.title || activeSection.id) + '」') : null,
+          ),
+          h('div', { className: 'kg-candidate-counts' },
+            h('span', null, '待审核 ' + counts.candidate),
+            h('span', null, '已接受 ' + counts.accepted),
+            h('span', null, '已驳回 ' + counts.rejected),
+          ),
+          h('div', { className: 'kg-candidate-toolbar' },
+            ['all', ...REVIEW_STATUS_ORDER].map((status) => h('button', {
+              key: status, type: 'button', className: 'kg-filter-chip' + (statusFilter === status ? ' on' : ''),
+              onClick: () => setStatusFilter(status),
+            }, status === 'all' ? '全部 ' + candidates.length : REVIEW_STATUS_LABEL[status] + ' ' + counts[status])),
+          ),
+          shown.length === 0
+            ? h('p', { className: 'kg-candidate-empty' }, candidates.length === 0 ? '当前章节没有可审核的候选实体或声明。' : '没有符合当前审核状态的候选。')
+            : h('div', { className: 'kg-candidate-list' }, shown.map((node) => {
+                const key = reviewKeyFor(graph, node)
+                const kind = candidateKindFor(node)
+                const status = reviews && REVIEW_STATUS_ORDER.includes(reviews[key]) ? reviews[key] : 'candidate'
+                const meta = TYPE_META[node.type] || { label: node.type || '未知', color: '#64748b' }
+                return h('div', {
+                  key, className: 'kg-candidate kg-candidate-' + status, role: 'button', tabIndex: 0,
+                  onClick: () => onLocate(node),
+                  onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onLocate(node) } },
+                },
+                  h('div', { className: 'kg-candidate-top' },
+                    h('span', { className: 'knowledge-type-badge', style: { background: meta.color } }, meta.label),
+                    h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选实体' : '候选声明'),
+                    Number.isInteger(Number(node.paragraph)) ? h('span', { className: 'kg-candidate-kind' }, 'P' + (Number(node.paragraph) + 1)) : null,
+                  ),
+                  h('div', { className: 'kg-candidate-text' }, node.text || '（无文本）'),
+                  candidateEvidenceText(node) ? h('div', { className: 'kg-candidate-evidence' }, '证据：' + candidateEvidenceText(node).slice(0, 220)) : null,
+                  h('div', { className: 'kg-candidate-actions' },
+                    REVIEW_STATUS_ORDER.map((nextStatus) => h('button', {
+                      key: nextStatus, type: 'button',
+                      className: nextStatus === status ? 'kg-primary' : 'kg-secondary',
+                      onClick: (event) => { event.stopPropagation(); onSetReview(key, nextStatus) },
+                    }, REVIEW_STATUS_LABEL[nextStatus])),
+                    h('span', { className: 'kg-candidate-status' }, REVIEW_STATUS_LABEL[status]),
+                  ),
+                )
+              })),
+        )
+      }
+
       // --------------------- verification panel ---------------------
       function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
@@ -3501,6 +3659,8 @@ export default function clientPlugin() {
           } catch (e) {}
           return 'force'
         })
+        const [chapterFilter, setChapterFilter] = useState('all')
+        const [candidateReviews, setCandidateReviews] = useState(() => loadCandidateReviews())
         const changeLayoutMode = (id) => {
           setLayoutMode(id)
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
@@ -4022,6 +4182,7 @@ export default function clientPlugin() {
           setExtractProgress(null)
           setPhase('extracting')
           setResultView(null)
+           setChapterFilter('all')
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
           setActivePara(-1)
@@ -4146,6 +4307,7 @@ export default function clientPlugin() {
            resumeAttemptRef.current = false
           cancelVerifyTasks()
           setTitle(''); setText(''); setTaskId(null); setPhase('idle'); setResultView(null)
+           setChapterFilter('all')
           setError(null); toastStore.clear(); setSelectedNodeId(null); setSelectedEdgeId(null)
           setFocusReq({ nodeId: null, seq: 0 }); setFlashPara(-1); setActivePara(-1); setShowDiag(false)
           setHistoryOpen(false)
@@ -4553,6 +4715,19 @@ export default function clientPlugin() {
           ctx.timeout(() => setFlashPara(-1), 1400)
           toastStore.show('已定位原文第 ' + (pi + 1) + ' 段')
         }
+        const handleCandidateReview = (key, status) => {
+          setCandidateReviews((previous) => {
+            const next = { ...previous, [key]: status }
+            saveCandidateReviews(next)
+            return next
+          })
+        }
+        const handleCandidateLocate = (node) => {
+          if (!node || !resultView) return
+          const section = chapterSectionsOf(resultView.graph).find((item) => nodeMatchesChapter(node, item) && (node.sectionId === item.id || (Number.isInteger(Number(node.paragraph)) && Number.isInteger(Number(item.startParagraph)) && Number.isInteger(Number(item.endParagraph)) && Number(node.paragraph) >= Number(item.startParagraph) && Number(node.paragraph) <= Number(item.endParagraph))))
+          setChapterFilter(section ? section.id : 'all')
+          ctx.timeout(() => handleSelectNode(node.id), 0)
+        }
         const handleSelectEdge = (idx) => {
           setSelectedEdgeId(idx)
           setSelectedNodeId(null)
@@ -4579,6 +4754,7 @@ export default function clientPlugin() {
           setCurrentHistoryId(entry.id)
           setAppendCount(0)
           setResultView(makeView(entry.graph, entry.text || ''))
+           setChapterFilter('all')
           setPhase('done')
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
@@ -4653,6 +4829,18 @@ export default function clientPlugin() {
         }
 
         // ---- view constructors ----
+        const chapterSections = resultView ? chapterSectionsOf(resultView.graph) : []
+        const activeChapter = chapterFilter !== 'all' ? chapterSections.find((section) => section.id === chapterFilter) : null
+        const activeChapterId = activeChapter ? activeChapter.id : 'all'
+        const visibleGraph = resultView ? filterGraphByChapter(resultView.graph, activeChapterId) : null
+        const visibleParagraphs = resultView
+          ? resultView.paragraphs.map((paragraph, index) => ({ paragraph, index })).filter(({ index }) => {
+              if (!activeChapter) return true
+              const start = Number(activeChapter.startParagraph)
+              const end = Number(activeChapter.endParagraph)
+              return Number.isInteger(start) && Number.isInteger(end) && index >= start && index <= end
+            })
+          : []
         const paraEl = (p, i) => {
           const badges = resultView.paraTypes[i] || []
           return h('div', {
@@ -4721,8 +4909,8 @@ export default function clientPlugin() {
 
         const resultPanel = resultView
           ? (() => {
-              const graph = resultView.graph
-              const resolvedCount = graph.nodes.length - resultView.unresolved.length
+              const graph = visibleGraph || resultView.graph
+              const resolvedCount = graph.nodes.filter((node) => resultView.anchors[node.id] != null).length
               const diagCount = (graph.warnings ? graph.warnings.length : 0) + resultView.unresolved.length
                const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
                const stagingMeta = graph.staging && typeof graph.staging === 'object' ? graph.staging : null
@@ -4764,7 +4952,7 @@ export default function clientPlugin() {
                   onPointerUp: onSplitUp,
                 },
                   h('div', { className: 'kg-original', 'aria-label': '原文段落', style: { maxHeight: resultHeight + 'px' } },
-                    resultView.paragraphs.map(paraEl)),
+                    visibleParagraphs.map(({ paragraph, index }) => paraEl(paragraph, index))),
                   h('div', {
                     className: 'kg-split-handle', role: 'separator', 'aria-orientation': 'vertical',
                     'aria-label': '拖动调整原文与知识图宽度比例', title: '拖动调整宽度比例',
@@ -4875,6 +5063,16 @@ export default function clientPlugin() {
               : h(React.Fragment, null,
                   inputPanel,
                   resultPanel,
+                  resultView
+                    ? h(CandidateReviewPanel, {
+                        graph: resultView.graph,
+                        chapterFilter: activeChapterId,
+                        onChapterFilter: setChapterFilter,
+                        reviews: candidateReviews,
+                        onSetReview: handleCandidateReview,
+                        onLocate: handleCandidateLocate,
+                      })
+                    : null,
                   resultView && (verification || verifyPhase === 'running' || questionResult || questionTarget)
                     ? h(VerificationPanel, {
                         report: verification, graph: resultView.graph, resultView,
