@@ -216,12 +216,13 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
   1. **拖一个文件（推荐）**：Chrome 打开 `chrome://extensions` → 开启右上角「开发者模式」→ 把 `dist/dsh-knowledge-graph.crx` **直接拖进页面** → 点「添加扩展程序」。首次会提示"Chromium 无法验证此扩展程序的来源"，属正常（未上架商店），照常使用。
   2. **加载文件夹**：「加载已解压的扩展程序」→ 选择本仓库 `extension/` 目录。
   - 注意 Chrome 137+ 品牌版**不支持 `--load-extension` 命令行加载**（Chrome for Testing / Chromium 等未品牌化构建仍支持）。
-- **重新打包**（源码更新后想继续用 crx 分发）：保留 `dist/dsh-knowledge-graph.pem` 私钥（扩展 ID 由它派生，换密钥 = 换 ID = 旧安装失效）：
+- **重新打包**（源码更新后想继续用 crx 分发）：扩展私钥**不能放在仓库里**。将它保存在仓库外（默认建议 `~/.config/dsh-knowledge-graph/extension-signing.pem`，权限 `0600`），然后通过环境变量传给打包脚本：
+  ```bash
+  export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
+  npm run pack:extension
   ```
-  chrome --pack-extension=extension --pack-extension-key=dist/dsh-knowledge-graph.pem
-  ```
-  输出 `extension.crx` 替换 `dist/dsh-knowledge-graph.crx` 后重新拖入安装。
-- **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web；端点仅接受 `chrome-extension://` 与 `localhost/127.0.0.1` 来源，并返回 PNA 预检头）。
+  首次运行会生成新私钥；扩展 ID 由它派生，换密钥 = 换 ID = 旧安装失效。不要把私钥复制到 `dist/` 或提交到 Git。脚本会把新的 CRX 写入 `dist/dsh-knowledge-graph.crx`。
+- **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web）。端点默认只接受本项目新 CRX 的扩展来源 `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`；若使用「加载已解压」导致扩展 ID 不同，启动 dsh web 前设置 `DSH_KG_EXTENSION_ORIGINS=chrome-extension://你的扩展ID`。只有显式设置 `DSH_KG_ALLOW_LOCAL_ORIGIN=1` 时才额外允许 localhost/127.0.0.1 来源，并返回 PNA 预检头；空 Origin 和任意其他扩展来源都会被拒绝。
 - **数据流**：内容脚本（任意页面）→ `chrome.runtime.sendMessage` → Service Worker 写入 `chrome.storage.session` 并 `chrome.action.openPopup()`（Chrome 127+）；弹窗读取选中文本后调用 `http://127.0.0.1:3080/dsh-kg/extract`，轮询 `task-status` 渲染知识图。DSH 服务地址可在弹窗底部修改并记忆（`chrome.storage.local` 的 `kgBase`）。
 
 ## 架构

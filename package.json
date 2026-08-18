@@ -48,9 +48,12 @@
     "build": "node scripts/build-lib.mjs && node scripts/build-client.mjs && node scripts/build-viewer.mjs",
     "build:lib": "node scripts/build-lib.mjs && node scripts/build-client.mjs",
     "build:viewer": "node scripts/build-viewer.mjs",
+    "pack:extension": "node scripts/pack-extension.mjs",
     "kg": "node scripts/kg-cli.mjs",
     "test:kg": "node scripts/kg-store-smoke.mjs",
     "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs",
+    "test:kg-incremental": "node scripts/kg-incremental-smoke.mjs",
+    "test:kg-security": "node scripts/kg-security-smoke.mjs",
     "test:kg-verification": "node scripts/kg-verification-smoke.mjs",
     "test:kg-export": "node scripts/kg-export-smoke.mjs"
   },

@@ -19,6 +19,7 @@
       // The host chunks book-sized sources; the client only stores the text and
       // anchors, so keep the same source ceiling for pasted/attached material.
       const MAX_LEN = 1000000
+       const MAX_VERIFY_SCOPE_CHARS = 240000
       const LS_PENDING = 'dsh-kg-pending-v1'
        const LS_CHECKPOINT = 'dsh-kg-checkpoint-v1'
       const LS_RESULT = 'dsh-kg-result-v1'
@@ -1076,7 +1077,7 @@
         const aNodes = Array.isArray(after.nodes) ? after.nodes : []
         const bById = new Map(bNodes.map((n) => [n.id, n]))
         const aById = new Map(aNodes.map((n) => [n.id, n]))
-        const sameNode = (a, b) => !b || !a || (a.id === b.id && a.type === b.type && String(a.text || '') === String(b.text || '') && String(a.quote || '') === String(b.quote || '') && a.paragraph === b.paragraph)
+        const sameNode = (a, b) => !b || !a || (a.id === b.id && a.type === b.type && String(a.text || '') === String(b.text || '') && String(a.quote || '') === String(b.quote || '') && a.paragraph === b.paragraph && JSON.stringify(a.evidence || []) === JSON.stringify(b.evidence || []))
         const bOut = []
         const aOut = []
         const ids = new Set([...bById.keys(), ...aById.keys()])
@@ -1117,7 +1118,28 @@
         }
       }
 
-      // graph (original untouched). Structural fixes are deterministic; text
+      function mergeEvidenceRecords(primary, secondary, limit = 8) {
+         const out = []
+         for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
+           if (!item || typeof item !== 'object' || out.length >= limit) continue
+           const key = String(item.paragraph) + '|' + String(item.quote || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '')
+           if (out.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') === key)) continue
+           out.push({ ...item })
+         }
+         return out
+       }
+       function mergeNodeProvenance(target, source) {
+         if (!target || !source) return target
+         const merged = { ...target }
+         if ((!merged.quote || !String(merged.quote).trim()) && source.quote) merged.quote = source.quote
+         if (merged.paragraph == null && source.paragraph != null) merged.paragraph = source.paragraph
+         for (const field of ['documentId', 'sourceId', 'chunkId', 'sectionId', 'sectionTitle']) {
+           if (merged[field] == null && source[field] != null) merged[field] = source[field]
+         }
+         merged.evidence = mergeEvidenceRecords(target.evidence, source.evidence)
+         return merged
+       }
+       // graph (original untouched). Structural fixes are deterministic; text
       // patches come from the AI and are still a user-confirmed action.
       function applyPatch(graph, issue) {
         const fix = issue && issue.proposedFix ? issue.proposedFix : { action: 'none' }
@@ -1148,8 +1170,20 @@
         } else if (fix.action === 'merge_nodes' && fix.nodePatch && fix.mergeIntoId && ids.has(fix.nodePatch.id) && ids.has(fix.mergeIntoId) && fix.nodePatch.id !== fix.mergeIntoId) {
           const from = fix.nodePatch.id
           const into = fix.mergeIntoId
-          edges = edges.map((e) => ({ ...e, fromNodeId: e.fromNodeId === from ? into : e.fromNodeId, toNodeId: e.toNodeId === from ? into : e.toNodeId }))
-          edges = edges.filter((e, i) => e.fromNodeId !== e.toNodeId && edges.findIndex((x, j) => j < i && x.fromNodeId === e.fromNodeId && x.toNodeId === e.toNodeId && x.relation === e.relation) < 0)
+          const redirected = []
+          const byKey = new Map()
+          for (const edge of edges) {
+            const next = { ...edge, fromNodeId: edge.fromNodeId === from ? into : edge.fromNodeId, toNodeId: edge.toNodeId === from ? into : edge.toNodeId }
+            if (next.fromNodeId === next.toNodeId) continue
+            const key = next.fromNodeId + '>' + next.toNodeId + ':' + next.relation
+            const previous = byKey.get(key)
+            if (previous) previous.evidence = mergeEvidenceRecords(previous.evidence, next.evidence)
+            else { byKey.set(key, next); redirected.push(next) }
+          }
+          edges = redirected
+          const fromNode = nodes.find((x) => x.id === from)
+          const intoIdx = nodes.findIndex((x) => x.id === into)
+          if (fromNode && intoIdx >= 0) nodes[intoIdx] = mergeNodeProvenance(nodes[intoIdx], fromNode)
           const idx = nodes.findIndex((x) => x.id === from)
           if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'merge_nodes:' + from + '>' + into }
         } else if ((fix.action === 'update_edge' || fix.action === 'delete_edge' || fix.action === 'add_edge') && fix.edgePatch) {

@@ -205,12 +205,13 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
   1. **Drag a single file (recommended)**: open `chrome://extensions` → enable **Developer mode** (top right) → **drag `dist/dsh-knowledge-graph.crx` onto the page** → click **Add extension**. The first time Chrome warns "Chromium cannot verify the source of this extension" — expected for any extension not from the Web Store; it works normally.
   2. **Load unpacked**: **Load unpacked** → select the repo's `extension/` folder.
   - Note: branded Chrome 137+ **no longer supports `--load-extension` on the command line** (Chrome for Testing / unbranded Chromium still do).
-- **Repacking** (after source updates, to keep distributing as crx): keep `dist/dsh-knowledge-graph.pem` private — the extension ID derives from it (a new key = new ID = existing installs stop matching):
+- **Repacking** (after source updates, to keep distributing as crx): the extension private key must **stay outside the repository**. Store it outside the checkout (the recommended default is `~/.config/dsh-knowledge-graph/extension-signing.pem`, mode `0600`) and pass it to the pack script:
+  ```bash
+  export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
+  npm run pack:extension
   ```
-  chrome --pack-extension=extension --pack-extension-key=dist/dsh-knowledge-graph.pem
-  ```
-  Replace `dist/dsh-knowledge-graph.crx` with the produced `extension.crx` and drag it in again.
-- **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). The endpoint only accepts `chrome-extension://` and `localhost/127.0.0.1` origins and answers with the PNA preflight header.
+  The first run creates a new private key; the extension ID is derived from it, so rotating the key changes the ID and invalidates existing installs. Never copy the key into `dist/` or commit it. The script writes the replacement CRX to `dist/dsh-knowledge-graph.crx`.
+- **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). By default the endpoint accepts only this project's new CRX origin, `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`; if you use **Load unpacked** and get a different extension ID, set `DSH_KG_EXTENSION_ORIGINS=chrome-extension://your-extension-id` before starting dsh web. `DSH_KG_ALLOW_LOCAL_ORIGIN=1` is required to additionally allow localhost/127.0.0.1 origins; empty Origin and other extension IDs are rejected. The endpoint answers with the PNA preflight header.
 - **Data flow**: content script (any page) → `chrome.runtime.sendMessage` → service worker writes `chrome.storage.session` and calls `chrome.action.openPopup()` (Chrome 127+); the popup reads the selected text and POSTs to `http://127.0.0.1:3080/dsh-kg/extract`, then polls `task-status` to render the graph. The DSH base URL is editable at the bottom of the popup and remembered (`kgBase` in `chrome.storage.local`).
 
 ## Architecture

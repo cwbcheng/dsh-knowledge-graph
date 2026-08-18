@@ -271,10 +271,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              const input = prepareVerificationInputHost(a)
+              const text = input.text
+              const graph = input.graph
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供图对应的原文' } })
-              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
-              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (text.length > MAX_VERIFY_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } })
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } })
               }
@@ -282,14 +283,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } })
               }
               const mode = a.mode === 'standard' ? 'standard' : 'quick'
-              if (mode === 'quick') return writeJson(res, 200, { report: buildLocalReport(graph, text) })
+              if (mode === 'quick') {
+                 const report = buildLocalReport(graph, text)
+                 report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
+                 return writeJson(res, 200, { report: mapVerificationResultHost(report, input.paragraphMap) })
+               }
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
-                text, graph, mode, model, skills, createdAt: Date.now(),
+                text, graph, mode, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -304,13 +309,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              const input = prepareVerificationInputHost(a)
+              const text = input.text
+              const graph = input.graph
               const question = typeof a.question === 'string' ? a.question.trim() : ''
               if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要质疑的问题' } })
               if (question.length > 600) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑问题不能超过 600 字' } })
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供图对应的原文' } })
-              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
-              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (text.length > MAX_VERIFY_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } })
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可质疑的知识图' } })
               }
@@ -327,7 +333,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-                text, graph, target, question, model, skills, createdAt: Date.now(),
+                text, graph, target, question, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -342,10 +348,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const text = typeof a.text === 'string' ? a.text.trim() : ''
+              const input = prepareVerificationInputHost(a)
+              const text = input.text
+              const graph = input.graph
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供要核查的原文' } })
-              if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
-              const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+              if (text.length > MAX_VERIFY_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } })
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可核查的知识图' } })
               }
@@ -364,7 +371,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
-                text, graph, mode, sources, rules, model, skills, createdAt: Date.now(),
+                text, graph, mode, sources, rules, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -480,22 +487,29 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             writeJson(res, 500, { error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } })
           }
         }
-      // Extension endpoint (/dsh-kg): NOT under /api, so the browser-trust
-      // fence does not gate it (chrome-extension origins would be rejected as
-      // cross-site). The Origin check below is the no-token abuse guard.
+      // Extension endpoint (/dsh-kg): keep the route outside /api so the
+      // browser-trust fence does not reject chrome-extension origins, but do
+      // not treat Origin as optional authentication. Only the rotated CRX id
+      // is allowed by default; additional origins must be explicitly opted in.
+      const kgConfiguredOrigins = String(globalThis.process && globalThis.process.env && globalThis.process.env.DSH_KG_EXTENSION_ORIGINS || '')
+        .split(',').map((value) => value.trim().replace(/\\/$/, '')).filter(Boolean)
+      const kgAllowedOrigins = new Set(kgConfiguredOrigins.length > 0
+        ? kgConfiguredOrigins
+        : ['chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof'])
+      const kgAllowLocalOrigin = Boolean(globalThis.process && globalThis.process.env && globalThis.process.env.DSH_KG_ALLOW_LOCAL_ORIGIN === '1')
       const kgExtHandle = async (req, res) => {
-        const origin = (req.headers && req.headers.origin) || ''
-        if (origin) {
-          const ok = /^chrome-extension:\\/\\//.test(origin)
-            || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/i.test(origin)
-          if (!ok) return writeJson(res, 403, { error: { code: 'forbidden', message: 'origin not allowed' } })
-          res.setHeader('Access-Control-Allow-Origin', origin)
-          res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-          // Chrome 142+ Private Network Access: a public/extension context
-          // calling a local server needs this preflight acknowledgement.
-          res.setHeader('Access-Control-Allow-Private-Network', 'true')
+        const origin = String((req.headers && req.headers.origin) || '').trim().replace(/\\/$/, '')
+        const localOrigin = /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/i.test(origin)
+        if (!origin || origin === 'null' || (!kgAllowedOrigins.has(origin) && !(kgAllowLocalOrigin && localOrigin))) {
+          return writeJson(res, 403, { error: { code: 'forbidden', message: 'origin not allowed' } })
         }
+        res.setHeader('Vary', 'Origin')
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+        // Chrome 142+ Private Network Access: a public/extension context
+        // calling a local server needs this preflight acknowledgement.
+        res.setHeader('Access-Control-Allow-Private-Network', 'true')
         if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
         // Rewrite the URL so the shared kgHandle router sees its native
         // /api/dsh-knowledge-graph/... paths (/dsh-kg/extract -> .../extract).

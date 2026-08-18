@@ -5,3 +5,7 @@ node_modules/
 .dsh-knowledge-graph.sqlite*
 data/*.sqlite*
 data/*.db*
+
+# Extension signing material must never enter the repository.
+*.pem
+*.key

@@ -29,11 +29,20 @@ export default function hostPlugin() {
       // runTask still processes it in bounded chunks. Keep the cap below the
       // HTTP/body and browser-storage limits while allowing book-sized inputs.
       const MAX_TEXT = 1000000
+       const MAX_VERIFY_TEXT = 4000000
+       const MAX_VERIFY_SCOPE_UNITS = 2000
+       const MAX_VERIFY_SCOPE_CHARS = 240000
       const MAX_TRACE_TEXT = 20000
       // buildLocalReport performs O(n²) duplicate/contradiction scans; cap
       // verification input so a crafted request cannot block the host loop.
       const MAX_VERIFY_NODES = 800
       const MAX_GRAPH_NODES = 800
+       const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024
+       const MAX_ARCHIVE_ENTRIES = 200
+       const MAX_ARCHIVE_ENTRY_OUTPUT_BYTES = 8 * 1024 * 1024
+       const MAX_ARCHIVE_OUTPUT_BYTES = 32 * 1024 * 1024
+       const MAX_PDF_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024
+       const MAX_EXTRACTED_DOCUMENT_CHARS = 4 * 1024 * 1024
        // Optional host capability: a composition may provide a declaration
        // extractor service. It receives owned chunk JSON and may return either
        // the normalized graph object or the JSON text expected from the LLM.
@@ -114,7 +123,7 @@ export default function hostPlugin() {
         '8. 单批节点数不超过 30 个。',
         '9. 每个 fact/inference 节点的 text 必须能从其 quote 所在位置推出；inference 必须是可复用的结论，不能只是换句话复述事实。',
         '10. 同一概念、同一事实只建一个节点；节点 text 要精炼，不要整段照抄原文。',
-        '11. 只在当前批次内建边，不要引用本批不存在的节点；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
+        '11. 默认只在当前批次内建边；如果提示附带“已有节点候选清单”，可在语义依据充分时连接其中真实存在的节点，但不得编造 id；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
         '12. 输出前自查：先想“这段原文真的支持这个节点/这条边吗？类型对吗？方向对吗？”，确认后再输出 JSON。',
       ].join(NL)
 
@@ -147,7 +156,7 @@ export default function hostPlugin() {
         '8. 单批节点数不超过 30 个。',
         '9. 每个 fact/inference 节点的 text 必须能从其 quote 所在位置推出；inference 必须是可复用的结论，不能只是换句话复述事实。',
         '10. 同一概念、同一事实只建一个节点；节点 text 要精炼，不要整段照抄原文。',
-        '11. 只在当前批次内建边，不要引用本批不存在的节点；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
+        '11. 默认只在当前批次内建边；如果提示附带“已有节点候选清单”，可在语义依据充分时连接其中真实存在的节点，但不得编造 id；每条边的方向必须符合语义（例子/反例→被支撑项，定义→被定义项，事实→推论，因→果）。',
         '12. 输出前自查：先想“这段原文真的支持这个节点/这条边吗？类型对吗？方向对吗？”，确认后再输出 JSON。',
       ].join(NL)
 
@@ -1155,7 +1164,10 @@ export default function hostPlugin() {
         const prefix = 'batch' + (batchIndex + 1) + ':'
         for (const w of batch.warnings) acc.warnings.push(prefix + w)
         for (const node of batch.nodes) {
-          if (!acc.nodes.has(node.id)) acc.nodes.set(node.id, node)
+          if (!acc.nodes.has(node.id)) {
+             acc.nodes.set(node.id, node)
+             registerNodeLookupKeyHost(acc, node)
+           }
         }
         for (const e of batch.edges) {
           if (!acc.nodes.has(e.fromNodeId) || !acc.nodes.has(e.toNodeId)) {
@@ -1537,9 +1549,10 @@ export default function hostPlugin() {
           .replace(/&#(\d+);/g, (_, d) => { const n = parseInt(d, 10); return isFinite(n) ? String.fromCharCode(n) : '' })
           .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
       }
-      function inflatePdfHost(data, zlib) {
-        try { return zlib.inflateSync(data) } catch (e) {}
-        try { return zlib.inflateRawSync(data) } catch (e) { return data }
+      function inflatePdfHost(data, zlib, maxOutputLength) {
+        const limit = Math.max(1, Number.isInteger(maxOutputLength) ? maxOutputLength : MAX_PDF_STREAM_OUTPUT_BYTES)
+        try { return zlib.inflateSync(data, { maxOutputLength: limit }) } catch (e) {}
+        try { return zlib.inflateRawSync(data, { maxOutputLength: limit }) } catch (e) { return null }
       }
       function decodeAsciiHexHost(buf) {
         const s = buf.toString('latin1')
@@ -1575,7 +1588,8 @@ export default function hostPlugin() {
       function pdfExtractTextHost(buf, zlib) {
         const chunks = []
         let i = 0
-        while (i < buf.length) {
+        let total = 0
+        while (i < buf.length && total < MAX_ARCHIVE_OUTPUT_BYTES) {
           const s = buf.indexOf('stream', i)
           if (s < 0) break
           let p = s + 6
@@ -1585,12 +1599,17 @@ export default function hostPlugin() {
           if (e < 0) break
           let data = buf.subarray(p, e)
           const head = buf.subarray(Math.max(0, s - 240), s).toString('latin1')
-          if (head.includes('FlateDecode')) data = inflatePdfHost(data, zlib)
+          const remaining = MAX_ARCHIVE_OUTPUT_BYTES - total
+          if (head.includes('FlateDecode')) data = inflatePdfHost(data, zlib, Math.min(MAX_PDF_STREAM_OUTPUT_BYTES, remaining))
           else if (head.includes('ASCIIHexDecode')) data = decodeAsciiHexHost(data)
-          chunks.push(data)
+          if (data && data.length > remaining) data = data.subarray(0, remaining)
+          if (data && data.length > 0) {
+            chunks.push(data)
+            total += data.length
+          }
           i = e + 9
         }
-        const content = Buffer.concat(chunks.length > 0 ? chunks : [buf]).toString('latin1')
+        const content = Buffer.concat(chunks.length > 0 ? chunks : [buf.subarray(0, MAX_ARCHIVE_OUTPUT_BYTES)]).toString('latin1')
         const out = []
         const re = /\(((?:\\.|[^()\\])*)\)\s*Tj|\[((?:\\.|[^\]\\])*)\]\s*TJ|<([0-9A-Fa-f]+)>\s*Tj/g
         let m
@@ -1604,13 +1623,14 @@ export default function hostPlugin() {
             out.push(hexPdfStringHost(m[3]))
           }
         }
-        return out.join(' ').replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+        return out.join(' ').replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_EXTRACTED_DOCUMENT_CHARS)
       }
       function zipEocdHost(buf) {
         const len = buf.length
+        if (len < 22) return null
         const min = Math.max(0, len - 65557)
         for (let p = len - 22; p >= min; p--) {
-          if (buf.readUInt32LE(p) === 0x06054b50) {
+          if (p + 22 <= len && buf.readUInt32LE(p) === 0x06054b50) {
             return {
               entryCount: buf.readUInt16LE(p + 10),
               centralSize: buf.readUInt32LE(p + 12),
@@ -1622,35 +1642,43 @@ export default function hostPlugin() {
       }
       function zipEntriesHost(buf) {
         const eocd = zipEocdHost(buf)
-        if (!eocd) return []
+        if (!eocd || eocd.centralOffset > buf.length || eocd.centralSize > buf.length - eocd.centralOffset) return []
         const entries = []
         let p = eocd.centralOffset
         const end = p + eocd.centralSize
-        while (p + 46 <= end && entries.length < eocd.entryCount) {
+        const declaredCount = Math.min(eocd.entryCount, MAX_ARCHIVE_ENTRIES)
+        while (p + 46 <= end && entries.length < declaredCount) {
           if (buf.readUInt32LE(p) !== 0x02014b50) break
           const compSize = buf.readUInt32LE(p + 20)
+          const uncompressedSize = buf.readUInt32LE(p + 24)
           const nameLen = buf.readUInt16LE(p + 28)
           const extraLen = buf.readUInt16LE(p + 30)
           const commentLen = buf.readUInt16LE(p + 32)
           const localOffset = buf.readUInt32LE(p + 42)
+          const recordSize = 46 + nameLen + extraLen + commentLen
+          if (recordSize > end - p || p + 46 + nameLen > end) break
           const name = buf.toString('utf8', p + 46, p + 46 + nameLen)
-          entries.push({ name, compSize, localOffset })
-          p += 46 + nameLen + extraLen + commentLen
+          entries.push({ name, compSize, uncompressedSize, localOffset })
+          p += recordSize
         }
         return entries
       }
-      function zipReadEntryHost(buf, entry, zlib) {
+      function zipReadEntryHost(buf, entry, zlib, outputLimit) {
+        if (!entry || typeof entry !== 'object') return null
         const p = entry.localOffset
-        if (p + 30 > buf.length || buf.readUInt32LE(p) !== 0x04034b50) return null
+        const limit = Math.max(1, Number.isInteger(outputLimit) ? outputLimit : MAX_ARCHIVE_ENTRY_OUTPUT_BYTES)
+        if (!Number.isInteger(p) || p < 0 || p + 30 > buf.length || buf.readUInt32LE(p) !== 0x04034b50) return null
         const method = buf.readUInt16LE(p + 8)
         const nameLen = buf.readUInt16LE(p + 26)
         const extraLen = buf.readUInt16LE(p + 28)
         const start = p + 30 + nameLen + extraLen
+        if (start < p || start > buf.length || entry.compSize > buf.length - start || entry.compSize > MAX_DOCUMENT_FILE_BYTES) return null
+        if (Number.isInteger(entry.uncompressedSize) && entry.uncompressedSize > limit) return null
         const data = buf.subarray(start, start + entry.compSize)
         if (method === 8) {
-          try { return zlib.inflateRawSync(data) } catch (e) { return null }
+          try { return zlib.inflateRawSync(data, { maxOutputLength: limit }) } catch (e) { return null }
         }
-        if (method === 0) return data
+        if (method === 0) return data.length <= limit ? data : null
         return null
       }
       function xmlToTextHost(xml, mode) {
@@ -1690,59 +1718,77 @@ export default function hostPlugin() {
         const lower = name.toLowerCase()
         const parts = []
         let hits = 0
+        let outputBytes = 0
+        let outputChars = 0
+        const readEntryText = (entry, mode) => {
+          const remaining = MAX_ARCHIVE_OUTPUT_BYTES - outputBytes
+          if (remaining <= 0) return null
+          const data = zipReadEntryHost(buf, entry, zlib, Math.min(MAX_ARCHIVE_ENTRY_OUTPUT_BYTES, remaining))
+          if (!data) return null
+          outputBytes += data.length
+          const text = xmlToTextHost(data, mode).slice(0, Math.max(0, MAX_EXTRACTED_DOCUMENT_CHARS - outputChars))
+          outputChars += text.length
+          return text
+        }
         if (lower.endsWith('.docx')) {
           for (const e of entries) {
             if (e.name !== 'word/document.xml') continue
-            const data = zipReadEntryHost(buf, e, zlib)
-            if (data) { parts.push(xmlToTextHost(data, 'docx')); hits += 1 }
+            const text = readEntryText(e, 'docx')
+            if (text) { parts.push(text); hits += 1 }
           }
         } else if (lower.endsWith('.pptx')) {
           for (const e of entries) {
             if (!/^ppt\/slides\/slide\d+\.xml$/.test(e.name)) continue
-            const data = zipReadEntryHost(buf, e, zlib)
-            if (data) { parts.push('幻灯片：' + xmlToTextHost(data, 'pptx')); hits += 1 }
+            const text = readEntryText(e, 'pptx')
+            if (text) { parts.push('幻灯片：' + text); hits += 1 }
           }
         } else if (lower.endsWith('.xlsx') || lower.endsWith('.xlsm')) {
           const shared = entries.find((e) => e.name === 'xl/sharedStrings.xml')
           if (shared) {
-            const data = zipReadEntryHost(buf, shared, zlib)
-            if (data) { parts.push(xmlToTextHost(data, 'xlsx')); hits += 1 }
+            const text = readEntryText(shared, 'xlsx')
+            if (text) { parts.push(text); hits += 1 }
           }
           for (const e of entries) {
             if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(e.name)) continue
-            const data = zipReadEntryHost(buf, e, zlib)
-            if (data) { parts.push(xmlToTextHost(data, 'xlsx')); hits += 1 }
+            const text = readEntryText(e, 'xlsx')
+            if (text) { parts.push(text); hits += 1 }
           }
         } else if (lower.endsWith('.odt')) {
           const e = entries.find((x) => x.name === 'content.xml')
           if (e) {
-            const data = zipReadEntryHost(buf, e, zlib)
-            if (data) { parts.push(xmlToTextHost(data, 'docx')); hits += 1 }
+            const text = readEntryText(e, 'docx')
+            if (text) { parts.push(text); hits += 1 }
           }
         }
-        if (hits > 0) return parts.join('\n\n').trim()
+        if (hits > 0) return parts.join('\n\n').trim().slice(0, MAX_EXTRACTED_DOCUMENT_CHARS)
         return null
       }
       async function readDocumentTextHost(absPath, name) {
         const mods = await docNodeModules()
-        const st = await mods.fs.stat(absPath)
-        if (!st.isFile()) return { error: '不是普通文件' }
-        if (st.size > 15 * 1024 * 1024) return { error: '文件超过 15 MiB，已跳过' }
-        const buf = await mods.fs.readFile(absPath)
+        const noFollow = Number.isInteger(mods.fs.constants && mods.fs.constants.O_NOFOLLOW) ? mods.fs.constants.O_NOFOLLOW : 0
+        const handle = await mods.fs.open(absPath, mods.fs.constants.O_RDONLY | noFollow)
+        try {
+          const st = await handle.stat()
+          if (!st.isFile()) return { error: '不是普通文件' }
+          if (st.size > MAX_DOCUMENT_FILE_BYTES) return { error: '文件超过 15 MiB，已跳过' }
+          const buf = await handle.readFile()
         const lower = name.toLowerCase()
         if (lower.endsWith('.pdf') || (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-')) {
           const text = pdfExtractTextHost(buf, mods.zlib)
-          return text.trim() ? { text, format: 'pdf', bytes: st.size, warning: 'PDF 文本为本地解析，复杂排版可能不完整' } : { error: 'PDF 没有提取到文本（可能是扫描版）' }
+          return text.trim() ? { text, format: 'pdf', bytes: st.size, warning: 'PDF 文本为本地解析，复杂排版可能不完整' } : { error: 'PDF 没有提取到文本（可能是扫描版或超过解压安全上限）' }
         }
         if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 3 || buf[2] === 5 || buf[2] === 7) && buf[3] < 10) {
           const text = zipExtractTextHost(buf, lower, mods.zlib)
-          return text && text.trim() ? { text, format: lower.split('.').pop() || 'zip', bytes: st.size } : { error: '压缩文档没有提取到文本（不支持的格式）' }
+          return text && text.trim() ? { text, format: lower.split('.').pop() || 'zip', bytes: st.size } : { error: '压缩文档没有提取到文本（格式不支持或超过解压安全上限）' }
         }
         if (looksUtf8TextHost(buf, name)) {
-          const text = buf.toString('utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, NL)
+          const text = buf.toString('utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, NL).slice(0, MAX_EXTRACTED_DOCUMENT_CHARS)
           if (text.trim()) return { text, format: 'text', bytes: st.size }
         }
-        return { error: '暂不支持的文件格式（支持文本类 / PDF / DOCX / PPTX / XLSX / ODT）' }
+          return { error: '暂不支持的文件格式（支持文本类 / PDF / DOCX / PPTX / XLSX / ODT）' }
+        } finally {
+          try { await handle.close() } catch (e) {}
+        }
       }
       function parsePasteInputMarkersHost(text) {
         const markers = []
@@ -1772,6 +1818,25 @@ export default function hostPlugin() {
         }
         return refs
       }
+      function pathInsideHost(root, candidate, pathMod) {
+        const rel = pathMod.relative(root, candidate)
+        return Boolean(rel) && !rel.startsWith('..' + pathMod.sep) && !pathMod.isAbsolute(rel)
+      }
+      function ownedAttachmentRootHost(root, sessionId, pathMod) {
+        if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return false
+        const parts = pathMod.resolve(root).split(pathMod.sep).filter(Boolean)
+        for (let i = 0; i + 3 < parts.length; i++) {
+          if (parts[i] === '.dsh' && parts[i + 1] === 'tmp' && parts[i + 2] === 'attachments' && parts[i + 3] === sessionId) return true
+        }
+        return false
+      }
+      async function resolveContainedDocumentPathHost(rootPath, relativePath, mods) {
+        const rootReal = await mods.fs.realpath(rootPath)
+        const candidate = mods.path.resolve(rootReal, relativePath)
+        const candidateReal = await mods.fs.realpath(candidate)
+        if (!pathInsideHost(rootReal, candidateReal, mods.path)) return null
+        return { root: rootReal, path: candidateReal }
+      }
       async function collectDocumentAttachmentsHost(sessionId, session, pendingText) {
         const mods = await docNodeModules()
         const found = []
@@ -1787,19 +1852,20 @@ export default function hostPlugin() {
               .filter(Boolean) : [])
         for (const text of texts) {
           for (const marker of parsePasteInputMarkersHost(text)) {
-            const normRoot = marker.root.replace(/\\/g, '/')
-            const attachIdx = normRoot.indexOf('/.dsh/tmp/attachments/')
-            if (attachIdx < 0 || !normRoot.includes('/' + sessionId + '/')) {
-              warnings.push('忽略不在附件目录中的路径：' + marker.root)
+            let markerRootReal = null
+            try { markerRootReal = await mods.fs.realpath(mods.path.resolve(marker.root)) } catch (e) {}
+            if (!markerRootReal || !ownedAttachmentRootHost(markerRootReal, sessionId, mods.path)) {
+              warnings.push('忽略不在当前会话附件目录中的路径：' + marker.root)
               continue
             }
             for (const rel of marker.files) {
-              const abs = mods.path.resolve(marker.root, rel)
-              const relCheck = mods.path.relative(mods.path.resolve(marker.root), abs)
-              if (!relCheck || relCheck.startsWith('..') || mods.path.isAbsolute(relCheck)) {
-                warnings.push('忽略越界附件路径：' + rel)
+              let resolved = null
+              try { resolved = await resolveContainedDocumentPathHost(markerRootReal, rel, mods) } catch (e) {}
+              if (!resolved) {
+                warnings.push('忽略越界或不存在的附件路径：' + rel)
                 continue
               }
+              const abs = resolved.path
               if (seen.has(abs)) continue
               seen.add(abs)
               try {
@@ -1816,12 +1882,13 @@ export default function hostPlugin() {
               warnings.push('忽略 @文件引用 ' + rel + '：会话没有工作区目录')
               continue
             }
-            const abs = mods.path.resolve(cwdRoot, rel)
-            const relCheck = mods.path.relative(cwdRoot, abs)
-            if (!relCheck || relCheck.startsWith('..') || mods.path.isAbsolute(relCheck)) {
-              warnings.push('忽略越界 @文件引用：' + rel)
+            let resolved = null
+            try { resolved = await resolveContainedDocumentPathHost(cwdRoot, rel, mods) } catch (e) {}
+            if (!resolved) {
+              warnings.push('忽略越界或不存在的 @文件引用：' + rel)
               continue
             }
+            const abs = resolved.path
             if (seen.has(abs)) continue
             seen.add(abs)
             try {
@@ -1876,20 +1943,79 @@ export default function hostPlugin() {
       }
 
       // ---- incremental append helpers ----
-      // Compact the existing graph into one line per node for the prompt.
-      function serializeExistingGraph(existing, maxNodes) {
-        const list = []
+      function normalizeGraphLookupTextHost(value) {
+        return normalizeForHost(String(value || '').normalize('NFKC').toLowerCase(), 'both').text.trim()
+      }
+      function graphNodeLookupKeyHost(node) {
+        const text = normalizeGraphLookupTextHost(node && node.text)
+        if (!text) return ''
+        const type = node && (node.type === 'concept' || node.type === 'definition') ? 'entity' : (node && node.type ? node.type : '')
+        return type + '|' + text
+      }
+      function mergeNodeEvidenceHost(target, incoming) {
+        if (!target || !incoming) return
+        if ((!target.quote || !target.quote.trim()) && incoming.quote) target.quote = incoming.quote
+        if (!Number.isInteger(target.paragraph) && Number.isInteger(incoming.paragraph)) target.paragraph = incoming.paragraph
+        const evidence = Array.isArray(target.evidence) ? target.evidence.slice(0, 4) : []
+        const incomingEvidence = Array.isArray(incoming.evidence) ? incoming.evidence : []
+        for (const item of incomingEvidence) {
+          if (!item || evidence.length >= 4) break
+          const key = String(item.paragraph) + '|' + String(item.quote || '')
+          if (!evidence.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') === key)) evidence.push({ paragraph: item.paragraph, quote: String(item.quote || '').slice(0, 600) })
+        }
+        target.evidence = evidence
+      }
+      function registerNodeLookupKeyHost(acc, node) {
+        const key = graphNodeLookupKeyHost(node)
+        if (key && !acc.nodeKeys.has(key)) acc.nodeKeys.set(key, node.id)
+      }
+      function dedupeIncomingNodesHost(norm, acc) {
+        const idMap = new Map()
+        const kept = []
+        const pending = new Map()
+        for (const node of norm.nodes) {
+          const key = graphNodeLookupKeyHost(node)
+          const canonicalId = (key && (acc.nodeKeys.get(key) || pending.get(key))) || ''
+          if (canonicalId && canonicalId !== node.id) {
+            idMap.set(node.id, canonicalId)
+            const canonical = acc.nodes.get(canonicalId) || kept.find((candidate) => candidate.id === canonicalId)
+            if (canonical) mergeNodeEvidenceHost(canonical, node)
+            acc.warnings.push('duplicate_merged:' + node.id + '->' + canonicalId)
+            continue
+          }
+          kept.push(node)
+          if (key) pending.set(key, node.id)
+        }
+        for (const edge of norm.edges) {
+          if (idMap.has(edge.fromNodeId)) edge.fromNodeId = idMap.get(edge.fromNodeId)
+          if (idMap.has(edge.toNodeId)) edge.toNodeId = idMap.get(edge.toNodeId)
+        }
+        norm.nodes = kept
+        return norm
+      }
+      function serializeExistingGraph(existing, maxNodes, queryText) {
         const nodes = existing && Array.isArray(existing.nodes) ? existing.nodes : []
-        for (const n of nodes) {
+        const candidates = []
+        const query = normalizeGraphLookupTextHost(queryText)
+        const queryTokens = query ? phraseTokensHost(query) : new Set()
+        for (let index = 0; index < nodes.length; index++) {
+          const n = nodes[index]
           if (!n || typeof n !== 'object') continue
           const id = typeof n.id === 'string' ? n.id.trim() : ''
           const text = typeof n.text === 'string' ? n.text.trim() : ''
           if (!id || !text) continue
-          list.push(id + '|' + (typeof n.type === 'string' ? n.type : '') + '|' + text.slice(0, 60))
+          const normalized = normalizeGraphLookupTextHost(text)
+          const tokens = phraseTokensHost(normalized)
+          let overlap = 0
+          if (queryTokens.size > 0) for (const token of queryTokens) if (tokens.has(token)) overlap += 1
+          const score = queryTokens.size > 0 ? (normalized === query ? 2 : overlap / Math.max(queryTokens.size, tokens.size, 1)) : 0
+          candidates.push({ node: n, index, score })
         }
-        const cap = typeof maxNodes === 'number' && maxNodes > 0 ? maxNodes : 150
-        if (list.length > cap) list.length = cap
-        return list.join(NL)
+        if (queryTokens.size > 0) candidates.sort((a, b) => b.score - a.score || a.index - b.index)
+        const cap = typeof maxNodes === 'number' && maxNodes > 0 ? maxNodes : 24
+        return candidates.slice(0, cap).map(({ node }) => (
+          node.id + '|' + (typeof node.type === 'string' ? node.type : '') + '|' + String(node.text || '').slice(0, 120)
+        )).join(NL)
       }
 
       // AI ids restart at n1 per batch; renumber any id that collides with an
@@ -2016,7 +2142,7 @@ export default function hostPlugin() {
                return failTask(task, 'checkpoint_invalid', 'checkpoint 与当前正文不匹配，无法安全续跑；请重新拆分全文')
              }
            }
-           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [] }
+           const acc = { nodes: new Map(), edges: [], edgeKeys: new Set(), warnings: [], nodeKeys: new Map() }
           let summary = ''
           const batchSummaries = []
           const chunkResults = []
@@ -2046,7 +2172,8 @@ export default function hostPlugin() {
                  sectionId: typeof n.sectionId === 'string' ? n.sectionId : null,
                  sectionTitle: typeof n.sectionTitle === 'string' ? n.sectionTitle : null,
               })
-              existingIds.add(id)
+              registerNodeLookupKeyHost(acc, acc.nodes.get(id))
+               existingIds.add(id)
             }
             for (const e of existing.edges || []) {
               if (!e || typeof e !== 'object') continue
@@ -2096,7 +2223,7 @@ export default function hostPlugin() {
            const resumeFromBatch = isResume && task.checkpoint && Number.isInteger(task.checkpoint.nextBatchIndex) ? task.checkpoint.nextBatchIndex : 0
           task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, resumeFromBatch)
            await persistCheckpointSafe('running')
-           const existingDigest = isAppend ? serializeExistingGraph(existing, 150) : ''
+           const existingDigest = ''
           const system = isTrajAppend ? TRAJ_APPEND_SYSTEM_PROMPT : (isResume ? SYSTEM_PROMPT : (isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT)))
           for (let i = resumeFromBatch; i < batches.length; i++) {
             const batch = batches[i]
@@ -2105,6 +2232,10 @@ export default function hostPlugin() {
              if (task.progress) {
                task.progress.batch = { index: i + 1, total: batches.length, chunkId: batch.chunkId, startParagraph: batch.startParagraph, endParagraph: batch.endParagraph }
              }
+             const batchQuery = (batch.units || []).map((unit) => unit && unit.text ? unit.text : '').join(' ')
+             const existingDigest = acc.nodes.size > 0
+               ? serializeExistingGraph({ nodes: Array.from(acc.nodes.values()) }, 24, batchQuery)
+               : ''
              let userText = buildUserPrompt(task.title, batch, i, batches.length)
             if (existingDigest) {
               userText += NL + NL + '已有知识图节点清单（id|类型|文本，引用边时只能用这些 id）：' + NL + existingDigest
@@ -2169,7 +2300,9 @@ export default function hostPlugin() {
                  }
                }
              }
+             dedupeIncomingNodesHost(norm, acc)
              mergeBatch(norm, acc, i)
+             for (const node of norm.nodes) existingIds.add(node.id)
             if (norm.summary) {
                batchSummaries.push(norm.summary)
                for (const sectionId of batch.sectionIds || []) {
@@ -2277,6 +2410,70 @@ export default function hostPlugin() {
         }
       }
 
+      function prepareVerificationInputHost(args) {
+        const rawText = typeof args.text === 'string' ? args.text.trim() : ''
+        const graph = args.graph && typeof args.graph === 'object' ? args.graph : null
+        const sourceUnits = Array.isArray(args.sourceUnits) ? args.sourceUnits : []
+        if (!graph || sourceUnits.length === 0) return { text: rawText, graph, paragraphMap: null, scoped: false }
+        const units = []
+        const seen = new Set()
+        let chars = 0
+        for (const unit of sourceUnits) {
+          if (!unit || typeof unit !== 'object') continue
+          const paragraph = Number(unit.paragraph)
+          const text = typeof unit.text === 'string' ? unit.text.trim() : ''
+          if (!Number.isInteger(paragraph) || paragraph < 0 || !text || seen.has(paragraph)) continue
+          if (units.length >= MAX_VERIFY_SCOPE_UNITS || chars + text.length > MAX_VERIFY_SCOPE_CHARS) break
+          seen.add(paragraph)
+          units.push({ paragraph, text })
+          chars += text.length
+        }
+        if (units.length === 0) return { text: rawText, graph, paragraphMap: null, scoped: false }
+        units.sort((a, b) => a.paragraph - b.paragraph)
+        const paragraphMap = units.map((unit) => unit.paragraph)
+        const localParagraph = new Map(paragraphMap.map((paragraph, index) => [paragraph, index]))
+        const scopedGraph = {
+          ...graph,
+          nodes: Array.isArray(graph.nodes) ? graph.nodes.map((node) => ({
+            ...node,
+            paragraph: Number.isInteger(node && node.paragraph) && localParagraph.has(node.paragraph) ? localParagraph.get(node.paragraph) : null,
+            evidence: Array.isArray(node && node.evidence) ? node.evidence.map((evidence) => ({
+              ...evidence,
+              paragraph: Number.isInteger(evidence && evidence.paragraph) && localParagraph.has(evidence.paragraph) ? localParagraph.get(evidence.paragraph) : null,
+            })) : node && node.evidence,
+          })) : [],
+          edges: Array.isArray(graph.edges) ? graph.edges.slice() : [],
+        }
+        return {
+          text: units.map((unit) => unit.text).join(NL + NL),
+          graph: scopedGraph,
+          paragraphMap,
+          scoped: true,
+        }
+      }
+      function mapVerificationParagraphHost(value, paragraphMap) {
+        if (!Array.isArray(paragraphMap) || !Number.isInteger(value)) return value
+        return value >= 0 && value < paragraphMap.length ? paragraphMap[value] : value
+      }
+      function mapVerificationResultHost(result, paragraphMap) {
+        if (!result || !Array.isArray(paragraphMap)) return result
+        const mapEvidence = (evidence) => Array.isArray(evidence) ? evidence.map((item) => ({ ...item, paragraph: mapVerificationParagraphHost(item && item.paragraph, paragraphMap) })) : evidence
+        const mapFix = (fix) => {
+          if (!fix || typeof fix !== 'object') return fix
+          const next = { ...fix }
+          if (fix.nodePatch && typeof fix.nodePatch === 'object') {
+            next.nodePatch = { ...fix.nodePatch, patch: fix.nodePatch.patch && typeof fix.nodePatch.patch === 'object'
+              ? { ...fix.nodePatch.patch, ...(Number.isInteger(fix.nodePatch.patch.paragraph) ? { paragraph: mapVerificationParagraphHost(fix.nodePatch.patch.paragraph, paragraphMap) } : {}) }
+              : fix.nodePatch.patch }
+          }
+          return next
+        }
+        if (Array.isArray(result.issues)) return { ...result, issues: result.issues.map((issue) => ({ ...issue, evidence: mapEvidence(issue.evidence), proposedFix: mapFix(issue.proposedFix) })) }
+        if (Array.isArray(result.claims)) return { ...result, claims: result.claims.map((claim) => ({ ...claim, paragraph: mapVerificationParagraphHost(claim.paragraph, paragraphMap) })) }
+        if (Array.isArray(result.evidence) || result.proposedFix) return { ...result, evidence: mapEvidence(result.evidence), proposedFix: mapFix(result.proposedFix) }
+        return result
+      }
+
       // ---- verification (deep AI audit) ----
       function serializeGraphForVerify(graph, nodeIds) {
         const idSet = nodeIds ? new Set(nodeIds) : null
@@ -2297,12 +2494,13 @@ export default function hostPlugin() {
       }
       function buildVerifyBatches(paras, graph) {
         const pBatches = buildBatchesByParagraph(paras, 2500)
-        const batches = pBatches.map((batch) => {
+        let batches = pBatches.map((batch) => {
            const units = Array.isArray(batch) ? batch : batch.units
           const pSet = new Set(units.map((u) => u.num))
           const nodes = (graph.nodes || []).filter((n) => n && Number.isInteger(n.paragraph) && pSet.has(n.paragraph))
           return { units, pSet, nodes, chunkId: batch.chunkId || null }
         })
+        if (batches.some((batch) => batch.nodes.length > 0)) batches = batches.filter((batch) => batch.nodes.length > 0)
         // Nodes without a usable paragraph join the first batch so they are
         // still audited instead of silently skipped.
         const orphan = (graph.nodes || []).filter((n) => n && !(Number.isInteger(n.paragraph) && n.paragraph >= 0 && n.paragraph < paras.length))
@@ -2527,17 +2725,18 @@ export default function hostPlugin() {
           for (const it of issues) counts[it.severity] += 1
           task.status = 'succeeded'
           task.finishedAt = Date.now()
-          task.result = {
+          const report = {
             reportId: 'vd-' + Date.now().toString(36) + '-' + task.id,
             mode: task.mode === 'standard' ? 'standard' : 'quick',
             createdAt: Date.now(),
             model,
-            scope: { kind: 'full', ids: [] },
+            scope: task.scope || { kind: 'full', ids: [] },
             summary: 'AI 深度审校完成：' + counts.error + ' 个错误、' + counts.warning + ' 个警告、' + counts.suggestion + ' 条建议（已叠加本地规则检查）。',
             metrics: { ...local.metrics, errorCount: counts.error, warningCount: counts.warning, suggestionCount: counts.suggestion },
             warnings,
             issues,
           }
+          task.result = mapVerificationResultHost(report, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] verification failed:', e)
@@ -2648,12 +2847,12 @@ export default function hostPlugin() {
           if (!norm) return failTask(task, 'schema_invalid', 'AI 质疑回答无法解析（已自动重试）：' + lastErr)
           task.status = 'succeeded'
           task.finishedAt = Date.now()
-          task.result = {
+          const result = {
             reportId: 'vq-' + Date.now().toString(36) + '-' + task.id,
             mode: 'question',
             createdAt: Date.now(),
             model,
-            scope: { kind: task.target ? task.target.kind : 'graph', ids: task.target ? [task.target.id] : [] },
+            scope: task.scope || { kind: task.target ? task.target.kind : 'graph', ids: task.target ? [task.target.id] : [] },
             question: task.question,
             target: task.target || null,
             verdict: norm.verdict,
@@ -2662,6 +2861,7 @@ export default function hostPlugin() {
             proposedFix: norm.proposedFix,
             summary: norm.answer.slice(0, 80),
           }
+          task.result = mapVerificationResultHost(result, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] question task failed:', e)
@@ -2880,12 +3080,12 @@ export default function hostPlugin() {
           const supportedRate = factualTotal > 0 ? Math.round((counts.supported / factualTotal) * 100) : 0
           task.status = 'succeeded'
           task.finishedAt = Date.now()
-          task.result = {
+          const result = {
             reportId: 'fc-' + Date.now().toString(36) + '-' + task.id,
             mode,
             createdAt: Date.now(),
             model,
-            scope: { kind: 'full', ids: [] },
+            scope: task.scope || { kind: 'full', ids: [] },
             summary: '外部事实核查完成：' + counts.supported + ' 项支持 / ' + counts.contradicted + ' 项矛盾 / ' + counts.partially_supported + ' 项部分支持 / ' + counts.insufficient + ' 项证据不足 / ' + counts.unverifiable + ' 项无法核查。',
             metrics: {
               totalClaims: finalClaims.length,
@@ -2895,6 +3095,7 @@ export default function hostPlugin() {
             warnings,
             claims: finalClaims,
           }
+          task.result = mapVerificationResultHost(result, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] fact-check failed:', e)
@@ -2906,10 +3107,11 @@ export default function hostPlugin() {
 
       harness.handle('fact-check', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
-        const text = typeof a.text === 'string' ? a.text.trim() : ''
+        const input = prepareVerificationInputHost(a)
+        const text = input.text
+        const graph = input.graph
         if (!text) return { error: { code: 'invalid_input', message: '请先提供要核查的原文' } }
-        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
-        const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+        if (text.length > MAX_VERIFY_TEXT) return { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } }
         if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可核查的知识图' } }
         }
@@ -2928,7 +3130,7 @@ export default function hostPlugin() {
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
-          text, graph, mode, sources, rules, model, skills, createdAt: Date.now(),
+          text, graph, mode, sources, rules, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3144,10 +3346,11 @@ export default function hostPlugin() {
 
       harness.handle('verify-graph', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
-        const text = typeof a.text === 'string' ? a.text.trim() : ''
+        const input = prepareVerificationInputHost(a)
+        const text = input.text
+        const graph = input.graph
         if (!text) return { error: { code: 'invalid_input', message: '请先提供图对应的原文' } }
-        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
-        const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+        if (text.length > MAX_VERIFY_TEXT) return { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } }
         if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } }
         }
@@ -3155,14 +3358,18 @@ export default function hostPlugin() {
           return { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } }
         }
         const mode = a.mode === 'standard' ? 'standard' : 'quick'
-        if (mode === 'quick') return { report: buildLocalReport(graph, text) }
+        if (mode === 'quick') {
+          const report = buildLocalReport(graph, text)
+          report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
+          return { report: mapVerificationResultHost(report, input.paragraphMap) }
+        }
         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
-          text, graph, mode, model, skills, createdAt: Date.now(),
+          text, graph, mode, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3175,13 +3382,14 @@ export default function hostPlugin() {
 
       harness.handle('question-graph', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
-        const text = typeof a.text === 'string' ? a.text.trim() : ''
+        const input = prepareVerificationInputHost(a)
+        const text = input.text
+        const graph = input.graph
         const question = typeof a.question === 'string' ? a.question.trim() : ''
         if (!question) return { error: { code: 'invalid_input', message: '请先输入要质疑的问题' } }
         if (question.length > 600) return { error: { code: 'invalid_input', message: '质疑问题不能超过 600 字' } }
         if (!text) return { error: { code: 'invalid_input', message: '请先提供图对应的原文' } }
-        if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
-        const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+        if (text.length > MAX_VERIFY_TEXT) return { error: { code: 'invalid_input', message: '验证资料不能超过 ' + MAX_VERIFY_TEXT + ' 字；过长追加内容请按来源单元分范围验证' } }
         if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可质疑的知识图' } }
         }
@@ -3198,7 +3406,7 @@ export default function hostPlugin() {
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-          text, graph, target, question, model, skills, createdAt: Date.now(),
+          text, graph, target, question, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3224,7 +3432,7 @@ export default function hostPlugin() {
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          model, createdAt: Date.now(),
+          model, skills, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
