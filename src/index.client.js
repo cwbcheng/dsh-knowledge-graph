@@ -658,7 +658,7 @@ export default function clientPlugin() {
         if (typeof Blob === 'undefined' || !downloadBrowserBlob(new Blob([content], { type: mime }), filename, ctx)) return null
         return filename
       }
-      function exportRenderedGraphImage(container, title, ctx) {
+      function exportRenderedGraphImage(container, title, ctx, exportBBox) {
         return new Promise((resolve, reject) => {
           try {
             if (!container || typeof container.querySelector !== 'function' || typeof XMLSerializer === 'undefined' || typeof Image === 'undefined') {
@@ -668,8 +668,10 @@ export default function clientPlugin() {
             const svg = container.querySelector('svg')
             if (!svg || typeof svg.cloneNode !== 'function') { resolve(null); return }
             const rect = container.getBoundingClientRect()
-            const width = Math.max(320, Math.round(rect.width || 0))
-            const height = Math.max(240, Math.round(rect.height || 0))
+            const hasExportBBox = exportBBox && Number.isFinite(exportBBox.w) && Number.isFinite(exportBBox.h) && Number.isFinite(exportBBox.cx) && Number.isFinite(exportBBox.cy)
+            const padding = 180
+            const width = hasExportBBox ? Math.max(320, Math.ceil(exportBBox.w + padding * 2)) : Math.max(320, Math.round(rect.width || 0))
+            const height = hasExportBBox ? Math.max(240, Math.ceil(exportBBox.h + padding * 2)) : Math.max(240, Math.round(rect.height || 0))
             const clone = svg.cloneNode(true)
             const svgNs = 'http://www.w3.org/2000/svg'
             clone.setAttribute('xmlns', svgNs)
@@ -677,6 +679,13 @@ export default function clientPlugin() {
             clone.setAttribute('width', String(width))
             clone.setAttribute('height', String(height))
             clone.setAttribute('viewBox', '0 0 ' + width + ' ' + height)
+            if (hasExportBBox) {
+              const scene = clone.querySelector('g')
+              if (scene) {
+                scene.removeAttribute('style')
+                scene.setAttribute('transform', 'translate(' + (padding - (exportBBox.cx - exportBBox.w / 2)) + ' ' + (padding - (exportBBox.cy - exportBBox.h / 2)) + ')')
+              }
+            }
             const computed = typeof getComputedStyle === 'function' ? getComputedStyle(container) : null
             const textColor = computed && computed.getPropertyValue('--kg-text').trim() ? computed.getPropertyValue('--kg-text').trim() : '#1f2937'
             const panelColor = computed && computed.getPropertyValue('--kg-panel').trim() ? computed.getPropertyValue('--kg-panel').trim() : '#ffffff'
@@ -2686,7 +2695,7 @@ export default function clientPlugin() {
         }
         const exportImage = async () => {
           try {
-            const filename = await exportRenderedGraphImage(containerRef.current, exportTitle || 'knowledge-graph', ctx)
+            const filename = await exportRenderedGraphImage(containerRef.current, exportTitle || 'knowledge-graph', ctx, bbox)
             if (filename) toastStore.show('已导出图片 ' + filename)
             else toastStore.show('当前浏览器不支持图片下载')
           } catch (error) {
