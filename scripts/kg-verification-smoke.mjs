@@ -43,6 +43,9 @@ assert(scoped.report.scope && scoped.report.scope.kind === 'source-units', 'scop
 assert(scoped.report.scope.ids.join(',') === '2,10', 'scoped paragraph map was not restored')
 
 const clientSource = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+const hostSource = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
+assert(!clientSource.includes('j-space') && !clientSource.includes('JSpaceToggle'), 'J-space client integration is still present')
+assert(!hostSource.includes('j-space') && !hostSource.includes('skillContextFor'), 'J-space Host integration is still present')
 assert(clientSource.includes("'复核并提交'"), 'recheck button is not labeled as an immediate submission')
 assert(clientSource.includes('submitQuestion(draft, target)'), 'recheck handler does not submit the targeted question')
 assert(clientSource.includes('relationTypeFix'), 'relation mismatch repair option is missing')

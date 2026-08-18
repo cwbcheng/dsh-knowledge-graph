@@ -1214,39 +1214,6 @@ export default function hostPlugin() {
         activeTask.progress.updatedAt = Date.now()
         if (warning !== undefined) activeTask.progress.warning = warning
       }
-      // ---- optional installed-skill context (e.g. j-space) ----
-      const skillBlockCache = new Map()
-      function escapeSkillAttr(s) {
-        return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      }
-      function skillContentBlockHost(skill) {
-        if (!skill || !skill.content) return ''
-        const name = typeof skill.name === 'string' ? skill.name : 'skill'
-        const provider = typeof skill.provider === 'string' ? skill.provider : 'runtime'
-        const resource = skill.resourceBase ? ' resourceBase="' + escapeSkillAttr(typeof skill.resourceBase === 'string' ? skill.resourceBase : '') + '"' : ''
-        return '<skill_content name="' + escapeSkillAttr(name) + '" provider="' + escapeSkillAttr(provider) + '"' + resource + '>\n' + skill.content + '\n</skill_content>'
-      }
-      async function skillContextFor(names) {
-        if (!Array.isArray(names) || names.length === 0) return ''
-        const skills = ctx.get('skills')
-        if (!skills || typeof skills.get !== 'function') return ''
-        const blocks = []
-        for (const name of names.slice(0, 4)) {
-          if (typeof name !== 'string' || !name) continue
-          try {
-            if (skillBlockCache.has(name)) blocks.push(skillBlockCache.get(name))
-            else {
-              const skill = await skills.get(name)
-              const block = skillContentBlockHost(skill)
-              if (block) {
-                skillBlockCache.set(name, block)
-                blocks.push(block)
-              }
-            }
-          } catch (e) { /* skill unavailable */ }
-        }
-        return blocks.join(NL + NL)
-      }
       async function resolveModelInner() {
         taskStage('正在读取当前默认模型…')
         const adm = ctx.get('agentDefaultModel')
@@ -1403,13 +1370,7 @@ export default function hostPlugin() {
             warnAt(300000, '模型 5 分钟未返回首字，继续等待或取消任务')
           }
           try {
-            let systemText = system
-            if (task && Array.isArray(task.skills) && task.skills.length > 0) {
-              try {
-                const skillContext = await skillContextFor(task.skills)
-                if (skillContext) systemText = system + NL + NL + skillContext
-              } catch (e) { /* skill load failure must not block extraction */ }
-            }
+            const systemText = system
             iter = await Promise.resolve(llm.stream({
               provider: model.provider,
               model: model.model,
@@ -3126,11 +3087,10 @@ export default function hostPlugin() {
         if (sources.includes('rules') && !rules.trim()) return { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } }
         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
-          text, graph, mode, sources, rules, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+          text, graph, mode, sources, rules, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3275,7 +3235,6 @@ export default function hostPlugin() {
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
          const task = {
@@ -3291,7 +3250,6 @@ export default function hostPlugin() {
            existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
            paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
            model,
-           skills,
            createdAt: Date.now(),
          }
         tasks.set(task.id, task)
@@ -3365,11 +3323,10 @@ export default function hostPlugin() {
         }
         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
-          text, graph, mode, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+          text, graph, mode, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3402,11 +3359,10 @@ export default function hostPlugin() {
         if (target.kind !== 'graph' && !target.id) return { error: { code: 'invalid_input', message: '质疑目标缺少 id' } }
         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-          text, graph, target, question, model, skills, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+          text, graph, target, question, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3427,12 +3383,11 @@ export default function hostPlugin() {
         if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          model, skills, createdAt: Date.now(),
+          model, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
@@ -3491,12 +3446,11 @@ export default function hostPlugin() {
         const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-          baseTraceText, baseTraceEvents, existing, paragraphOffset, model, skills,
+          baseTraceText, baseTraceEvents, existing, paragraphOffset, model,
           createdAt: Date.now(),
         }
         tasks.set(task.id, task)
@@ -3521,11 +3475,10 @@ export default function hostPlugin() {
         const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
-        const skills = Array.isArray(a.skills) ? a.skills.filter((s) => typeof s === 'string' && s).slice(0, 4) : []
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-          title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, skills, createdAt: Date.now(),
+          title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true
