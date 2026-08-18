@@ -39,6 +39,54 @@ export default function hostPlugin() {
        // the normalized graph object or the JSON text expected from the LLM.
        const kgExtractor = ctx.get('kgExtractor')
        const hasKgExtractor = typeof kgExtractor === 'function' || Boolean(kgExtractor && typeof kgExtractor.extractChunk === 'function')
+       const candidateReviewState = new Map()
+       const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
+       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+       const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
+       function candidateDocumentId(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         return typeof source.documentId === 'string' && source.documentId ? source.documentId : (typeof graph.documentId === 'string' && graph.documentId ? graph.documentId : (typeof source.id === 'string' ? source.id : 'local'))
+       }
+       function candidateRowsFromGraph(graph, options = {}) {
+         const documentId = candidateDocumentId(graph)
+         const requestedKind = options.kind === 'entity' || options.kind === 'claim' ? options.kind : 'all'
+         const requestedStatus = CANDIDATE_STATUSES.has(options.status) ? options.status : null
+         const limit = Math.max(1, Math.min(500, Number.isInteger(options.limit) ? options.limit : 100))
+         const rows = []
+         for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
+           if (!node || typeof node.id !== 'string' || typeof node.text !== 'string' || !node.text.trim()) continue
+           const kinds = []
+           if (CANDIDATE_ENTITY_TYPES.has(node.type)) kinds.push('entity')
+           if (CANDIDATE_CLAIM_TYPES.has(node.type)) kinds.push('claim')
+           for (const kind of kinds) {
+             if (requestedKind !== 'all' && requestedKind !== kind) continue
+             const key = documentId + '|' + kind + '|' + node.id
+             const status = CANDIDATE_STATUSES.has(candidateReviewState.get(key)) ? candidateReviewState.get(key) : 'candidate'
+             if (requestedStatus && status !== requestedStatus) continue
+             rows.push({
+               id: (kind === 'entity' ? 'ent_' : 'clm_') + node.id,
+               kind,
+               documentId,
+               nodeId: node.id,
+               text: node.text,
+               type: node.type,
+               status,
+               confidence: typeof node.confidence === 'number' ? node.confidence : null,
+               evidence: Array.isArray(node.evidence) ? node.evidence : [],
+               paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
+               sectionId: typeof node.sectionId === 'string' ? node.sectionId : null,
+               sectionTitle: typeof node.sectionTitle === 'string' ? node.sectionTitle : null,
+             })
+           }
+         }
+         return rows.slice(0, limit)
+       }
+       function candidateKeyFromArgs(args) {
+         const documentId = typeof args.documentId === 'string' && args.documentId ? args.documentId : candidateDocumentId(args.graph)
+         const kind = args.kind === 'entity' ? 'entity' : args.kind === 'claim' ? 'claim' : ''
+         const nodeId = typeof args.nodeId === 'string' && args.nodeId ? args.nodeId : ''
+         return kind && nodeId ? documentId + '|' + kind + '|' + nodeId : ''
+       }
 
       const SYSTEM_PROMPT = [
         '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记等），正文已按内容切分为编号单元（一个编号单元可能是自然段里的若干句），[P数字] 为该单元的编号，请把它拆解为一张知识图。',
@@ -2997,7 +3045,27 @@ export default function hostPlugin() {
         return { providers, current }
       })
 
-      harness.handle('extract', async (args) => {
+      harness.handle('candidate-list', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+         if (!graph || !Array.isArray(graph.nodes)) return { candidates: [], source: 'dynamic' }
+         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit }), source: 'dynamic' }
+       })
+
+       harness.handle('candidate-update', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+         const status = CANDIDATE_STATUSES.has(a.status) ? a.status : ''
+         const key = candidateKeyFromArgs(a)
+         if (!graph || !key || !status) return { error: { code: 'invalid_input', message: '候选更新缺少 graph、kind、nodeId 或合法 status' } }
+         const rows = candidateRowsFromGraph(graph, { kind: a.kind, limit: 500 })
+         const candidate = rows.find((row) => row.kind === a.kind && row.nodeId === a.nodeId)
+         if (!candidate) return { error: { code: 'not_found', message: '找不到要更新的候选' } }
+         candidateReviewState.set(key, status)
+         return { candidate: { ...candidate, status }, source: 'dynamic' }
+       })
+
+       harness.handle('extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
         const text = typeof a.text === 'string' ? a.text.trim() : ''

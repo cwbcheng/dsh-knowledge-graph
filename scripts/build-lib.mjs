@@ -192,6 +192,43 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               return writeJson(res, 200, { providers, current })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/candidate-list') {
+              const raw = await readBody(req, 4 * 1024 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const options = {
+                documentId: typeof a.documentId === 'string' ? a.documentId.slice(0, 160) : '',
+                kind: a.kind,
+                status: a.status,
+                limit: Number.isInteger(a.limit) ? a.limit : 100,
+              }
+              try {
+                const store = await getSqliteStore()
+                return writeJson(res, 200, { candidates: store.listCandidates(options), source: 'sqlite' })
+              } catch (error) {
+                return writeJson(res, 200, { candidates: candidateRowsFromGraph(a.graph, options), source: 'fallback', warning: 'SQLite candidate store unavailable' })
+              }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/candidate-update') {
+              const raw = await readBody(req, 4 * 1024 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const kind = a.kind === 'entity' || a.kind === 'claim' ? a.kind : ''
+              const status = CANDIDATE_STATUSES.has(a.status) ? a.status : ''
+              if (!kind || !status || typeof a.id !== 'string' || !a.id) return writeJson(res, 200, { error: { code: 'invalid_input', message: '候选更新缺少合法 kind、id 或 status' } })
+              try {
+                const store = await getSqliteStore()
+                const candidate = store.updateCandidate(kind, a.id, status)
+                if (!candidate) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要更新的候选' } })
+                return writeJson(res, 200, { candidate, source: 'sqlite' })
+              } catch (error) {
+                const key = candidateKeyFromArgs(a)
+                if (key) candidateReviewState.set(key, status)
+                return writeJson(res, 200, { candidate: { id: a.id, kind, nodeId: a.nodeId || null, documentId: a.documentId || candidateDocumentId(a.graph), status }, source: 'fallback', warning: 'SQLite candidate store unavailable' })
+              }
+            }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
                const includeCheckpoint = url.searchParams.get('includeCheckpoint') === '1'

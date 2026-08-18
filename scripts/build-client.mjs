@@ -58,6 +58,14 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
+      if (method === "candidate-list" || method === "candidate-update") {
+        const res = await fetch("/api/dsh-knowledge-graph/" + method, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        return res.json()
+      }
       if (method === "extract") {
         const res = await fetch("/api/dsh-knowledge-graph/extract", {
           method: "POST",
@@ -141,6 +149,8 @@ if (!c.includes('styles.insert(')) throw new Error('styles.insert not found')
 c = c.split('styles.insert(').join('insertStyles(')
 
 // host.call -> rpc
+if (!c.includes("host.call('candidate-list'")) throw new Error('candidate-list call not found')
+if (!c.includes("host.call('candidate-update'")) throw new Error('candidate-update call not found')
 if (!c.includes("host.call('extract', payload)")) throw new Error('extract call not found')
 if (!c.includes("host.call('task-status'")) throw new Error('task-status call not found')
 if (!c.includes("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) })")) throw new Error('trajectory-extract call not found')
@@ -153,6 +163,8 @@ if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not 
 if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
 if (!c.includes("host.call('list-models'")) throw new Error('list-models call not found')
 if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
+c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
+c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
 c = c.split("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}), ...(jspaceOn ? { skills: ['j-space'] } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")

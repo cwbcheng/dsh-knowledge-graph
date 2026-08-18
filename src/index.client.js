@@ -440,6 +440,26 @@ export default function clientPlugin() {
          const first = evidence.find((item) => item && typeof item.quote === 'string' && item.quote.trim())
          return first ? first.quote.trim() : ''
        }
+       function candidateGraphPayload(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         return {
+           source: {
+             documentId: source.documentId || graph && graph.documentId || '',
+             id: source.id || '',
+           },
+           nodes: (Array.isArray(graph && graph.nodes) ? graph.nodes : []).map((node) => ({
+             id: node.id,
+             type: node.type,
+             text: node.text,
+             quote: node.quote,
+             paragraph: node.paragraph,
+             evidence: Array.isArray(node.evidence) ? node.evidence : [],
+             sectionId: node.sectionId,
+             sectionTitle: node.sectionTitle,
+             confidence: node.confidence,
+           })),
+         }
+       }
       const SEVERITY_META = {
         error: { label: '错误', cls: 'kg-sev-error' },
         warning: { label: '警告', cls: 'kg-sev-warning' },
@@ -3661,6 +3681,7 @@ export default function clientPlugin() {
         })
         const [chapterFilter, setChapterFilter] = useState('all')
         const [candidateReviews, setCandidateReviews] = useState(() => loadCandidateReviews())
+        const [candidateRemote, setCandidateRemote] = useState(null)
         const changeLayoutMode = (id) => {
           setLayoutMode(id)
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
@@ -3836,6 +3857,44 @@ export default function clientPlugin() {
           })()
           return () => { disposed = true }
         }, [docReq ? docReq.seq : 0])
+         const candidateSyncKey = resultView && resultView.graph
+           ? ((resultView.graph.source && resultView.graph.source.documentId) || '') + '|' + (resultView.graph.nodes || []).length + '|' + (resultView.graph.edges || []).length + '|' + ((resultView.graph.staging && resultView.graph.staging.chunkCount) || 0)
+           : ''
+         useEffect(() => {
+           if (!resultView || !resultView.graph || !candidateSyncKey) {
+             setCandidateRemote(null)
+             return undefined
+           }
+           let disposed = false
+           ;(async () => {
+             try {
+               const source = resultView.graph.source && typeof resultView.graph.source === 'object' ? resultView.graph.source : {}
+               const res = await host.call('candidate-list', {
+                 documentId: source.documentId || '',
+                 graph: candidateGraphPayload(resultView.graph),
+                 kind: 'all', status: 'all', limit: 500,
+               })
+               if (disposed) return
+               const rows = res && Array.isArray(res.candidates) ? res.candidates : []
+               setCandidateRemote(rows)
+               if (rows.length > 0) {
+                 setCandidateReviews((previous) => {
+                   const next = { ...previous }
+                   for (const row of rows) {
+                     if (!row || !row.kind || !row.nodeId) continue
+                     const key = (row.documentId || source.documentId || 'local') + '|' + row.kind + '|' + row.nodeId
+                     if (REVIEW_STATUS_ORDER.includes(row.status)) next[key] = row.status
+                   }
+                   saveCandidateReviews(next)
+                   return next
+                 })
+               }
+             } catch (error) {
+               if (!disposed) setCandidateRemote(null)
+             }
+           })()
+           return () => { disposed = true }
+         }, [candidateSyncKey])
          const resumeLostTask = async (statusResult) => {
            if (resumeAttemptRef.current) return false
            let pending = null
@@ -4715,12 +4774,37 @@ export default function clientPlugin() {
           ctx.timeout(() => setFlashPara(-1), 1400)
           toastStore.show('已定位原文第 ' + (pi + 1) + ' 段')
         }
-        const handleCandidateReview = (key, status) => {
+        const handleCandidateReview = async (key, status) => {
+          const previousStatus = candidateReviews[key] || 'candidate'
           setCandidateReviews((previous) => {
             const next = { ...previous, [key]: status }
             saveCandidateReviews(next)
             return next
           })
+          const remote = Array.isArray(candidateRemote)
+            ? candidateRemote.find((row) => row && row.documentId + '|' + row.kind + '|' + row.nodeId === key)
+            : null
+          if (!remote || !resultView || !resultView.graph) return
+          const source = resultView.graph.source && typeof resultView.graph.source === 'object' ? resultView.graph.source : {}
+          try {
+            const res = await host.call('candidate-update', {
+              documentId: remote.documentId || source.documentId || '',
+              kind: remote.kind,
+              id: remote.id,
+              nodeId: remote.nodeId,
+              status,
+              graph: candidateGraphPayload(resultView.graph),
+            })
+            if (!res || res.error || !res.candidate) throw new Error(res && res.error && res.error.message ? res.error.message : '候选状态同步失败')
+            setCandidateRemote((previous) => Array.isArray(previous) ? previous.map((row) => row && row.id === remote.id ? { ...row, status: res.candidate.status || status } : row) : previous)
+          } catch (error) {
+            setCandidateReviews((previous) => {
+              const next = { ...previous, [key]: previousStatus }
+              saveCandidateReviews(next)
+              return next
+            })
+            toastStore.show('候选状态未能同步：' + (error && error.message ? error.message : '未知错误'))
+          }
         }
         const handleCandidateLocate = (node) => {
           if (!node || !resultView) return

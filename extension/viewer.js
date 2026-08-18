@@ -151,6 +151,26 @@
          const first = evidence.find((item) => item && typeof item.quote === 'string' && item.quote.trim())
          return first ? first.quote.trim() : ''
        }
+       function candidateGraphPayload(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         return {
+           source: {
+             documentId: source.documentId || graph && graph.documentId || '',
+             id: source.id || '',
+           },
+           nodes: (Array.isArray(graph && graph.nodes) ? graph.nodes : []).map((node) => ({
+             id: node.id,
+             type: node.type,
+             text: node.text,
+             quote: node.quote,
+             paragraph: node.paragraph,
+             evidence: Array.isArray(node.evidence) ? node.evidence : [],
+             sectionId: node.sectionId,
+             sectionTitle: node.sectionTitle,
+             confidence: node.confidence,
+           })),
+         }
+       }
       const SEVERITY_META = {
         error: { label: '错误', cls: 'kg-sev-error' },
         warning: { label: '警告', cls: 'kg-sev-warning' },
