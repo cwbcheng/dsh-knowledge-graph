@@ -50,7 +50,8 @@
     "build:viewer": "node scripts/build-viewer.mjs",
     "kg": "node scripts/kg-cli.mjs",
     "test:kg": "node scripts/kg-store-smoke.mjs",
-    "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs"
+    "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs",
+    "test:kg-verification": "node scripts/kg-verification-smoke.mjs"
   },
   "engines": {
     "node": ">=18"
