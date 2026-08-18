@@ -314,6 +314,71 @@
         const p = (n) => (n < 10 ? '0' + n : '' + n)
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
       }
+      function exportFilePart(value, fallback) {
+        const text = String(value || '').trim().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').slice(0, 80)
+        return text || fallback
+      }
+      function csvValue(value) {
+        if (value == null) return ''
+        const text = typeof value === 'string' ? value : JSON.stringify(value)
+        return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text
+      }
+      function csvTable(headers, rows) {
+        return [headers, ...rows].map((row) => row.map(csvValue).join(',')).join(NL) + NL
+      }
+      function exportGraphFile(graph, title, kind, ctx) {
+        if (!graph || typeof graph !== 'object' || !Array.isArray(graph.nodes)) return null
+        const source = graph.source && typeof graph.source === 'object' ? graph.source : {}
+        const base = exportFilePart(title || source.title || source.documentId, 'knowledge-graph')
+        let filename = base + '.json'
+        let content = JSON.stringify(graph, null, 2)
+        let mime = 'application/json;charset=utf-8'
+        if (kind === 'nodes') {
+          filename = base + '-nodes.csv'
+          content = '\ufeff' + csvTable(
+            ['id', 'type', 'text', 'paragraph', 'quote', 'documentId', 'sourceId', 'chunkId', 'sectionId', 'sectionTitle', 'status', 'confidence', 'evidence', 'provenance'],
+            graph.nodes.map((node) => [node.id, node.type, node.text, node.paragraph, node.quote, node.documentId, node.sourceId, node.chunkId, node.sectionId, node.sectionTitle, node.status, node.confidence, node.evidence, node.provenance]),
+          )
+          mime = 'text/csv;charset=utf-8'
+        } else if (kind === 'edges') {
+          filename = base + '-edges.csv'
+          content = '\ufeff' + csvTable(
+            ['id', 'fromNodeId', 'toNodeId', 'relation', 'documentId', 'sourceId', 'chunkId', 'paragraph', 'status', 'confidence', 'evidence', 'provenance'],
+            (Array.isArray(graph.edges) ? graph.edges : []).map((edge) => [edge.id, edge.fromNodeId, edge.toNodeId, edge.relation, edge.documentId, edge.sourceId, edge.chunkId, edge.paragraph, edge.status, edge.confidence, edge.evidence, edge.provenance]),
+          )
+          mime = 'text/csv;charset=utf-8'
+        }
+        if (typeof Blob === 'undefined' || typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null
+        const url = URL.createObjectURL(new Blob([content], { type: mime }))
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = filename
+        anchor.style.display = 'none'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        const revoke = () => { try { URL.revokeObjectURL(url) } catch (e) {} }
+        if (ctx && typeof ctx.timeout === 'function') ctx.timeout(revoke, 1200)
+        else revoke()
+        return filename
+      }
+      function GraphExportActions({ graph, title, ctx }) {
+        const runExport = (kind) => {
+          try {
+            const filename = exportGraphFile(graph, title, kind, ctx)
+            if (filename) toastStore.show('已导出 ' + filename)
+            else toastStore.show('当前浏览器不支持文件下载')
+          } catch (error) {
+            toastStore.show('导出失败：' + (error && error.message ? error.message : '未知错误'))
+          }
+        }
+        return h('span', { className: 'kg-export-actions', title: '导出完整知识图，不受章节筛选影响' },
+          h('span', { className: 'kg-export-label' }, '导出'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('json'), title: '导出完整知识图 JSON（保留 provenance、验证与审计信息）' }, 'JSON'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('nodes'), title: '导出节点表 CSV' }, '节点 CSV'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('edges'), title: '导出关系表 CSV' }, '关系 CSV'),
+        )
+      }
 
       function GraphIcon(size) {
         return h('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },

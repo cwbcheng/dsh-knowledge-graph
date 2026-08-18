@@ -51,7 +51,8 @@
     "kg": "node scripts/kg-cli.mjs",
     "test:kg": "node scripts/kg-store-smoke.mjs",
     "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs",
-    "test:kg-verification": "node scripts/kg-verification-smoke.mjs"
+    "test:kg-verification": "node scripts/kg-verification-smoke.mjs",
+    "test:kg-export": "node scripts/kg-export-smoke.mjs"
   },
   "engines": {
     "node": ">=18"
