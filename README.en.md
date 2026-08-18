@@ -10,7 +10,7 @@
 
 ## What it does
 
-- **Asynchronous AI extraction**: paste any text (chapters, technical docs, study notes…); a background task calls the LLM and returns a knowledge graph in ~15–40 s. Book-sized sources up to roughly 1 million characters are split into bounded chunks with deterministic document/source/chunk IDs, section metadata, and per-node evidence; polling resumes automatically after a refresh / window reopen, and a lost or failed task can continue unfinished chunks from a browser checkpoint.
+- **Asynchronous AI extraction**: paste any text (chapters, technical docs, study notes…); a background task calls the LLM and returns a knowledge graph in ~15–40 s. Book-sized sources up to roughly 1 million characters are split into bounded chunks with deterministic document/source/chunk IDs, section metadata, and per-node evidence. In persistent mode the full source, canonical graph, and lossless checkpoint live in SQLite; the browser restores by `documentId/runId`, and only a `running` task orphaned by a Host restart may resume from checkpoint. Explicit `failed/cancelled` tasks are never auto-retried.
 - **7 node types / 6 relation types**:
   - Nodes: `fact` · `inference` · `concept` · `definition` · `example` · `counter_example` · `rule`.
   - Relations: `supports` · `example` · `counter_example` · `defines` · `infers` · `causes`.
@@ -30,7 +30,7 @@
 - **Floating workbench**: draggable, resizable window; the **width ratio** between text and graph and the **result area height** are both drag-adjustable and remembered.
 - **Select-to-split**: select any text **inside a chat message**; a "拆成知识图" (split into graph) button floats above the selection — one click opens the workbench and splits the selection; selecting text in the result's source column splits it as a sub-graph; selecting part of the input textarea also offers "split selection".
 - **Incremental append (追加拆分)**: once a result exists, the input panel's primary button becomes **追加拆分 (append split)** — paste the next passage / document and the AI extracts ONLY the new content, linking it into the existing graph via **cross-passage edges** (a concept that reappears is not duplicated — it gets an edge straight to the existing node); the result merges in place, paragraph numbering stays unified across the whole text, and the history entry updates in place. Selecting text in a chat message while a result exists appends it to the current graph automatically.
-- **History**: every successful split is stored automatically (up to 20 entries, deduped by text, deletable one-by-one or all), reloadable at any time.
+- **History**: every successful split records a lightweight browser index (up to 20 entries, deletable one-by-one or all); the browser keeps only `documentId`, title, counts, and timestamps, then reloads the source and canonical graph from Host/SQLite instead of copying book-sized payloads into `localStorage`.
 - **Chapter filtering and candidate review**: filter the graph and source paragraphs by chapter; review evidence-bearing entity / claim candidates as **candidate / accepted / rejected** and click a candidate to jump back to its source. Decisions sync through the Host to SQLite (dynamic plugins retain them in the Host session, with browser localStorage as fallback).
 - **Knowledge graph export**: the graph toolbar exports the current rendered graph as a high-resolution PNG image, and the result toolbar exports the complete graph as JSON (including source, chunk, evidence, verification, and audit data) or as separate node and edge CSV files. Data exports always contain the full graph, independent of the active chapter filter; trajectory graphs support the same exports.
 - **Persistent entry**: a permanent 「知识图」button on the right of each conversation header; run cards also get a launch bar.
@@ -124,11 +124,11 @@ pnpm install
 # 2. Restart dsh web (Ctrl+C, then `dsh web` again)
 ```
 
-After the restart: the 「知识图」button appears at the right of each conversation header; history, window position, etc. (browser localStorage) are preserved.
+After the restart: the 「知识图」button appears at the right of each conversation header. Browser `localStorage` keeps only lightweight UI state such as layout and history indexes; source text, graph, checkpoints, and revisions are persisted by Host/SQLite.
 
 | File | Purpose (persistent package) |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes (POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status) + automatic SQLite graph/checkpoint persistence |
+| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes for extraction/append, task status, `document-load`/`document-export`, revisioned `graph-commit`, safe `resume-extract`, verification/questioning, plus automatic SQLite canonical-graph/checkpoint persistence |
 | [`lib/client.js`](lib/client.js) | Client half: `__ModuleLoader__` browser module (fetch RPC + manual style injection) |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch: inserts the `dsh-knowledge-graph` row into the composition |
 
@@ -177,7 +177,7 @@ The persistent `lib/index.js` writes each successful chunk and completed graph t
 - **Dynamic install**: open the **Cordis Plugin** panel → click **Stop** on the plugin row to pause; use `cordis_undefine` to delete the definition entirely.
 - **Persistent install**: remove the dependency and bundles entries from the profile's `package.json`, then `pnpm install` and restart.
 
-History and other data live in browser `localStorage`; uninstalling does not delete it.
+Window layout, history indexes, and other lightweight UI state live in browser `localStorage`; book-sized sources, canonical graphs, checkpoints, and graph revisions live in Host/SQLite in persistent mode. Keep the SQLite database or export JSON/CSV before uninstalling if you need long-term retention.
 
 ## Notes
 
@@ -207,6 +207,7 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
   - Note: branded Chrome 137+ **no longer supports `--load-extension` on the command line** (Chrome for Testing / unbranded Chromium still do).
 - **Repacking** (after source updates, to keep distributing as crx): the extension private key must **stay outside the repository**. Store it outside the checkout (the recommended default is `~/.config/dsh-knowledge-graph/extension-signing.pem`, mode `0600`) and pass it to the pack script:
   ```bash
+  npm ci --prefix scripts/signing --ignore-scripts
   export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
   npm run pack:extension
   ```
@@ -235,18 +236,19 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 ### Key design
 
 - **Content-unit index = anchor**: Host and Client first classify each blank-line block (heading / list / dialogue / table / code / quote / prose) and then number units according to that structure — headings and list items stay one unit each, dialogue turns stay separate, quotes and code organize by line; ordinary prose groups sentences by discourse markers (but/therefore/for example…) and lexical topic drift, then closes a group at ~120 chars and splits single sentences past ~180 chars at clause/punctuation boundaries, so one unit never accumulates too many node badges. The prompt requires every node to report its source unit index; the client maps units **deterministically** instead of relying on the LLM to quote verbatim.
+- **Relation evidence must prove the relation itself**: every edge must carry model-produced `evidence[{ paragraph, quote }]`, and the Host verifies that each quote occurs in the referenced source unit. Evidence that merely proves both endpoint nodes exist is not enough to establish `supports / causes / infers`; an edge without locatable relation evidence is dropped with a warning.
 - **Typed failures, never silent**: CLI/process failures, non-JSON output, invalid schema (typed retry ×2 first), busy queue, missing model — all produce explicit error codes and Chinese messages; invalid nodes/edges are dropped but recorded in warnings.
 - **No offset guessing**: if anchoring fails, the node is simply not linkable between graph and text — no fabricated offsets, always surfaced in the diagnostics list (`anchor_unresolved:node:...`).
 - **Trace events become content units**: the session execution trace is serialized into numbered content units (user messages / tool calls / tool results / assistant replies); every event carries its `[start, end)` range in the trace text, so a long event split into several units still maps deterministically back to its event, reusing the same unit-index anchor mechanism for deterministic two-way linking between graph and events.
 - **Incremental merge (append split)**: on append, the existing graph's node list is injected into the prompt; the AI only produces new nodes and links them into the old graph by referencing existing node ids (**cross-passage edges**); the Host renumbers new ids (avoiding collisions), offsets unit numbers (keeping global alignment) and dedupes edges; the client merges the view in place.
 - **The source is the only ground truth**: quick checks run locally on the Host using the same anchor-matching algorithm as the Client; the deep audit batches content units, reviews only the relevant sub-graph per batch, and the standard mode generates candidate issues first and then filters them with a second confirmation pass; issues without locatable evidence, with low confidence, or targeting missing graph objects are dropped Host-side; verify/question input is capped at 800 nodes to prevent crafted graphs from stalling the Host.
-- **Fixes are explicit and auditable**: the AI only proposes, the user applies (or applies all auto-fixable issues with one click); every patch writes a compact before/after snapshot of the CHANGED nodes/edges to `graph.verification.auditLog` (keeps localStorage small); appending new content marks the previous report `stale`.
+- **Fixes are explicit and auditable**: the AI only proposes, the user applies (or applies all auto-fixable issues with one click); every patch writes a compact before/after snapshot to `graph.verification.auditLog` and is committed through `expectedRevision + baseline window`. Stale writes return `revision_conflict` instead of creating a browser/SQLite split-brain; appending new content marks the previous report `stale`.
 - **Tasks are observable and cancellable, not timeout-as-failure**: model work runs until it finishes or the user cancels; live progress (stage / elapsed / chars received / warnings) is surfaced and every long operation has a cancel button, so a slow stream never silently fails.
-- **SQLite candidate layer**: `src/kg-store.mjs` persists documents, chunks, nodes, edges, and evidence, then derives evidence-bearing entity and claim candidates from node types; the CLI lets a reviewer mark candidates accepted or rejected.
+- **SQLite candidate layer**: `src/kg-store.mjs` persists documents, chunks, nodes, edges, and evidence, then derives evidence-bearing entity and claim candidates from node types. A canonical revision removes stale candidates while preserving accepted/rejected state for surviving stable candidate ids; the CLI can also update review state.
 - **Chapter / review view**: chapter filtering changes only the browser view, not the source graph; review decisions use the stable `documentId | kind | nodeId` key and preserve source evidence.
 - **Pluggable declaration extractor**: the Host optionally consumes a `kgExtractor` service implementing `extractChunk(input)`. It receives owned chunk JSON and existing node ids, and returns either the normalized graph object or JSON text; without the service, the existing LLM path remains the fallback.
-- **Per-chunk checkpoints**: every successful chunk records `nextBatchIndex`, the partial graph, staging summaries, and source identity; the client persists it during polling and automatically retries a lost or failed task at most once, without re-calling completed chunks.
-- **Self-contained front end**: layout, force simulation, two-way linking, history, the verification panel, and patch application all run in the browser; the Host is only a thin async task manager.
+- **Lossless per-chunk checkpoints**: every successful chunk records `nextBatchIndex`, the complete semantic state accumulated so far, staging summaries, and source identity. Checkpoint v2 is never truncated to the 800-node renderer budget and lives in Host/SQLite; the browser never stores it. Only `task-status=not_found` plus a persisted `running` run is recoverable; deterministic failures stay terminal.
+- **800 is a view budget, not a knowledge limit**: Host/SQLite retains the full canonical graph while the browser loads windows of at most 800 nodes. `document-load(nodeOffset)` can query later windows, and JSON/CSV export fetches the full canonical graph when the current view is truncated.
 
 ## Data contract
 
@@ -254,7 +256,8 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], verification? }
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
-Checkpoint { version: 1, sourceId, documentId, nextBatchIndex, totalBatches, graph, staging }
+Checkpoint { version: 2, taskKind, sourceId, documentId, nextBatchIndex, totalBatches, graph /* lossless */, staging }
+GraphView { nodes[<=800], edges[], view: { nodeOffset, nodeLimit, totalNodes, totalEdges, truncated } }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
 ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }

@@ -11,7 +11,7 @@
 
 ## 它能做什么
 
-- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字的书级正文；Host 按内容块分批处理，并生成确定性的来源 ID、章节地图、chunk ID 与逐节点 evidence；刷新 / 重开窗口后自动恢复轮询，Host 重启或任务失败时可从浏览器保存的 checkpoint 继续未完成内容块。
+- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；Host 按内容块分批处理，并生成确定性的来源 ID、章节地图、chunk ID 与逐节点 evidence。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
 - **7 类节点 / 6 类关系**：
   - 节点：`fact` 事实 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
   - 关系：`supports` 支持 · `example` 例子 · `counter_example` 反例 · `defines` 定义 · `infers` 推断 · `causes` 因果。
@@ -31,7 +31,7 @@
 - **浮动工作台**：窗口可拖动、可调整大小；原文与知识图的**宽度比例**、**结果区高度**均可拖拽调整并记忆。
 - **划线拆分**：**在聊天消息里**用鼠标选中任意一段文字，选区上方浮出「拆成知识图」按钮，点击即自动打开工作台并拆分所选文字；在结果页原文里划线选中可拆成子图；输入框里选中部分文字也可「拆分所选」。
 - **追加拆分（增量合并）**：已有拆分结果后，输入区主按钮变为「追加拆分」——粘贴下一段/下一份资料，AI 只抽取新增内容，并自动与已有图建立**跨段关系边**（同一概念不重复建节点，直接连线到已有节点）；结果原地合并、全文段落统一编号、历史记录原地更新。聊天划线选中文字时也会自动追加到当前图。
-- **历史记录**：每次成功拆分自动入库（最多 20 条、同文去重、可单删 / 清空），随时回看加载。
+- **历史记录**：每次成功拆分自动记录（最多 20 条、同文去重、可单删 / 清空）；浏览器只保存 `documentId`、标题、计数等轻量索引，回看时从 Host/SQLite 重新载入正文与 canonical graph，避免把书级正文复制进 `localStorage`。
 - **章节过滤与候选审核**：结果区按章节筛选图节点和原文段落；候选实体 / 声明面板展示 evidence，可一键标记「待审核 / 已接受 / 已驳回」，状态通过 Host 同步到 SQLite（动态插件在 Host 会话中保留，失败时回退浏览器 localStorage），并可点击候选回链原文。
 - **知识图导出**：结果工具栏可导出当前渲染图为高清 PNG 图片，也可导出完整 JSON（保留 source、chunk、evidence、验证报告和审计记录）以及节点 CSV、关系 CSV；数据导出的是完整图，不受当前章节筛选影响。轨迹知识图也支持相同导出。
 - **常驻入口**：每个对话的标题右侧常驻「知识图」按钮，一键打开；运行卡片内也有启动条。
@@ -126,11 +126,11 @@ pnpm install
 # 2. 重启 dsh web（Ctrl+C 后重新 `dsh web`）
 ```
 
-重启后：对话标题右侧出现「知识图」按钮，历史记录、窗口位置等（浏览器 localStorage）原样保留。
+重启后：对话标题右侧出现「知识图」按钮。窗口位置、筛选和历史索引等轻量 UI 状态保存在浏览器 `localStorage`；正文、图、checkpoint 与 revision 由 Host/SQLite 持久化。
 
 | 文件 | 作用（常驻包） |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（POST extract / POST append-extract / POST trajectory-extract / GET task-status / GET trajectory-status）+ 自动 SQLite 图 / checkpoint 持久化 |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（抽取/追加、task status、`document-load`/`document-export`、revisioned `graph-commit`、安全 `resume-extract`、验证/质疑等）+ 自动 SQLite canonical graph / checkpoint 持久化 |
 | [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
 
@@ -188,7 +188,7 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 - **动态安装**：打开 **Cordis Plugin** 面板 → 在插件行点击 **停止（Stop）** 暂停使用；需要彻底删除定义时使用 `cordis_undefine`。
 - **常驻安装**：从 profile 的 `package.json` 移除依赖与 bundles 条目，`pnpm install` 后重启。
 
-历史记录等数据保存在浏览器 `localStorage`，卸载不会丢失。
+窗口布局、历史索引等轻量 UI 数据保存在浏览器 `localStorage`；书级正文、canonical graph、checkpoint 与 graph revision 在常驻模式保存在 Host/SQLite。卸载前如需长期保留知识内容，请保留对应 SQLite 数据库或先导出 JSON/CSV。
 
 ## 注意事项
 
@@ -218,6 +218,7 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
   - 注意 Chrome 137+ 品牌版**不支持 `--load-extension` 命令行加载**（Chrome for Testing / Chromium 等未品牌化构建仍支持）。
 - **重新打包**（源码更新后想继续用 crx 分发）：扩展私钥**不能放在仓库里**。将它保存在仓库外（默认建议 `~/.config/dsh-knowledge-graph/extension-signing.pem`，权限 `0600`），然后通过环境变量传给打包脚本：
   ```bash
+  npm ci --prefix scripts/signing --ignore-scripts
   export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
   npm run pack:extension
   ```
@@ -247,17 +248,18 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
+- **关系证据必须证明关系本身**：每条 edge 必须由模型直接给出 `evidence[{ paragraph, quote }]`；Host 会验证 quote 确实存在于对应原文单元。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等关系；缺少可定位 relation evidence 的边会被丢弃并写入 warning。
 - **typed 失败、不静默**：CLI/进程失败、非 JSON、schema 不合法（先 typed 重试 2 次）、队列忙碌、无模型等情况都有明确原因码与中文文案；无效节点/边丢弃但写入 warnings。
 - **不猜偏移**：锚点解析失败时节点在图/原文间不可回链，但绝不臆造偏移，统一暴露在诊断列表（`anchor_unresolved:node:...`）中。
 - **轨迹事件即内容单元**：会话执行轨迹序列化为编号内容单元（用户消息 / 工具调用 / 工具结果 / AI 回复）；每个事件记录自身在轨迹文本中的 `[start, end)` 偏移，超长事件被切分成多个单元后仍能确定性映射回原事件，复用同一套「内容单元编号即锚点」机制做图与事件的确定性双向回链。
 - **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、单元号偏移（对齐全文编号）与边去重，客户端原地合并视图。
 - **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃；验证/质疑输入限制最多 800 个节点，避免恶意大图拖垮 Host。
-- **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`（仅保存变化节点的 before/after 快照，防止 localStorage 膨胀）；追加拆分后旧报告自动标记 `stale`。
+- **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`，并通过 `expectedRevision + baseline window` 提交到 canonical graph；冲突会显式返回 `revision_conflict`，不会让浏览器与 SQLite 各自形成一份“真相”。追加拆分后旧报告自动标记 `stale`。
 - **任务可观测、可取消，而非超时即失败**：模型任务跑到完成或由用户取消为止；进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮，慢流不会被静默判死。
-- **逐内容块 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、部分图、staging chunk 摘要和来源身份；客户端轮询时写入 `localStorage`，任务失联或失败后最多自动续跑一次，已经完成的 chunk 不会重复调用。
-- **前端自包含**：布局、力导向、双向定位、历史、验证面板、补丁应用均在浏览器完成，Host 只做最薄的异步任务管理。
+- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图、staging chunk 摘要和来源身份；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化。浏览器不保存 checkpoint；只有 `task-status=not_found` 且 SQLite 中仍是 `running` 的任务才允许恢复，确定性失败不会自动续跑。
+- **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；浏览器一次只加载最多 800 个节点的工作窗口，可通过 `document-load(nodeOffset)` 查询后续窗口。JSON/CSV 导出遇到截断视图时会向 Host 请求完整 canonical graph；布局、双向定位和交互仍在浏览器完成。
 - **章节 / 候选审核视图**：章节筛选只改变当前浏览器结果视图，不修改原始图；候选状态以 `documentId | kind | nodeId` 稳定键保存，保留原文 evidence 和回链能力。
-- **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；用户可以通过 CLI 将 candidate 标记为 accepted 或 rejected。
+- **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；canonical revision 提交时会删除已经失效的候选，同时用稳定 candidate id 保留仍存在候选的 accepted/rejected 状态。用户也可以通过 CLI 更新审核状态。
 - **可插拔声明抽取器**：Host 可选读取 `kgExtractor` 服务；它实现 `extractChunk(input)`，输入一个自有 JSON 内容块和已有节点 id，返回标准图对象或 JSON 文本。未提供时自动回退到当前 LLM 路径，因此动态插件和常驻包都不增加硬依赖。
 
 ## 数据契约
@@ -266,7 +268,8 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], verification? }
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
-Checkpoint { version: 1, sourceId, documentId, nextBatchIndex, totalBatches, graph, staging }
+Checkpoint { version: 2, taskKind, sourceId, documentId, nextBatchIndex, totalBatches, graph /* 无损 */, staging }
+GraphView { nodes[<=800], edges[], view: { nodeOffset, nodeLimit, totalNodes, totalEdges, truncated } }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
 ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }

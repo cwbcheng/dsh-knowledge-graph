@@ -55,7 +55,10 @@
     "test:kg-incremental": "node scripts/kg-incremental-smoke.mjs",
     "test:kg-security": "node scripts/kg-security-smoke.mjs",
     "test:kg-verification": "node scripts/kg-verification-smoke.mjs",
-    "test:kg-export": "node scripts/kg-export-smoke.mjs"
+    "test:kg-export": "node scripts/kg-export-smoke.mjs",
+    "test:kg-large": "node scripts/kg-large-graph-smoke.mjs",
+    "test:kg-policy": "node scripts/kg-policy-smoke.mjs",
+    "test": "npm run build && npm run test:kg && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-policy"
   },
   "engines": {
     "node": ">=18"

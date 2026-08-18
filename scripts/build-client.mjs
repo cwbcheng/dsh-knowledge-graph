@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "resume-extract") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -151,6 +151,10 @@ c = c.split('styles.insert(').join('insertStyles(')
 // host.call -> rpc
 if (!c.includes("host.call('candidate-list'")) throw new Error('candidate-list call not found')
 if (!c.includes("host.call('candidate-update'")) throw new Error('candidate-update call not found')
+if (!c.includes("host.call('document-load'")) throw new Error('document-load call not found')
+if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
+if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
+if (!c.includes("host.call('resume-extract'")) throw new Error('resume-extract call not found')
 if (!c.includes("host.call('extract', payload)")) throw new Error('extract call not found')
 if (!c.includes("host.call('task-status'")) throw new Error('task-status call not found')
 if (!c.includes("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")) throw new Error('trajectory-extract call not found')
@@ -165,6 +169,10 @@ if (!c.includes("host.call('list-models'")) throw new Error('list-models call no
 if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
 c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
+c = c.split("host.call('document-load'").join("rpc('document-load'")
+c = c.split("host.call('document-export'").join("rpc('document-export'")
+c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
+c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
 c = c.split("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")

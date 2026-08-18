@@ -20,10 +20,10 @@
       // anchors, so keep the same source ceiling for pasted/attached material.
       const MAX_LEN = 1000000
        const MAX_VERIFY_SCOPE_CHARS = 240000
-      const LS_PENDING = 'dsh-kg-pending-v1'
-       const LS_CHECKPOINT = 'dsh-kg-checkpoint-v1'
-      const LS_RESULT = 'dsh-kg-result-v1'
+      const LS_PENDING = 'dsh-kg-pending-v2'
+      const LS_RESULT = 'dsh-kg-result-v2'
       const LS_DRAFT = 'dsh-kg-draft-v1'
+      const LEGACY_LARGE_STORAGE_KEYS = ['dsh-kg-pending-v1', 'dsh-kg-checkpoint-v1', 'dsh-kg-result-v1']
       const LS_WIN = 'dsh-kg-win-v1'
       const LS_HISTORY = 'dsh-kg-history-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
@@ -267,23 +267,55 @@
           edges: Array.isArray(g.edges) ? g.edges : [],
         }
       }
+      function documentIdOfGraph(graph) {
+        const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+        return typeof source.documentId === 'string' && source.documentId ? source.documentId : ''
+      }
+      function historyMetadata(entry) {
+        if (!entry || typeof entry !== 'object') return null
+        const graph = entry.graph && typeof entry.graph === 'object' ? entry.graph : null
+        const documentId = typeof entry.documentId === 'string' && entry.documentId
+          ? entry.documentId
+          : documentIdOfGraph(graph)
+        if (!documentId) return null
+        const nodeCount = Number.isInteger(entry.nodeCount)
+          ? entry.nodeCount
+          : (graph && graph.view && Number.isInteger(graph.view.totalNodes) ? graph.view.totalNodes : (graph && Array.isArray(graph.nodes) ? graph.nodes.length : 0))
+        const edgeCount = Number.isInteger(entry.edgeCount)
+          ? entry.edgeCount
+          : (graph && graph.view && Number.isInteger(graph.view.totalEdges) ? graph.view.totalEdges : (graph && Array.isArray(graph.edges) ? graph.edges.length : 0))
+        return {
+          id: typeof entry.id === 'string' && entry.id ? entry.id : 'h-' + Date.now(),
+          documentId,
+          title: typeof entry.title === 'string' ? entry.title : '',
+          summary: typeof entry.summary === 'string' ? entry.summary : (graph && typeof graph.summary === 'string' ? graph.summary : ''),
+          nodeCount,
+          edgeCount,
+          ts: Number.isFinite(entry.ts) ? entry.ts : Date.now(),
+        }
+      }
       function loadHistory() {
         try {
           const arr = JSON.parse(localStorage.getItem(LS_HISTORY) || 'null')
           if (Array.isArray(arr)) {
-            return arr
-              .filter((e) => e && e.graph && Array.isArray(e.graph.nodes) && typeof e.text === 'string')
-              .map((e) => ({ ...e, graph: normalizeStoredGraph(e.graph) }))
-              .slice(0, HISTORY_MAX)
+            const metadata = arr.map(historyMetadata).filter(Boolean).slice(0, HISTORY_MAX)
+            // Upgrade legacy entries in place: old versions embedded full
+            // source text and graphs here, which can occupy many MiB forever
+            // even after the new reference-only code stops reading them.
+            localStorage.setItem(LS_HISTORY, JSON.stringify(metadata))
+            return metadata
           }
         } catch (e) {}
         return []
       }
       function saveHistory(list) {
-        try { localStorage.setItem(LS_HISTORY, JSON.stringify(list.slice(0, HISTORY_MAX))) } catch (e) {}
+        const metadata = list.map(historyMetadata).filter(Boolean).slice(0, HISTORY_MAX)
+        try { localStorage.setItem(LS_HISTORY, JSON.stringify(metadata)) } catch (e) {}
       }
       function appendHistory(list, entry) {
-        const next = [entry].concat(list.filter((e) => e && e.text !== entry.text))
+        const meta = historyMetadata(entry)
+        if (!meta) return list
+        const next = [meta].concat(list.filter((e) => e && e.documentId !== meta.documentId))
         if (next.length > HISTORY_MAX) next.length = HISTORY_MAX
         saveHistory(next)
         return next
@@ -300,7 +332,11 @@
       }
       function csvValue(value) {
         if (value == null) return ''
-        const text = typeof value === 'string' ? value : JSON.stringify(value)
+        let text = typeof value === 'string' ? value : JSON.stringify(value)
+        // Source text and LLM output are untrusted. Spreadsheet applications
+        // interpret cells beginning with = + - @ as formulas, even after CSV
+        // quoting, so neutralize before escaping the CSV field itself.
+        if (/^[\t\r ]*[=+\-@]/.test(text) || /^[\t\r]/.test(text)) text = "'" + text
         return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text
       }
       function csvTable(headers, rows) {
@@ -423,9 +459,22 @@
         })
       }
       function GraphExportActions({ graph, title, ctx }) {
-        const runExport = (kind) => {
+        const runExport = async (kind) => {
           try {
-            const filename = exportGraphFile(graph, title, kind, ctx)
+            let exportGraph = graph
+            const documentId = documentIdOfGraph(graph)
+            const truncated = graph && graph.view && graph.view.truncated === true
+            const canLoadCanonical = typeof host !== 'undefined' && host && typeof host.call === 'function'
+            if (truncated && documentId && canLoadCanonical) {
+              const loaded = await host.call('document-export', { documentId })
+              if (!loaded || loaded.error || !loaded.graph || !Array.isArray(loaded.graph.nodes)) {
+                throw new Error(loaded && loaded.error && loaded.error.message ? loaded.error.message : '无法读取完整 canonical graph')
+              }
+              exportGraph = loaded.graph
+            } else if (truncated && documentId) {
+              throw new Error('当前是截断工作窗口，请在知识库工作台中导出完整 canonical graph')
+            }
+            const filename = exportGraphFile(exportGraph, title, kind, ctx)
             if (filename) toastStore.show('已导出 ' + filename)
             else toastStore.show('当前浏览器不支持文件下载')
           } catch (error) {
@@ -1170,18 +1219,20 @@
           let idx = Number.isInteger(p.index) && p.index >= 0 && p.index < edges.length ? p.index : -1
           if (idx < 0) idx = edges.findIndex((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId && (!p.relation || e.relation === p.relation))
           if (fix.action === 'update_edge' && idx >= 0) {
-            if (p.relation && REL_LABEL[p.relation]) edges[idx] = { ...edges[idx], relation: p.relation }
-            changed = true
-            auditDetail = 'update_edge:' + edgeKeyOf(edges[idx])
+            if (p.relation && REL_LABEL[p.relation] && Array.isArray(p.evidence) && p.evidence.length > 0) {
+              edges[idx] = { ...edges[idx], relation: p.relation, evidence: mergeEvidenceRecords([], p.evidence) }
+              changed = true
+              auditDetail = 'update_edge:' + edgeKeyOf(edges[idx])
+            }
           } else if (fix.action === 'delete_edge' && idx >= 0) {
             const key = edgeKeyOf(edges[idx])
             edges.splice(idx, 1)
             changed = true
             auditDetail = 'delete_edge:' + key
-          } else if (fix.action === 'add_edge' && ids.has(p.fromNodeId) && ids.has(p.toNodeId) && p.fromNodeId !== p.toNodeId && p.relation && REL_LABEL[p.relation]) {
+          } else if (fix.action === 'add_edge' && ids.has(p.fromNodeId) && ids.has(p.toNodeId) && p.fromNodeId !== p.toNodeId && p.relation && REL_LABEL[p.relation] && Array.isArray(p.evidence) && p.evidence.length > 0) {
             const dup = edges.some((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId && e.relation === p.relation)
             if (!dup) {
-              edges.push({ fromNodeId: p.fromNodeId, toNodeId: p.toNodeId, relation: p.relation })
+              edges.push({ fromNodeId: p.fromNodeId, toNodeId: p.toNodeId, relation: p.relation, evidence: mergeEvidenceRecords([], p.evidence) })
               changed = true
               auditDetail = 'add_edge:' + p.fromNodeId + '>' + p.toNodeId
             }

@@ -14,7 +14,7 @@ const extractor = async ({ existingDigest }) => {
       { id: 'n1', type: 'concept', text: '目标概念', quote: '目标概念', paragraph: 0 },
       { id: 'n2', type: 'fact', text: '新增事实', quote: '新增事实', paragraph: 0 },
     ],
-    edges: [{ fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports' }],
+    edges: [{ fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports', evidence: [{ paragraph: 0, quote: '目标概念；新增事实' }] }],
   }
 }
 

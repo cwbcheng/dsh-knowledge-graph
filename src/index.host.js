@@ -36,7 +36,10 @@ export default function hostPlugin() {
       // buildLocalReport performs O(n²) duplicate/contradiction scans; cap
       // verification input so a crafted request cannot block the host loop.
       const MAX_VERIFY_NODES = 800
-      const MAX_GRAPH_NODES = 800
+      // 800 is a renderer/query budget, never a knowledge-retention budget.
+      // The canonical graph and checkpoints retain every extracted node.
+      const MAX_GRAPH_VIEW_NODES = 800
+      const MAX_GRAPH_VIEW_EDGES = MAX_GRAPH_VIEW_NODES * 6
        const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024
        const MAX_ARCHIVE_ENTRIES = 200
        const MAX_ARCHIVE_ENTRY_OUTPUT_BYTES = 8 * 1024 * 1024
@@ -49,6 +52,12 @@ export default function hostPlugin() {
        const kgExtractor = ctx.get('kgExtractor')
        const hasKgExtractor = typeof kgExtractor === 'function' || Boolean(kgExtractor && typeof kgExtractor.extractChunk === 'function')
        const candidateReviewState = new Map()
+       // Dynamic-package mode has no SQLite store, so retain the canonical
+       // full graph in Host memory. Persistent builds additionally mirror this
+       // state into SQLite and can recover it after a process restart.
+       const canonicalGraphs = new Map()
+       const canonicalSources = new Map()
+       const canonicalRevisions = new Map()
        const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
        const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
        const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
@@ -96,6 +105,95 @@ export default function hostPlugin() {
          const nodeId = typeof args.nodeId === 'string' && args.nodeId ? args.nodeId : ''
          return kind && nodeId ? documentId + '|' + kind + '|' + nodeId : ''
        }
+       function cloneEvidenceHost(value) {
+         return Array.isArray(value) ? value.map((item) => item && typeof item === 'object' ? { ...item } : item) : []
+       }
+       function cloneGraphNodeHost(node) {
+         return node && typeof node === 'object' ? { ...node, evidence: cloneEvidenceHost(node.evidence) } : node
+       }
+       function cloneGraphEdgeHost(edge) {
+         return edge && typeof edge === 'object' ? { ...edge, evidence: cloneEvidenceHost(edge.evidence) } : edge
+       }
+       function buildGraphViewHost(graph, nodeOffset) {
+         if (!graph || typeof graph !== 'object') return graph
+         const allNodes = Array.isArray(graph.nodes) ? graph.nodes : []
+         const allEdges = Array.isArray(graph.edges) ? graph.edges : []
+         const requestedOffset = Number.isInteger(nodeOffset) && nodeOffset > 0 ? nodeOffset : 0
+         const offset = Math.min(requestedOffset, Math.max(0, allNodes.length - 1))
+         const nodes = allNodes.slice(offset, offset + MAX_GRAPH_VIEW_NODES).map(cloneGraphNodeHost)
+         const ids = new Set(nodes.map((node) => node && node.id).filter(Boolean))
+         const edges = allEdges
+           .filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
+           .slice(0, MAX_GRAPH_VIEW_EDGES)
+           .map(cloneGraphEdgeHost)
+         return {
+           ...graph,
+           nodes,
+           edges,
+           view: {
+             kind: 'window',
+             nodeOffset: offset,
+             nodeLimit: MAX_GRAPH_VIEW_NODES,
+             totalNodes: allNodes.length,
+             totalEdges: allEdges.length,
+             truncated: allNodes.length > nodes.length || allEdges.length > edges.length,
+           },
+         }
+       }
+       function canonicalDocumentIdHost(graph) {
+         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         return typeof source.documentId === 'string' && source.documentId
+           ? source.documentId
+           : (typeof graph.documentId === 'string' ? graph.documentId : '')
+       }
+       function rememberCanonicalGraphHost(graph, sourceText, revision) {
+         const documentId = canonicalDocumentIdHost(graph)
+         if (!documentId || !graph || typeof graph !== 'object') return null
+         const nextRevision = Number.isInteger(revision)
+           ? revision
+           : (Number.isInteger(canonicalRevisions.get(documentId)) ? canonicalRevisions.get(documentId) : 0)
+         canonicalGraphs.set(documentId, graph)
+         if (typeof sourceText === 'string') canonicalSources.set(documentId, sourceText)
+         canonicalRevisions.set(documentId, nextRevision)
+         return { documentId, revision: nextRevision }
+       }
+       function loadCanonicalDocumentHost(documentId) {
+         const id = typeof documentId === 'string' ? documentId : ''
+         const graph = id ? canonicalGraphs.get(id) : null
+         if (!graph) return null
+         return {
+           documentId: id,
+           sourceText: canonicalSources.get(id) || '',
+           revision: Number.isInteger(canonicalRevisions.get(id)) ? canonicalRevisions.get(id) : 0,
+           graph,
+         }
+       }
+       function edgeKeyHost(edge) {
+         return edge && typeof edge === 'object'
+           ? String(edge.fromNodeId || '') + '>' + String(edge.toNodeId || '') + ':' + String(edge.relation || '')
+           : ''
+       }
+       function mergeGraphViewHost(current, incoming, baseNodeIds, baseEdgeKeys) {
+         if (!current || !incoming) return null
+         const baseNodes = new Set(Array.isArray(baseNodeIds) ? baseNodeIds.filter((id) => typeof id === 'string' && id) : [])
+         const baseEdges = new Set(Array.isArray(baseEdgeKeys) ? baseEdgeKeys.filter((id) => typeof id === 'string' && id) : [])
+         const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes.filter((node) => node && typeof node.id === 'string' && node.id) : []
+         const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges.filter((edge) => edge && edgeKeyHost(edge)) : []
+         const nodes = (Array.isArray(current.nodes) ? current.nodes : []).filter((node) => !baseNodes.has(node && node.id))
+         nodes.push(...incomingNodes.map(cloneGraphNodeHost))
+         const nodeIds = new Set(nodes.map((node) => node && node.id).filter(Boolean))
+         const edges = (Array.isArray(current.edges) ? current.edges : []).filter((edge) => !baseEdges.has(edgeKeyHost(edge)))
+         for (const edge of incomingEdges) {
+           if (nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId)) edges.push(cloneGraphEdgeHost(edge))
+         }
+         return {
+           ...current,
+           ...incoming,
+           source: current.source && typeof current.source === 'object' ? { ...current.source } : incoming.source,
+           nodes,
+           edges,
+         }
+       }
 
       const SYSTEM_PROMPT = [
         '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记等），正文已按内容切分为编号单元（一个编号单元可能是自然段里的若干句），[P数字] 为该单元的编号，请把它拆解为一张知识图。',
@@ -117,7 +215,7 @@ export default function hostPlugin() {
         '2. 每个节点还应给出 quote 字段：资料原文中逐字摘录的句子或片段，尽量原样引用，禁止改写或编造；摘录不到时可以为空字符串。',
         '3. 宁缺毋滥：环境描写、铺垫、与主题无关的句子不要拆成节点。',
         '4. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
-        '5. JSON 结构固定为：{"summary":"一句话总结全文","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
+        '5. JSON 结构固定为：{"summary":"一句话总结全文","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的原文逐字摘录"}]}]}',
         '6. type 只能取 fact/inference/concept/definition/example/counter_example/rule 之一；relation 只能取 supports/example/counter_example/defines/infers/causes 之一；paragraph 必须是正文中真实存在的段落编号。',
         '7. 节点 id 用 n1、n2、n3... 全局唯一；edges 中的 fromNodeId/toNodeId 必须引用存在的节点 id。',
         '8. 单批节点数不超过 30 个。',
@@ -150,7 +248,7 @@ export default function hostPlugin() {
         '2. 每个节点还应给出 quote 字段：轨迹原文中逐字摘录的片段，尽量原样引用；摘录不到时可以为空字符串。',
         '3. 宁缺毋滥：重复的、无关的事件不要拆成节点；优先保留"查到了什么"和"因此做出了什么判断"。',
         '4. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
-        '5. JSON 结构固定为：{"summary":"一句话总结这个 Agent 做了什么","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
+        '5. JSON 结构固定为：{"summary":"一句话总结这个 Agent 做了什么","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的轨迹逐字摘录"}]}]}',
         '6. type 只能取 fact/inference/concept/definition/example/counter_example/rule 之一；relation 只能取 supports/example/counter_example/defines/infers/causes 之一；paragraph 必须是轨迹中真实存在的事件编号。',
         '7. 节点 id 用 n1、n2、n3... 全局唯一；edges 中的 fromNodeId/toNodeId 必须引用存在的节点 id。',
         '8. 单批节点数不超过 30 个。',
@@ -176,10 +274,10 @@ export default function hostPlugin() {
         '3. 每个新节点必须给出 paragraph 字段：[P数字] 中的数字（相对于新正文的段落编号，整数）；quote 字段尽量逐字摘录。',
         '4. summary 字段输出合并后整张图的一句话总结（涵盖新旧全部内容）。',
         '5. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
-        '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
+        '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的原文逐字摘录"}]}]}',
         '7. 节点 id 用 n1、n2、n3... 且不得与节点清单中的已有 id 重复；单批新节点不超过 30 个。',
         '8. 宁缺毋滥：与已有图重复、无关的内容不要输出节点。',
-        '9. 输出前自查：每个新节点的 text 都能从新正文 quote 推出；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
+        '9. 输出前自查：每个新节点的 text 都能从新正文 quote 推出；每条边必须给出直接证明 relation 的 evidence 原文摘录，不能由端点证据合成；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
       ].join(NL)
 
       // Incremental trajectory append: NEW trace events plus the existing
@@ -198,10 +296,10 @@ export default function hostPlugin() {
         '3. 每个新节点必须给出 paragraph 字段：[P数字] 中的数字（相对于新轨迹的事件编号，整数）；quote 字段尽量逐字摘录。',
         '4. summary 字段输出合并后整张图的一句话总结（涵盖新旧全部内容）。',
         '5. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
-        '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"}]}',
+        '6. JSON 结构固定为：{"summary":"合并后的一句话总结","nodes":[{"id":"n1","type":"fact","text":"节点的规范表述","quote":"轨迹逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的轨迹逐字摘录"}]}]}',
         '7. 节点 id 用 n1、n2、n3... 且不得与节点清单中的已有 id 重复；单批新节点不超过 30 个。',
         '8. 宁缺毋滥：与已有图重复、无关的事件不要输出节点；优先保留「查到了什么」和「因此做出了什么判断」。',
-        '9. 输出前自查：每个新节点的 text 都能从新轨迹 quote 推出；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
+        '9. 输出前自查：每个新节点的 text 都能从新轨迹 quote 推出；每条边必须给出直接证明 relation 的 evidence 轨迹摘录，不能由端点证据合成；与已有节点的边必须有语义依据，不要因为名称相似就强行连边；关系方向必须正确。',
       ].join(NL)
 
       // Verification / questioning prompts. The verifier is an ADVERSARIAL
@@ -229,7 +327,7 @@ export default function hostPlugin() {
         '2. 每条 issue 必须给出 evidence（至少一条）：{"paragraph": 段落编号, "quote": "原文逐字摘录"}；quote 必须能在原文中找到，找不到证据的质疑禁止输出。',
         '3. 只有 confidence >= 0.7 的 issue 才允许输出；宁缺毋滥。',
         '4. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
-        '5. JSON 结构固定为：{"issues":[{"id":"v1","severity":"error|warning|suggestion","category":"grounding|type|relation|duplicate|contradiction|completeness|summary","targetKind":"node|edge|graph","targetId":"n3 或 fromNodeId>toNodeId","title":"一句话问题","detail":"为什么有问题","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"confidence":0.9,"proposedFix":{"action":"none|update_node|delete_node|add_node|update_edge|delete_edge|add_edge|merge_nodes|update_summary","nodePatch":{"id":"n3","patch":{"type":"fact","text":"修正后的表述","quote":"修正后的摘录","paragraph":2}},"edgePatch":{"fromNodeId":"n1","toNodeId":"n2","relation":"supports"},"mergeIntoId":"n5"}}]}',
+        '5. JSON 结构固定为：{"issues":[{"id":"v1","severity":"error|warning|suggestion","category":"grounding|type|relation|duplicate|contradiction|completeness|summary","targetKind":"node|edge|graph","targetId":"n3 或 fromNodeId>toNodeId","title":"一句话问题","detail":"为什么有问题","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"confidence":0.9,"proposedFix":{"action":"none|update_node|delete_node|add_node|update_edge|delete_edge|add_edge|merge_nodes|update_summary","nodePatch":{"id":"n3","patch":{"type":"fact","text":"修正后的表述","quote":"修正后的摘录","paragraph":2}},"edgePatch":{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"直接证明新关系的原文逐字摘录"}]},"mergeIntoId":"n5"}}]}',
         '6. targetId：node 用节点 id；edge 用 "fromNodeId>toNodeId"；graph 用 null。没有修复方案时 proposedFix 用 {"action":"none"}。',
         '7. 控制输出长度：title 不超过 80 字，detail 不超过 300 字，evidence.quote 不超过 200 字，避免输出被截断。',
         '8. 每批最多输出 15 个 issue：只报最确定的 error/warning，suggestion 最多 3 条；宁可下一批/下次复核再报，也不要输出超长内容导致超时。',
@@ -942,6 +1040,15 @@ export default function hostPlugin() {
 
         // L1 — quote / paragraph grounding.
         const paras = splitParagraphsOffsetsHost(sourceText || '')
+        const paragraphTexts = paras.map((paragraph) => paragraph.text)
+        for (const e of edges) {
+          if (!e || !nodeById.has(e.fromNodeId) || !nodeById.has(e.toNodeId)) continue
+          const evidence = normalizeRelationEvidenceHost(e.evidence, paras.length, { paragraphTexts }, null, edgeKey(e) + ':' + String(e.relation || ''))
+          if (evidence.length === 0) {
+            addIssue('error', 'grounding', 'edge', edgeKey(e), '关系边缺少直接原文证据',
+              '端点分别出现在原文中并不能证明这条关系；请为该关系提供能直接支持 relation 的原文摘录。', [], { action: 'none' })
+          }
+        }
         const coveredParas = new Set()
         let evidenceOk = 0
         for (const n of nodes) {
@@ -1074,6 +1181,28 @@ export default function hostPlugin() {
         }
       }
 
+      function normalizeRelationEvidenceHost(rawEvidence, totalParagraphs, sourceContext, warnings, edgeLabel) {
+        const out = []
+        const paragraphs = sourceContext && Array.isArray(sourceContext.paragraphTexts) ? sourceContext.paragraphTexts : null
+        for (const item of Array.isArray(rawEvidence) ? rawEvidence : []) {
+          if (!item || typeof item !== 'object') continue
+          const rawParagraph = item.paragraph != null ? item.paragraph : item.para
+          const paragraph = Number(String(rawParagraph == null ? '' : rawParagraph).trim())
+          const quote = typeof item.quote === 'string' ? item.quote.trim().slice(0, 600) : ''
+          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= totalParagraphs || !quote) continue
+          if (paragraphs && typeof paragraphs[paragraph] === 'string') {
+            const source = paragraphs[paragraph]
+            const normalizedSource = source.replace(/\s+/g, ' ').trim()
+            const normalizedQuote = quote.replace(/\s+/g, ' ').trim()
+            if (!source.includes(quote) && !normalizedSource.includes(normalizedQuote)) continue
+          }
+          out.push({ paragraph, quote })
+          if (out.length >= 4) break
+        }
+        if (out.length === 0 && warnings) warnings.push('edge_dropped:missing_relation_evidence:' + edgeLabel)
+        return out
+      }
+
       function normalizeGraph(obj, totalParagraphs, extraIds, sourceContext) {
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: '结果不是 JSON 对象' }
         const summary = typeof obj.summary === 'string' ? obj.summary.trim() : ''
@@ -1125,7 +1254,6 @@ export default function hostPlugin() {
           nodes.push({ id, type, text, quote, paragraph: pNum, evidence, ...sourceFields })
         }
 
-        const nodeById = new Map(nodes.map((node) => [node.id, node]))
         const edges = []
         for (const e of obj.edges) {
           if (!e || typeof e !== 'object') { warnings.push('edge_dropped:not_object'); continue }
@@ -1136,14 +1264,11 @@ export default function hostPlugin() {
           if (!seen.has(from) && !(extraIds && extraIds.has(from))) { warnings.push('edge_dropped:missing_endpoint:' + from + '->' + to); continue }
           if (!seen.has(to) && !(extraIds && extraIds.has(to))) { warnings.push('edge_dropped:missing_endpoint:' + from + '->' + to); continue }
           if (from === to) { warnings.push('edge_dropped:self_loop:' + from); continue }
-          const edgeEvidence = []
-          for (const nodeId of [from, to]) {
-            const node = nodeById.get(nodeId)
-            for (const evidence of node && Array.isArray(node.evidence) ? node.evidence : []) {
-              if (edgeEvidence.length >= 2) break
-              edgeEvidence.push(evidence)
-            }
-          }
+          const edgeEvidence = normalizeRelationEvidenceHost(e.evidence, totalParagraphs, sourceContext, warnings, from + '->' + to + ':' + relation)
+          // Endpoint presence is not relation evidence. A relation without a
+          // source quote that directly supports it is discarded rather than
+          // upgraded into trusted provenance by combining node evidence.
+          if (edgeEvidence.length === 0) continue
           edges.push({
             fromNodeId: from,
             toNodeId: to,
@@ -2025,17 +2150,13 @@ export default function hostPlugin() {
        // live Host references. The next batch is always the first unfinished
        // one, so a retry never duplicates completed chunks.
        function buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, nextBatchIndex) {
-         const nodes = []
-         acc.nodes.forEach((node) => {
-           if (nodes.length < MAX_GRAPH_NODES) nodes.push({ ...node, evidence: Array.isArray(node.evidence) ? node.evidence.slice(0, 4) : [] })
-         })
-         const nodeIds = new Set(nodes.map((node) => node.id))
-         const edges = acc.edges
-           .filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId))
-           .slice(0, MAX_GRAPH_NODES * 6)
-           .map((edge) => ({ ...edge, evidence: Array.isArray(edge.evidence) ? edge.evidence.slice(0, 4) : [] }))
+         // A checkpoint is recovery state, not a render payload. Never truncate
+         // nodes, edges, or evidence here: otherwise a completed-but-oversized
+         // run can resume from a lossy snapshot and silently become “success”.
+         const nodes = Array.from(acc.nodes.values()).map(cloneGraphNodeHost)
+         const edges = acc.edges.map(cloneGraphEdgeHost)
          return {
-           version: 1,
+           version: 2,
            title: sourceManifest.title,
            documentId: sourceManifest.documentId,
            sourceId: sourceManifest.sourceId,
@@ -2044,6 +2165,7 @@ export default function hostPlugin() {
            totalBatches: sourceManifest.chunkCount,
            nextBatchIndex,
            paragraphOffset: Number.isInteger(task.paragraphOffset) ? task.paragraphOffset : 0,
+           taskKind: typeof task.kind === 'string' && task.kind ? task.kind : 'extract',
            summary: summary || '',
            graph: { summary: summary || '', nodes, edges, warnings: acc.warnings.slice(-300) },
            staging: {
@@ -2074,6 +2196,7 @@ export default function hostPlugin() {
         task.cancelHooks = []
         task.progress = { stage: '准备模型', charsReceived: 0, updatedAt: Date.now() }
         activeTask = task
+        let persistCheckpointSafe = async () => {}
         try {
           const model = task.model || ((hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check') ? null : await resolveModel())
           if (!model && !(hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check')) {
@@ -2090,7 +2213,7 @@ export default function hostPlugin() {
             sourceId: sourceManifest.sourceId,
             paragraphMeta: sourceManifest.paragraphMeta,
           }
-          const persistCheckpointSafe = async (status) => {
+          persistCheckpointSafe = async (status) => {
              if (typeof persistCheckpoint !== 'function' || !task.checkpoint) return
              try { await persistCheckpoint(task.checkpoint, task, status || task.status || 'running') } catch (error) {
                if (task.progress) task.progress.warning = 'SQLite checkpoint 保存失败：' + (error && error.message ? error.message : String(error))
@@ -2099,7 +2222,7 @@ export default function hostPlugin() {
            if (isResume) {
              const checkpoint = task.checkpoint
              const nextBatch = checkpoint && Number.isInteger(checkpoint.nextBatchIndex) ? checkpoint.nextBatchIndex : -1
-             if (!checkpoint || checkpoint.version !== 1 || checkpoint.sourceId !== sourceManifest.sourceId || nextBatch < 0 || nextBatch > batches.length || !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes)) {
+             if (!checkpoint || checkpoint.version !== 2 || checkpoint.sourceId !== sourceManifest.sourceId || nextBatch < 0 || nextBatch > batches.length || !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes)) {
                return failTask(task, 'checkpoint_invalid', 'checkpoint 与当前正文不匹配，无法安全续跑；请重新拆分全文')
              }
            }
@@ -2188,7 +2311,7 @@ export default function hostPlugin() {
           const system = isTrajAppend ? TRAJ_APPEND_SYSTEM_PROMPT : (isResume ? SYSTEM_PROMPT : (isAppend ? APPEND_SYSTEM_PROMPT : (task.kind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : SYSTEM_PROMPT)))
           for (let i = resumeFromBatch; i < batches.length; i++) {
             const batch = batches[i]
-             const batchContext = { ...sourceContext, chunkId: batch.chunkId }
+             const batchContext = { ...sourceContext, chunkId: batch.chunkId, paragraphTexts: paras }
              taskStage('正在处理第 ' + (i + 1) + '/' + batches.length + ' 个内容块（' + batch.chunkId + '）')
              if (task.progress) {
                task.progress.batch = { index: i + 1, total: batches.length, chunkId: batch.chunkId, startParagraph: batch.startParagraph, endParagraph: batch.endParagraph }
@@ -2305,9 +2428,11 @@ export default function hostPlugin() {
           task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, batches.length)
            acc.nodes.forEach((v) => nodes.push(v))
           if (nodes.length === 0) return failTask(task, 'empty', 'AI 没有拆出任何节点，请尝试内容更明确的资料')
-          if (nodes.length > MAX_GRAPH_NODES) return failTask(task, 'too_many_nodes', '合并后的节点过多（' + nodes.length + ' 个，当前上限 ' + MAX_GRAPH_NODES + '），请分章节拆分或追加更小的内容')
-          task.status = 'succeeded'
-          task.finishedAt = Date.now()
+          const priorSourceText = isAppend && typeof task.existingSourceText === 'string' ? task.existingSourceText : ''
+          const canonicalSourceText = priorSourceText ? priorSourceText + NL + NL + task.text : task.text
+          const priorChunks = isAppend && existing && existing.staging && Array.isArray(existing.staging.chunks) ? existing.staging.chunks : []
+          const allChunks = priorChunks.concat(chunkResults)
+          const priorSections = isAppend && existing && existing.source && Array.isArray(existing.source.sections) ? existing.source.sections : []
           const sourceSections = sourceManifest.sections.map((section) => {
              const parts = sectionSummaryParts.get(section.id) || []
              return {
@@ -2322,11 +2447,11 @@ export default function hostPlugin() {
              id: sourceManifest.sourceId,
              documentId: sourceManifest.documentId,
              title: sourceManifest.title,
-             chars: sourceManifest.chars,
-             paragraphCount: sourceManifest.paragraphCount,
-             chunkCount: sourceManifest.chunkCount,
-             sectionCount: sourceManifest.sectionCount,
-             sections: sourceSections,
+             chars: canonicalSourceText.length,
+             paragraphCount: splitParagraphsHost(canonicalSourceText).length,
+             chunkCount: allChunks.length,
+             sectionCount: priorSections.length + sourceSections.length,
+             sections: priorSections.concat(sourceSections),
              ...(isAppend && existing && existing.source && existing.source.id ? { previousId: existing.source.id } : {}),
            }
            const trajAppendPrefix = isTrajAppend && typeof task.baseTraceText === 'string' && task.baseTraceText ? task.baseTraceText + NL + NL : ''
@@ -2338,14 +2463,14 @@ export default function hostPlugin() {
                 : e
             )),
           ] : null
-          task.result = {
+          const fullResult = {
             summary, nodes, edges: acc.edges, warnings: acc.warnings,
              source,
              staging: {
                sourceId: source.id,
                documentId: source.documentId,
-               chunkCount: chunkResults.length,
-               chunks: chunkResults,
+               chunkCount: allChunks.length,
+               chunks: allChunks,
              },
             ...task.kind === 'trajectory' ? { traceText: task.traceText, traceEvents: task.traceEvents } : {},
             ...isTrajAppend ? {
@@ -2354,20 +2479,38 @@ export default function hostPlugin() {
             } : {},
             ...isAppend ? { addedNodeIds: addedIds } : {},
            }
+           task.status = 'succeeded'
+           task.finishedAt = Date.now()
            await persistCheckpointSafe('succeeded')
+           let persistedRevision = null
            if (typeof persistGraph === 'function') {
-             try { await persistGraph(task.result, task) } catch (error) {
-               task.result.warnings = Array.isArray(task.result.warnings) ? task.result.warnings : []
-               task.result.warnings.push('sqlite_persist_failed:' + (error && error.message ? error.message : String(error)))
+             try {
+               const persisted = await persistGraph(fullResult, { ...task, canonicalSourceText })
+               if (persisted && Number.isInteger(persisted.revision)) persistedRevision = persisted.revision
+             } catch (error) {
+               fullResult.warnings = Array.isArray(fullResult.warnings) ? fullResult.warnings : []
+               fullResult.warnings.push('sqlite_persist_failed:' + (error && error.message ? error.message : String(error)))
              }
            }
+           const remembered = rememberCanonicalGraphHost(fullResult, canonicalSourceText, persistedRevision)
+           if (remembered) {
+             fullResult.revision = remembered.revision
+             fullResult.source = { ...fullResult.source, revision: remembered.revision }
+           }
+           // The UI receives a bounded working window; the canonical full graph
+           // remains in Host/SQLite and is never truncated for persistence.
+           task.result = buildGraphViewHost(fullResult)
 
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
           console.error('[dsh-knowledge-graph] extraction failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else failTask(task, 'failed', 'AI 拆分失败：' + msg)
-           await persistCheckpointSafe(task.status)
+        } finally {
+          // `return failTask(...)` paths still execute this finally block. This
+          // makes deterministic failures durable instead of leaving the last
+          // SQLite checkpoint marked as "running" and therefore resumable.
+          if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
         }
       }
 
@@ -2393,17 +2536,28 @@ export default function hostPlugin() {
         units.sort((a, b) => a.paragraph - b.paragraph)
         const paragraphMap = units.map((unit) => unit.paragraph)
         const localParagraph = new Map(paragraphMap.map((paragraph, index) => [paragraph, index]))
+        const mapEvidenceIntoScope = (evidence) => (Array.isArray(evidence) ? evidence : [])
+          .filter((item) => item && Number.isInteger(item.paragraph) && localParagraph.has(item.paragraph))
+          .map((item) => ({ ...item, paragraph: localParagraph.get(item.paragraph) }))
+        const scopedNodes = (Array.isArray(graph.nodes) ? graph.nodes : [])
+          .filter((node) => {
+            if (!node || typeof node !== 'object') return false
+            if (Number.isInteger(node.paragraph) && localParagraph.has(node.paragraph)) return true
+            return Array.isArray(node.evidence) && node.evidence.some((item) => item && Number.isInteger(item.paragraph) && localParagraph.has(item.paragraph))
+          })
+          .map((node) => ({
+            ...node,
+            paragraph: Number.isInteger(node.paragraph) && localParagraph.has(node.paragraph) ? localParagraph.get(node.paragraph) : null,
+            evidence: mapEvidenceIntoScope(node.evidence),
+          }))
+        const scopedNodeIds = new Set(scopedNodes.map((node) => node.id))
+        const scopedEdges = (Array.isArray(graph.edges) ? graph.edges : [])
+          .filter((edge) => edge && scopedNodeIds.has(edge.fromNodeId) && scopedNodeIds.has(edge.toNodeId))
+          .map((edge) => ({ ...edge, evidence: mapEvidenceIntoScope(edge.evidence) }))
         const scopedGraph = {
           ...graph,
-          nodes: Array.isArray(graph.nodes) ? graph.nodes.map((node) => ({
-            ...node,
-            paragraph: Number.isInteger(node && node.paragraph) && localParagraph.has(node.paragraph) ? localParagraph.get(node.paragraph) : null,
-            evidence: Array.isArray(node && node.evidence) ? node.evidence.map((evidence) => ({
-              ...evidence,
-              paragraph: Number.isInteger(evidence && evidence.paragraph) && localParagraph.has(evidence.paragraph) ? localParagraph.get(evidence.paragraph) : null,
-            })) : node && node.evidence,
-          })) : [],
-          edges: Array.isArray(graph.edges) ? graph.edges.slice() : [],
+          nodes: scopedNodes,
+          edges: scopedEdges,
         }
         return {
           text: units.map((unit) => unit.text).join(NL + NL),
@@ -2426,6 +2580,9 @@ export default function hostPlugin() {
             next.nodePatch = { ...fix.nodePatch, patch: fix.nodePatch.patch && typeof fix.nodePatch.patch === 'object'
               ? { ...fix.nodePatch.patch, ...(Number.isInteger(fix.nodePatch.patch.paragraph) ? { paragraph: mapVerificationParagraphHost(fix.nodePatch.patch.paragraph, paragraphMap) } : {}) }
               : fix.nodePatch.patch }
+          }
+          if (fix.edgePatch && typeof fix.edgePatch === 'object') {
+            next.edgePatch = { ...fix.edgePatch, evidence: mapEvidence(fix.edgePatch.evidence) }
           }
           return next
         }
@@ -2497,7 +2654,7 @@ export default function hostPlugin() {
         }
         return allowEmpty || out.length > 0 ? out : null
       }
-      function sanitizeFix(fix, graph, totalParagraphs) {
+      function sanitizeFix(fix, graph, sourceText, totalParagraphs) {
         if (!fix || typeof fix !== 'object') return { action: 'none' }
         const action = VERIFY_FIX_ACTIONS.has(fix.action) ? fix.action : 'none'
         const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
@@ -2527,6 +2684,14 @@ export default function hostPlugin() {
           if (!from || !to || !ids.has(from) || !ids.has(to) || !relation) return null
           const out = { fromNodeId: from, toNodeId: to, relation }
           if (typeof p.index === 'number' && p.index >= 0) out.index = p.index
+          const relationEvidence = normalizeRelationEvidenceHost(
+            p.evidence,
+            totalParagraphs,
+            { paragraphTexts: splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '') },
+            null,
+            from + '->' + to + ':' + relation,
+          )
+          if (relationEvidence.length > 0) out.evidence = relationEvidence
           return out
         }
         const clean = { action }
@@ -2548,6 +2713,7 @@ export default function hostPlugin() {
         } else if (action === 'update_edge' || action === 'delete_edge' || action === 'add_edge') {
           const p = cleanEdgePatch(fix.edgePatch)
           if (!p) return { action: 'none' }
+          if ((action === 'update_edge' || action === 'add_edge') && (!Array.isArray(p.evidence) || p.evidence.length === 0)) return { action: 'none' }
           clean.edgePatch = p
         } else if (action === 'update_summary') {
           if (typeof fix.summaryPatch === 'string' && fix.summaryPatch.trim()) clean.summaryPatch = fix.summaryPatch.trim().slice(0, 500)
@@ -2598,7 +2764,7 @@ export default function hostPlugin() {
             detail: typeof raw.detail === 'string' ? raw.detail.trim().slice(0, 1000) : '',
             evidence,
             confidence,
-            proposedFix: sanitizeFix(raw.proposedFix, graph, totalParagraphs),
+            proposedFix: sanitizeFix(raw.proposedFix, graph, sourceText, totalParagraphs),
             status: 'open',
           })
         }
@@ -2763,7 +2929,7 @@ export default function hostPlugin() {
           verdict,
           answer,
           evidence,
-          proposedFix: sanitizeFix(obj && obj.proposedFix, graph, totalParagraphs),
+          proposedFix: sanitizeFix(obj && obj.proposedFix, graph, sourceText, totalParagraphs),
           warnings,
         }
       }
@@ -3209,9 +3375,11 @@ export default function hostPlugin() {
 
       harness.handle('candidate-list', async (args) => {
          const a = args && typeof args === 'object' ? args : {}
-         const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
+         const documentId = typeof a.documentId === 'string' && a.documentId ? a.documentId : candidateDocumentId(a.graph)
+         const canonical = documentId ? loadCanonicalDocumentHost(documentId) : null
+         const graph = canonical && canonical.graph ? canonical.graph : (a.graph && typeof a.graph === 'object' ? a.graph : null)
          if (!graph || !Array.isArray(graph.nodes)) return { candidates: [], source: 'dynamic' }
-         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit }), source: 'dynamic' }
+         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit }), source: canonical ? 'dynamic-canonical' : 'dynamic' }
        })
 
        harness.handle('candidate-update', async (args) => {
@@ -3226,6 +3394,48 @@ export default function hostPlugin() {
          candidateReviewState.set(key, status)
          return { candidate: { ...candidate, status }, source: 'dynamic' }
        })
+
+       harness.handle('document-load', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         if (!documentId) return { error: { code: 'invalid_input', message: '缺少 documentId' } }
+         const saved = loadCanonicalDocumentHost(documentId)
+         if (!saved) return { error: { code: 'not_found', message: '当前 Host 中找不到该文档；持久化模式可从 SQLite 恢复' } }
+         const graph = buildGraphViewHost({ ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } }, Number.isInteger(a.nodeOffset) ? a.nodeOffset : 0)
+         return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
+       })
+
+       harness.handle('document-export', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         const saved = loadCanonicalDocumentHost(documentId)
+         if (!saved) return { error: { code: 'not_found', message: '找不到要导出的 canonical graph' } }
+         return { documentId, revision: saved.revision, graph: { ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } } }
+       })
+
+       harness.handle('graph-commit', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         const incoming = a.graph && typeof a.graph === 'object' ? a.graph : null
+         const current = loadCanonicalDocumentHost(documentId)
+         if (!documentId || !incoming) return { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } }
+         if (!current) return { error: { code: 'not_found', message: '当前 Host 中找不到要提交的 canonical graph' } }
+         const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : current.revision
+         if (expectedRevision !== current.revision) {
+           return { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } }
+         }
+         const merged = mergeGraphViewHost(current.graph, incoming, a.baseNodeIds, a.baseEdgeKeys)
+         if (!merged) return { error: { code: 'invalid_input', message: '无法合并知识图工作窗口' } }
+         const revision = current.revision + 1
+         merged.revision = revision
+         merged.source = { ...(current.graph.source || incoming.source || {}), revision }
+         rememberCanonicalGraphHost(merged, current.sourceText, revision)
+         return { documentId, revision, graph: buildGraphViewHost(merged) }
+       })
+
+       harness.handle('resume-extract', async () => ({
+         error: { code: 'resume_unavailable', message: '动态包模式无法跨 Host 重启恢复任务；持久化模式会从 SQLite checkpoint 续跑' },
+       }))
 
        harness.handle('extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
@@ -3468,17 +3678,23 @@ export default function hostPlugin() {
         const text = typeof a.text === 'string' ? a.text.trim() : ''
         if (!text) return { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } }
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } }
-        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+        const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+        const canonical = documentId ? loadCanonicalDocumentHost(documentId) : null
+        const existing = canonical && canonical.graph
+          ? canonical.graph
+          : (a.existing && typeof a.existing === 'object' ? a.existing : null)
         if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } }
         }
-        const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
+        const paragraphOffset = canonical && canonical.sourceText
+          ? splitParagraphsHost(canonical.sourceText).length
+          : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-          title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, createdAt: Date.now(),
+          title, text, existing, existingSourceText: canonical ? canonical.sourceText : '', documentId, paragraphOffset, model, createdAt: Date.now(),
         }
         tasks.set(task.id, task)
         busy = true

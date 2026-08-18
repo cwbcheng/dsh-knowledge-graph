@@ -30,7 +30,10 @@ globalThis.document = {
 const graph = {
   source: { documentId: 'doc-export', title: '导出测试' },
   summary: '保留完整图',
-  nodes: [{ id: 'n1', type: 'fact', text: '带逗号, 换行\n和引号"的节点', paragraph: 0, documentId: 'doc-export', evidence: [{ paragraph: 0, quote: '证据' }] }],
+  nodes: [
+    { id: 'n1', type: 'fact', text: '带逗号, 换行\n和引号"的节点', paragraph: 0, documentId: 'doc-export', evidence: [{ paragraph: 0, quote: '证据' }] },
+    { id: 'n2', type: 'fact', text: '=HYPERLINK("https://evil.invalid","click")', paragraph: 1, documentId: 'doc-export', evidence: [{ paragraph: 1, quote: '不可信输入' }] },
+  ],
   edges: [{ id: 'e1', fromNodeId: 'n1', toNodeId: 'n1', relation: 'supports', documentId: 'doc-export', provenance: { sourceId: 's1' } }],
   verification: { issues: [{ id: 'i1', status: 'open' }] },
 }
@@ -46,6 +49,7 @@ try {
   text = await capturedBlob.text()
   const bytes = new Uint8Array(await capturedBlob.arrayBuffer())
   assert(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf && text.includes('"带逗号, 换行\n和引号""的节点"'), 'node CSV escaping or BOM is wrong')
+  assert(text.includes('"\'=HYPERLINK(""https://evil.invalid""'), 'CSV formula injection was not neutralized')
 
   filename = exportGraphFile(graph, '', 'edges', null)
   assert(filename === '导出测试-edges.csv', 'edge CSV filename is wrong')

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  trust-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated signing toolchain
+        run: npm ci --prefix scripts/signing --ignore-scripts
+      - name: Audit signing dependencies
+        run: npm audit --prefix scripts/signing --audit-level=high
+      - name: Build and run all knowledge-graph regressions
+        run: npm test
+      - name: Verify generated artifacts are committed
+        run: git diff --exit-code -- lib extension/viewer.js
+      - name: Reject committed private keys
+        shell: bash
+        run: |
+          if git grep -nE -- '-----BEGIN (RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----' -- ':!SECURITY.md'; then
+            echo 'Private-key material must never be committed.' >&2
+            exit 1
+          fi

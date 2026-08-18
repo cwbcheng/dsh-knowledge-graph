@@ -37,11 +37,22 @@ export function apply(ctx) {
   }
   const persistGraph = async (graph, task) => {
     const store = await getSqliteStore()
-    return store.saveGraph(graph, { runId: task && task.id ? task.id : undefined })
+    return store.saveGraph(graph, {
+      runId: task && task.id ? task.id : undefined,
+      sourceText: task && typeof task.canonicalSourceText === 'string' ? task.canonicalSourceText : (task && typeof task.text === 'string' ? task.text : ''),
+      kind: task && (task.kind === 'append' || task.kind === 'trajectory-append') ? 'append' : 'extract',
+    })
   }
   const persistCheckpoint = async (checkpoint, task, status) => {
     const store = await getSqliteStore()
-    return store.saveCheckpoint(checkpoint, { runId: task && task.id ? task.id : undefined, status })
+    return store.saveCheckpoint(checkpoint, {
+      runId: task && task.id ? task.id : undefined,
+      status,
+      title: task && typeof task.title === 'string' ? task.title : '',
+      sourceText: task && typeof task.text === 'string' ? task.text : '',
+      errorCode: task && task.errorCode ? task.errorCode : null,
+      errorMessage: task && task.errorMessage ? task.errorMessage : null,
+    })
   }`
 
 // strip the dynamic wrapper: `return { inject, apply(ctx) {` -> header,
@@ -226,6 +237,111 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (key) candidateReviewState.set(key, status)
                 return writeJson(res, 200, { candidate: { id: a.id, kind, nodeId: a.nodeId || null, documentId: a.documentId || candidateDocumentId(a.graph), status }, source: 'fallback', warning: 'SQLite candidate store unavailable' })
               }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-load') {
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const documentId = payload && typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const store = await getSqliteStore()
+              const saved = store.getDocument(documentId)
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该文档' } })
+              const revision = Number.isInteger(saved.revision) ? saved.revision : 0
+              const fullGraph = { ...saved, source: { ...(saved.source || {}), revision } }
+              delete fullGraph.sourceText
+              rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
+              const nodeOffset = Number.isInteger(payload.nodeOffset) ? payload.nodeOffset : 0
+              return writeJson(res, 200, { documentId, sourceText: saved.sourceText || '', revision, graph: buildGraphViewHost(fullGraph, nodeOffset) })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-export') {
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const documentId = payload && typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const store = await getSqliteStore()
+              const saved = store.getDocument(documentId)
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要导出的 canonical graph' } })
+              const revision = Number.isInteger(saved.revision) ? saved.revision : 0
+              const graph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
+              delete graph.sourceText
+              return writeJson(res, 200, { documentId, revision, graph })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-commit') {
+              const raw = await readBody(req, 4 * 1024 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId || !a.graph || typeof a.graph !== 'object') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } })
+              try {
+                const store = await getSqliteStore()
+                const committed = store.commitViewGraph({
+                  documentId,
+                  graph: a.graph,
+                  baseNodeIds: Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [],
+                  baseEdgeKeys: Array.isArray(a.baseEdgeKeys) ? a.baseEdgeKeys : [],
+                  expectedRevision: Number.isInteger(a.expectedRevision) ? a.expectedRevision : undefined,
+                  kind: 'ui_patch',
+                })
+                const saved = store.getDocument(documentId)
+                if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '提交后无法重新读取文档' } })
+                const revision = committed && Number.isInteger(committed.revision) ? committed.revision : saved.revision
+                const fullGraph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
+                delete fullGraph.sourceText
+                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
+                return writeJson(res, 200, { documentId, revision, graph: buildGraphViewHost(fullGraph) })
+              } catch (error) {
+                if (error && error.code === 'revision_conflict') {
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: error.currentRevision } })
+                }
+                if (error && error.code === 'not_found') return writeJson(res, 200, { error: { code: 'not_found', message: error.message } })
+                throw error
+              }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/resume-extract') {
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const runId = typeof a.runId === 'string' ? a.runId.trim().slice(0, 200) : ''
+              if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
+              if (tasks.has(runId)) return writeJson(res, 200, { taskId: runId, resumed: false })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              const store = await getSqliteStore()
+              const savedRun = store.loadCheckpoint(runId)
+              if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
+              if (savedRun.status !== 'running') {
+                return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该任务状态为 ' + savedRun.status + '，不是 Host 重启遗留的运行中任务，禁止自动续跑' } })
+              }
+              const checkpoint = savedRun.checkpoint && typeof savedRun.checkpoint === 'object' ? savedRun.checkpoint : null
+              if (!checkpoint || checkpoint.version !== 2 || !savedRun.sourceText) {
+                return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '持久化 checkpoint 不完整，无法安全续跑' } })
+              }
+              const previous = savedRun.documentId ? store.getDocument(savedRun.documentId) : null
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const task = {
+                id: runId,
+                status: 'running',
+                kind: 'resume',
+                title: savedRun.title || checkpoint.title || '',
+                text: savedRun.sourceText,
+                documentId: savedRun.documentId || checkpoint.documentId || '',
+                checkpoint,
+                existing: checkpoint.graph,
+                existingSourceText: checkpoint.taskKind === 'append' && previous ? (previous.sourceText || '') : '',
+                paragraphOffset: Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
+                model,
+                createdAt: Date.now(),
+              }
+              tasks.set(runId, task)
+              busy = true
+              Promise.resolve().then(() => runTask(task)).catch((e) => {
+                console.error('[dsh-knowledge-graph] resumed task crashed', e)
+                failTask(task, 'failed', 'AI 拆分失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: runId, resumed: true })
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
@@ -427,17 +543,30 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const text = typeof a.text === 'string' ? a.text.trim() : ''
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } })
-              const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              let canonical = null
+              if (documentId) {
+                try {
+                  const store = await getSqliteStore()
+                  canonical = store.getDocument(documentId)
+                } catch (error) { canonical = null }
+              }
+              const existing = canonical && Array.isArray(canonical.nodes)
+                ? canonical
+                : (a.existing && typeof a.existing === 'object' ? a.existing : null)
               if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } })
               }
-              const paragraphOffset = Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0
+              const existingSourceText = canonical && typeof canonical.sourceText === 'string' ? canonical.sourceText : ''
+              const paragraphOffset = existingSourceText
+                ? splitParagraphsHost(existingSourceText).length
+                : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-                title, text, existing, documentId: typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : '', paragraphOffset, model, createdAt: Date.now(),
+                title, text, existing, existingSourceText, documentId, paragraphOffset, model, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true

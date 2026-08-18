@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS documents (
   chunk_count INTEGER NOT NULL DEFAULT 0,
   section_count INTEGER NOT NULL DEFAULT 0,
   source_json TEXT NOT NULL,
+  source_text TEXT NOT NULL DEFAULT '',
+  graph_meta_json TEXT NOT NULL DEFAULT '{}',
+  graph_revision INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -107,10 +110,25 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
   next_batch_index INTEGER NOT NULL DEFAULT 0,
   total_batches INTEGER NOT NULL DEFAULT 0,
   checkpoint_json TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  source_text TEXT NOT NULL DEFAULT '',
+  error_code TEXT,
+  error_message TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS extraction_runs_document_idx ON extraction_runs(document_id, updated_at);
+CREATE TABLE IF NOT EXISTS graph_revisions (
+  document_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  parent_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'extract',
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (document_id, revision),
+  FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS graph_revisions_document_idx ON graph_revisions(document_id, revision DESC);
 `
 
 const ENTITY_TYPES = new Set(['concept', 'definition'])
@@ -173,6 +191,21 @@ export class SqliteKnowledgeStore {
     this.db = db
     this.filename = filename
     this.db.exec(SCHEMA)
+    // CREATE TABLE IF NOT EXISTS does not add columns to databases created by
+    // older releases. Keep migrations additive and deterministic.
+    this.ensureColumn('documents', 'source_text', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('documents', 'graph_meta_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('documents', 'graph_revision', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('extraction_runs', 'title', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('extraction_runs', 'source_text', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('extraction_runs', 'error_code', 'TEXT')
+    this.ensureColumn('extraction_runs', 'error_message', 'TEXT')
+  }
+
+  ensureColumn(table, column, declaration) {
+    const columns = this.db.prepare('PRAGMA table_info(' + table + ')').all()
+    if (columns.some((row) => row && row.name === column)) return
+    this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + declaration)
   }
 
   close() {
@@ -189,13 +222,21 @@ export class SqliteKnowledgeStore {
     const documentId = text(sourceInput.documentId || graph.documentId || options.documentId) || 'document_' + stableHash(sourceId)
     const title = text(sourceInput.title || options.title)
     const paragraphCount = int(sourceInput.paragraphCount, nodes.reduce((max, node) => Math.max(max, int(node.paragraph, -1) + 1), 0))
+    const sourceText = text(options.sourceText)
+    const graphMeta = {
+      summary: text(graph.summary),
+      warnings: Array.isArray(graph.warnings) ? graph.warnings : [],
+      ...(graph.verification && typeof graph.verification === 'object' ? { verification: graph.verification } : {}),
+      ...(graph.factCheck && typeof graph.factCheck === 'object' ? { factCheck: graph.factCheck } : {}),
+    }
     const now = Date.now()
+    let revision = 0
     const source = {
       ...sourceInput,
       id: sourceId,
       documentId,
       title,
-      chars: int(sourceInput.chars, text(options.sourceText).length),
+      chars: int(sourceInput.chars, sourceText.length),
       paragraphCount,
       chunkCount: int(sourceInput.chunkCount, Array.isArray(staging.chunks) ? staging.chunks.length : 0),
       sectionCount: int(sourceInput.sectionCount, Array.isArray(sourceInput.sections) ? sourceInput.sections.length : 0),
@@ -203,9 +244,19 @@ export class SqliteKnowledgeStore {
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const current = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(documentId)
+      const currentRevision = current && Number.isInteger(current.graph_revision) ? current.graph_revision : 0
+      if (Number.isInteger(options.expectedRevision) && options.expectedRevision !== currentRevision) {
+        const error = new Error('graph revision conflict: expected ' + options.expectedRevision + ', current ' + currentRevision)
+        error.code = 'revision_conflict'
+        error.currentRevision = currentRevision
+        throw error
+      }
+      revision = currentRevision + 1
+      source.revision = revision
       this.db.prepare(`
-        INSERT INTO documents (document_id, source_id, title, chars, paragraph_count, chunk_count, section_count, source_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (document_id, source_id, title, chars, paragraph_count, chunk_count, section_count, source_json, source_text, graph_meta_json, graph_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(document_id) DO UPDATE SET
           source_id = excluded.source_id,
           title = excluded.title,
@@ -214,8 +265,23 @@ export class SqliteKnowledgeStore {
           chunk_count = excluded.chunk_count,
           section_count = excluded.section_count,
           source_json = excluded.source_json,
+          source_text = excluded.source_text,
+          graph_meta_json = excluded.graph_meta_json,
+          graph_revision = excluded.graph_revision,
           updated_at = excluded.updated_at
-      `).run(documentId, sourceId, title, source.chars, source.paragraphCount, source.chunkCount, source.sectionCount, json(source, {}), now, now)
+      `).run(documentId, sourceId, title, source.chars, source.paragraphCount, source.chunkCount, source.sectionCount, json(source, {}), sourceText, json(graphMeta, {}), revision, now, now)
+
+      // saveGraph represents a canonical revision, not an upsert-only staging
+      // append. Remove prior materialized graph rows so UI deletions cannot
+      // leave a stale second truth in SQLite. Candidate review state is kept
+      // only when the same stable candidate id still exists in the new graph.
+      const previousEntityStatuses = new Map(this.db.prepare('SELECT entity_id, status FROM entity_candidates WHERE document_id = ?').all(documentId).map((row) => [row.entity_id, row.status]))
+      const previousClaimStatuses = new Map(this.db.prepare('SELECT claim_id, status FROM claim_candidates WHERE document_id = ?').all(documentId).map((row) => [row.claim_id, row.status]))
+      this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
+      this.db.prepare('DELETE FROM graph_edges WHERE document_id = ?').run(documentId)
+      this.db.prepare('DELETE FROM graph_nodes WHERE document_id = ?').run(documentId)
+      this.db.prepare('DELETE FROM entity_candidates WHERE document_id = ?').run(documentId)
+      this.db.prepare('DELETE FROM claim_candidates WHERE document_id = ?').run(documentId)
 
       const chunkStmt = this.db.prepare(`
         INSERT INTO chunks (chunk_id, document_id, source_id, start_paragraph, end_paragraph, section_ids_json, section_titles_json, summary, status, node_ids_json, edge_count, warnings_json, payload_json, updated_at)
@@ -354,26 +420,28 @@ export class SqliteKnowledgeStore {
         if (!nodeId || !nodeText) continue
         const evidence = Array.isArray(node.evidence) ? node.evidence : []
         if (ENTITY_TYPES.has(nodeType)) {
+          const entityId = 'ent_' + stableHash(documentId + '\u001f' + nodeType + '\u001f' + nodeText)
           entityStmt.run(
-            'ent_' + stableHash(documentId + '\u001f' + nodeType + '\u001f' + nodeText),
+            entityId,
             documentId,
             nodeId,
             nodeText,
             nodeType,
-            'candidate',
+            CANDIDATE_STATUSES.has(previousEntityStatuses.get(entityId)) ? previousEntityStatuses.get(entityId) : 'candidate',
             json(evidence, []),
             now,
             now,
           )
         }
         if (CLAIM_TYPES.has(nodeType)) {
+          const claimId = 'clm_' + stableHash(documentId + '\u001f' + nodeId + '\u001f' + nodeText)
           claimStmt.run(
-            'clm_' + stableHash(documentId + '\u001f' + nodeId + '\u001f' + nodeText),
+            claimId,
             documentId,
             nodeId,
             nodeText,
             nodeType,
-            'candidate',
+            CANDIDATE_STATUSES.has(previousClaimStatuses.get(claimId)) ? previousClaimStatuses.get(claimId) : 'candidate',
             typeof node.confidence === 'number' ? node.confidence : null,
             json(evidence, []),
             now,
@@ -381,6 +449,10 @@ export class SqliteKnowledgeStore {
           )
         }
       }
+      this.db.prepare(`
+        INSERT OR REPLACE INTO graph_revisions (document_id, revision, parent_revision, kind, summary_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(documentId, revision, Math.max(0, revision - 1), text(options.kind, 'extract'), json({ nodes: nodes.length, edges: edges.length, chunks: Array.isArray(staging.chunks) ? staging.chunks.length : 0 }, {}), now)
       this.db.exec('COMMIT')
     } catch (error) {
       try { this.db.exec('ROLLBACK') } catch (e) {}
@@ -395,6 +467,7 @@ export class SqliteKnowledgeStore {
       chunks: Array.isArray(staging.chunks) ? staging.chunks.length : 0,
       entityCandidates: nodes.filter((node) => ENTITY_TYPES.has(text(node.type))).length,
       claimCandidates: nodes.filter((node) => CLAIM_TYPES.has(text(node.type))).length,
+      revision,
     }
   }
 
@@ -407,9 +480,13 @@ export class SqliteKnowledgeStore {
     const sourceId = text(checkpoint.sourceId || options.sourceId) || null
     const nextBatchIndex = int(checkpoint.nextBatchIndex, 0)
     const totalBatches = int(checkpoint.totalBatches, 0)
+    const title = text(options.title || checkpoint.title)
+    const sourceText = text(options.sourceText)
+    const errorCode = text(options.errorCode) || null
+    const errorMessage = text(options.errorMessage) || null
     this.db.prepare(`
-      INSERT INTO extraction_runs (run_id, document_id, source_id, status, next_batch_index, total_batches, checkpoint_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO extraction_runs (run_id, document_id, source_id, status, next_batch_index, total_batches, checkpoint_json, title, source_text, error_code, error_message, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         document_id = excluded.document_id,
         source_id = excluded.source_id,
@@ -417,13 +494,17 @@ export class SqliteKnowledgeStore {
         next_batch_index = excluded.next_batch_index,
         total_batches = excluded.total_batches,
         checkpoint_json = excluded.checkpoint_json,
+        title = excluded.title,
+        source_text = excluded.source_text,
+        error_code = excluded.error_code,
+        error_message = excluded.error_message,
         updated_at = excluded.updated_at
-    `).run(runId, documentId, sourceId, status, nextBatchIndex, totalBatches, json(checkpoint, {}), now, now)
+    `).run(runId, documentId, sourceId, status, nextBatchIndex, totalBatches, json(checkpoint, {}), title, sourceText, errorCode, errorMessage, now, now)
     return { runId, documentId, sourceId, status, nextBatchIndex, totalBatches }
   }
 
   loadCheckpoint(runId) {
-    const row = this.db.prepare('SELECT run_id, document_id, source_id, status, next_batch_index, total_batches, checkpoint_json, created_at, updated_at FROM extraction_runs WHERE run_id = ?').get(runId)
+    const row = this.db.prepare('SELECT * FROM extraction_runs WHERE run_id = ?').get(runId)
     if (!row) return null
     return {
       runId: row.run_id,
@@ -433,6 +514,10 @@ export class SqliteKnowledgeStore {
       nextBatchIndex: row.next_batch_index,
       totalBatches: row.total_batches,
       checkpoint: parseJson(row.checkpoint_json, {}),
+      title: row.title || '',
+      sourceText: row.source_text || '',
+      errorCode: row.error_code || null,
+      errorMessage: row.error_message || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -492,8 +577,9 @@ export class SqliteKnowledgeStore {
       edgeCount: chunk.edge_count,
       warnings: parseJson(chunk.warnings_json, []),
     }))
-    return {
-      source: parseJson(row.source_json, {
+    const meta = parseJson(row.graph_meta_json, {})
+    const source = {
+      ...parseJson(row.source_json, {
         id: row.source_id,
         documentId: row.document_id,
         title: row.title,
@@ -502,10 +588,68 @@ export class SqliteKnowledgeStore {
         chunkCount: row.chunk_count,
         sectionCount: row.section_count,
       }),
+      revision: Number.isInteger(row.graph_revision) ? row.graph_revision : 0,
+    }
+    return {
+      ...meta,
+      source,
+      sourceText: row.source_text || '',
+      revision: Number.isInteger(row.graph_revision) ? row.graph_revision : 0,
       nodes,
       edges,
       staging: { sourceId: row.source_id, documentId: row.document_id, chunkCount: chunks.length, chunks },
     }
+  }
+
+  commitViewGraph(options = {}) {
+    const documentId = text(options.documentId)
+    const incoming = options.graph && typeof options.graph === 'object' ? options.graph : null
+    if (!documentId || !incoming) throw new Error('documentId and graph are required')
+    const current = this.getDocument(documentId)
+    if (!current) {
+      const error = new Error('document not found: ' + documentId)
+      error.code = 'not_found'
+      throw error
+    }
+    const expectedRevision = Number.isInteger(options.expectedRevision) ? options.expectedRevision : current.revision
+    if (expectedRevision !== current.revision) {
+      const error = new Error('graph revision conflict: expected ' + expectedRevision + ', current ' + current.revision)
+      error.code = 'revision_conflict'
+      error.currentRevision = current.revision
+      throw error
+    }
+    const baseNodeIds = new Set(Array.isArray(options.baseNodeIds) ? options.baseNodeIds.filter((id) => typeof id === 'string' && id) : [])
+    const baseEdgeKeys = new Set(Array.isArray(options.baseEdgeKeys) ? options.baseEdgeKeys.filter((key) => typeof key === 'string' && key) : [])
+    const nodeMap = new Map((current.nodes || []).filter((node) => node && node.id).map((node) => [node.id, node]))
+    for (const id of baseNodeIds) nodeMap.delete(id)
+    for (const node of Array.isArray(incoming.nodes) ? incoming.nodes : []) {
+      if (node && typeof node.id === 'string' && node.id && typeof node.text === 'string' && node.text.trim()) nodeMap.set(node.id, node)
+    }
+    const edgeKey = (edge) => edge && typeof edge === 'object'
+      ? String(edge.fromNodeId || '') + '>' + String(edge.toNodeId || '') + ':' + String(edge.relation || '')
+      : ''
+    const edgeMap = new Map((current.edges || []).filter((edge) => edgeKey(edge)).map((edge) => [edgeKey(edge), edge]))
+    for (const key of baseEdgeKeys) edgeMap.delete(key)
+    for (const edge of Array.isArray(incoming.edges) ? incoming.edges : []) {
+      const key = edgeKey(edge)
+      if (key) edgeMap.set(key, edge)
+    }
+    const nodeIds = new Set(nodeMap.keys())
+    const edges = Array.from(edgeMap.values()).filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId))
+    const nextGraph = {
+      ...current,
+      ...incoming,
+      source: current.source,
+      staging: current.staging,
+      nodes: Array.from(nodeMap.values()),
+      edges,
+    }
+    delete nextGraph.sourceText
+    return this.saveGraph(nextGraph, {
+      sourceText: current.sourceText,
+      expectedRevision,
+      kind: text(options.kind, 'ui_patch'),
+    })
   }
 
   listCandidates(options = {}) {

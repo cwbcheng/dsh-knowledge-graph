@@ -1,0 +1,8 @@
+{
+  "name": "dsh-knowledge-graph-signing",
+  "private": true,
+  "version": "1.0.0",
+  "devDependencies": {
+    "crx3": "2.0.0"
+  }
+}
