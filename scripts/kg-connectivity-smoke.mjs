@@ -200,17 +200,20 @@ assert(crossRevisionEdge.evidence.length === 2 && crossRevisionEdge.evidence.eve
 assert(new Set(crossRevisionEdge.evidence.map((item) => item.sourceId)).size === 2, 'cross-revision edge evidence was stamped with one incorrect source version')
 assert(weaveCalls.filter((call) => call.title === 'append-connectivity').length === 1, 'append mode did not use exactly one bounded relation-weave pass')
 
-// Explicit same-paragraph inference and concept mentions are admitted through
-// deterministic evidence-backed seeds even when the optional model adds none.
+// Deterministic seeds may enter canonical state only when the source span itself
+// contains both propositions and an explicit relation cue. A nearby concept
+// mention is only a recall hint and must not be promoted from endpoint evidence.
 const seedText = ['缺少目标，因此方法会走形', '本书帮助重建学习系统'].join('\n\n')
 const seedStarted = await handlers.get('extract')({ title: 'explicit-relation-seed', text: seedText })
 const seedCompleted = await waitTask(seedStarted.taskId)
 assert(seedCompleted.status === 'succeeded' && seedCompleted.result, 'explicit relation seed extraction failed: ' + JSON.stringify(seedCompleted))
 const seedConnectivity = seedCompleted.result.generation && seedCompleted.result.generation.connectivity
-assert(seedCompleted.result.edges.length === 2, 'explicit relation seeding did not add both grounded edges: ' + JSON.stringify(seedCompleted.result.edges))
-assert(seedConnectivity && seedConnectivity.seededEdges === 2 && seedConnectivity.addedEdges === 2, 'explicit seed metadata is wrong: ' + JSON.stringify(seedConnectivity))
-assert(seedCompleted.result.edges.some((edge) => edge.fromNodeId === 's1' && edge.toNodeId === 's2' && edge.relation === 'infers'), 'same-paragraph inference seed is missing')
-assert(seedCompleted.result.edges.some((edge) => edge.fromNodeId === 's4' && edge.toNodeId === 's3' && edge.relation === 'supports'), 'explicit concept support seed is missing')
+assert(seedCompleted.result.edges.length === 1, 'deterministic relation seeding admitted a relation without relation-spanning evidence: ' + JSON.stringify(seedCompleted.result.edges))
+assert(seedConnectivity && seedConnectivity.seededEdges === 1 && seedConnectivity.addedEdges === 1, 'explicit seed metadata is wrong: ' + JSON.stringify(seedConnectivity))
+const explicitSeedEdge = seedCompleted.result.edges.find((edge) => edge.fromNodeId === 's1' && edge.toNodeId === 's2' && edge.relation === 'infers')
+assert(explicitSeedEdge, 'same-paragraph inference seed is missing')
+assert(explicitSeedEdge.evidence.length === 1 && explicitSeedEdge.evidence[0].quote.includes('因此'), 'deterministic seed did not preserve the relation-bearing source span')
+assert(!seedCompleted.result.edges.some((edge) => edge.fromNodeId === 's4' && edge.toNodeId === 's3'), 'endpoint evidence was promoted into a fact-to-concept relation')
 
 // A sparse graph whose automatic weave found nothing can be retried later
 // without regenerating or renumbering its nodes.
