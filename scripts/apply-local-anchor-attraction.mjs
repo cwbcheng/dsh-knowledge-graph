@@ -18,6 +18,7 @@ const newTail = `        // Strong local semantic relations should look local to
         const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])
         const localMoved = new Set()
         const localGap = 22
+        const localRadius = 260
         const rowPeers = (id) => {
           const p = placed.get(id)
           if (!p) return []
@@ -44,15 +45,13 @@ const newTail = `        // Strong local semantic relations should look local to
           const mover = placed.get(moverId)
           if (!anchor || !mover) continue
           const dx = Math.abs(mover.x - anchor.x)
-          if (dx <= 260) continue
-          const anchorSize = sizes.get(anchorId)
-          const moverSize = sizes.get(moverId)
-          const sideDistance = ((anchorSize ? anchorSize.w : 170) + (moverSize ? moverSize.w : 170)) / 2 + localGap
-          const sameRow = anchor.y === mover.y
+          if (dx <= localRadius) continue
           const preferredSide = mover.x < anchor.x ? -1 : 1
-          const candidates = sameRow
-            ? [anchor.x + preferredSide * sideDistance, anchor.x - preferredSide * sideDistance]
-            : [anchor.x, anchor.x + preferredSide * sideDistance, anchor.x - preferredSide * sideDistance]
+          const candidates = [anchor.x]
+          for (let offset = 24; offset <= localRadius; offset += 24) {
+            candidates.push(anchor.x + preferredSide * offset)
+            candidates.push(anchor.x - preferredSide * offset)
+          }
           const chosen = candidates.find((x) => slotFree(moverId, x))
           if (chosen == null) continue
           mover.x = chosen
@@ -90,6 +89,7 @@ const marker = `const pos = resolveLayeredOverlaps(nodes, sizes, rawPos, 18, pin
 const assertions = `const localDistance = Math.abs(pos.get('flow').x - pos.get('system').x)
 assert(localDistance <= 260, 'strong local contains relation was not attracted near its anchor: ' + localDistance)
 assert(source.includes("const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])"), 'strong local relation set is missing or widened')
+assert(source.includes('const localRadius = 260'), 'local attraction must stay bounded')
 assert(!source.includes("strongLocalRelations = new Set(['supports'"), 'supports must not become a strong local attraction relation')
 `
 if (!test.includes(marker)) throw new Error('semantic layout assertion insertion target mismatch')
