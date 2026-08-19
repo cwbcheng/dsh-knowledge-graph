@@ -475,9 +475,11 @@ export default function hostPlugin() {
         '1. 图的这部分是否真的被原文支持？用户的质疑是否成立？',
         '2. verdict 只能取：supported（图被原文支持，质疑不成立）/ contradicted（图与原文矛盾，质疑成立）/ insufficient（原文证据不足，无法支持该图内容）/ out_of_scope（问题超出本图与原文范围）。',
         '3. evidence 必须给出原文逐字摘录与段落编号；找不到证据时给空数组。',
-        '4. 如需修正图，给出 proposedFix（结构同审校引擎）；否则给 {"action":"none"}。',
-        '5. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
-        '6. JSON 结构固定为：{"verdict":"supported|contradicted|insufficient|out_of_scope","answer":"结论与解释","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"proposedFix":{"action":"none"}}',
+        '4. 如需修正图，给出 proposedFix（结构同审校引擎）；否则给 {"action":"none"}。质疑成立时优先选择最小、非破坏性的修复：如果问题是图中缺少一条关系，必须返回 add_edge，不得删除仍有原文依据的节点；只有节点本身完全不被原文支持且无法通过 update_node 或关系修复时，才允许 delete_node。',
+        '5. 关系修复只能使用这些 relation：supports、example、counter_example、defines、infers、causes。若回答指出“n1 应与 n2 建立关系边”，必须把它编码进 edgePatch（fromNodeId、toNodeId、relation、evidence），不能只写在 answer 里；方向或关系类型无法从原文确定时返回 {"action":"none"}，不要猜测或删除节点。add_edge/update_edge 的 evidence 必须直接证明这条关系。',
+        '6. supported 或 out_of_scope 时 proposedFix 必须为 {"action":"none"}；不要在质疑不成立时修改图。',
+        '7. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
+        '8. JSON 结构固定为：{"verdict":"supported|contradicted|insufficient|out_of_scope","answer":"结论与解释","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"proposedFix":{"action":"none"}}',
       ].join(NL)
 
       // Multi-batch summary consolidation: batch prompts ask for a local
@@ -526,7 +528,7 @@ export default function hostPlugin() {
         counter_example: 'counter_example', counterexample: 'counter_example', 反例: 'counter_example',
         defines: 'defines', define: 'defines', 定义: 'defines',
         infers: 'infers', infer: 'infers', implies: 'infers', 推断: 'infers',
-        causes: 'causes', cause: 'causes', 因果: 'causes', 导致: 'causes',
+        causes: 'causes', cause: 'causes', 因果: 'causes', 导致: 'causes', drives: 'causes', drive: 'causes', 驱动: 'causes',
       }
 
       // ---- structure-aware paragraph segmentation ----
@@ -3387,12 +3389,21 @@ export default function hostPlugin() {
         const verdict = ['supported', 'contradicted', 'insufficient', 'out_of_scope'].includes(obj && obj.verdict) ? obj.verdict : 'insufficient'
         const answer = typeof obj.answer === 'string' ? obj.answer.trim().slice(0, 2000) : ''
         const evidence = sanitizeEvidence(obj && obj.evidence, sourceText, totalParagraphs, true) || []
+        const warningList = Array.isArray(warnings) ? warnings : []
+        let proposedFix = sanitizeFix(obj && obj.proposedFix, graph, sourceText, totalParagraphs)
+        // A positive or out-of-scope answer must never carry a graph mutation.
+        // This also prevents a malformed model response from exposing a stale
+        // destructive fix after the verdict says that the challenge is not valid.
+        if ((verdict === 'supported' || verdict === 'out_of_scope') && proposedFix.action !== 'none') {
+          warningList.push('question_fix_dropped:verdict_' + verdict)
+          proposedFix = { action: 'none' }
+        }
         return {
           verdict,
           answer,
           evidence,
-          proposedFix: sanitizeFix(obj && obj.proposedFix, graph, sourceText, totalParagraphs),
-          warnings,
+          proposedFix,
+          warnings: warningList,
         }
       }
       async function runQuestionTask(task) {

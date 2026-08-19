@@ -3294,10 +3294,11 @@ export default function clientPlugin() {
         const qFix = questionResult && questionResult.proposedFix ? questionResult.proposedFix : null
         const qAction = qFix ? qFix.action : 'none'
         const qVerdict = questionResult ? questionResult.verdict : ''
-        const qCanDelete = (qVerdict === 'contradicted' || qVerdict === 'insufficient')
-          && questionTarget && (questionTarget.kind === 'node' || questionTarget.kind === 'edge')
-          && qAction !== 'delete_node' && qAction !== 'delete_edge'
-          && typeof onDeleteTarget === 'function'
+        // A contradicted/insufficient answer without a structured fix is not a
+        // deletion instruction. Never synthesize delete_node/delete_edge from
+        // the target kind: the answer may be pointing out a missing relation
+        // (for example, a node that should be connected to n2).
+        const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
         return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑' },
@@ -3470,13 +3471,10 @@ export default function clientPlugin() {
                       }, '采纳修复建议'),
                     )
                   : null,
-                qCanDelete
-                  ? h('div', { className: 'kg-issue-actions' },
-                      h('button', {
-                        type: 'button', className: 'kg-secondary kg-danger',
-                        onClick: () => onDeleteTarget(questionTarget),
-                      }, questionTarget.kind === 'edge' ? '删除此关系' : '删除此节点'),
-                    )
+                qNeedsManualRepair
+                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
+                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
+                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
               )
             : null,
@@ -4768,15 +4766,11 @@ export default function clientPlugin() {
         // ---- verification / questioning actions ----
         const persistGraph = (g, baseGraph) => {
           const documentId = documentIdOfGraph(g)
-          if (!documentId) return
-          try { localStorage.setItem(LS_RESULT, JSON.stringify({ title, documentId, ts: Date.now() })) } catch (e) {}
-          setHistory((prev) => {
-            const entryId = currentHistoryId || 'h-' + Date.now()
-            return appendHistory(prev, { id: entryId, title, documentId, graph: g, ts: Date.now() })
-          })
+          if (!documentId) return Promise.resolve(null)
           const baseline = baseGraph && typeof baseGraph === 'object'
             ? baseGraph
             : (resultView && resultView.graph ? resultView.graph : g)
+          const rollbackText = fullText || (resultView && resultView.sourceText) || ''
           const edgeRevisionKey = (edge) => edge && edge.fromNodeId && edge.toNodeId
             ? edge.fromNodeId + '>' + edge.toNodeId + ':' + String(edge.relation || '')
             : ''
@@ -4788,7 +4782,39 @@ export default function clientPlugin() {
             ...(g.verification && typeof g.verification === 'object' ? { verification: g.verification } : {}),
             ...(g.factCheck && typeof g.factCheck === 'object' ? { factCheck: g.factCheck } : {}),
           }
-          graphCommitQueueRef.current = graphCommitQueueRef.current.catch(() => {}).then(async () => {
+          const rememberLocalGraph = () => {
+            try { localStorage.setItem(LS_RESULT, JSON.stringify({ title, documentId, ts: Date.now() })) } catch (e) {}
+            setHistory((prev) => {
+              const entryId = currentHistoryId || 'h-' + Date.now()
+              return appendHistory(prev, { id: entryId, title, documentId, graph: g, ts: Date.now() })
+            })
+          }
+          const describeCommitError = (error) => {
+            const details = error && error.details && typeof error.details === 'object' ? error.details : error
+            const issues = details && Array.isArray(details.issues) ? details.issues : []
+            const suffix = issues.length > 0
+              ? '：' + issues.slice(0, 5).map((issue) => [issue.code, issue.title, issue.targetId].filter(Boolean).join(' / ')).join('；')
+              : ''
+            return (details && details.message ? details.message : '知识图提交失败') + suffix
+          }
+          const restoreAfterCommitFailure = (error) => {
+            const details = error && error.details && typeof error.details === 'object' ? error.details : error
+            setError({ ...(details && typeof details === 'object' ? details : {}), message: describeCommitError(error) })
+            if (details && details.code === 'revision_conflict') {
+              toastStore.show('知识图版本已变化，已恢复未提交状态，请重新载入后再编辑')
+            } else if (details && details.code === 'invariant_violation') {
+              toastStore.show('确定性验收未通过，未更新 canonical graph，已恢复未提交状态')
+            }
+            graphSemanticOperations.delete(g)
+            if (baseline && baseline !== g) {
+              setResultView(makeView(baseline, rollbackText))
+              const previousReport = baseline.verification && baseline.verification.lastReport ? baseline.verification.lastReport : null
+              const previousFactReport = baseline.factCheck && baseline.factCheck.lastReport ? baseline.factCheck.lastReport : null
+              setVerification(previousReport)
+              setFactReport(previousFactReport)
+            }
+          }
+          const queued = graphCommitQueueRef.current.catch(() => {}).then(async () => {
             const expectedRevision = graphRevisionRef.current
             const response = await host.call('graph-commit', {
               documentId,
@@ -4799,17 +4825,20 @@ export default function clientPlugin() {
               baseEdgeKeys: (Array.isArray(baseline.edges) ? baseline.edges : []).map(edgeRevisionKey).filter(Boolean),
             })
             if (response && response.error) {
-              if (response.error.code === 'revision_conflict') {
-                setError(response.error)
-                toastStore.show('知识图已被其他修改更新，请重新载入后再编辑')
-              } else {
-                setError(response.error)
-              }
-              throw new Error(response.error.message || 'graph commit failed')
+              const failure = new Error(response.error.message || 'graph commit failed')
+              failure.details = response.error
+              throw failure
             }
             if (response && Number.isInteger(response.revision)) graphRevisionRef.current = response.revision
             graphSemanticOperations.delete(g)
-          }).catch(() => {})
+            rememberLocalGraph()
+            return response
+          }).catch((error) => {
+            restoreAfterCommitFailure(error)
+            return null
+          })
+          graphCommitQueueRef.current = queued
+          return queued
         }
         const commitGraph = (g) => {
           if (!resultView) return

@@ -2996,10 +2996,11 @@
         const qFix = questionResult && questionResult.proposedFix ? questionResult.proposedFix : null
         const qAction = qFix ? qFix.action : 'none'
         const qVerdict = questionResult ? questionResult.verdict : ''
-        const qCanDelete = (qVerdict === 'contradicted' || qVerdict === 'insufficient')
-          && questionTarget && (questionTarget.kind === 'node' || questionTarget.kind === 'edge')
-          && qAction !== 'delete_node' && qAction !== 'delete_edge'
-          && typeof onDeleteTarget === 'function'
+        // A contradicted/insufficient answer without a structured fix is not a
+        // deletion instruction. Never synthesize delete_node/delete_edge from
+        // the target kind: the answer may be pointing out a missing relation
+        // (for example, a node that should be connected to n2).
+        const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
         return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑' },
@@ -3172,13 +3173,10 @@
                       }, '采纳修复建议'),
                     )
                   : null,
-                qCanDelete
-                  ? h('div', { className: 'kg-issue-actions' },
-                      h('button', {
-                        type: 'button', className: 'kg-secondary kg-danger',
-                        onClick: () => onDeleteTarget(questionTarget),
-                      }, questionTarget.kind === 'edge' ? '删除此关系' : '删除此节点'),
-                    )
+                qNeedsManualRepair
+                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
+                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
+                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
               )
             : null,

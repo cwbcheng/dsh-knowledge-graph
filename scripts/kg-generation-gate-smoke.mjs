@@ -106,6 +106,29 @@ assert(rejectedCommit && rejectedCommit.error && rejectedCommit.error.code === '
 const unchanged = await handlers.get('document-export')({ documentId })
 assert(unchanged && unchanged.graph && unchanged.graph.nodes.length === 2, 'rejected graph-commit mutated the canonical graph')
 
+// A valid evidence-backed relation repair must pass the same gate and update
+// canonical state. This covers the question-panel add_edge path.
+const repairedEdge = {
+  fromNodeId: 'n2',
+  toNodeId: 'n1',
+  relation: 'supports',
+  evidence: [{ paragraph: 1, quote: '事实节点' }],
+}
+const acceptedCommit = await handlers.get('graph-commit')({
+  documentId,
+  expectedRevision: completed.result.source && completed.result.source.revision,
+  graph: {
+    summary: completed.result.summary,
+    nodes: completed.result.nodes,
+    edges: [...completed.result.edges, repairedEdge],
+  },
+  baseNodeIds: completed.result.nodes.map((node) => node.id),
+  baseEdgeKeys: completed.result.edges.map((edge) => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation),
+})
+assert(acceptedCommit && !acceptedCommit.error && acceptedCommit.revision === (completed.result.source.revision + 1), 'valid add_edge repair was rejected by the canonical invariant gate: ' + JSON.stringify(acceptedCommit))
+const updated = await handlers.get('document-export')({ documentId })
+assert(updated && updated.graph && updated.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n1' && edge.relation === 'supports'), 'accepted add_edge repair did not update canonical graph')
+
 const qualityStarted = await handlers.get('extract')({ title: 'gate-quality', text: '孤立事实' })
 const qualityCompleted = await waitTask(qualityStarted.taskId)
 assert(qualityCompleted.status === 'succeeded', 'quality-only findings must not block generation')
