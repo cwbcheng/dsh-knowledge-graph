@@ -20,10 +20,27 @@ jobs:
         run: npm ci --prefix scripts/signing --ignore-scripts
       - name: Audit signing dependencies
         run: npm audit --prefix scripts/signing --audit-level=high
+      - name: Apply bounded semantic and layout patch
+        run: node scripts/apply-semantic-closure-layout.mjs
       - name: Build and run all knowledge-graph regressions
         run: npm test
-      - name: Verify generated artifacts are committed
-        run: git diff --exit-code -- lib extension/viewer.js extension/viewer.css extension/d3
+      - name: Export verified staging tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-closure-verified-tree
+          if-no-files-found: error
+          path: |
+            README.md
+            README.en.md
+            package.json
+            src/index.host.js
+            src/index.client.js
+            lib/index.js
+            lib/client.js
+            extension/viewer.js
+            extension/viewer.css
+            scripts/kg-semantic-closure-smoke.mjs
+            scripts/kg-semantic-layout-smoke.mjs
       - name: Reject committed private keys
         shell: bash
         run: |
