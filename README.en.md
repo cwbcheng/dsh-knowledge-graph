@@ -16,6 +16,7 @@
   - Relations: `supports` · `example` · `counter_example` · `defines` · `infers` · `causes` · `is_a` · `contains` · `driven_by` · `not_is` · `analogy` · `aims_at`.
   - **Minimal semantic contract**: one node expresses one atomic proposition; source/author theories and empirical generalizations use `claim` rather than `fact`; qualifiers such as “possible / most / usually / must / if” must be preserved; use a precise semantic relation instead of falling back to `supports` when the source makes that relation explicit.
   - **Mechanism coverage review**: after a valid first pass, a second bounded review runs only when a source block contains an explicit multi-step mechanism and intermediate knowledge appears omitted. It may add missing atomic nodes and relations incident to them, but cannot rewrite the accepted graph or add knowledge merely to improve connectivity.
+- **Relation-aware layered layout**: layered mode treats `causes/infers` as the reasoning backbone and keeps examples, analogies, counter-examples, definitions, and concept relations as nearby branches. New users default to layered layout; existing saved layout preferences are preserved.
 - **Two-way linking**:
   - Click a **graph node** → opens a **detail card** (full content + verbatim quote + locate button) and smoothly scrolls to and highlights the matching content unit;
   - Click a **source content unit** → the graph centers on and pulses the corresponding node.

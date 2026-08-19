@@ -337,10 +337,10 @@ export default function hostPlugin() {
         '1. fact 事实 —— 可直接观察、记录或核对的具体信息/元信息。作者的理论判断、经验概括、价值判断不得标 fact。',
         '2. claim 主张 —— 作者/资料直接提出但未在当前文本中作为客观事实核实的观点、经验概括、理论判断。必须保留“可能、多数、通常、必须、如果”等限定强度。',
         '3. inference 推论 —— 由已有事实/主张结合原文逻辑推出的可复用结论；不能只是换句话复述原句。',
-        '4. concept 概念 —— 稳定、可复用的术语或明确命名对象。作者临时标签、修辞表达不得仅因显眼就升级为 concept，除非文本明确把它当作持续讨论的理论对象。',
+        '4. concept 概念 —— 稳定、可复用的术语或明确命名对象。作者临时标签、修辞表达不得仅因显眼就升级为 concept，除非文本明确把它当作持续讨论的理论对象。被两个以上独立核心命题反复引用、可跨段/跨章节继续承载知识的明确命名对象，应保留独立 concept anchor；concept 名称优先使用稳定对象本身，不把“重建/优化/提高/建立 + 对象”整体实体化，除非该过程本身被正式命名。',
         '5. definition 定义 —— 对概念的精确界定。',
         '6. example 例子 —— 用于说明某个事实、主张、规则或概念的具体实例。',
-        '7. counter_example 反例 —— 边界约束、不成立的情况。',
+        '7. counter_example 反例 —— 只有当一个具体案例明确削弱、限制或否定某个一般命题时使用，并应通过 counter_example 关系指向被挑战命题。负向结果、失败情形或对照情形如果仍在帮助说明/支持原命题，仍用 example，并通过 supports/analogy 表达作用。',
         '8. rule 规则 —— 方法、步骤、操作流程或明确规范。',
         '',
         '关系必须从以下 12 类中选择：',
@@ -359,10 +359,10 @@ export default function hostPlugin() {
         '9. 节点 id 用 n1、n2、n3... 全局唯一；edges 的 fromNodeId/toNodeId 必须引用存在节点。',
         '10. 单批节点数最多 48 个；这是安全上限，不是压缩目标。不要为了少建节点而合并本应独立的命题。',
         '11. 每个 fact/claim/inference 节点的 text 必须由 quote 支撑，且不得删除或强化原文的可能性、数量范围、条件、否定和必要性。',
-        '12. 同一稳定概念或同一原子命题只建一个节点；优先保留能跨段复用的概念和机制链，但不要把多个原子命题合成“主结论大节点”。',
+        '12. 同一稳定概念或同一原子命题只建一个节点；优先保留能跨段复用的概念和机制链，但不要把多个原子命题合成“主结论大节点”。若一个稳定对象被多个核心命题共同引用，应保留其 concept anchor，而不是只让该术语散落在命题文本里。',
         '13. 关系方向必须符合语义；每条边必须有直接证明该 relation 的原文 evidence。端点分别出现、主题相似或同段出现都不能单独证明关系。',
-        '14. 与主题有关的节点可保持孤立；原文未定义的核心概念允许作为待后文展开的节点存在，禁止为了连通率强行补关系。',
-        '15. 输出前自查：节点是否原子？fact/claim 是否分对？是否保留“可能/多数/必须/如果”等强度？是否存在比 supports 更精确的关系？证据是否真的证明节点和关系？',
+        '14. 与主题有关的节点可保持孤立；原文未定义的核心概念允许作为待后文展开的节点存在，禁止为了连通率强行补关系。原文明示“并非X/不是X/不意味着X/问题不在X而在Y”等纠偏时，应保留防止错误推理所必需的限定主张；原文明示某问题留待后文回答时，可用普通 claim 记录“当前范围尚未给出具体答案”，不要虚构答案。',
+        '15. 输出前自查：节点是否原子？fact/claim 是否分对？counter_example 是否真的在反驳一个命题而不是仅描述负向/对照结果？核心稳定对象是否有 concept anchor？显式纠偏或留待后文的信息是否被遗漏？是否保留“可能/多数/必须/如果”等强度？是否存在比 supports 更精确的关系？证据是否真的证明节点和关系？',
       ].join(NL)
 
       // Trajectory extraction: the input is an AGENT EXECUTION TRACE (each
@@ -398,7 +398,7 @@ export default function hostPlugin() {
         '',
         '硬性要求：',
         '1. 只输出新正文引入的新节点；已有稳定概念/同一原子命题再次出现时不得重复建节点，可通过关系引用已有 id。',
-        '2. 一节点一命题；多个后果、步骤或判断必须拆成多个节点。fact 仅用于可直接核对的具体事实，作者理论/经验判断使用 claim。',
+        '2. 一节点一命题；多个后果、步骤或判断必须拆成多个节点。fact 仅用于可直接核对的具体事实，作者理论/经验判断使用 claim。counter_example 只用于真正削弱/限制某个命题的案例；负向对照仍用 example。稳定对象被多个核心命题复用时保留 concept anchor，并优先用对象本身而不是“重建/优化/提高 + 对象”作为 concept 名称。',
         '3. quote 必须保留会改变语义强度的“可能、多数、部分、通常、必须、如果、不是”等词；node.text 不得把可能说成确定、把部分说成全部。',
         '4. 新节点 paragraph 必须来自新正文真实 [P数字]；已有节点 id 必须来自清单，禁止编造。',
         '5. summary 输出合并后整张图的一句话总结。',
@@ -436,14 +436,14 @@ export default function hostPlugin() {
       // relations incident to those new nodes. It cannot rewrite/delete nodes
       // or optimize graph connectivity.
       const COVERAGE_SYSTEM_PROMPT = [
-        '你是「知识图机制覆盖复核器」。你会收到一个原文内容块，以及已经通过确定性验收的该块知识节点。你的唯一任务是检查：首轮抽取是否把对后续“为什么/如何”问答必要的中间机制、独立后果或高知识密度例子摘要掉了。',
+        '你是「知识图解释覆盖复核器」。你会收到一个原文内容块，以及已经通过确定性验收的该块知识节点。你的唯一任务是检查首轮图是否丢失后续解释/检索必需的信息：中间机制、独立后果、稳定概念锚点、显式防误推理限定、当前范围明确留待后文回答的信息，以及高知识密度例子。',
         '',
         '只补漏，不重做：',
         '1. 只能输出首轮图中真正缺失的新节点，以及至少一端连接这些新节点的必要关系；禁止改写、删除、合并已有节点，禁止只补已有节点之间的关系。',
-        '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。',
+        '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。若一个明确命名的稳定对象被多个核心命题反复引用却没有独立 concept anchor，也可补回该对象；concept 名称使用稳定对象本身。',
         '3. 一节点一命题。不要把多个步骤再次压成一个总结节点；不要为追求完整而把每句话都建成节点。',
-        '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。',
-        '5. 所有新节点和关系必须由当前编号原文直接支持。quote/evidence 必须逐字来自原文；保留“可能、多数、通常、必须、如果、不是”等限定。',
+        '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。counter_example 只用于真正削弱/限制某个命题的案例；负向结果或对照情形若仍在支持原命题，不得标为 counter_example。',
+        '5. 所有新节点和关系必须由当前编号原文直接支持。quote/evidence 必须逐字来自原文；保留“可能、多数、通常、必须、如果、不是”等限定。若原文明示“并非X/不是X/不意味着X/问题不在X而在Y”，检查防误推理所需的X侧限定是否漏掉；若原文明示问题将在后文回答，可补一条普通 claim 记录“当前范围尚未给出具体答案”，不得猜答案或新增 question/unresolved 类型。',
         '6. 不要因为节点孤立、图不够漂亮或边太少而补知识。原文没有缺口时返回空 nodes/edges。',
         '7. 最多补 12 个新节点。type/relation 与主抽取器完全相同。',
         '8. 只输出合法 JSON：{"nodes":[{"id":"m1","type":"claim","text":"缺失的原子命题","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"m1","toNodeId":"n3","relation":"causes","evidence":[{"paragraph":2,"quote":"直接证明关系的原文"}]}]}。无缺口时输出 {"nodes":[],"edges":[]}。',
@@ -452,24 +452,38 @@ export default function hostPlugin() {
       function mechanismCoverageNeededHost(batch, graph) {
         const units = batch && Array.isArray(batch.units) ? batch.units : []
         if (units.length === 0) return false
-        const cue = /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越)/g
+        const mechanismCue = /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越)/g
+        const boundaryCue = /(?:并非|并不是|不是说|并不意味着|不意味着|问题不在|而在|而是)/
+        const forwardCue = /(?:后文|下文|接下来|留待后文|本书将|将在后文|后面会|随后会|将会回答|将会解释)/
         const nodesByParagraph = new Map()
         for (const node of graph && Array.isArray(graph.nodes) ? graph.nodes : []) {
           if (!node || !Number.isInteger(node.paragraph)) continue
-          nodesByParagraph.set(node.paragraph, (nodesByParagraph.get(node.paragraph) || 0) + 1)
+          const list = nodesByParagraph.get(node.paragraph) || []
+          list.push(node)
+          nodesByParagraph.set(node.paragraph, list)
         }
         let mechanismUnits = 0
         let suspiciousUnits = 0
+        let explanatoryBoundaryGap = false
         for (const unit of units) {
           if (!unit || !Number.isInteger(unit.num)) continue
           const text = String(unit.text || '')
-          const cues = text.match(cue) || []
-          if (cues.length === 0) continue
-          mechanismUnits += 1
-          const represented = nodesByParagraph.get(unit.num) || 0
-          if (represented === 0 || (cues.length >= 2 && represented <= 1)) suspiciousUnits += 1
+          const paragraphNodes = nodesByParagraph.get(unit.num) || []
+          const cues = text.match(mechanismCue) || []
+          if (cues.length > 0) {
+            mechanismUnits += 1
+            if (paragraphNodes.length === 0 || (cues.length >= 2 && paragraphNodes.length <= 1)) suspiciousUnits += 1
+          }
+          if (boundaryCue.test(text)) {
+            const covered = paragraphNodes.some((node) => boundaryCue.test(String(node.quote || '') + ' ' + String(node.text || '')))
+            if (!covered) explanatoryBoundaryGap = true
+          }
+          if (forwardCue.test(text)) {
+            const covered = paragraphNodes.some((node) => forwardCue.test(String(node.quote || '') + ' ' + String(node.text || '')))
+            if (!covered) explanatoryBoundaryGap = true
+          }
         }
-        return suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(cue) || []).length >= 2)))
+        return explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
       }
 
       function buildCoverageUserTextHost(title, batch, accepted, existingDigest) {
@@ -561,7 +575,7 @@ export default function hostPlugin() {
         '2. 禁止仅因关键词相似、主题相近、同段出现或两个端点分别有证据就连边。',
         '3. 每条边必须给 evidence；quote 必须逐字来自原文，并直接证明该 relation。跨段关系列出共同证明关系所需的全部摘录。',
         '4. 优先使用精确关系：is_a 下位→上位；contains 整体→组成；driven_by 手段/行为→目标；not_is A→B；analogy 类比案例→被说明原则；aims_at 主体/方案/作品→目标。只有确实只是论证支持时才用 supports。',
-        '5. 其它方向：例子/反例→被说明项，定义→被定义项，事实/主张→推论，因→果。example/counter_example/defines 的源节点类型仍应分别为 example/counter_example/definition。',
+        '5. 其它方向：例子→被说明项，定义→被定义项，事实/主张→推论，因→果。counter_example 必须由真正反驳/限制一般命题的案例指向被挑战命题；仅仅是负向结果或对照情形时使用 example + supports/analogy。example/counter_example/defines 的源节点类型仍应分别为 example/counter_example/definition。',
         '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。',
         '7. 原文明示“属于/是一种/包含/由…驱动/不是/类比/旨在/导致/因此/例子/定义”等关系时，应选择对应的最精确 relation。',
         '8. 每次最多补充 24 条高置信关系；宁缺毋滥。',
@@ -578,7 +592,7 @@ export default function hostPlugin() {
         '',
         '节点类型：fact 事实 / claim 主张 / inference 推论 / concept 概念 / definition 定义 / example 例子 / counter_example 反例 / rule 规则',
         '关系类型：supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
-        '审校时重点检查：作者主张是否被误标 fact；节点是否包含多个独立命题；是否丢失“可能/多数/部分/通常/必须/如果/不是”等语义限定；是否把可用精确关系退化成 supports。',
+        '审校时重点检查：作者主张是否被误标 fact；节点是否包含多个独立命题；counter_example 是否真正削弱/限制了一个明确命题；稳定核心对象是否缺少 concept anchor 或被“重建/优化/提高 + 对象”错误实体化；是否遗漏显式纠偏/防误推理限定或“留待后文回答”的范围信息；是否丢失“可能/多数/部分/通常/必须/如果/不是”等语义限定；是否把可用精确关系退化成 supports。',
         '',
         '检查维度：',
         '1. grounding 事实性：节点 text 是否忠于原文 quote 所在段落？是否夸大、曲解或超出原文？quote 是否真能在对应段落找到？',
@@ -586,7 +600,7 @@ export default function hostPlugin() {
         '3. relation 关系：边是否存在且方向正确？example/counter_example 的源应是例子/反例，defines 的源应是定义；infers 的目标应是推论。',
         '4. duplicate 重复：不同 id 的节点是否在说同一件事，应当合并？',
         '5. contradiction 矛盾：图内两个节点是否互相冲突？',
-        '6. completeness 遗漏：原文中重要的结论、定义、规则或边界条件是否漏拆？',
+        '6. completeness 遗漏：原文中重要的结论、定义、规则、稳定概念锚点、显式纠偏/防误推理限定或明确留待后文回答的信息是否漏拆？',
         '7. summary 总结：summary 是否忠于全文、不夸大？',
         '',
         '硬性要求：',
@@ -1665,6 +1679,16 @@ export default function hostPlugin() {
             if (!edge || !nodeById.has(edge.fromNodeId) || !nodeById.has(edge.toNodeId)) continue
             degree.set(edge.fromNodeId, (degree.get(edge.fromNodeId) || 0) + 1)
             degree.set(edge.toNodeId, (degree.get(edge.toNodeId) || 0) + 1)
+          }
+          for (const node of nodes) {
+            if (!node || !node.id || node.type !== 'counter_example') continue
+            const hasCounterTarget = edges.some((edge) => edge && edge.fromNodeId === node.id && edge.relation === 'counter_example')
+            if (!hasCounterTarget) {
+              add('counter_example_without_target', false, 'warning', 'type', 'node', node.id,
+                '反例节点没有明确的被挑战命题',
+                'counter_example 的逻辑角色是削弱/限制一个一般命题；如果该节点只是负向结果或对照情形，应改用 example，并用 supports/analogy 表达其说明作用。',
+                [], { action: 'none' })
+            }
           }
           for (const node of nodes) {
             if (node && node.id && !degree.has(node.id)) {
