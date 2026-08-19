@@ -2097,6 +2097,15 @@ export default function clientPlugin() {
         const reasoningRelations = new Set(['causes', 'infers'])
         const satelliteRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
         const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])
+        // One shared view-only set drives both local rank adjacency and the
+        // later bounded x-attraction pass. It is not graph-schema authority.
+        const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])
+        const reasoningRankIds = new Set()
+        for (const edge of edges) {
+          if (!edge || !reasoningRelations.has(edge.relation)) continue
+          reasoningRankIds.add(edge.fromNodeId)
+          reasoningRankIds.add(edge.toNodeId)
+        }
         // View-only reasoning lanes: a real multi-step causes/infers path may
         // align vertically, but lane identity never enters the canonical graph.
         const backbonePaths = []
@@ -2225,6 +2234,32 @@ export default function clientPlugin() {
           }
           for (const [id, rank] of local) level.set(id, rank)
         }
+
+        // Strong local relations are also a soft rank constraint. Reasoning
+        // nodes never move. A subordinate endpoint with exactly one local
+        // anchor may move only when the pair is more than one rank apart; the
+        // new rank is anchor+1. Ambiguous multi-anchor nodes stay untouched.
+        const localAnchors = new Map()
+        for (const edge of edges) {
+          if (!edge || !strongLocalRelations.has(edge.relation)) continue
+          let anchorId = edge.toNodeId
+          let moverId = edge.fromNodeId
+          if (edge.relation === 'contains') { anchorId = edge.fromNodeId; moverId = edge.toNodeId }
+          if (!level.has(anchorId) || !level.has(moverId)) continue
+          if (!localAnchors.has(moverId)) localAnchors.set(moverId, new Set())
+          localAnchors.get(moverId).add(anchorId)
+        }
+        const baseLevel = new Map(level)
+        for (const [moverId, anchors] of localAnchors) {
+          if (anchors.size !== 1 || reasoningRankIds.has(moverId)) continue
+          const anchorId = anchors.values().next().value
+          const anchorRank = baseLevel.get(anchorId)
+          const moverRank = baseLevel.get(moverId)
+          if (!Number.isInteger(anchorRank) || !Number.isInteger(moverRank)) continue
+          if (Math.abs(moverRank - anchorRank) <= 1) continue
+          level.set(moverId, anchorRank + 1)
+        }
+
         const groups = new Map()
         for (const node of nodes) {
           const l = level.get(node.id) == null ? 1 : level.get(node.id)
@@ -2445,7 +2480,6 @@ export default function clientPlugin() {
         // view-only: it preserves y/rank and never changes graph semantics.
         // causes/infers are handled by reasoning lanes; supports/driven_by/
         // aims_at stay free to span larger conceptual distances.
-        const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])
         const localMoved = new Set()
         const localGap = 22
         const localRadius = 260

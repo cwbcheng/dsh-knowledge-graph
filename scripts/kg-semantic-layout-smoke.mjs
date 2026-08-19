@@ -37,6 +37,8 @@ const edges = [
   { fromNodeId: 'd', toNodeId: 'e', relation: 'causes' },
   { fromNodeId: 'x', toNodeId: 'c', relation: 'analogy' },
   { fromNodeId: 'p', toNodeId: 'q', relation: 'supports' },
+  { fromNodeId: 'c', toNodeId: 'system', relation: 'supports' },
+  { fromNodeId: 'e', toNodeId: 'flow', relation: 'supports' },
   { fromNodeId: 'system', toNodeId: 'flow', relation: 'contains' },
   { fromNodeId: 'far', toNodeId: 'system', relation: 'supports' },
 ]
@@ -46,8 +48,13 @@ const rawPos = layoutLayered(nodes, edges, sizes, pinnedX)
 const pos = resolveLayeredOverlaps(nodes, sizes, rawPos, 18, pinnedX)
 const localDistance = Math.abs(pos.get('flow').x - pos.get('system').x)
 assert(localDistance <= 260, 'strong local contains relation was not attracted near its anchor: ' + localDistance)
+const localRankDistance = pos.get('flow').y - pos.get('system').y
+assert(localRankDistance > 0 && localRankDistance <= values[names.indexOf('LAYER_Y_GAP')] + 0.1, 'strong local contains relation was not made rank-adjacent: ' + localRankDistance)
 assert(source.includes("const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])"), 'strong local relation set is missing or widened')
 assert(source.includes('const localRadius = 260'), 'local attraction must stay bounded')
+assert((source.match(/const strongLocalRelations = new Set/g) || []).length === 1, 'strong local relation set must have one view authority')
+assert(source.includes('if (anchors.size !== 1 || reasoningRankIds.has(moverId)) continue'), 'ambiguous/local-reasoning rank guard is missing')
+assert(source.includes('level.set(moverId, anchorRank + 1)'), 'local rank adjacency projection is missing')
 assert(!source.includes("strongLocalRelations = new Set(['supports'"), 'supports must not become a strong local attraction relation')
 for (const [from, to] of [['a','b'],['b','c'],['c','d'],['d','e']]) {
   assert(pos.get(from).y < pos.get(to).y, 'reasoning chain is not monotonic: ' + from + ' -> ' + to + ' / ' + JSON.stringify({ from: pos.get(from), to: pos.get(to) }))
