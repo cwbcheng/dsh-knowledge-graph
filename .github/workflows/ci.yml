@@ -53,12 +53,24 @@ jobs:
               raise SystemExit('semantic layout smoke id target mismatch')
           p.write_text(s.replace(old, new))
 
-          for name in ('README.md', 'README.en.md'):
+          docs = {
+            'README.md': (
+              '- **机制覆盖复核**：首轮抽取通过后，仅当内容块存在明显多步机制且中间步骤疑似漏拆时，执行一次受限复核；它只能补缺失原子节点及其必要关系，不能重写已有图，也不会为了连通率补知识。',
+              '- **解释覆盖复核**：首轮抽取通过后，仅在多步机制疑似欠覆盖，或原文明示纠偏/防误推理限定、留待后文回答的信息却未进入图时，执行一次受限复核；它也可恢复被多个核心命题反复引用的稳定概念锚点。复核只能补缺失节点及其必要关系，不能重写已有图，也不会为了连通率补知识。'
+            ),
+            'README.en.md': (
+              '- **Mechanism coverage review**: after the first extraction passes deterministic admission, a bounded second look runs only when an explicit multi-step mechanism appears underrepresented. It may add missing atomic nodes plus necessary incident relations, but cannot rewrite the accepted graph or add knowledge merely to improve connectivity.',
+              '- **Explanatory coverage review**: after the first extraction passes deterministic admission, a bounded second look runs only when a multi-step mechanism appears underrepresented or the source explicitly states a correction / anti-misinference boundary / answer deferred to later text that the graph omitted. It may also recover a stable concept anchor reused by multiple core propositions. The review may only add missing nodes plus necessary incident relations; it cannot rewrite the accepted graph or add knowledge merely to improve connectivity.'
+            ),
+          }
+          for name, (old, new) in docs.items():
               p = Path(name)
               s = p.read_text()
-              if '\\n- **' not in s:
-                  raise SystemExit(name + ': expected escaped newline not found')
-              p.write_text(s.replace('\\n- **', '\n- **'))
+              if '\\n- **' in s:
+                  s = s.replace('\\n- **', '\n- **')
+              if old not in s:
+                  raise SystemExit(name + ': explanatory coverage doc target mismatch')
+              p.write_text(s.replace(old, new))
           PY
       - name: Build and run all knowledge-graph regressions
         run: npm test
@@ -72,33 +84,16 @@ jobs:
             echo 'Private-key material must never be committed.' >&2
             exit 1
           fi
-      - name: Export verified staging tree
-        uses: actions/upload-artifact@v4
-        with:
-          name: semantic-closure-verified-tree
-          if-no-files-found: error
-          path: |
-            README.md
-            README.en.md
-            package.json
-            src/index.host.js
-            src/index.client.js
-            lib/index.js
-            lib/client.js
-            extension/viewer.js
-            extension/viewer.css
-            scripts/kg-semantic-closure-smoke.mjs
-            scripts/kg-semantic-layout-smoke.mjs
-      - name: Publish clean verified branch
+      - name: Publish final clean branch
         shell: bash
         run: |
           set -euo pipefail
-          CLEAN_BRANCH=codex/semantic-closure-relation-layout-clean
+          CLEAN_BRANCH=codex/semantic-closure-relation-layout-final
           if git ls-remote --exit-code --heads origin "$CLEAN_BRANCH" >/dev/null 2>&1; then
             echo "Clean branch already exists: $CLEAN_BRANCH" >&2
             exit 1
           fi
-          tar -czf /tmp/semantic-closure-verified.tgz \
+          tar -czf /tmp/semantic-closure-final.tgz \
             README.md README.en.md package.json \
             src/index.host.js src/index.client.js \
             lib/index.js lib/client.js \
@@ -108,7 +103,7 @@ jobs:
           git reset --hard
           git clean -fd
           git switch -c "$CLEAN_BRANCH" origin/main
-          tar -xzf /tmp/semantic-closure-verified.tgz
+          tar -xzf /tmp/semantic-closure-final.tgz
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md README.en.md package.json \
