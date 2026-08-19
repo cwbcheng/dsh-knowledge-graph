@@ -33,6 +33,16 @@ jobs:
           p.write_text(s.replace(old, new))
           PY
           node scripts/apply-semantic-closure-layout.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/kg-semantic-closure-smoke.mjs')
+          s = p.read_text()
+          old = "issue.code === 'counter_example_without_target'"
+          new = "issue.invariantCode === 'counter_example_without_target'"
+          if s.count(old) != 1:
+              raise SystemExit('semantic closure public issue assertion target mismatch')
+          p.write_text(s.replace(old, new))
+          PY
       - name: Build and run all knowledge-graph regressions
         run: npm test
       - name: Export verified staging tree
