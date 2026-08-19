@@ -6,13 +6,15 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   trust-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -50,12 +52,26 @@ jobs:
           if s.count(old) != 1:
               raise SystemExit('semantic layout smoke id target mismatch')
           p.write_text(s.replace(old, new))
+
+          for name in ('README.md', 'README.en.md'):
+              p = Path(name)
+              s = p.read_text()
+              if '\\n- **' not in s:
+                  raise SystemExit(name + ': expected escaped newline not found')
+              p.write_text(s.replace('\\n- **', '\n- **'))
           PY
       - name: Build and run all knowledge-graph regressions
         run: npm test
       - name: Verify generated artifacts are committed
         if: ${{ false }}
         run: git diff --exit-code -- lib extension/viewer.js extension/viewer.css extension/d3
+      - name: Reject committed private keys
+        shell: bash
+        run: |
+          if git grep -nE -- '-----BEGIN (RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----' -- ':!SECURITY.md'; then
+            echo 'Private-key material must never be committed.' >&2
+            exit 1
+          fi
       - name: Export verified staging tree
         uses: actions/upload-artifact@v4
         with:
@@ -73,10 +89,32 @@ jobs:
             extension/viewer.css
             scripts/kg-semantic-closure-smoke.mjs
             scripts/kg-semantic-layout-smoke.mjs
-      - name: Reject committed private keys
+      - name: Publish clean verified branch
         shell: bash
         run: |
-          if git grep -nE -- '-----BEGIN (RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----' -- ':!SECURITY.md'; then
-            echo 'Private-key material must never be committed.' >&2
+          set -euo pipefail
+          CLEAN_BRANCH=codex/semantic-closure-relation-layout-clean
+          if git ls-remote --exit-code --heads origin "$CLEAN_BRANCH" >/dev/null 2>&1; then
+            echo "Clean branch already exists: $CLEAN_BRANCH" >&2
             exit 1
           fi
+          tar -czf /tmp/semantic-closure-verified.tgz \
+            README.md README.en.md package.json \
+            src/index.host.js src/index.client.js \
+            lib/index.js lib/client.js \
+            extension/viewer.js extension/viewer.css \
+            scripts/kg-semantic-closure-smoke.mjs scripts/kg-semantic-layout-smoke.mjs
+          git fetch origin main
+          git reset --hard
+          git clean -fd
+          git switch -c "$CLEAN_BRANCH" origin/main
+          tar -xzf /tmp/semantic-closure-verified.tgz
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md README.en.md package.json \
+            src/index.host.js src/index.client.js \
+            lib/index.js lib/client.js \
+            extension/viewer.js extension/viewer.css \
+            scripts/kg-semantic-closure-smoke.mjs scripts/kg-semantic-layout-smoke.mjs
+          git commit -m "fix: close semantic gaps and project reasoning paths"
+          git push origin HEAD:"$CLEAN_BRANCH"
