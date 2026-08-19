@@ -36,7 +36,11 @@ const pos = layoutLayered(nodes, edges, sizes)
 for (const [from, to] of [['a','b'],['b','c'],['c','d'],['d','e']]) {
   assert(pos.get(from).y < pos.get(to).y, 'reasoning chain is not monotonic: ' + from + ' -> ' + to + ' / ' + JSON.stringify({ from: pos.get(from), to: pos.get(to) }))
 }
+const chainX = ['a','b','c','d','e'].map((id) => pos.get(id).x)
+assert(Math.max(...chainX) - Math.min(...chainX) < 1, 'reasoning backbone did not stay in one vertical lane: ' + JSON.stringify(chainX))
+const satelliteDistance = Math.abs(pos.get('x').x - pos.get('c').x)
 assert(pos.get('x').y < pos.get('c').y, 'analogy satellite was not placed as a branch near its target')
+assert(satelliteDistance >= 120 && satelliteDistance <= 280, 'analogy satellite is not a nearby side branch: ' + satelliteDistance)
 assert(source.includes("const reasoningRelations = new Set(['causes', 'infers'])"), 'relation-aware layered backbone is missing')
 assert(source.includes("return 'layered'"), 'new sessions do not default to the semantic layered projection')
 console.log(JSON.stringify({ ok: true, chain: ['a','b','c','d','e'].map((id) => ({ id, ...pos.get(id) })), satellite: pos.get('x') }))
