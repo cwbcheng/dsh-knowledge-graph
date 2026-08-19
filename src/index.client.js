@@ -2021,6 +2021,8 @@ export default function clientPlugin() {
           if (deg.has(e.fromNodeId)) deg.set(e.fromNodeId, deg.get(e.fromNodeId) + 1)
           if (deg.has(e.toNodeId)) deg.set(e.toNodeId, deg.get(e.toNodeId) + 1)
         }
+        let hub = nodes[0]
+        for (const node of nodes) if (deg.get(node.id) > deg.get(hub.id)) hub = node
         const adj = new Map()
         for (const node of nodes) adj.set(node.id, [])
         for (const e of edges) {
@@ -2028,106 +2030,13 @@ export default function clientPlugin() {
           const tb = adj.get(e.toNodeId)
           if (fa && tb) { fa.push(e.toNodeId); tb.push(e.fromNodeId) }
         }
-        // Relation-aware ranking. A causal/inference chain is the visual
-        // backbone; examples/analogies/definitions become nearby branches.
-        // Components without such a chain keep the old deterministic BFS
-        // behaviour, so this is a projection change rather than a graph-model
-        // change.
-        const reasoningRelations = new Set(['causes', 'infers'])
-        const satelliteRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
-        const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])
-        const level = new Map()
-        const componentSeen = new Set()
-        for (const start of nodes) {
-          if (componentSeen.has(start.id)) continue
-          const component = []
-          const queue = [start.id]
-          componentSeen.add(start.id)
-          while (queue.length > 0) {
-            const id = queue.shift()
-            component.push(id)
-            for (const nb of adj.get(id) || []) {
-              if (componentSeen.has(nb)) continue
-              componentSeen.add(nb)
-              queue.push(nb)
-            }
+        const level = new Map([[hub.id, 0]])
+        const queue = [hub.id]
+        while (queue.length > 0) {
+          const id = queue.shift()
+          for (const nb of adj.get(id)) {
+            if (!level.has(nb)) { level.set(nb, level.get(id) + 1); queue.push(nb) }
           }
-          const componentSet = new Set(component)
-          const componentEdges = edges.filter((edge) => edge && componentSet.has(edge.fromNodeId) && componentSet.has(edge.toNodeId))
-          const reasoningEdges = componentEdges.filter((edge) => reasoningRelations.has(edge.relation))
-          const local = new Map()
-          if (reasoningEdges.length >= 2) {
-            const reasonIds = new Set()
-            const indegree = new Map()
-            const outgoing = new Map()
-            for (const edge of reasoningEdges) {
-              reasonIds.add(edge.fromNodeId); reasonIds.add(edge.toNodeId)
-            }
-            for (const id of reasonIds) { indegree.set(id, 0); outgoing.set(id, []) }
-            for (const edge of reasoningEdges) {
-              indegree.set(edge.toNodeId, indegree.get(edge.toNodeId) + 1)
-              outgoing.get(edge.fromNodeId).push(edge.toNodeId)
-            }
-            const topo = component.filter((id) => reasonIds.has(id) && indegree.get(id) === 0)
-            for (const id of topo) local.set(id, 0)
-            let processed = 0
-            while (topo.length > 0) {
-              const id = topo.shift()
-              processed += 1
-              const base = local.get(id) || 0
-              for (const to of outgoing.get(id) || []) {
-                local.set(to, Math.max(local.get(to) || 0, base + 1))
-                indegree.set(to, indegree.get(to) - 1)
-                if (indegree.get(to) === 0) topo.push(to)
-              }
-            }
-            if (processed !== reasonIds.size) local.clear()
-          }
-          if (local.size === 0) {
-            let hub = nodes.find((node) => node.id === component[0])
-            for (const id of component) {
-              const node = nodes.find((candidate) => candidate.id === id)
-              if (node && deg.get(node.id) > deg.get(hub.id)) hub = node
-            }
-            const bfs = [hub.id]
-            local.set(hub.id, 0)
-            while (bfs.length > 0) {
-              const id = bfs.shift()
-              for (const nb of adj.get(id) || []) {
-                if (!componentSet.has(nb) || local.has(nb)) continue
-                local.set(nb, local.get(id) + 1)
-                bfs.push(nb)
-              }
-            }
-          } else {
-            for (let pass = 0; pass < component.length; pass++) {
-              let changed = false
-              for (const edge of componentEdges) {
-                const fromLevel = local.get(edge.fromNodeId)
-                const toLevel = local.get(edge.toNodeId)
-                if (fromLevel == null && toLevel != null) {
-                  local.set(edge.fromNodeId, satelliteRelations.has(edge.relation) || directionalRelations.has(edge.relation) ? Math.max(0, toLevel - 1) : toLevel + 1)
-                  changed = true
-                } else if (fromLevel != null && toLevel == null) {
-                  local.set(edge.toNodeId, fromLevel + 1)
-                  changed = true
-                }
-              }
-              if (!changed) break
-            }
-            for (let pass = 0; pass < component.length; pass++) {
-              let changed = false
-              for (const id of component) {
-                if (local.has(id)) continue
-                const ranked = (adj.get(id) || []).find((nb) => local.has(nb))
-                if (ranked) { local.set(id, local.get(ranked) + 1); changed = true }
-              }
-              if (!changed) break
-            }
-            const tail = local.size > 0 ? Math.max(...local.values()) + 1 : 1
-            for (const id of component) if (!local.has(id)) local.set(id, tail)
-          }
-          for (const [id, rank] of local) level.set(id, rank)
         }
         const groups = new Map()
         for (const node of nodes) {
