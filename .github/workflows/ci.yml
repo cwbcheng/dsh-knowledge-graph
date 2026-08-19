@@ -55,22 +55,23 @@ jobs:
 
           docs = {
             'README.md': (
-              '- **机制覆盖复核**：首轮抽取通过后，仅当内容块存在明显多步机制且中间步骤疑似漏拆时，执行一次受限复核；它只能补缺失原子节点及其必要关系，不能重写已有图，也不会为了连通率补知识。',
-              '- **解释覆盖复核**：首轮抽取通过后，仅在多步机制疑似欠覆盖，或原文明示纠偏/防误推理限定、留待后文回答的信息却未进入图时，执行一次受限复核；它也可恢复被多个核心命题反复引用的稳定概念锚点。复核只能补缺失节点及其必要关系，不能重写已有图，也不会为了连通率补知识。'
+              '  - **机制覆盖复核**：',
+              '  - **解释覆盖复核**：首轮抽取通过后，仅在多步机制疑似欠覆盖，或原文明示纠偏/防误推理限定、留待后文回答的信息却未进入图时，执行一次受限复核；它也可恢复被多个核心命题反复引用的稳定概念锚点。复核只能补缺失节点及其必要关系，不能重写已有图，也不会为了连通率补知识。'
             ),
             'README.en.md': (
-              '- **Mechanism coverage review**: after the first extraction passes deterministic admission, a bounded second look runs only when an explicit multi-step mechanism appears underrepresented. It may add missing atomic nodes plus necessary incident relations, but cannot rewrite the accepted graph or add knowledge merely to improve connectivity.',
-              '- **Explanatory coverage review**: after the first extraction passes deterministic admission, a bounded second look runs only when a multi-step mechanism appears underrepresented or the source explicitly states a correction / anti-misinference boundary / answer deferred to later text that the graph omitted. It may also recover a stable concept anchor reused by multiple core propositions. The review may only add missing nodes plus necessary incident relations; it cannot rewrite the accepted graph or add knowledge merely to improve connectivity.'
+              '  - **Mechanism coverage review**:',
+              '  - **Explanatory coverage review**: after the first extraction passes deterministic admission, a bounded second look runs only when a multi-step mechanism appears underrepresented or the source explicitly states a correction / anti-misinference boundary / answer deferred to later text that the graph omitted. It may also recover a stable concept anchor reused by multiple core propositions. The review may only add missing nodes plus necessary incident relations; it cannot rewrite the accepted graph or add knowledge merely to improve connectivity.'
             ),
           }
-          for name, (old, new) in docs.items():
+          for name, (prefix, replacement) in docs.items():
               p = Path(name)
-              s = p.read_text()
-              if '\\n- **' in s:
-                  s = s.replace('\\n- **', '\n- **')
-              if old not in s:
-                  raise SystemExit(name + ': explanatory coverage doc target mismatch')
-              p.write_text(s.replace(old, new))
+              s = p.read_text().replace('\\n- **', '\n- **')
+              lines = s.splitlines()
+              hits = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+              if len(hits) != 1:
+                  raise SystemExit(name + ': explanatory coverage bullet count=' + str(len(hits)))
+              lines[hits[0]] = replacement
+              p.write_text('\n'.join(lines) + '\n')
           PY
       - name: Build and run all knowledge-graph regressions
         run: npm test
