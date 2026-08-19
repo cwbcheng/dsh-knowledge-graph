@@ -1,0 +1,122 @@
+[
+  {
+    "id": "why-review-relearning",
+    "question": "为什么复习会变成重学？",
+    "category": "answerability",
+    "kind": "path",
+    "from": { "all": ["无法", "完成度", "继续学习"] },
+    "to": { "all": ["复习", "重新学习"] },
+    "relations": ["causes", "infers", "supports"],
+    "maxHops": 3
+  },
+  {
+    "id": "why-learning-rituals",
+    "question": "为什么学习者会依赖读几遍、抄几遍来判断结束？",
+    "category": "answerability",
+    "kind": "path",
+    "from": { "all": ["无法判断", "完成学习"] },
+    "to": { "any": ["仪式", "阅读、抄写、画图"] },
+    "relations": ["causes", "infers", "supports"],
+    "maxHops": 3
+  },
+  {
+    "id": "feeling-understood-not-goal",
+    "question": "‘感觉懂了’是不是明确的行为目标？",
+    "category": "answerability",
+    "kind": "node",
+    "selector": { "all": ["感觉懂了", "不是", "行为目标"] }
+  },
+  {
+    "id": "methods-not-the-problem",
+    "question": "作者是否认为学习方法本身就是问题？",
+    "category": "forbidden-inference",
+    "kind": "node",
+    "selector": { "any": ["手段本身并非有问题", "方法本身并非有问题", "并非这些手段有问题"] }
+  },
+  {
+    "id": "missing-goal-distorts-method",
+    "question": "为什么学习方法会执行走形？",
+    "category": "answerability",
+    "kind": "path",
+    "from": { "all": ["缺少", "可验证", "目标"] },
+    "to": { "any": ["执行成低效", "执行走形", "无法完成"] },
+    "relations": ["causes", "infers", "supports"],
+    "maxHops": 3
+  },
+  {
+    "id": "target-still-undefined",
+    "question": "序言是否已经给出真正学习目标的具体内容？",
+    "category": "unknown-calibration",
+    "kind": "unknown",
+    "guard": { "any": ["尚未给出", "留待后文", "后文展开", "没有给出具体"] },
+    "positive": { "type": "definition", "all": ["可验证", "行为目标"] }
+  },
+  {
+    "id": "target-exact-content",
+    "question": "学习真正应该瞄准的可验证行为目标具体是什么？",
+    "category": "unknown-calibration",
+    "kind": "unknown",
+    "guard": { "any": ["尚未给出", "留待后文", "后文展开", "没有给出具体"] },
+    "positive": { "type": "definition", "all": ["可验证", "行为目标"] }
+  },
+  {
+    "id": "muscle-example-is-analogy",
+    "question": "增肌案例在这里起什么作用？",
+    "category": "faithfulness",
+    "kind": "relation",
+    "from": { "any": ["肌纤维微损伤", "增肌"] },
+    "to": { "any": ["目标", "手段", "驱动"] },
+    "relations": ["analogy"]
+  },
+  {
+    "id": "weight-loss-not-counterexample",
+    "question": "‘运动可能被执行成减肥’是不是理论反例？",
+    "category": "forbidden-inference",
+    "kind": "forbidden-node",
+    "selector": { "type": "counter_example", "all": ["减肥"] }
+  },
+  {
+    "id": "function-case-connects-mechanism",
+    "question": "函数定义学习案例说明了什么？",
+    "category": "faithfulness",
+    "kind": "relation",
+    "from": { "any": ["面对函数定义", "函数定义时"] },
+    "to": { "any": ["感觉懂了", "学习方式", "记住讲解"] },
+    "relations": ["example", "analogy", "supports"]
+  },
+  {
+    "id": "book-direction",
+    "question": "本书的解决方向是什么？",
+    "category": "answerability",
+    "kind": "node",
+    "selector": { "all": ["本书", "重建学习系统"] }
+  },
+  {
+    "id": "learning-system-anchor",
+    "question": "图中是否保留了稳定对象‘学习系统’？",
+    "category": "concept-anchor",
+    "kind": "node",
+    "selector": { "type": "concept", "all": ["学习系统"] }
+  },
+  {
+    "id": "no-rebuild-as-concept",
+    "question": "是否错误地把‘学习系统重建’实体化成概念？",
+    "category": "concept-anchor",
+    "kind": "forbidden-node",
+    "selector": { "type": "concept", "all": ["学习系统重建"] }
+  },
+  {
+    "id": "no-methods-are-inherently-bad",
+    "question": "能否推出‘定期复习、联想记忆等方法本身低效’？",
+    "category": "forbidden-inference",
+    "kind": "forbidden-node",
+    "selector": { "any": ["定期复习本身低效", "联想记忆本身低效", "这些方法本身低效"] }
+  },
+  {
+    "id": "analogy-not-biomedical-fact",
+    "question": "能否把增肌类比直接当作全局生理学事实？",
+    "category": "forbidden-inference",
+    "kind": "forbidden-node",
+    "selector": { "type": "fact", "all": ["肌纤维微损伤", "才能增肌"] }
+  }
+]
