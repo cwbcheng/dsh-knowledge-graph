@@ -21,7 +21,18 @@ jobs:
       - name: Audit signing dependencies
         run: npm audit --prefix scripts/signing --audit-level=high
       - name: Apply bounded semantic and layout patch
-        run: node scripts/apply-semantic-closure-layout.mjs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply-semantic-closure-layout.mjs')
+          s = p.read_text()
+          old = "client = replaceOnce(client, oldLayerSeed, newLayerSeed, 'relation-aware layered ranking')"
+          new = "client = replaceCount(client, oldLayerSeed, newLayerSeed, 2, 'relation-aware layered ranking')"
+          if s.count(old) != 1:
+              raise SystemExit('staging replacement patch target mismatch')
+          p.write_text(s.replace(old, new))
+          PY
+          node scripts/apply-semantic-closure-layout.mjs
       - name: Build and run all knowledge-graph regressions
         run: npm test
       - name: Export verified staging tree
