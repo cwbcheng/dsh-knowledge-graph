@@ -24,7 +24,12 @@ const names = ['LAYER_COL_GAP', 'LAYER_MAX_ROW_WIDTH', 'LAYER_X_GAP', 'LAYER_Y_G
 const values = names.map(num)
 const layoutLayered = new Function(...names, 'return (' + extractFunction(source, 'layoutLayered') + ')')(...values)
 const resolveLayeredOverlaps = new Function('return (' + extractFunction(source, 'resolveLayeredOverlaps') + ')')()
-const nodes = ['a','b','c','d','e','x','p','q'].map((id) => ({ id }))
+const nodes = [
+  ...['a','b','c','d','e','x','p','q'].map((id) => ({ id, type: 'claim' })),
+  { id: 'system', type: 'concept' },
+  { id: 'flow', type: 'rule' },
+  { id: 'far', type: 'claim' },
+]
 const edges = [
   { fromNodeId: 'a', toNodeId: 'b', relation: 'causes' },
   { fromNodeId: 'b', toNodeId: 'c', relation: 'causes' },
@@ -32,11 +37,18 @@ const edges = [
   { fromNodeId: 'd', toNodeId: 'e', relation: 'causes' },
   { fromNodeId: 'x', toNodeId: 'c', relation: 'analogy' },
   { fromNodeId: 'p', toNodeId: 'q', relation: 'supports' },
+  { fromNodeId: 'system', toNodeId: 'flow', relation: 'contains' },
+  { fromNodeId: 'far', toNodeId: 'system', relation: 'supports' },
 ]
 const sizes = new Map(nodes.map((node) => [node.id, { w: node.id === 'q' ? 218 : 170, h: 72 }]))
 const pinnedX = new Map()
 const rawPos = layoutLayered(nodes, edges, sizes, pinnedX)
 const pos = resolveLayeredOverlaps(nodes, sizes, rawPos, 18, pinnedX)
+const localDistance = Math.abs(pos.get('flow').x - pos.get('system').x)
+assert(localDistance <= 260, 'strong local contains relation was not attracted near its anchor: ' + localDistance)
+assert(source.includes("const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])"), 'strong local relation set is missing or widened')
+assert(source.includes('const localRadius = 260'), 'local attraction must stay bounded')
+assert(!source.includes("strongLocalRelations = new Set(['supports'"), 'supports must not become a strong local attraction relation')
 for (const [from, to] of [['a','b'],['b','c'],['c','d'],['d','e']]) {
   assert(pos.get(from).y < pos.get(to).y, 'reasoning chain is not monotonic: ' + from + ' -> ' + to + ' / ' + JSON.stringify({ from: pos.get(from), to: pos.get(to) }))
 }
@@ -51,6 +63,7 @@ if (pos.get('q').y === pos.get('b').y) {
   assert(Math.abs(pos.get('q').x - pos.get('b').x) >= required - 0.1, 'unrelated row peer overlapped the pinned backbone slot')
 }
 const layeredSource = extractFunction(source, 'layoutLayered')
+assert(!layeredSource.includes('if (backbonePaths.length === 0) return placed'), 'strong local attraction is incorrectly gated on a reasoning backbone')
 assert(!layeredSource.includes('Shift an entire visual row rather than one node'), 'whole-row lane shifting is still present')
 assert(layeredSource.includes('backbone nodes occupy fixed lane slots') || layeredSource.includes('Backbone nodes occupy fixed lane slots'), 'fixed lane-slot projection is missing')
 assert(source.includes("const reasoningRelations = new Set(['causes', 'infers'])"), 'relation-aware layered backbone is missing')
