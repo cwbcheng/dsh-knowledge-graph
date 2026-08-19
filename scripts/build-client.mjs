@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "resume-extract") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "resume-extract" || method === "relation-retry") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -155,6 +155,7 @@ if (!c.includes("host.call('document-load'")) throw new Error('document-load cal
 if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
 if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
 if (!c.includes("host.call('resume-extract'")) throw new Error('resume-extract call not found')
+if (!c.includes("host.call('relation-retry'")) throw new Error('relation-retry call not found')
 if (!c.includes("host.call('extract', payload)")) throw new Error('extract call not found')
 if (!c.includes("host.call('task-status'")) throw new Error('task-status call not found')
 if (!c.includes("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")) throw new Error('trajectory-extract call not found')
@@ -173,6 +174,7 @@ c = c.split("host.call('document-load'").join("rpc('document-load'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
 c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
+c = c.split("host.call('relation-retry'").join("rpc('relation-retry'")
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
 c = c.split("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")

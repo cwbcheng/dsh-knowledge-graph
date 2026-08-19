@@ -1382,10 +1382,15 @@
         if (lines.length > 4) { lines.length = 4; lines[3] = lines[3].slice(0, 36) + '…' }
         return lines.length > 0 ? lines : ['']
       }
-      function computeNodeSizes(nodes) {
+      function computeNodeSizes(nodes, edges) {
         const canvas = document.createElement('canvas')
         const g = canvas.getContext('2d')
         g.font = '600 13px system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
+        const degree = new Map(nodes.map((node) => [node.id, 0]))
+        for (const edge of edges || []) {
+          if (degree.has(edge.fromNodeId)) degree.set(edge.fromNodeId, degree.get(edge.fromNodeId) + 1)
+          if (degree.has(edge.toNodeId)) degree.set(edge.toNodeId, degree.get(edge.toNodeId) + 1)
+        }
         const out = new Map()
         for (const node of nodes) {
           const meta = TYPE_META[node.type] || { label: '未知' }
@@ -1394,7 +1399,8 @@
           const lines = wrapText(g, node.text, WRAP_W)
           let textW = labelW
           for (const ln of lines) textW = Math.max(textW, g.measureText(ln).width)
-          out.set(node.id, { w: clamp(textW + 34, 96, 200), h: 20 * lines.length + 40, lines })
+          const hubBoost = Math.min(18, Math.max(0, (degree.get(node.id) || 0) - 2) * 4)
+          out.set(node.id, { w: clamp(textW + 34 + hubBoost, 96, 218), h: 20 * lines.length + 40 + (hubBoost > 0 ? 4 : 0), lines })
         }
         return out
       }
@@ -1463,7 +1469,7 @@
                 const cy = y1 + aby * t
                 const d = Math.abs((p.x - cx) * nx + (p.y - cy) * ny)
                 const half = s ? Math.max((s.w + s.h) / 4, 44) : 44
-                const minDist = half + 46 + extra
+                const minDist = half + 30 + extra
                 if (d < minDist) {
                   const push = minDist - d
                   const sgn = (p.x - cx) * nx + (p.y - cy) * ny >= 0 ? 1 : -1
@@ -1610,22 +1616,31 @@
             simLinks.push({ source: e.fromNodeId, target: e.toNodeId })
           }
         }
+        const simDegree = new Map(simNodes.map((node) => [node.id, 0]))
+        for (const link of simLinks) {
+          simDegree.set(link.source, (simDegree.get(link.source) || 0) + 1)
+          simDegree.set(link.target, (simDegree.get(link.target) || 0) + 1)
+        }
         const linkDistance = (l) => {
           const src = typeof l.source === 'object' ? l.source.id : l.source
           const tgt = typeof l.target === 'object' ? l.target.id : l.target
           const s1 = sizes.get(src)
           const s2 = sizes.get(tgt)
-          return ((s1 ? s1.w : 120) + (s2 ? s2.w : 120)) / 2 + 84
+          return ((s1 ? s1.w : 120) + (s2 ? s2.w : 120)) / 2 + 52
         }
         const simulation = F.forceSimulation(simNodes)
-          .force('link', F.forceLink(simLinks).id((d) => d.id).distance(linkDistance).strength(0.55))
-          .force('charge', F.forceManyBody().strength(-560))
+          .force('link', F.forceLink(simLinks).id((d) => d.id).distance(linkDistance).strength(0.72))
+          .force('charge', F.forceManyBody().strength((d) => (simDegree.get(d.id) || 0) === 0 ? -70 : -280))
           .force('collide', F.forceCollide((d) => {
             const s = sizes.get(d.id)
-            return (s ? Math.max(s.w, s.h) : 80) / 2 + 18
-          }).iterations(4))
-          .force('x', F.forceX(0).strength(0.035))
-          .force('y', F.forceY(0).strength(0.035))
+            if (!s) return 52
+            // A circle based on max(width,height) makes wide text boxes repel
+            // as though they were huge squares. Use an area-based seed radius;
+            // the rectangle-aware deterministic post-pass handles exact boxes.
+            return Math.sqrt(s.w * s.h) * 0.5 + 10
+          }).iterations(3))
+          .force('x', F.forceX(0).strength(0.055))
+          .force('y', F.forceY(0).strength(0.055))
           .alpha(1)
         for (let iter = 0; iter < 600 && simulation.alpha() > 0.005; iter++) simulation.tick()
         simulation.stop()
@@ -1654,12 +1669,17 @@
                 let dx = b.x - a.x
                 let dy = b.y - a.y
                 let d = Math.hypot(dx, dy)
-                if (d < 0.5) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d = Math.hypot(dx, dy) }
-                const need = Math.hypot((sa.w + sb.w) / 2 + 16, (sa.h + sb.h) / 2 + 16)
-                if (d >= need) continue
-                const push = (need - d) / 2
+                if (d < 0.5) {
+                  const angle = (((i + 1) * 97 + (j + 1) * 53) % 360) * Math.PI / 180
+                  dx = Math.cos(angle)
+                  dy = Math.sin(angle)
+                  d = 1
+                }
                 const ux = dx / d
                 const uy = dy / d
+                const need = intersectDist(sa, ux, uy) + intersectDist(sb, ux, uy) + 14
+                if (d >= need) continue
+                const push = (need - d) / 2
                 a.x -= ux * push
                 a.y -= uy * push
                 b.x += ux * push
@@ -1670,6 +1690,10 @@
             if (moved === 0) break
           }
         }
+        // Force simulation has no attractive force between disconnected
+        // components. Pack their already-resolved bounding boxes into a compact,
+        // deterministic shelf so isolated nodes do not fly to the canvas edge.
+        packDisconnectedComponents(nodes, edges, sizes, pos, 38)
         return { pos }
       }
 
@@ -1947,7 +1971,7 @@
               const need = (sa.w + sb.w) / 2 + gap
               if (Math.abs(dx) >= need) continue
               let s = dx >= 0 ? 1 : -1
-              if (dx === 0) s = Math.random() < 0.5 ? -1 : 1
+              if (dx === 0) s = ((i + j) % 2 === 0 ? -1 : 1)
               const push = (need - Math.abs(dx)) / 2
               a.x -= s * push
               b.x += s * push
@@ -1955,6 +1979,90 @@
             }
           }
           if (moved === 0) break
+        }
+        return pos
+      }
+
+      function packDisconnectedComponents(nodes, edges, sizes, pos, gap) {
+        if (!Array.isArray(nodes) || nodes.length < 2) return pos
+        const order = new Map(nodes.map((node, index) => [node.id, index]))
+        const ids = new Set(nodes.map((node) => node.id))
+        const adj = new Map(nodes.map((node) => [node.id, new Set()]))
+        for (const edge of edges || []) {
+          if (!edge || !ids.has(edge.fromNodeId) || !ids.has(edge.toNodeId) || edge.fromNodeId === edge.toNodeId) continue
+          adj.get(edge.fromNodeId).add(edge.toNodeId)
+          adj.get(edge.toNodeId).add(edge.fromNodeId)
+        }
+        const seen = new Set()
+        const components = []
+        for (const node of nodes) {
+          if (seen.has(node.id)) continue
+          const component = []
+          const queue = [node.id]
+          seen.add(node.id)
+          while (queue.length > 0) {
+            const id = queue.shift()
+            component.push(id)
+            for (const neighbor of adj.get(id) || []) {
+              if (seen.has(neighbor)) continue
+              seen.add(neighbor)
+              queue.push(neighbor)
+            }
+          }
+          components.push(component)
+        }
+        if (components.length <= 1) return pos
+        const boxes = components.map((component) => {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+          for (const id of component) {
+            const p = pos.get(id)
+            const s = sizes.get(id)
+            if (!p || !s) continue
+            x0 = Math.min(x0, p.x - s.w / 2)
+            y0 = Math.min(y0, p.y - s.h / 2)
+            x1 = Math.max(x1, p.x + s.w / 2)
+            y1 = Math.max(y1, p.y + s.h / 2)
+          }
+          if (!isFinite(x0)) x0 = y0 = x1 = y1 = 0
+          return {
+            ids: component,
+            x0, y0,
+            w: Math.max(x1 - x0, 1),
+            h: Math.max(y1 - y0, 1),
+            order: Math.min(...component.map((id) => order.get(id) || 0)),
+          }
+        }).sort((a, b) => (b.w * b.h) - (a.w * a.h) || a.order - b.order)
+        const totalArea = boxes.reduce((sum, box) => sum + (box.w + gap) * (box.h + gap), 0)
+        const widest = boxes.reduce((max, box) => Math.max(max, box.w), 0)
+        const targetWidth = Math.max(widest, Math.sqrt(totalArea) * 1.2)
+        let cursorX = 0
+        let cursorY = 0
+        let rowHeight = 0
+        let packedWidth = 0
+        for (const box of boxes) {
+          if (cursorX > 0 && cursorX + box.w > targetWidth) {
+            cursorX = 0
+            cursorY += rowHeight + gap
+            rowHeight = 0
+          }
+          box.px = cursorX
+          box.py = cursorY
+          cursorX += box.w + gap
+          rowHeight = Math.max(rowHeight, box.h)
+          packedWidth = Math.max(packedWidth, cursorX - gap)
+        }
+        const packedHeight = cursorY + rowHeight
+        const shiftX = -packedWidth / 2
+        const shiftY = -packedHeight / 2
+        for (const box of boxes) {
+          const dx = shiftX + box.px - box.x0
+          const dy = shiftY + box.py - box.y0
+          for (const id of box.ids) {
+            const p = pos.get(id)
+            if (!p) continue
+            p.x += dx
+            p.y += dy
+          }
         }
         return pos
       }
@@ -1976,12 +2084,17 @@
               let dx = b.x - a.x
               let dy = b.y - a.y
               let d = Math.hypot(dx, dy)
-              if (d < 0.5) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d = Math.hypot(dx, dy) }
-              const need = Math.hypot((sa.w + sb.w) / 2 + gap, (sa.h + sb.h) / 2 + gap)
-              if (d >= need) continue
-              const push = (need - d) / 2
+              if (d < 0.5) {
+                const angle = (((i + 1) * 97 + (j + 1) * 53) % 360) * Math.PI / 180
+                dx = Math.cos(angle)
+                dy = Math.sin(angle)
+                d = 1
+              }
               const ux = dx / d
               const uy = dy / d
+              const need = intersectDist(sa, ux, uy) + intersectDist(sb, ux, uy) + gap
+              if (d >= need) continue
+              const push = (need - d) / 2
               a.x -= ux * push
               a.y -= uy * push
               b.x += ux * push
@@ -2292,7 +2405,15 @@
         const markerIdRef = useRef(null)
         if (!markerIdRef.current) markerIdRef.current = 'kg-arrow-' + Math.random().toString(36).slice(2, 9)
 
-        const sizes = useMemo(() => computeNodeSizes(nodes), [nodes])
+        const sizes = useMemo(() => computeNodeSizes(nodes, edges), [nodes, edges])
+        const nodeDegree = useMemo(() => {
+          const degree = new Map((nodes || []).map((node) => [node.id, 0]))
+          for (const edge of edges || []) {
+            if (degree.has(edge.fromNodeId)) degree.set(edge.fromNodeId, degree.get(edge.fromNodeId) + 1)
+            if (degree.has(edge.toNodeId)) degree.set(edge.toNodeId, degree.get(edge.toNodeId) + 1)
+          }
+          return degree
+        }, [nodes, edges])
         const layout = useMemo(() => {
           try {
             return layoutGraph(nodes, edges, sizes, layoutMode || 'force')
@@ -2688,8 +2809,8 @@
             h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 14 }),
             h('path', {
               d, fill: 'none',
-              stroke: sel ? '#6366f1' : (issueSev ? SEVERITY_COLOR[issueSev] : ((inFocus && focus) ? '#6366f1' : '#9ca3af')),
-              strokeWidth: sel || hover ? 2.5 : (inFocus && focus ? 2 : 1.5),
+              stroke: sel ? '#6366f1' : (issueSev ? SEVERITY_COLOR[issueSev] : ((inFocus && focus) ? '#6366f1' : 'var(--kg-edge)')),
+              strokeWidth: sel || hover ? 3 : (inFocus && focus ? 2.5 : 2),
               markerEnd: 'url(#' + markerId + ')',
               opacity: dim ? 0.15 : 1,
             }),
@@ -2729,6 +2850,8 @@
           const neighbor = focus && inFocus && !sel
           const issueSev = issueSeverityFor(node.id)
           const issueCount = issueMaps.nodeMap.has(node.id) ? openIssuesOf(issueMaps.nodeMap.get(node.id)).length : 0
+          const degree = nodeDegree.get(node.id) || 0
+          const hub = degree >= 4
           const off = anchors[node.id]
           const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
           return h('g', {
@@ -2745,9 +2868,9 @@
               x, y, width: s.w, height: s.h, rx: 10,
               fill: meta.fill,
               stroke: sel ? '#3b82f6' : (flash ? '#f59e0b' : (issueSev ? SEVERITY_COLOR[issueSev] : (neighbor ? '#3b82f6' : meta.color))),
-              strokeWidth: sel || flash ? 3 : (issueSev ? 2.5 : (neighbor ? 2 : 1.5)),
+              strokeWidth: sel || flash ? 3 : (issueSev ? 2.5 : (neighbor ? 2.4 : (hub ? 2.2 : 1.6))),
               className: flash ? 'kg-node-flash' : '',
-              style: (sel || flash || neighbor || issueSev) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))' } : undefined,
+              style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
             }),
             issueCount > 0
               ? h('g', {
@@ -2764,7 +2887,7 @@
                   h('circle', { cx: x + s.w - 6, cy: y + 6, r: 7, fill: issueSev ? SEVERITY_COLOR[issueSev] : '#6b7280', stroke: '#fff', strokeWidth: 1.5 }),
                   h('text', { x: x + s.w - 6, y: y + 9.5, textAnchor: 'middle', fontSize: 8.5, fill: '#fff', fontWeight: 700 }, issueCount > 9 ? '9+' : String(issueCount)))
               : null,
-            h('text', { className: 'kg-node-name', x: p.x, y: y + 25, textAnchor: 'middle', fontSize: 13, fontWeight: 600 },
+            h('text', { className: 'kg-node-name', x: p.x, y: y + 25, textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
           )
@@ -2862,7 +2985,7 @@
           h('svg', { width: '100%', height: '100%', style: { display: 'block' } },
             h('defs', null,
               h('marker', { id: markerId, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse', markerUnits: 'userSpaceOnUse' },
-                h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#94a3b8' }))),
+                h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--kg-edge)' }))),
             h('g', {
               style: {
                 transform: 'translate(' + view.tx + 'px, ' + view.ty + 'px) scale(' + view.k + ')',
@@ -3045,6 +3168,7 @@
           report
             ? h('div', { className: 'kg-verify-metrics' },
                 h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
+                report.metrics && report.metrics.connectedComponents != null ? h('span', null, '连通分量 ' + report.metrics.connectedComponents + ' · 孤立节点 ' + (report.metrics.isolatedNodes || 0)) : null,
                 h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, (report.mode === 'quick' ? '质量警告 ' : '警告 ') + (report.metrics && report.metrics.warningCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),

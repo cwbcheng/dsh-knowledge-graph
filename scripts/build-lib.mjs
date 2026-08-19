@@ -623,6 +623,40 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/relation-retry') {
+              const raw = await readBody(req, 1024 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } })
+              let canonical = null
+              try {
+                const store = await getSqliteStore()
+                canonical = store.getDocument(documentId)
+              } catch (error) { canonical = null }
+              if (!canonical || !Array.isArray(canonical.nodes) || !canonical.sourceText) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } })
+              const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : canonical.revision
+              if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision)
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              seq += 1
+              const task = {
+                id: 'kg-' + Date.now().toString(36) + '-' + seq,
+                status: 'running', kind: 'relation-retry',
+                title: canonical.source && canonical.source.title ? canonical.source.title : '',
+                text: canonical.sourceText, documentId,
+                baseRevision: canonical.revision, model, createdAt: Date.now(),
+              }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runRelationRetryTask(task)).catch((error) => {
+                console.error('[dsh-knowledge-graph] relation retry task crashed', error)
+                failTask(task, 'failed', '关系补全失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/append-extract') {
               const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}

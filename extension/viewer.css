@@ -1,6 +1,6 @@
 
-.kg-root { --kg-text: #1f2937; --kg-text-dim: #6b7280; --kg-border: rgba(100,116,139,0.28); --kg-panel: rgba(127,127,127,0.055); font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; color: var(--kg-text); line-height: 1.5; min-width: 0; }
-@media (prefers-color-scheme: dark) { .kg-root { --kg-text: #e5e7eb; --kg-text-dim: #9ca3af; --kg-border: rgba(148,163,184,0.30); --kg-panel: rgba(255,255,255,0.045); } }
+.kg-root { --kg-text: #1f2937; --kg-text-dim: #6b7280; --kg-border: rgba(100,116,139,0.28); --kg-panel: rgba(127,127,127,0.055); --kg-edge: #64748b; --kg-edge-label-bg: #ffffff; --kg-edge-label-text: #334155; font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; color: var(--kg-text); line-height: 1.5; min-width: 0; }
+@media (prefers-color-scheme: dark) { .kg-root { --kg-text: #e5e7eb; --kg-text-dim: #9ca3af; --kg-border: rgba(148,163,184,0.30); --kg-panel: rgba(255,255,255,0.045); --kg-edge: #a8b3c4; --kg-edge-label-bg: #1f2937; --kg-edge-label-text: #e2e8f0; } }
 .kg-kicker { font-size: 11px; letter-spacing: 0.08em; color: #3b82f6; font-weight: 600; margin-bottom: 2px; }
 .kg-subtitle { margin: 6px 0 0; font-size: 13px; color: var(--kg-text-dim); line-height: 1.7; }
 .kg-banner { display: flex; align-items: flex-start; gap: 10px; background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.45); color: #dc2626; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
@@ -177,8 +177,8 @@
 .kg-node:hover rect { stroke-width: 2.5 !important; }
 .kg-node:focus-visible rect { stroke: #3b82f6; stroke-width: 3; }
 .kg-edge-label { pointer-events: none; }
-.kg-edge-label rect { fill: #ffffff; stroke: var(--kg-border); stroke-width: 1; }
-.kg-edge-label text { fill: #334155; font-size: 10px; font-weight: 500; }
+.kg-edge-label rect { fill: var(--kg-edge-label-bg); stroke: color-mix(in srgb, var(--kg-edge) 60%, transparent); stroke-width: 1; }
+.kg-edge-label text { fill: var(--kg-edge-label-text); font-size: 10px; font-weight: 600; }
 .kg-edge-label.sel rect { fill: rgba(99,102,241,0.16); stroke: #6366f1; }
 .kg-edge-label.sel text { fill: #6366f1; font-weight: 600; }
 .kg-edge-label.hov rect { stroke: #6366f1; }
@@ -242,8 +242,8 @@
 .kg-candidate-status { margin-left: auto; font-size: 11px; color: var(--kg-text-dim); }
 .kg-candidate-empty { margin: 0; font-size: 12px; color: var(--kg-text-dim); }
 .kg-candidate-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--kg-text-dim); }
-.kg-win { --kg-text: #1f2937; --kg-text-dim: #6b7280; --kg-border: rgba(100,116,139,0.28); --kg-panel: rgba(127,127,127,0.055); --kg-win-bg: #ffffff; position: relative; display: flex; flex-direction: column; border: 1px solid var(--kg-border); border-radius: 14px; background: var(--kg-win-bg); color: var(--kg-text); box-shadow: 0 16px 48px rgba(0,0,0,0.30); z-index: 60; pointer-events: auto; overflow: hidden; font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; line-height: 1.5; }
-@media (prefers-color-scheme: dark) { .kg-win { --kg-text: #e5e7eb; --kg-text-dim: #9ca3af; --kg-border: rgba(148,163,184,0.30); --kg-panel: rgba(255,255,255,0.045); --kg-win-bg: #111827; } }
+.kg-win { --kg-text: #1f2937; --kg-text-dim: #6b7280; --kg-border: rgba(100,116,139,0.28); --kg-panel: rgba(127,127,127,0.055); --kg-edge: #64748b; --kg-edge-label-bg: #ffffff; --kg-edge-label-text: #334155; --kg-win-bg: #ffffff; position: relative; display: flex; flex-direction: column; border: 1px solid var(--kg-border); border-radius: 14px; background: var(--kg-win-bg); color: var(--kg-text); box-shadow: 0 16px 48px rgba(0,0,0,0.30); z-index: 60; pointer-events: auto; overflow: hidden; font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; line-height: 1.5; }
+@media (prefers-color-scheme: dark) { .kg-win { --kg-text: #e5e7eb; --kg-text-dim: #9ca3af; --kg-border: rgba(148,163,184,0.30); --kg-panel: rgba(255,255,255,0.045); --kg-win-bg: #111827; --kg-edge: #a8b3c4; --kg-edge-label-bg: #1f2937; --kg-edge-label-text: #e2e8f0; } }
 .kg-win-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--kg-border); background: var(--kg-panel); cursor: grab; user-select: none; touch-action: none; }
 .kg-win-bar:active { cursor: grabbing; }
 .kg-win-dot { width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; flex: none; }
