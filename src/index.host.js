@@ -4345,8 +4345,8 @@ export default function hostPlugin() {
 
       // ---- external fact-checking (source text vs outside evidence) ----
       const FACT_VERDICTS = new Set(['supported', 'contradicted', 'partially_supported', 'insufficient', 'unverifiable', 'out_of_scope'])
-      const FACT_KINDS = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
-      const FACT_CHECKWORTHY = { fact: 0.9, counter_example: 0.9, rule: 0.85, definition: 0.75, inference: 0.6 }
+      const FACT_KINDS = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
+      const FACT_CHECKWORTHY = { fact: 0.9, counter_example: 0.9, rule: 0.85, definition: 0.75, claim: 0.7, inference: 0.6 }
       function stripHtmlHost(s) {
         return String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
       }

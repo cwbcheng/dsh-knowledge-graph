@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import hostPlugin from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
 
@@ -79,6 +80,8 @@ assert(contractPrompt.includes('作者的理论判断、经验概括、价值判
 assert(contractPrompt.includes('临时标签、修辞表达不得仅因显眼就升级为 concept'), 'concept promotion guard is missing')
 assert(contractPrompt.includes('driven_by') && contractPrompt.includes('analogy') && contractPrompt.includes('aims_at'), 'precise semantic relations are missing from prompt')
 assert(contractPrompt.includes('这是安全上限，不是压缩目标'), 'node cap still incentivizes proposition compression')
+const hostSource = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
+assert(hostSource.includes("const FACT_KINDS = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])"), 'claim nodes are excluded from external fact checking')
 
 const relationText = [
   '学习方法属于实现学习目的的手段',
