@@ -12,6 +12,9 @@ function extractFunction(source, name) {
   throw new Error(name + ' is not balanced')
 }
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+const radialSource = extractFunction(source, 'layoutRadial')
+assert(radialSource.includes('let hub = nodes[0]'), 'radial layout lost its highest-degree hub/BFS contract')
+assert(!radialSource.includes('reasoningRelations'), 'relation-aware reasoning ranking leaked into radial layout')
 const num = (name) => {
   const match = source.match(new RegExp('const ' + name + ' = ([0-9.]+)'))
   if (!match) throw new Error(name + ' not found')
