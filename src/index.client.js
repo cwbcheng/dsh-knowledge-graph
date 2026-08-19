@@ -89,6 +89,14 @@ export default function clientPlugin() {
 .kg-export-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: -6px 0 0; }
 .kg-export-actions .kg-secondary { padding: 4px 9px; font-size: 11.5px; }
 .kg-export-label { color: var(--kg-text-dim); font-size: 11.5px; }
+.kg-window-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 10px; padding: 8px 10px; border: 1px solid var(--kg-border); border-radius: 10px; background: var(--kg-panel); font-size: 12px; color: var(--kg-text-dim); }
+.kg-window-nav strong { color: var(--kg-text); font-weight: 600; }
+.kg-window-nav .kg-secondary { padding: 4px 9px; font-size: 11.5px; }
+.kg-window-page { width: 58px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; text-align: center; }
+.kg-window-query { min-width: 160px; flex: 1 1 220px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 5px 8px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; }
+.kg-window-query:focus, .kg-window-page:focus { outline: 2px solid rgba(59,130,246,0.35); border-color: #3b82f6; }
+.kg-window-sep { width: 1px; height: 22px; background: var(--kg-border); margin: 0 2px; }
+@media (max-width: 720px) { .kg-window-sep { display: none; } .kg-window-query { flex-basis: 100%; } }
 .kg-verify-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--kg-text-dim); margin: 6px 0 10px; }
 .kg-verify-metrics .kg-ok { color: #059669; }
 @media (prefers-color-scheme: dark) { .kg-verify-metrics .kg-ok { color: #34d399; } }
@@ -560,6 +568,30 @@ export default function clientPlugin() {
       function documentIdOfGraph(graph) {
         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
         return typeof source.documentId === 'string' && source.documentId ? source.documentId : ''
+      }
+      function graphViewMetadata(graph) {
+        const view = graph && graph.view && typeof graph.view === 'object' ? graph.view : null
+        if (!view || !Number.isInteger(view.totalNodes) || !Number.isInteger(view.nodeLimit) || view.nodeLimit <= 0) return null
+        const totalNodes = Math.max(0, view.totalNodes)
+        const nodeOffset = Number.isInteger(view.nodeOffset) && view.nodeOffset >= 0 ? view.nodeOffset : 0
+        const pageCount = Math.max(1, Math.ceil(totalNodes / view.nodeLimit))
+        const page = Math.min(pageCount, Math.floor(nodeOffset / view.nodeLimit) + 1)
+        const visibleNodes = graph && Array.isArray(graph.nodes) ? graph.nodes.length : 0
+        return {
+          kind: view.kind === 'query' ? 'query' : 'window',
+          query: typeof view.query === 'string' ? view.query : '',
+          matchedNodes: Number.isInteger(view.matchedNodes) ? view.matchedNodes : null,
+          nodeOffset,
+          nodeLimit: view.nodeLimit,
+          totalNodes,
+          totalEdges: Number.isInteger(view.totalEdges) ? view.totalEdges : (graph && Array.isArray(graph.edges) ? graph.edges.length : 0),
+          page,
+          pageCount,
+          startNode: totalNodes > 0 && visibleNodes > 0 ? nodeOffset + 1 : 0,
+          endNode: totalNodes > 0 && visibleNodes > 0 ? Math.min(totalNodes, nodeOffset + visibleNodes) : 0,
+          visibleNodes,
+          truncated: view.truncated === true,
+        }
       }
       function historyMetadata(entry) {
         if (!entry || typeof entry !== 'object') return null
@@ -3897,6 +3929,9 @@ export default function clientPlugin() {
           return 'force'
         })
         const [chapterFilter, setChapterFilter] = useState('all')
+        const [graphWindowLoading, setGraphWindowLoading] = useState(false)
+        const [graphPageDraft, setGraphPageDraft] = useState('1')
+        const [graphQueryDraft, setGraphQueryDraft] = useState('')
         const [candidateReviews, setCandidateReviews] = useState(() => loadCandidateReviews())
         const [candidateRemote, setCandidateRemote] = useState(null)
         const changeLayoutMode = (id) => {
@@ -3960,6 +3995,12 @@ export default function clientPlugin() {
         const factReportRef = useRef(null)
         useEffect(() => { verificationRef.current = verification }, [verification])
         useEffect(() => { factReportRef.current = factReport }, [factReport])
+        useEffect(() => {
+          const meta = resultView && resultView.graph ? graphViewMetadata(resultView.graph) : null
+          if (!meta) return
+          setGraphPageDraft(String(meta.page))
+          setGraphQueryDraft(meta.kind === 'query' ? meta.query : '')
+        }, [resultView && resultView.graph && resultView.graph.view ? resultView.graph.view.nodeOffset : -1, resultView && resultView.graph && resultView.graph.view ? resultView.graph.view.kind : 'none', resultView && resultView.graph && resultView.graph.view ? resultView.graph.view.query : ''])
         // Cancel any in-flight verification/question/fact-check tasks; bumping
         // the generations invalidates stale polling callbacks.
         const cancelVerifyTasks = () => {
@@ -4125,6 +4166,93 @@ export default function clientPlugin() {
            })()
            return () => { disposed = true }
          }, [candidateSyncKey])
+         const loadGraphWindow = async ({ page, query } = {}) => {
+           if (!resultView || !resultView.graph || graphWindowLoading) return false
+           const documentId = documentIdOfGraph(resultView.graph)
+           const currentMeta = graphViewMetadata(resultView.graph)
+           if (!documentId || !currentMeta) return false
+           const queryText = typeof query === 'string' ? query.trim().slice(0, 200) : ''
+           const targetPage = queryText
+             ? 1
+             : Math.max(1, Math.min(currentMeta.pageCount, Number.isInteger(page) ? page : currentMeta.page))
+           const nodeOffset = queryText ? 0 : (targetPage - 1) * currentMeta.nodeLimit
+           if (!queryText && currentMeta.kind === 'window' && currentMeta.nodeOffset === nodeOffset) {
+             setGraphPageDraft(String(targetPage))
+             return true
+           }
+           if (queryText && currentMeta.kind === 'query' && currentMeta.query === queryText) return true
+           setGraphWindowLoading(true)
+           setError(null)
+           try {
+             // Do not navigate away from an uncommitted UI patch. This also
+             // ensures the next window is loaded at the latest canonical revision.
+             await graphCommitQueueRef.current.catch(() => {})
+             const loaded = await host.call('document-load', {
+               documentId,
+               nodeOffset,
+               ...(queryText ? { query: queryText } : {}),
+             })
+             if (!loaded || loaded.error || !loaded.graph || !Array.isArray(loaded.graph.nodes)) {
+               const err = loaded && loaded.error ? loaded.error : { message: '无法加载知识图窗口' }
+               setError(err)
+               return false
+             }
+             const sourceText = typeof loaded.sourceText === 'string'
+               ? loaded.sourceText
+               : (fullText || resultView.sourceText || '')
+             const nextGraph = loaded.graph
+             graphRevisionRef.current = Number.isInteger(loaded.revision)
+               ? loaded.revision
+               : (nextGraph.source && Number.isInteger(nextGraph.source.revision) ? nextGraph.source.revision : graphRevisionRef.current)
+             setResultView(makeView(nextGraph, sourceText))
+             setText(sourceText)
+             setFullText(sourceText)
+             setChapterFilter('all')
+             setSelectedNodeId(null)
+             setSelectedEdgeId(null)
+             setActivePara(-1)
+             setFocusReq((value) => ({ nodeId: null, seq: value.seq + 1 }))
+             const ver = nextGraph.verification && nextGraph.verification.lastReport
+             setVerification(ver && ver.issues ? ver : null)
+             const fact = nextGraph.factCheck && nextGraph.factCheck.lastReport
+             setFactReport(fact && fact.claims ? fact : null)
+             const nextMeta = graphViewMetadata(nextGraph)
+             if (nextMeta) {
+               setGraphPageDraft(String(nextMeta.page))
+               if (nextMeta.kind === 'query') {
+                 setGraphQueryDraft(nextMeta.query)
+                 toastStore.show('子图查询完成：匹配 ' + (nextMeta.matchedNodes || 0) + ' 个节点，当前显示 ' + nextMeta.visibleNodes + ' 个节点（含一跳邻居）')
+               } else {
+                 setGraphQueryDraft('')
+                 toastStore.show('已加载节点 ' + nextMeta.startNode + '–' + nextMeta.endNode + ' / ' + nextMeta.totalNodes)
+               }
+             }
+             return true
+           } catch (e) {
+             setError({ message: '加载知识图窗口失败：' + (e && e.message ? e.message : '未知错误') })
+             return false
+           } finally {
+             setGraphWindowLoading(false)
+           }
+         }
+         const jumpGraphPage = () => {
+           const meta = resultView && resultView.graph ? graphViewMetadata(resultView.graph) : null
+           if (!meta) return
+           const parsed = parseInt(graphPageDraft, 10)
+           const page = Number.isInteger(parsed) ? Math.max(1, Math.min(meta.pageCount, parsed)) : meta.page
+           setGraphPageDraft(String(page))
+           loadGraphWindow({ page, query: '' })
+         }
+         const runGraphQuery = () => {
+           const query = graphQueryDraft.trim()
+           if (!query) loadGraphWindow({ page: 1, query: '' })
+           else loadGraphWindow({ query })
+         }
+         const clearGraphQuery = () => {
+           setGraphQueryDraft('')
+           loadGraphWindow({ page: 1, query: '' })
+         }
+
          const resumeLostTask = async () => {
            // Recovery is only for a task that disappeared because the Host was
            // restarted. Failed/cancelled tasks are terminal and are never
@@ -4592,7 +4720,7 @@ export default function clientPlugin() {
            resumeAttemptRef.current = false
           cancelVerifyTasks()
           setTitle(''); setText(''); setTaskId(null); setPhase('idle'); setResultView(null)
-           setChapterFilter('all')
+           setChapterFilter('all'); setGraphWindowLoading(false); setGraphPageDraft('1'); setGraphQueryDraft('')
           setError(null); toastStore.clear(); setSelectedNodeId(null); setSelectedEdgeId(null)
           setFocusReq({ nodeId: null, seq: 0 }); setFlashPara(-1); setActivePara(-1); setShowDiag(false)
           setHistoryOpen(false)
@@ -5297,6 +5425,7 @@ export default function clientPlugin() {
         const resultPanel = resultView
           ? (() => {
               const graph = visibleGraph || resultView.graph
+              const windowMeta = graphViewMetadata(resultView.graph)
               const resolvedCount = graph.nodes.filter((node) => resultView.anchors[node.id] != null).length
               const diagCount = (graph.warnings ? graph.warnings.length : 0) + resultView.unresolved.length
                const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
@@ -5330,8 +5459,46 @@ export default function clientPlugin() {
                       }, '已记录 ' + diagCount + ' 条诊断（含无法回链原文的节点）' + (showDiag ? ' ▴' : ' ▾'))
                     : null,
                 ),
+                windowMeta && (windowMeta.truncated || windowMeta.kind === 'query')
+                  ? h('div', { className: 'kg-window-nav', 'aria-label': '大图窗口导航与子图查询' },
+                      windowMeta.kind === 'query'
+                        ? h(React.Fragment, null,
+                            h('strong', null, '子图查询'),
+                            h('span', null, '“' + windowMeta.query + '” · 匹配 ' + (windowMeta.matchedNodes || 0) + ' 个节点 · 当前显示 ' + windowMeta.visibleNodes + ' 个（含一跳邻居） · 全图 ' + windowMeta.totalNodes + ' 个'),
+                            h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading, onClick: clearGraphQuery }, graphWindowLoading ? '加载中…' : '返回全图窗口'))
+                        : h(React.Fragment, null,
+                            h('strong', null, '节点窗口 ' + windowMeta.startNode + '–' + windowMeta.endNode + ' / ' + windowMeta.totalNodes),
+                            h('span', null, '第 ' + windowMeta.page + ' / ' + windowMeta.pageCount + ' 页'),
+                            h('button', {
+                              type: 'button', className: 'kg-secondary',
+                              disabled: graphWindowLoading || windowMeta.page <= 1,
+                              onClick: () => loadGraphWindow({ page: windowMeta.page - 1, query: '' }),
+                            }, '上一页'),
+                            h('input', {
+                              className: 'kg-window-page', type: 'number', min: 1, max: windowMeta.pageCount,
+                              value: graphPageDraft, disabled: graphWindowLoading,
+                              'aria-label': '知识图页码',
+                              onChange: (e) => setGraphPageDraft(e.target.value),
+                              onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); jumpGraphPage() } },
+                            }),
+                            h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading, onClick: jumpGraphPage }, '跳转'),
+                            h('button', {
+                              type: 'button', className: 'kg-secondary',
+                              disabled: graphWindowLoading || windowMeta.page >= windowMeta.pageCount,
+                              onClick: () => loadGraphWindow({ page: windowMeta.page + 1, query: '' }),
+                            }, '下一页')),
+                      h('span', { className: 'kg-window-sep', 'aria-hidden': 'true' }),
+                      h('input', {
+                        className: 'kg-window-query', value: graphQueryDraft, disabled: graphWindowLoading,
+                        placeholder: '按节点 ID / 文本 / 类型 / 章节查询子图…', maxLength: 200,
+                        'aria-label': '查询知识图子图',
+                        onChange: (e) => setGraphQueryDraft(e.target.value),
+                        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runGraphQuery() } },
+                      }),
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || !graphQueryDraft.trim(), onClick: runGraphQuery }, graphWindowLoading ? '加载中…' : '查询子图'))
+                  : null,
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
-                h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看原文摘录。'),
+                h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；大图可按 800 节点窗口翻页，或按节点 ID / 文本 / 类型 / 章节查询带一跳邻居的子图；拖拽平移画布，Ctrl+滚轮缩放，右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看原文摘录。'),
                 h('div', {
                   className: 'kg-cols',
                   ref: colsRef,

@@ -257,7 +257,7 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 - **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`，并通过 `expectedRevision + baseline window` 提交到 canonical graph；冲突会显式返回 `revision_conflict`，不会让浏览器与 SQLite 各自形成一份“真相”。追加拆分后旧报告自动标记 `stale`。
 - **任务可观测、可取消，而非超时即失败**：模型任务跑到完成或由用户取消为止；进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮，慢流不会被静默判死。
 - **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图、staging chunk 摘要和来源身份；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化。浏览器不保存 checkpoint；只有 `task-status=not_found` 且 SQLite 中仍是 `running` 的任务才允许恢复，确定性失败不会自动续跑。
-- **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；浏览器一次只加载最多 800 个节点的工作窗口，可通过 `document-load(nodeOffset)` 查询后续窗口。JSON/CSV 导出遇到截断视图时会向 Host 请求完整 canonical graph；布局、双向定位和交互仍在浏览器完成。
+- **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；浏览器一次只加载最多 800 个节点的工作窗口。工作台会显示「当前节点区间 / 全量节点数」，提供上一页 / 下一页 / 指定页跳转，并支持按节点 ID、文本、类型或章节查询有界子图；查询结果优先返回直接命中的节点，再补一跳邻居以恢复跨窗口关系上下文。JSON/CSV 导出遇到截断视图时会向 Host 请求完整 canonical graph；布局、双向定位和交互仍在浏览器完成。
 - **章节 / 候选审核视图**：章节筛选只改变当前浏览器结果视图，不修改原始图；候选状态以 `documentId | kind | nodeId` 稳定键保存，保留原文 evidence 和回链能力。
 - **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；canonical revision 提交时会删除已经失效的候选，同时用稳定 candidate id 保留仍存在候选的 accepted/rejected 状态。用户也可以通过 CLI 更新审核状态。
 - **可插拔声明抽取器**：Host 可选读取 `kgExtractor` 服务；它实现 `extractChunk(input)`，输入一个自有 JSON 内容块和已有节点 id，返回标准图对象或 JSON 文本。未提供时自动回退到当前 LLM 路径，因此动态插件和常驻包都不增加硬依赖。
@@ -269,7 +269,7 @@ KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnin
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
 Checkpoint { version: 2, taskKind, sourceId, documentId, nextBatchIndex, totalBatches, graph /* 无损 */, staging }
-GraphView { nodes[<=800], edges[], view: { nodeOffset, nodeLimit, totalNodes, totalEdges, truncated } }
+GraphView { nodes[<=800], edges[], view: { kind: 'window' | 'query', nodeOffset, nodeLimit, totalNodes, totalEdges, truncated, query?, matchedNodes? } }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
 ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }

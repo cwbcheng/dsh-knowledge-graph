@@ -248,7 +248,7 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 - **Chapter / review view**: chapter filtering changes only the browser view, not the source graph; review decisions use the stable `documentId | kind | nodeId` key and preserve source evidence.
 - **Pluggable declaration extractor**: the Host optionally consumes a `kgExtractor` service implementing `extractChunk(input)`. It receives owned chunk JSON and existing node ids, and returns either the normalized graph object or JSON text; without the service, the existing LLM path remains the fallback.
 - **Lossless per-chunk checkpoints**: every successful chunk records `nextBatchIndex`, the complete semantic state accumulated so far, staging summaries, and source identity. Checkpoint v2 is never truncated to the 800-node renderer budget and lives in Host/SQLite; the browser never stores it. Only `task-status=not_found` plus a persisted `running` run is recoverable; deterministic failures stay terminal.
-- **800 is a view budget, not a knowledge limit**: Host/SQLite retains the full canonical graph while the browser loads windows of at most 800 nodes. `document-load(nodeOffset)` can query later windows, and JSON/CSV export fetches the full canonical graph when the current view is truncated.
+- **800 is a view budget, not a knowledge limit**: Host/SQLite retains the full canonical graph while the browser loads windows of at most 800 nodes. The workbench shows the current node range / canonical total, provides previous / next / direct-page navigation, and can query a bounded subgraph by node ID, text, type, or section. Query results prioritize direct matches and then add one-hop neighbors so cross-window relation context can be inspected. JSON/CSV export fetches the full canonical graph when the current view is truncated.
 
 ## Data contract
 
@@ -257,7 +257,7 @@ KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnin
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
 Checkpoint { version: 2, taskKind, sourceId, documentId, nextBatchIndex, totalBatches, graph /* lossless */, staging }
-GraphView { nodes[<=800], edges[], view: { nodeOffset, nodeLimit, totalNodes, totalEdges, truncated } }
+GraphView { nodes[<=800], edges[], view: { kind: 'window' | 'query', nodeOffset, nodeLimit, totalNodes, totalEdges, truncated, query?, matchedNodes? } }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
 ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }

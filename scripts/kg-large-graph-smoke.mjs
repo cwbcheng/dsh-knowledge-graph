@@ -28,7 +28,7 @@ const extractor = async ({ title }) => {
       quote: '大型图测试',
       paragraph: 0,
     })),
-    edges: [],
+    edges: [{ fromNodeId: 'n1', toNodeId: 'n801', relation: 'supports', evidence: [{ paragraph: 0, quote: '大型图测试' }] }],
   }
 }
 
@@ -58,8 +58,28 @@ assert(loaded && !loaded.error && loaded.graph, 'canonical document could not be
 assert(loaded.graph.view.totalNodes === 801 && loaded.graph.nodes.length === 800, 'Host canonical graph was truncated instead of only the view')
 const tail = await handlers.get('document-load')({ documentId, nodeOffset: 800 })
 assert(tail && tail.graph && tail.graph.nodes.length === 1 && tail.graph.nodes[0].id === 'n801', 'tail window is not queryable past the 800-node renderer budget')
+const queried = await handlers.get('document-load')({ documentId, query: '知识节点 801' })
+assert(queried && queried.graph && queried.graph.view && queried.graph.view.kind === 'query', 'canonical subgraph query did not return query metadata')
+assert(queried.graph.view.matchedNodes === 1 && queried.graph.nodes.some((node) => node.id === 'n801'), 'subgraph query could not locate a node outside the first renderer window')
+assert(queried.graph.nodes.some((node) => node.id === 'n1'), 'subgraph query did not include a one-hop neighbor across renderer windows')
+assert(queried.graph.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n801'), 'subgraph query did not restore cross-window relation context')
 const exported = await handlers.get('document-export')({ documentId })
 assert(exported && exported.graph && exported.graph.nodes.length === 801, 'canonical export was truncated to the renderer window')
+
+// Deleting a node from a tail window must also remove canonical cross-window
+// edges that are not visible in that window; otherwise pagination can create
+// dangling relations in dynamic-package mode.
+const tailCommit = await handlers.get('graph-commit')({
+  documentId,
+  expectedRevision: tail.revision,
+  graph: { summary: tail.graph.summary, nodes: [], edges: [] },
+  baseNodeIds: tail.graph.nodes.map((node) => node.id),
+  baseEdgeKeys: [],
+})
+assert(tailCommit && !tailCommit.error, 'tail-window graph commit failed')
+const afterTailCommit = await handlers.get('document-export')({ documentId })
+assert(afterTailCommit.graph.nodes.length === 800 && !afterTailCommit.graph.nodes.some((node) => node.id === 'n801'), 'tail-window node deletion did not update the canonical graph')
+assert(!afterTailCommit.graph.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n801'), 'tail-window node deletion left a dangling cross-window edge')
 
 const relationStarted = await handlers.get('extract')({ title: 'relation evidence', text: 'A 发生了\n\nB 也发生了' })
 let relationResult = null
@@ -80,5 +100,8 @@ assert(!hostSource.includes('MAX_GRAPH_NODES'), '800-node knowledge hard limit s
 assert(!clientSource.includes('LS_CHECKPOINT'), 'client still persists full checkpoints in localStorage')
 assert(!clientSource.includes("status !== 'cancelled' && await resumeLostTask"), 'deterministic failures can still auto-resume')
 assert(clientSource.includes("if (await resumeLostTask()) return"), 'Host-restart recovery path is missing')
+assert(clientSource.includes("className: 'kg-window-nav'"), 'large-graph UI window navigation is missing')
+assert(clientSource.includes("loadGraphWindow({ page: windowMeta.page + 1, query: '' })"), 'large-graph next-page control is missing')
+assert(clientSource.includes("placeholder: '按节点 ID / 文本 / 类型 / 章节查询子图…'"), 'large-graph subgraph query control is missing')
 
-console.log(JSON.stringify({ ok: true, canonicalNodes: result.view.totalNodes, visibleNodes: result.nodes.length, checkpointVersion: 2 }))
+console.log(JSON.stringify({ ok: true, canonicalNodes: result.view.totalNodes, visibleNodes: result.nodes.length, queriedNode: 'n801', checkpointVersion: 2 }))

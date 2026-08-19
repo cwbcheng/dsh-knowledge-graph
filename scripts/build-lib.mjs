@@ -252,7 +252,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               delete fullGraph.sourceText
               rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
               const nodeOffset = Number.isInteger(payload.nodeOffset) ? payload.nodeOffset : 0
-              return writeJson(res, 200, { documentId, sourceText: saved.sourceText || '', revision, graph: buildGraphViewHost(fullGraph, nodeOffset) })
+              const query = typeof payload.query === 'string' ? payload.query : ''
+              return writeJson(res, 200, { documentId, sourceText: saved.sourceText || '', revision, graph: buildGraphViewHost(fullGraph, nodeOffset, query) })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-export') {
               const raw = await readBody(req, 256 * 1024)

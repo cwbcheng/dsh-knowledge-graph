@@ -114,10 +114,57 @@ export default function hostPlugin() {
        function cloneGraphEdgeHost(edge) {
          return edge && typeof edge === 'object' ? { ...edge, evidence: cloneEvidenceHost(edge.evidence) } : edge
        }
-       function buildGraphViewHost(graph, nodeOffset) {
+       function buildGraphViewHost(graph, nodeOffset, queryText) {
          if (!graph || typeof graph !== 'object') return graph
          const allNodes = Array.isArray(graph.nodes) ? graph.nodes : []
          const allEdges = Array.isArray(graph.edges) ? graph.edges : []
+         const query = typeof queryText === 'string' ? normalizeGraphLookupTextHost(queryText).slice(0, 200) : ''
+         if (query) {
+           const directMatches = allNodes.filter((node) => {
+             if (!node || typeof node !== 'object') return false
+             return [node.id, node.type, node.text, node.quote, node.sectionId, node.sectionTitle]
+               .some((value) => normalizeGraphLookupTextHost(value).includes(query))
+           })
+           const nodes = []
+           const ids = new Set()
+           const addNode = (node) => {
+             if (!node || !node.id || ids.has(node.id) || nodes.length >= MAX_GRAPH_VIEW_NODES) return
+             ids.add(node.id)
+             nodes.push(cloneGraphNodeHost(node))
+           }
+           for (const node of directMatches) addNode(node)
+           if (nodes.length < MAX_GRAPH_VIEW_NODES && ids.size > 0) {
+             const neighborIds = new Set()
+             for (const edge of allEdges) {
+               if (!edge) continue
+               if (ids.has(edge.fromNodeId) && !ids.has(edge.toNodeId)) neighborIds.add(edge.toNodeId)
+               if (ids.has(edge.toNodeId) && !ids.has(edge.fromNodeId)) neighborIds.add(edge.fromNodeId)
+             }
+             for (const node of allNodes) {
+               if (neighborIds.has(node && node.id)) addNode(node)
+               if (nodes.length >= MAX_GRAPH_VIEW_NODES) break
+             }
+           }
+           const edges = allEdges
+             .filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
+             .slice(0, MAX_GRAPH_VIEW_EDGES)
+             .map(cloneGraphEdgeHost)
+           return {
+             ...graph,
+             nodes,
+             edges,
+             view: {
+               kind: 'query',
+               query: queryText.trim().slice(0, 200),
+               nodeOffset: 0,
+               nodeLimit: MAX_GRAPH_VIEW_NODES,
+               matchedNodes: directMatches.length,
+               totalNodes: allNodes.length,
+               totalEdges: allEdges.length,
+               truncated: allNodes.length > nodes.length || allEdges.length > edges.length,
+             },
+           }
+         }
          const requestedOffset = Number.isInteger(nodeOffset) && nodeOffset > 0 ? nodeOffset : 0
          const offset = Math.min(requestedOffset, Math.max(0, allNodes.length - 1))
          const nodes = allNodes.slice(offset, offset + MAX_GRAPH_VIEW_NODES).map(cloneGraphNodeHost)
@@ -182,7 +229,8 @@ export default function hostPlugin() {
          const nodes = (Array.isArray(current.nodes) ? current.nodes : []).filter((node) => !baseNodes.has(node && node.id))
          nodes.push(...incomingNodes.map(cloneGraphNodeHost))
          const nodeIds = new Set(nodes.map((node) => node && node.id).filter(Boolean))
-         const edges = (Array.isArray(current.edges) ? current.edges : []).filter((edge) => !baseEdges.has(edgeKeyHost(edge)))
+         const edges = (Array.isArray(current.edges) ? current.edges : [])
+           .filter((edge) => !baseEdges.has(edgeKeyHost(edge)) && nodeIds.has(edge && edge.fromNodeId) && nodeIds.has(edge && edge.toNodeId))
          for (const edge of incomingEdges) {
            if (nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId)) edges.push(cloneGraphEdgeHost(edge))
          }
@@ -3401,7 +3449,11 @@ export default function hostPlugin() {
          if (!documentId) return { error: { code: 'invalid_input', message: '缺少 documentId' } }
          const saved = loadCanonicalDocumentHost(documentId)
          if (!saved) return { error: { code: 'not_found', message: '当前 Host 中找不到该文档；持久化模式可从 SQLite 恢复' } }
-         const graph = buildGraphViewHost({ ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } }, Number.isInteger(a.nodeOffset) ? a.nodeOffset : 0)
+         const graph = buildGraphViewHost(
+           { ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } },
+           Number.isInteger(a.nodeOffset) ? a.nodeOffset : 0,
+           typeof a.query === 'string' ? a.query : '',
+         )
          return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
        })
 

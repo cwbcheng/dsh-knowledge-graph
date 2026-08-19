@@ -67,6 +67,9 @@ async function persistentSmoke() {
     interval() { return () => {} },
   })
   const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
+  const queried = await request(api, { documentId: graph.source.documentId, query: '概念候选' }, 'document-load')
+  assert(queried && queried.graph && queried.graph.view && queried.graph.view.kind === 'query', 'persistent document-load did not expose query view metadata')
+  assert(queried.graph.nodes.some((node) => node.id === 'n-concept'), 'persistent canonical query could not locate the requested node')
   const listed = await request(api, { documentId: graph.source.documentId, kind: 'all', status: 'all', limit: 20, graph })
   assert(listed.source === 'sqlite' && Array.isArray(listed.candidates) && listed.candidates.length === 2, 'persistent candidate list did not use SQLite')
   const entity = listed.candidates.find((candidate) => candidate.kind === 'entity')
@@ -87,7 +90,7 @@ async function persistentSmoke() {
   const afterCommit = await request(api, { documentId: graph.source.documentId, kind: 'entity', status: 'rejected', limit: 20 }, 'candidate-list')
   assert(afterCommit.candidates.length === 1 && afterCommit.candidates[0].nodeId === 'n-concept', 'candidate review state was lost across graph revision')
   rmSync(dir, { recursive: true, force: true })
-  return { listed: listed.candidates.length, updated: update.candidate.id, revision: committed.revision }
+  return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id, revision: committed.revision }
 }
 
 const dynamic = await dynamicSmoke()

@@ -271,6 +271,30 @@
         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
         return typeof source.documentId === 'string' && source.documentId ? source.documentId : ''
       }
+      function graphViewMetadata(graph) {
+        const view = graph && graph.view && typeof graph.view === 'object' ? graph.view : null
+        if (!view || !Number.isInteger(view.totalNodes) || !Number.isInteger(view.nodeLimit) || view.nodeLimit <= 0) return null
+        const totalNodes = Math.max(0, view.totalNodes)
+        const nodeOffset = Number.isInteger(view.nodeOffset) && view.nodeOffset >= 0 ? view.nodeOffset : 0
+        const pageCount = Math.max(1, Math.ceil(totalNodes / view.nodeLimit))
+        const page = Math.min(pageCount, Math.floor(nodeOffset / view.nodeLimit) + 1)
+        const visibleNodes = graph && Array.isArray(graph.nodes) ? graph.nodes.length : 0
+        return {
+          kind: view.kind === 'query' ? 'query' : 'window',
+          query: typeof view.query === 'string' ? view.query : '',
+          matchedNodes: Number.isInteger(view.matchedNodes) ? view.matchedNodes : null,
+          nodeOffset,
+          nodeLimit: view.nodeLimit,
+          totalNodes,
+          totalEdges: Number.isInteger(view.totalEdges) ? view.totalEdges : (graph && Array.isArray(graph.edges) ? graph.edges.length : 0),
+          page,
+          pageCount,
+          startNode: totalNodes > 0 && visibleNodes > 0 ? nodeOffset + 1 : 0,
+          endNode: totalNodes > 0 && visibleNodes > 0 ? Math.min(totalNodes, nodeOffset + visibleNodes) : 0,
+          visibleNodes,
+          truncated: view.truncated === true,
+        }
+      }
       function historyMetadata(entry) {
         if (!entry || typeof entry !== 'object') return null
         const graph = entry.graph && typeof entry.graph === 'object' ? entry.graph : null
