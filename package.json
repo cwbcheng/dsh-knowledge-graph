@@ -66,9 +66,10 @@
     "test:kg-connectivity": "node scripts/kg-connectivity-smoke.mjs",
     "test:kg-layout": "node scripts/kg-layout-smoke.mjs",
     "test:kg-policy": "node scripts/kg-policy-smoke.mjs",
-    "test": "npm run build && npm run test:kg && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-trust-boundary && npm run test:kg-policy",
+    "test": "npm run build && npm run test:kg && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-trust-boundary && npm run test:kg-policy",
     "test:kg-trust-boundary": "node scripts/kg-trust-boundary-smoke.mjs",
-    "test:kg-semantic-contract": "node scripts/kg-semantic-contract-smoke.mjs"
+    "test:kg-semantic-contract": "node scripts/kg-semantic-contract-smoke.mjs",
+    "test:kg-mechanism-coverage": "node scripts/kg-mechanism-coverage-smoke.mjs"
   },
   "engines": {
     "node": ">=18"
