@@ -7,14 +7,22 @@ function norm(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, '')
 }
 
+function termMatches(text, term) {
+  if (Array.isArray(term)) return term.some((alternative) => text.includes(norm(alternative)))
+  return text.includes(norm(term))
+}
+
 function selectorMatches(node, selector) {
   if (!node || !selector || typeof selector !== 'object') return false
   if (selector.type && node.type !== selector.type) return false
   const text = norm(node.text)
   const all = Array.isArray(selector.all) ? selector.all : []
   const any = Array.isArray(selector.any) ? selector.any : []
-  if (all.some((term) => !text.includes(norm(term)))) return false
-  if (any.length > 0 && !any.some((term) => text.includes(norm(term)))) return false
+  // An item inside `all` may itself be an array of finite wording variants.
+  // That means "match one wording from every semantic slot", without turning
+  // the deterministic benchmark into an embedding or LLM-based evaluator.
+  if (all.some((term) => !termMatches(text, term))) return false
+  if (any.length > 0 && !any.some((term) => termMatches(text, term))) return false
   return all.length > 0 || any.length > 0 || Boolean(selector.type)
 }
 
@@ -70,6 +78,21 @@ function renderPath(graph, path) {
 
 function evaluateCase(graph, testCase) {
   const kind = testCase.kind
+  if (kind === 'any-of') {
+    const options = Array.isArray(testCase.options) ? testCase.options : []
+    if (options.length === 0) throw new Error('any-of case requires options[]')
+    const attempts = options.map((option) => evaluateCase(graph, option))
+    const index = attempts.findIndex((attempt) => attempt.pass)
+    if (index >= 0) return { ...attempts[index], matchedKind: options[index].kind }
+    return {
+      pass: false,
+      verdict: 'insufficient',
+      evidence: [],
+      edgeEvidence: [],
+      answer: '',
+      alternatives: attempts.map((attempt, i) => ({ kind: options[i].kind, verdict: attempt.verdict })),
+    }
+  }
   if (kind === 'node') {
     const nodes = matchingNodes(graph, testCase.selector)
     return { pass: nodes.length > 0, verdict: nodes.length > 0 ? 'supported' : 'insufficient', evidence: nodes.slice(0, 3).map((n) => n.id), answer: nodes[0]?.text || '' }
@@ -85,10 +108,21 @@ function evaluateCase(graph, testCase) {
     return { pass: edges.length > 0, verdict: edges.length > 0 ? 'supported' : 'insufficient', evidence: [...from, ...to], edgeEvidence: edges.map(edgeKey), answer: edges.length > 0 ? edges.map(edgeKey).join(', ') : '' }
   }
   if (kind === 'unknown') {
+    const anchor = testCase.anchor ? matchingNodes(graph, testCase.anchor) : []
     const guard = testCase.guard ? matchingNodes(graph, testCase.guard) : []
     const positive = testCase.positive ? matchingNodes(graph, testCase.positive) : []
-    const pass = guard.length > 0 && positive.length === 0
-    return { pass, verdict: pass ? 'insufficient' : (positive.length > 0 ? 'supported' : 'insufficient'), evidence: guard.map((n) => n.id), answer: pass ? (guard[0]?.text || '当前图未给出答案') : '' }
+    // Graph-only calibration does not require a special "I do not know" node.
+    // If the queried object is present (or the source explicitly deferred the
+    // answer) but no positive answer/definition exists, the graph is correctly
+    // insufficient. This separates missing knowledge from missing meta-knowledge.
+    const basis = anchor.length > 0 ? anchor : guard
+    const pass = basis.length > 0 && positive.length === 0
+    return {
+      pass,
+      verdict: pass ? 'insufficient' : (positive.length > 0 ? 'supported' : 'insufficient'),
+      evidence: basis.map((n) => n.id),
+      answer: pass ? (guard[0]?.text || '当前图包含该主题，但未给出所问的具体答案') : (positive[0]?.text || ''),
+    }
   }
   if (kind === 'forbidden-node') {
     const nodes = matchingNodes(graph, testCase.selector)
