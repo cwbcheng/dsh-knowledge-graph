@@ -42,6 +42,14 @@ jobs:
           if s.count(old) != 1:
               raise SystemExit('semantic closure public issue assertion target mismatch')
           p.write_text(s.replace(old, new))
+
+          p = Path('scripts/kg-semantic-layout-smoke.mjs')
+          s = p.read_text()
+          old = "assert(pos.get(x).y < pos.get(c).y, 'analogy satellite was not placed as a branch near its target')"
+          new = "assert(pos.get('x').y < pos.get('c').y, 'analogy satellite was not placed as a branch near its target')"
+          if s.count(old) != 1:
+              raise SystemExit('semantic layout smoke id target mismatch')
+          p.write_text(s.replace(old, new))
           PY
       - name: Build and run all knowledge-graph regressions
         run: npm test
