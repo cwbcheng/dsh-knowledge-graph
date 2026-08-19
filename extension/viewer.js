@@ -86,6 +86,7 @@
 
       const TYPE_META = {
         fact: { label: '事实', color: '#3b82f6', fill: 'rgba(59,130,246,0.15)' },
+        claim: { label: '主张', color: '#0f766e', fill: 'rgba(15,118,110,0.15)' },
         inference: { label: '推论', color: '#8b5cf6', fill: 'rgba(139,92,246,0.15)' },
         concept: { label: '概念', color: '#10b981', fill: 'rgba(16,185,129,0.15)' },
         definition: { label: '定义', color: '#f59e0b', fill: 'rgba(245,158,11,0.16)' },
@@ -93,11 +94,11 @@
         counter_example: { label: '反例', color: '#ef4444', fill: 'rgba(239,68,68,0.15)' },
         rule: { label: '规则', color: '#7c3aed', fill: 'rgba(124,58,237,0.16)' },
       }
-      const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果' }
+      const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果', is_a: '属于', contains: '包含', driven_by: '受驱动于', not_is: '不是', analogy: '类比说明', aims_at: '旨在' }
       const REL_SOURCE_RULES = { example: 'example', counter_example: 'counter_example', defines: 'definition' }
-      const TYPE_ORDER = ['fact', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
+      const TYPE_ORDER = ['fact', 'claim', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
        const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
-       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
        const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
        const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
        function chapterSectionsOf(graph) {
