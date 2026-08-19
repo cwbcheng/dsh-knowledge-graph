@@ -2097,6 +2097,9 @@ export default function clientPlugin() {
         const reasoningRelations = new Set(['causes', 'infers'])
         const satelliteRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
         const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])
+        // View-only reasoning lanes: a real multi-step causes/infers path may
+        // align vertically, but lane identity never enters the canonical graph.
+        const backbonePaths = []
         const level = new Map()
         const componentSeen = new Set()
         for (const start of nodes) {
@@ -2130,10 +2133,13 @@ export default function clientPlugin() {
               outgoing.get(edge.fromNodeId).push(edge.toNodeId)
             }
             const topo = component.filter((id) => reasonIds.has(id) && indegree.get(id) === 0)
+            const roots = topo.slice()
+            const topoOrder = []
             for (const id of topo) local.set(id, 0)
             let processed = 0
             while (topo.length > 0) {
               const id = topo.shift()
+              topoOrder.push(id)
               processed += 1
               const base = local.get(id) || 0
               for (const to of outgoing.get(id) || []) {
@@ -2142,7 +2148,36 @@ export default function clientPlugin() {
                 if (indegree.get(to) === 0) topo.push(to)
               }
             }
-            if (processed !== reasonIds.size) local.clear()
+            if (processed !== reasonIds.size) {
+              local.clear()
+            } else {
+              // Pick only substantial reasoning backbones (>= 3 nodes). This
+              // is deterministic longest-path selection inside the already
+              // accepted causes/infers DAG, not semantic clustering.
+              const remainingDepth = new Map()
+              for (let orderIndex = topoOrder.length - 1; orderIndex >= 0; orderIndex--) {
+                const id = topoOrder[orderIndex]
+                let depth = 0
+                for (const to of outgoing.get(id) || []) depth = Math.max(depth, 1 + (remainingDepth.get(to) || 0))
+                remainingDepth.set(id, depth)
+              }
+              const used = new Set()
+              roots.sort((a, b) => (remainingDepth.get(b) || 0) - (remainingDepth.get(a) || 0) || String(a).localeCompare(String(b)))
+              for (const root of roots) {
+                if (used.has(root)) continue
+                const path = []
+                let cursor = root
+                while (cursor && !used.has(cursor)) {
+                  path.push(cursor)
+                  used.add(cursor)
+                  const next = (outgoing.get(cursor) || [])
+                    .filter((to) => !used.has(to))
+                    .sort((a, b) => (remainingDepth.get(b) || 0) - (remainingDepth.get(a) || 0) || String(a).localeCompare(String(b)))[0]
+                  cursor = next || null
+                }
+                if (path.length >= 3) backbonePaths.push(path)
+              }
+            }
           }
           if (local.size === 0) {
             let hub = nodes.find((node) => node.id === component[0])
@@ -2310,7 +2345,65 @@ export default function clientPlugin() {
           }
           placeVirtual()
         }
-        return placeLevels()
+        const placed = placeLevels()
+        if (backbonePaths.length === 0) return placed
+
+        // Keep every substantial reasoning backbone in a stable vertical lane.
+        // Shift an entire visual row rather than one node, preserving the row
+        // geometry and the existing orthogonal edge-router assumptions.
+        const backboneLane = new Map()
+        const laneGap = Math.max(LAYER_X_GAP * 2, 360)
+        const laneMid = (backbonePaths.length - 1) / 2
+        backbonePaths.forEach((path, laneIndex) => {
+          const laneX = (laneIndex - laneMid) * laneGap
+          for (const id of path) backboneLane.set(id, laneX)
+        })
+        const rowIds = new Map()
+        for (const node of nodes) {
+          const p = placed.get(node.id)
+          if (!p) continue
+          const list = rowIds.get(p.y) || []
+          list.push(node.id)
+          rowIds.set(p.y, list)
+        }
+        for (const ids of rowIds.values()) {
+          const anchors = ids.filter((id) => backboneLane.has(id))
+          if (anchors.length === 0) continue
+          const shift = anchors.reduce((sum, id) => {
+            const p = placed.get(id)
+            return sum + backboneLane.get(id) - p.x
+          }, 0) / anchors.length
+          for (const id of ids) placed.get(id).x += shift
+        }
+
+        // Examples/analogies/definitions/concept branches stay next to the
+        // backbone node they explain. They remain ordinary graph nodes; this is
+        // only a view projection and resolveLayeredOverlaps handles collisions.
+        const branchRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
+        const branchCount = new Map()
+        for (const edge of edges) {
+          if (!edge || !branchRelations.has(edge.relation)) continue
+          const fromIsBackbone = backboneLane.has(edge.fromNodeId)
+          const toIsBackbone = backboneLane.has(edge.toNodeId)
+          if (fromIsBackbone === toIsBackbone) continue
+          const targetId = fromIsBackbone ? edge.fromNodeId : edge.toNodeId
+          const branchId = fromIsBackbone ? edge.toNodeId : edge.fromNodeId
+          const target = placed.get(targetId)
+          const branch = placed.get(branchId)
+          if (!target || !branch) continue
+          const count = branchCount.get(targetId) || 0
+          const side = count % 2 === 0 ? -1 : 1
+          const ring = Math.floor(count / 2) + 1
+          const targetSize = sizes.get(targetId)
+          const branchSize = sizes.get(branchId)
+          const distance = Math.max(
+            LAYER_X_GAP * 0.72,
+            ((targetSize ? targetSize.w : 170) + (branchSize ? branchSize.w : 170)) / 2 + 24,
+          )
+          branch.x = target.x + side * distance * ring
+          branchCount.set(targetId, count + 1)
+        }
+        return placed
       }
 
       // Row-preserving overlap resolution for the LAYERED layout: pushes
