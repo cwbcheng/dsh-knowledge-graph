@@ -22,6 +22,9 @@ function extractFunction(source, name) {
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const functionText = extractFunction(source, 'packDisconnectedComponents')
 const packDisconnectedComponents = (0, eval)('(' + functionText + ')')
+const intersectDist = (0, eval)('(' + extractFunction(source, 'intersectDist') + ')')
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+const bezierGeometry = new Function('intersectDist', 'clamp', 'return (' + extractFunction(source, 'bezierGeometry') + ')')(intersectDist, clamp)
 
 const nodes = Array.from({ length: 12 }, (_, index) => ({ id: 'n' + index }))
 const edges = [{ fromNodeId: 'n0', toNodeId: 'n1', relation: 'supports' }]
@@ -64,6 +67,21 @@ for (let i = 0; i < nodes.length; i++) {
     assert(!(overlapX && overlapY), 'packed components overlap: ' + a.id + ' / ' + b.id)
   }
 }
+
+// Curved and straight arrows must start/end exactly on their rectangle borders.
+const a = { x: 0, y: 0 }
+const b = { x: 400, y: 120 }
+const sa = { w: 180, h: 80 }
+const sb = { w: 150, h: 100 }
+const curved = bezierGeometry(a, b, sa, sb, 2)
+const boundaryRatio = (point, center, size) => Math.max(Math.abs(point.x - center.x) / (size.w / 2), Math.abs(point.y - center.y) / (size.h / 2))
+assert(Math.abs(boundaryRatio({ x: curved.x1, y: curved.y1 }, a, sa) - 1) < 1e-9, 'curved edge source does not touch the node border: ' + JSON.stringify(curved))
+assert(Math.abs(boundaryRatio({ x: curved.x2, y: curved.y2 }, b, sb) - 1) < 1e-9, 'curved edge target does not touch the node border: ' + JSON.stringify(curved))
+const sourceCross = (curved.x1 - a.x) * (curved.cy - curved.y1) - (curved.y1 - a.y) * (curved.cx - curved.x1)
+const targetCross = (curved.x2 - b.x) * (curved.y2 - curved.cy) - (curved.y2 - b.y) * (curved.x2 - curved.cx)
+assert(Math.abs(sourceCross) < 1e-7 && Math.abs(targetCross) < 1e-7, 'bezier endpoint tangents are not aligned with border clipping')
+const straight = bezierGeometry({ x: 0, y: 0 }, { x: 400, y: 0 }, { w: 180, h: 80 }, { w: 180, h: 80 }, 0)
+assert(Math.abs(straight.x1 - 90) < 1e-9 && Math.abs(straight.x2 - 310) < 1e-9, 'straight edge retained a border gap: ' + JSON.stringify(straight))
 
 assert(source.includes("(simDegree.get(d.id) || 0) === 0 ? -70 : -280"), 'isolated-node charge reduction is missing')
 assert(source.includes('Math.sqrt(s.w * s.h) * 0.5 + 10'), 'area-based collision radius is missing')

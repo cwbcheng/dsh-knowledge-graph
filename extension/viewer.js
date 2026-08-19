@@ -1501,33 +1501,8 @@
         const sa = sizes.get(edge.fromNodeId)
         const sb = sizes.get(edge.toNodeId)
         if (!sa || !sb) return null
-        const dx = b.x - a.x
-        const dy = b.y - a.y
-        const len = Math.max(Math.hypot(dx, dy), 0.001)
-        const ux = dx / len
-        const uy = dy / len
-        const s1 = intersectDist(sa, ux, uy)
-        const s2 = intersectDist(sb, ux, uy)
-        const x1 = a.x + ux * s1
-        const y1 = a.y + uy * s1
-        const x2 = b.x - ux * s2
-        const y2 = b.y - uy * s2
-        const elen0 = Math.max(Math.hypot(x2 - x1, y2 - y1), 0.001)
-        const ex = (x2 - x1) / elen0
-        const ey = (y2 - y1) / elen0
-        const EXT = 12
-        const x1p = x1 + ex * EXT
-        const y1p = y1 + ey * EXT
-        const x2p = x2 - ex * EXT
-        const y2p = y2 - ey * EXT
-        const elen = Math.max(Math.hypot(x2p - x1p, y2p - y1p), 0.001)
-        const rank = fanRankOf(edge)
-        const bend = rank === 0 ? 0 : clamp(clamp(rank * 26, -104, 104), -elen * 0.35, elen * 0.35)
-        const mx = (x1p + x2p) / 2
-        const my = (y1p + y2p) / 2
-        const cxp = mx - ey * bend
-        const cyp = my + ex * bend
-        return [[x1p, y1p, cxp, cyp], [cxp, cyp, x2p, y2p]]
+        const geometry = bezierGeometry(a, b, sa, sb, fanRankOf(edge))
+        return [[geometry.x1, geometry.y1, geometry.cx, geometry.cy], [geometry.cx, geometry.cy, geometry.x2, geometry.y2]]
       }
 
       // Path segments for radial polyline edges: the out/in radial segments
@@ -2371,15 +2346,47 @@
         if (uy !== 0) t = Math.min(t, size.h / 2 / Math.abs(uy))
         return isFinite(t) ? t : 0
       }
-      function edgePoints(a, b, sa, sb) {
+      function bezierGeometry(a, b, sa, sb, rawBend) {
         const dx = b.x - a.x
         const dy = b.y - a.y
         const len = Math.max(Math.hypot(dx, dy), 0.001)
         const ux = dx / len
         const uy = dy / len
-        const s1 = intersectDist(sa, ux, uy)
-        const s2 = intersectDist(sb, ux, uy)
-        return { x1: a.x + ux * s1, y1: a.y + uy * s1, x2: b.x - ux * s2, y2: b.y - uy * s2 }
+        const directA = intersectDist(sa, ux, uy)
+        const directB = intersectDist(sb, ux, uy)
+        const baseX1 = a.x + ux * directA
+        const baseY1 = a.y + uy * directA
+        const baseX2 = b.x - ux * directB
+        const baseY2 = b.y - uy * directB
+        const baseLen = Math.max(Math.hypot(baseX2 - baseX1, baseY2 - baseY1), 0.001)
+        const bend = rawBend === 0 ? 0 : clamp(clamp(rawBend * 26, -104, 104), -baseLen * 0.35, baseLen * 0.35)
+        const mx = (baseX1 + baseX2) / 2
+        const my = (baseY1 + baseY2) / 2
+        const cx = mx - uy * bend
+        const cy = my + ux * bend
+        // Clip along the actual quadratic tangents, not the center-to-center
+        // line. This keeps both path endpoints exactly on the rectangle border
+        // even for strongly fanned curves, without a visible 12px gap.
+        let sdx = cx - a.x
+        let sdy = cy - a.y
+        let slen = Math.hypot(sdx, sdy)
+        if (slen < 0.001) { sdx = ux; sdy = uy; slen = 1 }
+        const sux = sdx / slen
+        const suy = sdy / slen
+        let tdx = cx - b.x
+        let tdy = cy - b.y
+        let tlen = Math.hypot(tdx, tdy)
+        if (tlen < 0.001) { tdx = -ux; tdy = -uy; tlen = 1 }
+        const tux = tdx / tlen
+        const tuy = tdy / tlen
+        const tA = intersectDist(sa, sux, suy)
+        const tB = intersectDist(sb, tux, tuy)
+        const x1 = a.x + sux * tA
+        const y1 = a.y + suy * tA
+        const x2 = b.x + tux * tB
+        const y2 = b.y + tuy * tB
+        const chordLen = Math.max(Math.hypot(x2 - x1, y2 - y1), 0.001)
+        return { x1, y1, x2, y2, cx, cy, ex: (x2 - x1) / chordLen, ey: (y2 - y1) / chordLen }
       }
       function zoomAround(v, factor, px, py) {
         const wx = (px - v.tx) / v.k
@@ -2686,7 +2693,6 @@
           const sa = sizes.get(edge.fromNodeId)
           const sb = sizes.get(edge.toNodeId)
           if (!a || !b || !sa || !sb) return null
-          const pts = edgePoints(a, b, sa, sb)
           const sel = selectedEdgeId === i
           const hover = hoverEdge === i
           const inFocus = focus ? related.edgeIdx.has(i) : true
@@ -2769,30 +2775,14 @@
             }
           } else {
             // Quadratic bezier with a signed perpendicular bend: same-source
-            // edges fan out symmetrically by rank so arrows never pile onto
-            // one line (0 = straight for single edges).
-            const rawBend = edgeFan.get(edge) || 0
-            const elen0 = Math.max(Math.hypot(pts.x2 - pts.x1, pts.y2 - pts.y1), 0.001)
-            const ex = (pts.x2 - pts.x1) / elen0
-            const ey = (pts.y2 - pts.y1) / elen0
-            // Start/end a few px OUTSIDE the node border so the fanned curve
-            // can never clip the node's corner on departure.
-            const EXT = 12
-            const x1p = pts.x1 + ex * EXT
-            const y1p = pts.y1 + ey * EXT
-            const x2p = pts.x2 - ex * EXT
-            const y2p = pts.y2 - ey * EXT
-            const elen = Math.max(Math.hypot(x2p - x1p, y2p - y1p), 0.001)
-            const bend = rawBend === 0 ? 0 : clamp(clamp(rawBend * 26, -104, 104), -elen * 0.35, elen * 0.35)
-            const mx = (x1p + x2p) / 2
-            const my = (y1p + y2p) / 2
-            const cxp = mx - ey * bend
-            const cyp = my + ex * bend
-            d = 'M ' + x1p + ' ' + y1p + ' Q ' + cxp + ' ' + cyp + ' ' + x2p + ' ' + y2p
-            const bx = (x1p + 2 * cxp + x2p) / 4
-            const by = (y1p + 2 * cyp + y2p) / 4
-            lblX = bx - ey * 11
-            lblY = by + ex * 11
+            // edges fan out symmetrically by rank. Endpoints are clipped along
+            // the curve tangents so the line and arrowhead touch node borders.
+            const geometry = bezierGeometry(a, b, sa, sb, edgeFan.get(edge) || 0)
+            d = 'M ' + geometry.x1 + ' ' + geometry.y1 + ' Q ' + geometry.cx + ' ' + geometry.cy + ' ' + geometry.x2 + ' ' + geometry.y2
+            const bx = (geometry.x1 + 2 * geometry.cx + geometry.x2) / 4
+            const by = (geometry.y1 + 2 * geometry.cy + geometry.y2) / 4
+            lblX = bx - geometry.ey * 11
+            lblY = by + geometry.ex * 11
           }
           return h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
