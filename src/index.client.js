@@ -326,7 +326,8 @@ export default function clientPlugin() {
       const LS_HISTORY = 'dsh-kg-history-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
       const LS_HEIGHT = 'dsh-kg-height-v1'
-      const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v1' // + ':' + sessionId
+      const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v2' // + ':' + sessionId; reference-only
+      const LS_TRAJ_RESULT_LEGACY = 'dsh-kg-traj-result-v1' // full graph/text payload from older releases
       const LS_TRAJ_PENDING = 'dsh-kg-traj-pending-v1' // + ':' + sessionId
       const LS_TRAJ_SPLIT = 'dsh-kg-traj-split-v1'
       const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
@@ -1495,8 +1496,8 @@ export default function clientPlugin() {
          const out = []
          for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
            if (!item || typeof item !== 'object' || out.length >= limit) continue
-           const key = String(item.paragraph) + '|' + String(item.quote || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '')
-           if (out.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') === key)) continue
+           const key = String(item.documentId || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '') + '|' + String(item.paragraph) + '|' + String(item.quote || '')
+           if (out.some((existing) => String(existing.documentId || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') + '|' + String(existing.paragraph) + '|' + String(existing.quote || '') === key)) continue
            out.push({ ...item })
          }
          return out
@@ -1510,6 +1511,9 @@ export default function clientPlugin() {
            if (merged[field] == null && source[field] != null) merged[field] = source[field]
          }
          merged.evidence = mergeEvidenceRecords(target.evidence, source.evidence)
+         if (merged.evidence.length > 0 || source.groundingStatus === 'grounded') merged.groundingStatus = 'grounded'
+         else if (!merged.groundingStatus) merged.groundingStatus = source.groundingStatus || 'candidate'
+         if (merged.entailmentStatus !== 'verified') merged.entailmentStatus = source.entailmentStatus || merged.entailmentStatus || 'unverified'
          return merged
        }
        // graph (original untouched). Structural fixes are deterministic; text
@@ -3342,7 +3346,9 @@ export default function clientPlugin() {
                 h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, (report.mode === 'quick' ? '质量警告 ' : '警告 ') + (report.metrics && report.metrics.warningCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),
+                report.metrics && report.metrics.anchorCoverage != null ? h('span', null, '锚点覆盖 ' + report.metrics.anchorCoverage + '%') : null,
                 h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
+                report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '语义已验证 ' + report.metrics.entailmentCoverage + '%') : null,
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
             : null,
@@ -5516,7 +5522,7 @@ export default function clientPlugin() {
                    generationMeta ? h('span', {
                      style: { color: generationMeta.invariantErrors === 0 ? '#059669' : '#dc2626' },
                      title: generationMeta.sourceAudit === 'full' ? '已完成全文 deterministic invariant 验收' : '旧式追加调用缺少既有正文，只完成新增批次 grounding + 整图结构验收',
-                   }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '') + (generationMeta.sourceAudit && generationMeta.sourceAudit !== 'full' ? ' · 部分来源复核' : '')) : null,
+                   }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.grounding && generationMeta.grounding.evidenceBackedClaims != null ? ' · 证据声明 ' + generationMeta.grounding.evidenceBackedClaims : '') + (generationMeta.grounding && (generationMeta.grounding.candidateClaims || generationMeta.grounding.unsupportedClaims) ? ' · 待证实声明 ' + ((generationMeta.grounding.candidateClaims || 0) + (generationMeta.grounding.unsupportedClaims || 0)) : '') + (generationMeta.grounding && generationMeta.grounding.entailmentStatus === 'unverified' ? ' · 语义未独立验证' : '') + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '') + (generationMeta.sourceAudit && generationMeta.sourceAudit !== 'full' ? ' · 部分来源复核' : '')) : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
@@ -5749,32 +5755,62 @@ export default function clientPlugin() {
         'tool/result': '工具结果',
       }
 
-      // Per-session persistence: the conversation.view tab unmounts whenever
-      // the user switches to another tab, so the last result and any running
-      // task live OUTSIDE the component — module-level cache (fast path)
-      // mirrored to localStorage (survives page reloads).
+      // Trajectory state follows the same persistence contract as document
+      // graphs: the browser keeps only a small document reference. Full trace
+      // text, events and canonical graph live in Host/SQLite. The module-level
+      // map may cache a hydrated view for fast tab switches, but localStorage
+      // never becomes an alternate trajectory truth.
       const trajMem = new Map()
       const trajPendMem = new Map()
+      function trajReference(entry) {
+        if (!entry || typeof entry !== 'object') return null
+        const graph = entry.graph && typeof entry.graph === 'object' ? entry.graph : null
+        const documentId = typeof entry.documentId === 'string' && entry.documentId
+          ? entry.documentId
+          : documentIdOfGraph(graph)
+        if (!documentId) return null
+        const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+        return {
+          documentId,
+          revision: Number.isInteger(entry.revision) ? entry.revision : (Number.isInteger(source.revision) ? source.revision : 0),
+          ts: Number.isFinite(entry.ts) ? entry.ts : Date.now(),
+        }
+      }
       function readTrajResult(sessionId) {
         if (!sessionId) return null
         if (trajMem.has(sessionId)) return trajMem.get(sessionId)
         let e = null
         try { e = JSON.parse(localStorage.getItem(LS_TRAJ_RESULT + ':' + sessionId) || 'null') } catch (err) {}
-        if (e && e.graph && Array.isArray(e.graph.nodes)) {
-          e = { ...e, graph: normalizeStoredGraph(e.graph) }
-          trajMem.set(sessionId, e)
-        } else e = null
-        return e
+        if (e && typeof e.documentId === 'string' && e.documentId) return e
+        // Upgrade old full-graph cache to a reference if it already has a
+        // canonical document id. The full legacy payload is deleted either way.
+        let legacy = null
+        try { legacy = JSON.parse(localStorage.getItem(LS_TRAJ_RESULT_LEGACY + ':' + sessionId) || 'null') } catch (err) {}
+        try { localStorage.removeItem(LS_TRAJ_RESULT_LEGACY + ':' + sessionId) } catch (err) {}
+        const ref = trajReference(legacy)
+        if (ref) {
+          try { localStorage.setItem(LS_TRAJ_RESULT + ':' + sessionId, JSON.stringify(ref)) } catch (err) {}
+          return ref
+        }
+        return null
       }
       function writeTrajResult(sessionId, entry) {
         if (!sessionId) return
-        trajMem.set(sessionId, entry)
-        try { localStorage.setItem(LS_TRAJ_RESULT + ':' + sessionId, JSON.stringify(entry)) } catch (e) {}
+        if (entry && entry.graph && Array.isArray(entry.graph.nodes)) trajMem.set(sessionId, entry)
+        const ref = trajReference(entry)
+        try {
+          localStorage.removeItem(LS_TRAJ_RESULT_LEGACY + ':' + sessionId)
+          if (ref) localStorage.setItem(LS_TRAJ_RESULT + ':' + sessionId, JSON.stringify(ref))
+          else localStorage.removeItem(LS_TRAJ_RESULT + ':' + sessionId)
+        } catch (e) {}
       }
       function clearTrajResult(sessionId) {
         if (!sessionId) return
         trajMem.delete(sessionId)
-        try { localStorage.removeItem(LS_TRAJ_RESULT + ':' + sessionId) } catch (e) {}
+        try {
+          localStorage.removeItem(LS_TRAJ_RESULT + ':' + sessionId)
+          localStorage.removeItem(LS_TRAJ_RESULT_LEGACY + ':' + sessionId)
+        } catch (e) {}
       }
       function readTrajPending(sessionId) {
         if (!sessionId) return null
@@ -5859,6 +5895,8 @@ export default function clientPlugin() {
         const hHandleRef = useRef(null)
         const hDragRef = useRef(null)
         const mountedSessionRef = useRef(null)
+        const trajRevisionRef = useRef(0)
+        const trajCommitQueueRef = useRef(Promise.resolve())
         const appendModeRef = useRef(false) // true while an append task is running
         const [appendCount, setAppendCount] = useState(0)
         // ---- verification / questioning ----
@@ -5909,6 +5947,41 @@ export default function clientPlugin() {
           if (toastTimer.current) { toastTimer.current(); toastTimer.current = null }
           toastTimer.current = ctx.timeout(() => { toastTimer.current = null; setTrajToast(null) }, 3000)
         }
+        const applyHydratedTrajectory = (graph, sourceText, events, revision) => {
+          const tText = typeof graph.traceText === 'string' && graph.traceText ? graph.traceText : (sourceText || '')
+          const rawEvents = Array.isArray(graph.traceEvents) ? graph.traceEvents : events
+          const evs = normalizeTraceEvents(tText, Array.isArray(rawEvents) ? rawEvents : [])
+          trajRevisionRef.current = Number.isInteger(revision)
+            ? revision
+            : (graph.source && Number.isInteger(graph.source.revision) ? graph.source.revision : 0)
+          const hydrated = { graph, traceText: tText, traceEvents: evs, revision: trajRevisionRef.current, ts: Date.now() }
+          setView(makeView(graph, tText))
+          setTraceEvents(evs)
+          writeTrajResult(sessionId, hydrated)
+          const ver = graph.verification && graph.verification.lastReport
+          setVerification(ver && ver.issues ? ver : null)
+          const fact = graph.factCheck && graph.factCheck.lastReport
+          setFactReport(fact && fact.claims ? fact : null)
+          return hydrated
+        }
+        const hydrateTrajectoryDocument = async (documentId, expectedSeq) => {
+          if (!documentId) return false
+          try {
+            const loaded = await host.call('document-load', { documentId })
+            if (expectedSeq !== sessionSeq.current || mountedSessionRef.current !== sessionId) return false
+            if (!loaded || loaded.error || !loaded.graph || !Array.isArray(loaded.graph.nodes)) {
+              clearTrajResult(sessionId)
+              setError(loaded && loaded.error ? loaded.error : { message: '无法从 Host/SQLite 恢复轨迹知识图' })
+              return false
+            }
+            applyHydratedTrajectory(loaded.graph, loaded.sourceText || '', loaded.graph.traceEvents, loaded.revision)
+            return true
+          } catch (error) {
+            if (expectedSeq !== sessionSeq.current || mountedSessionRef.current !== sessionId) return false
+            setError({ message: '恢复轨迹知识图失败：' + (error && error.message ? error.message : '未知错误') })
+            return false
+          }
+        }
 
         // Mount / session switch: RESTORE the last result (or a still-running
         // task) for this session instead of resetting — the tab is unmounted
@@ -5931,23 +6004,41 @@ export default function clientPlugin() {
           sessionSeq.current += 1
           if (!sessionId) return
           const cached = readTrajResult(sessionId)
-          if (cached) {
+          const pending = readTrajPending(sessionId)
+          const restoreSeq = sessionSeq.current
+          if (cached && cached.graph && Array.isArray(cached.graph.nodes)) {
             try {
-              setView(makeView(cached.graph, typeof cached.traceText === 'string' ? cached.traceText : ''))
-              setTraceEvents(normalizeTraceEvents(typeof cached.traceText === 'string' ? cached.traceText : '', Array.isArray(cached.traceEvents) ? cached.traceEvents : []))
-              const ver = cached.graph && cached.graph.verification && cached.graph.verification.lastReport
-              setVerification(ver && ver.issues ? ver : null)
-              const fact = cached.graph && cached.graph.factCheck && cached.graph.factCheck.lastReport
-              setFactReport(fact && fact.claims ? fact : null)
-              setPhase('done')
-              setTaskId(null)
+              applyHydratedTrajectory(cached.graph, cached.traceText || '', cached.traceEvents || [], cached.revision)
+              if (pending && pending.taskId) {
+                setTaskId(pending.taskId)
+                setPhase('extracting')
+                appendModeRef.current = pending.append === true
+              } else {
+                setPhase('done')
+                setTaskId(null)
+              }
             } catch (err) {
               clearTrajResult(sessionId)
               setPhase('idle'); setView(null); setTraceEvents([])
             }
             return
           }
-          const pending = readTrajPending(sessionId)
+          if (cached && typeof cached.documentId === 'string' && cached.documentId) {
+            setView(null); setTraceEvents([])
+            if (pending && pending.taskId) {
+              setTaskId(pending.taskId)
+              setPhase('extracting')
+              appendModeRef.current = pending.append === true
+            } else {
+              setTaskId(null)
+              setPhase('extracting')
+            }
+            hydrateTrajectoryDocument(cached.documentId, restoreSeq).then((ok) => {
+              if (restoreSeq !== sessionSeq.current || mountedSessionRef.current !== sessionId) return
+              if (!pending) setPhase(ok ? 'done' : 'idle')
+            })
+            return
+          }
           if (pending && pending.taskId) {
             setTaskId(pending.taskId)
             setPhase('extracting')
@@ -5986,9 +6077,24 @@ export default function clientPlugin() {
             if (disposed || mySeq !== sessionSeq.current) return
             if (res && res.status === 'running') setExtractProgress(res.progress || null)
             if (res && res.status === 'succeeded') {
-              const g = res.result
+              let g = res.result
+              const resultAddedNodeIds = g && Array.isArray(g.addedNodeIds) ? g.addedNodeIds.slice() : []
               if (g && Array.isArray(g.nodes)) {
-                const tText = typeof g.traceText === 'string' ? g.traceText : ''
+                if (g.source && Number.isInteger(g.source.revision)) trajRevisionRef.current = g.source.revision
+                const documentId = documentIdOfGraph(g)
+                if (documentId) {
+                  try {
+                    const loaded = await host.call('document-load', { documentId })
+                    if (disposed || mySeq !== sessionSeq.current) return
+                    if (loaded && !loaded.error && loaded.graph && Array.isArray(loaded.graph.nodes)) {
+                      g = { ...loaded.graph, ...(resultAddedNodeIds.length > 0 ? { addedNodeIds: resultAddedNodeIds } : {}) }
+                      trajRevisionRef.current = Number.isInteger(loaded.revision)
+                        ? loaded.revision
+                        : (g.source && Number.isInteger(g.source.revision) ? g.source.revision : trajRevisionRef.current)
+                    }
+                  } catch (error) { /* task result remains usable in dynamic mode */ }
+                }
+                const tText = typeof g.traceText === 'string' && g.traceText ? g.traceText : ''
                 const evs = normalizeTraceEvents(tText, Array.isArray(g.traceEvents) ? g.traceEvents : [])
                 const wasAppend = appendModeRef.current
                 appendModeRef.current = false
@@ -5996,20 +6102,21 @@ export default function clientPlugin() {
                 const prevVer = verificationRef.current
                 const prevFact = factReportRef.current
                 let g2 = g
+                let reportMetadataChanged = false
                 if (prevVer && prevVer.issues) {
                   const staleReport = { ...prevVer, stale: true }
-                  g2 = withVerification(g, staleReport, true)
+                  g2 = withVerification(g2, staleReport, true)
                   setVerification(staleReport)
+                  reportMetadataChanged = true
                 } else {
-                  g2 = withVerification(g, null, false)
                   setVerification(null)
                 }
                 if (prevFact && Array.isArray(prevFact.claims)) {
                   const staleFact = { ...prevFact, stale: true }
                   g2 = withFactCheck(g2, staleFact, true)
                   setFactReport(staleFact)
+                  reportMetadataChanged = true
                 } else {
-                  g2 = withFactCheck(g2, null, false)
                   setFactReport(null)
                 }
                 try {
@@ -6018,10 +6125,11 @@ export default function clientPlugin() {
                   setPhase('done'); setTaskId(null); setExtractProgress(null)
                   setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
                   clearTrajPending(sessionId)
-                  writeTrajResult(sessionId, { graph: g2, traceText: tText, traceEvents: evs, ts: Date.now() })
+                  writeTrajResult(sessionId, { graph: g2, traceText: tText, traceEvents: evs, revision: trajRevisionRef.current, ts: Date.now() })
+                  if (reportMetadataChanged) persistTrajGraph(g2, g)
                   if (wasAppend) {
                     setAppendCount((c) => c + 1)
-                    const added = Array.isArray(g.addedNodeIds) ? g.addedNodeIds.length : 0
+                    const added = resultAddedNodeIds.length
                     const lastEv = evs.length > 0 ? evs[evs.length - 1] : null
                     showToast('轨迹追加完成：新增 ' + added + ' 个节点' + (lastEv && typeof lastEv.seq === 'number' ? '，已覆盖到事件 #' + lastEv.seq : ''))
                   } else {
@@ -6085,9 +6193,10 @@ export default function clientPlugin() {
               const report = res.result
               if (report && Array.isArray(report.issues) && view) {
                 setVerification(report)
-                const g2 = withVerification(view.graph, report, false)
+                const baseline = view.graph
+                const g2 = withVerification(baseline, report, false)
                 setView(makeView(g2, view.sourceText))
-                writeTrajResult(sessionId, { graph: g2, traceText: view.sourceText, traceEvents, ts: Date.now() })
+                persistTrajGraph(g2, baseline)
               }
               setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
               showToast('轨迹知识图验证完成')
@@ -6179,9 +6288,10 @@ export default function clientPlugin() {
               const report = res.result
               if (report && Array.isArray(report.claims) && view) {
                 setFactReport(report)
-                const g2 = withFactCheck(view.graph, report, false)
+                const baseline = view.graph
+                const g2 = withFactCheck(baseline, report, false)
                 setView(makeView(g2, view.sourceText))
-                writeTrajResult(sessionId, { graph: g2, traceText: view.sourceText, traceEvents, ts: Date.now() })
+                persistTrajGraph(g2, baseline)
               }
               setFactPhase('idle'); setFactTaskId(null); setFactProgress(null)
               showToast('轨迹外部事实核查完成')
@@ -6214,6 +6324,7 @@ export default function clientPlugin() {
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
           setAppendCount(0)
           appendModeRef.current = false
+          trajRevisionRef.current = 0
           clearTrajResult(sessionId)
           try {
             const res = await host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
@@ -6244,18 +6355,24 @@ export default function clientPlugin() {
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
           appendModeRef.current = true
           try {
-            const existing = {
-              summary: typeof view.graph.summary === 'string' ? view.graph.summary : '',
-              nodes: view.graph.nodes,
-              edges: view.graph.edges,
-              traceText: view.sourceText || '',
-              traceEvents,
+            await trajCommitQueueRef.current.catch(() => {})
+            const documentId = documentIdOfGraph(view.graph)
+            if (!documentId) {
+              setPhase('done')
+              appendModeRef.current = false
+              setError({ code: 'trajectory_state_incomplete', message: '当前轨迹没有 canonical documentId，请重新拆解一次后再追加' })
+              return
             }
-            const res = await host.call('trajectory-append-extract', { sessionId, existing, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })
+            const res = await host.call('trajectory-append-extract', {
+              sessionId,
+              documentId,
+              expectedRevision: trajRevisionRef.current,
+              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+            })
             if (res && res.error) { setPhase('idle'); setError(res.error); return }
             if (res && res.taskId) {
               setTaskId(res.taskId)
-              writeTrajPending(sessionId, { taskId: res.taskId, append: true, ts: Date.now() })
+              writeTrajPending(sessionId, { taskId: res.taskId, append: true, documentId, revision: trajRevisionRef.current, ts: Date.now() })
             }
             else { setPhase('idle'); setError({ message: '无法提交追加任务，请重试' }) }
           } catch (e) {
@@ -6265,19 +6382,65 @@ export default function clientPlugin() {
         }
 
         // ---- verification / questioning actions (trajectory) ----
-        const persistTrajGraph = (g) => {
-          try { writeTrajResult(sessionId, { graph: g, traceText: view ? view.sourceText : '', traceEvents, ts: Date.now() }) } catch (e) {}
+        // Trajectory edits share the same canonical revision protocol as the
+        // document workbench. localStorage only remembers the document ref;
+        // reports and repairs are durable only after graph-commit succeeds.
+        const persistTrajGraph = (g, baseGraph) => {
+          const documentId = documentIdOfGraph(g)
+          if (!documentId) return Promise.resolve(null)
+          const baseline = baseGraph && typeof baseGraph === 'object' ? baseGraph : (view && view.graph ? view.graph : g)
+          const sourceText = view ? view.sourceText : ''
+          const edgeRevisionKey = (edge) => edge && edge.fromNodeId && edge.toNodeId
+            ? edge.fromNodeId + '>' + edge.toNodeId + ':' + String(edge.relation || '')
+            : ''
+          const operations = semanticOperationsOf(g)
+          const graphPayload = {
+            summary: typeof g.summary === 'string' ? g.summary : '',
+            nodes: Array.isArray(g.nodes) ? g.nodes : [],
+            edges: Array.isArray(g.edges) ? g.edges : [],
+            ...(g.verification && typeof g.verification === 'object' ? { verification: g.verification } : {}),
+            ...(g.factCheck && typeof g.factCheck === 'object' ? { factCheck: g.factCheck } : {}),
+          }
+          const queued = trajCommitQueueRef.current.catch(() => {}).then(async () => {
+            const response = await host.call('graph-commit', {
+              documentId,
+              expectedRevision: trajRevisionRef.current,
+              graph: graphPayload,
+              operations,
+              baseNodeIds: (Array.isArray(baseline.nodes) ? baseline.nodes : []).map((node) => node && node.id).filter(Boolean),
+              baseEdgeKeys: (Array.isArray(baseline.edges) ? baseline.edges : []).map(edgeRevisionKey).filter(Boolean),
+            })
+            if (response && response.error) {
+              const failure = new Error(response.error.message || 'trajectory graph commit failed')
+              failure.details = response.error
+              throw failure
+            }
+            if (response && Number.isInteger(response.revision)) trajRevisionRef.current = response.revision
+            graphSemanticOperations.delete(g)
+            writeTrajResult(sessionId, { graph: g, traceText: sourceText, traceEvents, revision: trajRevisionRef.current, ts: Date.now() })
+            return response
+          }).catch((error) => {
+            const details = error && error.details && typeof error.details === 'object' ? error.details : error
+            graphSemanticOperations.delete(g)
+            setError({ ...(details && typeof details === 'object' ? details : {}), message: details && details.message ? details.message : '轨迹知识图提交失败' })
+            if (baseline && baseline !== g) setView(makeView(baseline, sourceText))
+            return null
+          })
+          trajCommitQueueRef.current = queued
+          return queued
         }
         const commitTrajGraph = (g) => {
           if (!view) return
+          const baseline = view.graph
           setView(makeView(g, view.sourceText))
-          persistTrajGraph(g)
+          persistTrajGraph(g, baseline)
         }
         const attachTrajReport = (report, stale) => {
           if (!view) return
-          const g2 = withVerification(view.graph, report, stale)
+          const baseline = view.graph
+          const g2 = withVerification(baseline, report, stale)
           setView(makeView(g2, view.sourceText))
-          persistTrajGraph(g2)
+          persistTrajGraph(g2, baseline)
         }
         const startQuickVerify = async () => {
           if (!view || verifyBusyRef.current) return
@@ -6726,7 +6889,7 @@ export default function clientPlugin() {
                   sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
                    stagingMeta && stagingMeta.chunkCount > 0 ? h('span', null, '已保留 ' + stagingMeta.chunkCount + ' 个分块结果') : null,
                    appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
-                   generationMeta ? h('span', { style: { color: generationMeta.invariantErrors === 0 ? '#059669' : '#dc2626' } }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '')) : null,
+                   generationMeta ? h('span', { style: { color: generationMeta.invariantErrors === 0 ? '#059669' : '#dc2626' } }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.grounding && generationMeta.grounding.evidenceBackedClaims != null ? ' · 证据声明 ' + generationMeta.grounding.evidenceBackedClaims : '') + (generationMeta.grounding && (generationMeta.grounding.candidateClaims || generationMeta.grounding.unsupportedClaims) ? ' · 待证实声明 ' + ((generationMeta.grounding.candidateClaims || 0) + (generationMeta.grounding.unsupportedClaims || 0)) : '') + (generationMeta.grounding && generationMeta.grounding.entailmentStatus === 'unverified' ? ' · 语义未独立验证' : '') + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '')) : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),

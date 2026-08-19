@@ -5,6 +5,8 @@ const store = await openSqliteStore(':memory:')
 try {
   const graph = {
     summary: '书级 fixture',
+    traceText: 'trace persistence smoke',
+    traceEvents: [{ seq: 1, type: 'user/message', start: 0, end: 23, line: 'trace persistence smoke' }],
     generation: { invariantVersion: 1, status: 'succeeded', invariantErrors: 0, sourceAudit: 'full', retryCount: 0, autoRepairCount: 0, autoRepairs: [] },
     source: {
       id: 'source-smoke',
@@ -26,8 +28,8 @@ try {
       ],
     },
     nodes: [
-      { id: 'n1', type: 'fact', text: '系统按块读取正文', paragraph: 0, quote: '按块读取', evidence: [{ paragraph: 0, quote: '按块读取' }], documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-1', sectionId: 'section-1', sectionTitle: '第一章' },
-      { id: 'n2', type: 'concept', text: '可恢复处理', paragraph: 2, quote: '可恢复', evidence: [{ paragraph: 2, quote: '可恢复' }], documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-2', sectionId: 'section-2', sectionTitle: '第二章' },
+      { id: 'n1', type: 'fact', text: '系统按块读取正文', paragraph: 0, quote: '按块读取', evidence: [{ documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-1', paragraph: 0, quote: '按块读取' }], groundingStatus: 'grounded', entailmentStatus: 'unverified', documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-1', sectionId: 'section-1', sectionTitle: '第一章' },
+      { id: 'n2', type: 'concept', text: '可恢复处理', paragraph: 2, quote: '可恢复', evidence: [{ documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-2', paragraph: 2, quote: '可恢复' }], groundingStatus: 'grounded', entailmentStatus: 'verified', documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-2', sectionId: 'section-2', sectionTitle: '第二章' },
     ],
     edges: [{ fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports', evidence: [{ paragraph: 0, quote: '按块读取' }], documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-2' }],
   }
@@ -44,6 +46,8 @@ try {
   if (!loaded || loaded.checkpoint.nextBatchIndex !== 1 || loaded.sourceText !== sourceText || loaded.status !== 'running') throw new Error('checkpoint persistence failed')
   const restored = store.getDocument('document-smoke')
   if (!restored || restored.nodes.length !== 2 || restored.edges.length !== 1 || restored.staging.chunks.length !== 2 || restored.sourceText !== sourceText || restored.revision !== 1) throw new Error('document restore failed')
+  if (restored.traceText !== graph.traceText || !Array.isArray(restored.traceEvents) || restored.traceEvents.length !== 1) throw new Error('trajectory graph metadata was not restored')
+  if (restored.nodes[0].groundingStatus !== 'grounded' || !['unverified', 'verified'].includes(restored.nodes[0].entailmentStatus)) throw new Error('grounding/entailment status was not restored')
   if (!restored.generation || restored.generation.invariantErrors !== 0 || restored.generation.sourceAudit !== 'full') throw new Error('generation audit metadata was not restored from SQLite')
 
   // Commit a UI window containing only n1 and delete n1 from that window.

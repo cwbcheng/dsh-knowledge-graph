@@ -22,6 +22,27 @@ const extractor = async ({ title, attempt, prompt }) => {
       edges: [],
     }
   }
+  if (title === 'gate-hallucinated-empty') {
+    return {
+      summary: '只有锚点没有证据',
+      nodes: [{ id: 'h1', type: 'fact', text: '月球由奶酪组成', quote: '', paragraph: 0 }],
+      edges: [],
+    }
+  }
+  if (title === 'gate-hallucinated-fake') {
+    return {
+      summary: '伪造摘录不能成为证据',
+      nodes: [{ id: 'h2', type: 'fact', text: '月球由奶酪组成', quote: '月球由奶酪组成', paragraph: 0 }],
+      edges: [],
+    }
+  }
+  if (title === 'gate-entailment-unverified') {
+    return {
+      summary: '证据真实但语义蕴含未验证',
+      nodes: [{ id: 'h3', type: 'fact', text: '月球由奶酪组成', quote: '今天上海下雨', paragraph: 0, entailmentStatus: 'verified' }],
+      edges: [],
+    }
+  }
   if (attempt === 0) {
     return {
       summary: '第一次候选',
@@ -79,6 +100,11 @@ const retryCall = calls.find((call) => call.title === 'gate-retry' && call.attem
 assert(retryCall && retryCall.prompt.includes('edge_source_type_mismatch'), 'typed invariant feedback was not supplied to the retry prompt')
 assert(completed.result.generation && completed.result.generation.invariantErrors === 0, 'accepted graph does not declare zero invariant errors')
 assert(completed.result.generation.retryCount >= 1, 'generation retry metadata is missing')
+const provenanceNode = completed.result.nodes.find((node) => node.id === 'n1')
+const provenanceEdge = completed.result.edges[0]
+assert(provenanceNode && provenanceNode.evidence[0] && provenanceNode.evidence[0].documentId && provenanceNode.evidence[0].sourceId && provenanceNode.evidence[0].chunkId, 'node evidence does not carry full provenance')
+assert(provenanceEdge && provenanceEdge.evidence[0] && provenanceEdge.evidence[0].documentId && provenanceEdge.evidence[0].sourceId && provenanceEdge.evidence[0].chunkId, 'edge evidence does not carry full provenance')
+assert(provenanceNode.groundingStatus === 'grounded' && provenanceNode.entailmentStatus === 'unverified', 'anchor/evidence/entailment states are not separated')
 
 const quick = await handlers.get('verify-graph')({
   text: source,
@@ -135,6 +161,47 @@ assert(qualityCompleted.status === 'succeeded', 'quality-only findings must not 
 const qualityQuick = await handlers.get('verify-graph')({ text: '孤立事实', graph: qualityCompleted.result, mode: 'quick' })
 assert(qualityQuick.report.metrics.errorCount === 0, 'quality-only graph was incorrectly counted as deterministic failure')
 assert(qualityQuick.report.metrics.warningCount > 0 && qualityQuick.report.issues.some((issue) => issue.invariantCode === 'node_isolated'), 'quality warning layer did not preserve isolated-node guidance')
+
+const hallucinatedSource = '今天上海下雨'
+const emptyStarted = await handlers.get('extract')({ title: 'gate-hallucinated-empty', text: hallucinatedSource })
+const emptyCompleted = await waitTask(emptyStarted.taskId)
+assert(emptyCompleted.status === 'succeeded', 'missing quote should remain an explicit candidate instead of crashing extraction')
+assert(emptyCompleted.result.nodes[0].groundingStatus === 'candidate', 'paragraph-only hallucinated claim was incorrectly marked grounded')
+assert(emptyCompleted.result.nodes[0].evidence.length === 0, 'paragraph-only claim acquired fake evidence')
+assert(emptyCompleted.result.generation.status === 'succeeded_with_warnings' && emptyCompleted.result.generation.grounding.candidateClaims === 1, 'candidate claim was not surfaced in generation audit')
+const emptyQuick = await handlers.get('verify-graph')({ text: hallucinatedSource, graph: emptyCompleted.result, mode: 'quick' })
+assert(emptyQuick.report.issues.some((issue) => issue.invariantCode === 'claim_evidence_missing'), 'quick check does not distinguish anchor from claim evidence')
+
+const fakeStarted = await handlers.get('extract')({ title: 'gate-hallucinated-fake', text: hallucinatedSource })
+const fakeCompleted = await waitTask(fakeStarted.taskId)
+assert(fakeCompleted.status === 'succeeded', 'fake quote should be retained only as unsupported state for review')
+assert(fakeCompleted.result.nodes[0].groundingStatus === 'unsupported' && fakeCompleted.result.nodes[0].evidence.length === 0, 'fabricated quote was incorrectly authenticated as evidence')
+const fakeQuick = await handlers.get('verify-graph')({ text: hallucinatedSource, graph: fakeCompleted.result, mode: 'quick' })
+assert(fakeQuick.report.issues.some((issue) => issue.invariantCode === 'node_evidence_unsupported'), 'fabricated quote is not diagnosed as unsupported')
+
+const entailmentStarted = await handlers.get('extract')({ title: 'gate-entailment-unverified', text: hallucinatedSource })
+const entailmentCompleted = await waitTask(entailmentStarted.taskId)
+assert(entailmentCompleted.status === 'succeeded', 'authentic evidence fixture failed unexpectedly')
+assert(entailmentCompleted.result.nodes[0].groundingStatus === 'grounded', 'authentic quote was not evidence-backed')
+assert(entailmentCompleted.result.nodes[0].entailmentStatus === 'unverified', 'generation proposer was allowed to self-certify semantic entailment')
+const entailmentQuick = await handlers.get('verify-graph')({ text: hallucinatedSource, graph: entailmentCompleted.result, mode: 'quick' })
+assert(entailmentQuick.report.metrics.evidenceCoverage === 100 && entailmentQuick.report.metrics.entailmentCoverage === 0, 'evidence authenticity and semantic entailment metrics are conflated')
+
+const entailmentDocumentId = entailmentCompleted.result.source.documentId
+const forgedEntailment = await handlers.get('graph-commit')({
+  documentId: entailmentDocumentId,
+  expectedRevision: entailmentCompleted.result.source.revision,
+  graph: {
+    summary: entailmentCompleted.result.summary,
+    nodes: entailmentCompleted.result.nodes.map((node) => ({ ...node, entailmentStatus: 'verified' })),
+    edges: entailmentCompleted.result.edges,
+  },
+  baseNodeIds: entailmentCompleted.result.nodes.map((node) => node.id),
+  baseEdgeKeys: [],
+})
+assert(forgedEntailment && !forgedEntailment.error, 'ordinary graph edit was rejected while testing entailment authority')
+const entailmentExport = await handlers.get('document-export')({ documentId: entailmentDocumentId })
+assert(entailmentExport.graph.nodes[0].entailmentStatus === 'unverified', 'browser graph-commit was allowed to self-promote entailmentStatus=verified')
 
 const fatalStarted = await handlers.get('extract')({ title: 'gate-fatal', text: '没有 id 的节点' })
 assert(fatalStarted && fatalStarted.taskId, 'fatal invariant task was not created')

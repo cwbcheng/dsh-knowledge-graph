@@ -28,7 +28,8 @@
       const LS_HISTORY = 'dsh-kg-history-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
       const LS_HEIGHT = 'dsh-kg-height-v1'
-      const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v1' // + ':' + sessionId
+      const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v2' // + ':' + sessionId; reference-only
+      const LS_TRAJ_RESULT_LEGACY = 'dsh-kg-traj-result-v1' // full graph/text payload from older releases
       const LS_TRAJ_PENDING = 'dsh-kg-traj-pending-v1' // + ':' + sessionId
       const LS_TRAJ_SPLIT = 'dsh-kg-traj-split-v1'
       const LS_TRAJ_HEIGHT = 'dsh-kg-traj-height-v1'
@@ -1197,8 +1198,8 @@
          const out = []
          for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
            if (!item || typeof item !== 'object' || out.length >= limit) continue
-           const key = String(item.paragraph) + '|' + String(item.quote || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '')
-           if (out.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') === key)) continue
+           const key = String(item.documentId || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '') + '|' + String(item.paragraph) + '|' + String(item.quote || '')
+           if (out.some((existing) => String(existing.documentId || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') + '|' + String(existing.paragraph) + '|' + String(existing.quote || '') === key)) continue
            out.push({ ...item })
          }
          return out
@@ -1212,6 +1213,9 @@
            if (merged[field] == null && source[field] != null) merged[field] = source[field]
          }
          merged.evidence = mergeEvidenceRecords(target.evidence, source.evidence)
+         if (merged.evidence.length > 0 || source.groundingStatus === 'grounded') merged.groundingStatus = 'grounded'
+         else if (!merged.groundingStatus) merged.groundingStatus = source.groundingStatus || 'candidate'
+         if (merged.entailmentStatus !== 'verified') merged.entailmentStatus = source.entailmentStatus || merged.entailmentStatus || 'unverified'
          return merged
        }
        // graph (original untouched). Structural fixes are deterministic; text
@@ -3044,7 +3048,9 @@
                 h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, (report.mode === 'quick' ? '质量警告 ' : '警告 ') + (report.metrics && report.metrics.warningCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),
+                report.metrics && report.metrics.anchorCoverage != null ? h('span', null, '锚点覆盖 ' + report.metrics.anchorCoverage + '%') : null,
                 h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
+                report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '语义已验证 ' + report.metrics.entailmentCoverage + '%') : null,
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
             : null,

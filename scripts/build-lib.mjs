@@ -292,7 +292,17 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
                 }
                 const operated = applyGraphOperationsHost(current, a.operations)
-                const preview = mergeGraphViewHost(operated, a.graph, a.baseNodeIds, a.baseEdgeKeys)
+                const incomingGraph = {
+                  ...a.graph,
+                  source: current.source,
+                  staging: current.staging,
+                  nodes: Array.isArray(a.graph.nodes) ? a.graph.nodes.map((node) => ({ ...node, evidence: Array.isArray(node && node.evidence) ? node.evidence.map((item) => ({ ...item })) : [] })) : [],
+                  edges: Array.isArray(a.graph.edges) ? a.graph.edges.map((edge) => ({ ...edge, evidence: Array.isArray(edge && edge.evidence) ? edge.evidence.map((item) => ({ ...item })) : [] })) : [],
+                }
+                preserveEntailmentAuthorityHost(current, incomingGraph)
+                authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '')
+                const preview = mergeGraphViewHost(operated, incomingGraph, a.baseNodeIds, a.baseEdgeKeys)
+                authenticateGraphEvidenceHost(preview, current.sourceText || '')
                 const gate = validateGraphInvariantsHost(preview, current.sourceText || '', { includeQuality: false })
                 if (gate.blockingIssues.length > 0) {
                   return writeJson(res, 200, {
@@ -305,7 +315,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 }
                 const committed = store.commitViewGraph({
                   documentId,
-                  graph: a.graph,
+                  graph: incomingGraph,
                   operations: Array.isArray(a.operations) ? a.operations : [],
                   baseNodeIds: Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [],
                   baseEdgeKeys: Array.isArray(a.baseEdgeKeys) ? a.baseEdgeKeys : [],
@@ -387,6 +397,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 baseRevision: appendRecovery ? checkpoint.baseRevision : null,
                 baseSource,
                 baseStaging,
+                ...(checkpoint.taskKind === 'trajectory' || checkpoint.taskKind === 'trajectory-append' ? {
+                  traceText: savedRun.sourceText,
+                  traceEvents: Array.isArray(checkpoint.traceEvents) ? checkpoint.traceEvents : [],
+                } : {}),
+                ...(checkpoint.taskKind === 'trajectory-append' ? {
+                  baseTraceText: typeof checkpoint.baseTraceText === 'string' ? checkpoint.baseTraceText : (previous && typeof previous.traceText === 'string' ? previous.traceText : ''),
+                  baseTraceEvents: Array.isArray(checkpoint.baseTraceEvents) ? checkpoint.baseTraceEvents : (previous && Array.isArray(previous.traceEvents) ? previous.traceEvents : []),
+                } : {}),
                 paragraphOffset: Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
                 model,
                 createdAt: Date.now(),
@@ -557,12 +575,23 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const sessions = ctx.get('sessions')
               const session = sessions ? sessions.get(sessionId) : undefined
               if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
-              const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
-              if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
-                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } })
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '轨迹追加缺少 documentId；请先重新拆解当前轨迹' } })
+              const store = await getSqliteStore()
+              const canonical = store.getDocument(documentId)
+              if (!canonical || !Array.isArray(canonical.nodes) || canonical.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'not_found', message: 'SQLite 中找不到该轨迹 canonical graph；请重新拆解当前轨迹' } })
               }
-              const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
-              const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+              const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : canonical.revision
+              if (expectedRevision !== canonical.revision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '轨迹知识图已被其他修改更新，请重新载入后再追加', currentRevision: canonical.revision } })
+              }
+              const existing = canonical
+              const baseTraceText = typeof canonical.traceText === 'string' && canonical.traceText ? canonical.traceText : (canonical.sourceText || '')
+              const baseTraceEvents = Array.isArray(canonical.traceEvents) ? canonical.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+              if (baseTraceText && baseTraceEvents.length === 0) {
+                return writeJson(res, 200, { error: { code: 'trajectory_state_incomplete', message: '旧轨迹缺少 canonical traceEvents，无法安全增量追加；请重新拆解一次轨迹' } })
+              }
               let fromSeq = -1
               for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
               const newEvents = []
@@ -579,8 +608,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+                documentId, existingSourceText: canonical.sourceText || baseTraceText,
                 baseTraceText, baseTraceEvents, existing, paragraphOffset,
-                baseRevision: existing && existing.source && Number.isInteger(existing.source.revision) ? existing.source.revision : null,
+                baseRevision: canonical.revision,
                 baseSource: existing && existing.source ? existing.source : null,
                 baseStaging: existing && existing.staging ? existing.staging : null,
                 model, createdAt: Date.now(),

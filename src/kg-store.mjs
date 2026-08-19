@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
   chunk_id TEXT,
   section_id TEXT,
   section_title TEXT,
+  grounding_status TEXT NOT NULL DEFAULT 'candidate',
+  entailment_status TEXT NOT NULL DEFAULT 'unverified',
   state TEXT NOT NULL DEFAULT 'candidate',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -184,6 +186,8 @@ function nodeFromRow(node) {
     chunkId: node.chunk_id,
     sectionId: node.section_id,
     sectionTitle: node.section_title,
+    groundingStatus: text(node.grounding_status, 'candidate'),
+    entailmentStatus: text(node.entailment_status, 'unverified'),
     state: node.state,
   }
 }
@@ -225,8 +229,8 @@ function mergeEvidence(primary, secondary, limit = 8) {
   const out = []
   for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
     if (!item || typeof item !== 'object' || out.length >= limit) continue
-    const key = String(item.paragraph) + '|' + String(item.quote || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '')
-    if (!out.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') === key)) out.push({ ...item })
+    const key = String(item.documentId || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '') + '|' + String(item.paragraph) + '|' + String(item.quote || '')
+    if (!out.some((existing) => String(existing.documentId || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') + '|' + String(existing.paragraph) + '|' + String(existing.quote || '') === key)) out.push({ ...item })
   }
   return out
 }
@@ -266,6 +270,9 @@ function applyCanonicalOperations(graph, operations) {
       if (target[field] == null && from[field] != null) target[field] = from[field]
     }
     target.evidence = mergeEvidence(target.evidence, from.evidence)
+    if (target.evidence.length > 0 || from.groundingStatus === 'grounded') target.groundingStatus = 'grounded'
+    else if (!target.groundingStatus) target.groundingStatus = from.groundingStatus || 'candidate'
+    if (target.entailmentStatus !== 'verified') target.entailmentStatus = from.entailmentStatus || target.entailmentStatus || 'unverified'
     next.nodes[intoIndex] = target
     next.nodes = next.nodes.filter((node) => node && node.id !== fromId)
     const edgeMap = new Map()
@@ -320,6 +327,8 @@ export class SqliteKnowledgeStore {
     this.ensureColumn('documents', 'source_text', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('documents', 'graph_meta_json', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('documents', 'graph_revision', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('graph_nodes', 'grounding_status', "TEXT NOT NULL DEFAULT 'candidate'")
+    this.ensureColumn('graph_nodes', 'entailment_status', "TEXT NOT NULL DEFAULT 'unverified'")
     this.ensureColumn('extraction_runs', 'title', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('extraction_runs', 'source_text', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('extraction_runs', 'error_code', 'TEXT')
@@ -406,6 +415,8 @@ export class SqliteKnowledgeStore {
       summary: text(graph.summary),
       warnings: Array.isArray(graph.warnings) ? graph.warnings : [],
       ...(graph.generation && typeof graph.generation === 'object' ? { generation: graph.generation } : {}),
+      ...(typeof graph.traceText === 'string' ? { traceText: graph.traceText } : {}),
+      ...(Array.isArray(graph.traceEvents) ? { traceEvents: graph.traceEvents } : {}),
       ...(graph.verification && typeof graph.verification === 'object' ? { verification: graph.verification } : {}),
       ...(graph.factCheck && typeof graph.factCheck === 'object' ? { factCheck: graph.factCheck } : {}),
     }
@@ -501,8 +512,8 @@ export class SqliteKnowledgeStore {
       }
 
       const nodeStmt = this.db.prepare(`
-        INSERT INTO graph_nodes (node_key, document_id, source_id, node_id, type, text, quote, paragraph, evidence_json, chunk_id, section_id, section_title, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO graph_nodes (node_key, document_id, source_id, node_id, type, text, quote, paragraph, evidence_json, chunk_id, section_id, section_title, grounding_status, entailment_status, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(node_key) DO UPDATE SET
           source_id = excluded.source_id,
           type = excluded.type,
@@ -513,6 +524,8 @@ export class SqliteKnowledgeStore {
           chunk_id = excluded.chunk_id,
           section_id = excluded.section_id,
           section_title = excluded.section_title,
+          grounding_status = excluded.grounding_status,
+          entailment_status = excluded.entailment_status,
           updated_at = excluded.updated_at
       `)
       for (const node of nodes) {
@@ -533,6 +546,8 @@ export class SqliteKnowledgeStore {
           text(node.chunkId) || null,
           text(node.sectionId) || null,
           text(node.sectionTitle) || null,
+          ['grounded', 'candidate', 'unsupported'].includes(text(node.groundingStatus)) ? text(node.groundingStatus) : 'candidate',
+          ['verified', 'unsupported', 'uncertain', 'unverified'].includes(text(node.entailmentStatus)) ? text(node.entailmentStatus) : 'unverified',
           normalizeStatus(node.state),
           now,
           now,
@@ -719,43 +734,9 @@ export class SqliteKnowledgeStore {
   getDocument(documentId) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
-    const nodes = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id').all(documentId).map((node) => ({
-      id: node.node_id,
-      type: node.type,
-      text: node.text,
-      quote: node.quote,
-      paragraph: node.paragraph,
-      evidence: parseJson(node.evidence_json, []),
-      documentId: node.document_id,
-      sourceId: node.source_id,
-      chunkId: node.chunk_id,
-      sectionId: node.section_id,
-      sectionTitle: node.section_title,
-      state: node.state,
-    }))
-    const edges = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ? ORDER BY from_node_id, to_node_id').all(documentId).map((edge) => ({
-      fromNodeId: edge.from_node_id,
-      toNodeId: edge.to_node_id,
-      relation: edge.relation,
-      evidence: parseJson(edge.evidence_json, []),
-      documentId: edge.document_id,
-      sourceId: edge.source_id,
-      chunkId: edge.chunk_id,
-      state: edge.state,
-    }))
-    const chunks = this.db.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY start_paragraph, chunk_id').all(documentId).map((chunk) => ({
-      chunkId: chunk.chunk_id,
-      sourceId: chunk.source_id,
-      startParagraph: chunk.start_paragraph,
-      endParagraph: chunk.end_paragraph,
-      sectionIds: parseJson(chunk.section_ids_json, []),
-      sectionTitles: parseJson(chunk.section_titles_json, []),
-      summary: chunk.summary,
-      status: chunk.status,
-      nodeIds: parseJson(chunk.node_ids_json, []),
-      edgeCount: chunk.edge_count,
-      warnings: parseJson(chunk.warnings_json, []),
-    }))
+    const nodes = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id').all(documentId).map(nodeFromRow)
+    const edges = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ? ORDER BY from_node_id, to_node_id').all(documentId).map(edgeFromRow)
+    const chunks = this.db.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY start_paragraph, chunk_id').all(documentId).map(chunkFromRow)
     const meta = parseJson(row.graph_meta_json, {})
     const source = {
       ...parseJson(row.source_json, {

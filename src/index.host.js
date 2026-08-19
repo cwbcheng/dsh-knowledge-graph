@@ -1142,6 +1142,113 @@ export default function hostPlugin() {
         defines: 'definition',
       }
       const NEGATION_MARKERS = ['不', '无', '未', '非', '禁止', '不能', '无法', '没有', '不可', '不会', '反对']
+      const EVIDENCE_REQUIRED_NODE_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+      const GROUNDING_STATUSES = new Set(['grounded', 'candidate', 'unsupported'])
+      const ENTAILMENT_STATUSES = new Set(['verified', 'unsupported', 'uncertain', 'unverified'])
+      function evidenceKeyHost(item) {
+        if (!item || typeof item !== 'object') return ''
+        return [item.documentId || '', item.sourceId || '', item.chunkId || '', item.paragraph, item.quote || ''].join('|')
+      }
+      function evidenceRecordHost(paragraph, quote, sourceContext, item) {
+        const out = { paragraph, quote }
+        const context = sourceContext && typeof sourceContext === 'object' ? sourceContext : {}
+        const raw = item && typeof item === 'object' ? item : {}
+        const documentId = typeof raw.documentId === 'string' && raw.documentId ? raw.documentId : context.documentId
+        const sourceId = typeof raw.sourceId === 'string' && raw.sourceId ? raw.sourceId : context.sourceId
+        const chunkId = typeof raw.chunkId === 'string' && raw.chunkId ? raw.chunkId : context.chunkId
+        if (documentId) out.documentId = documentId
+        if (sourceId) out.sourceId = sourceId
+        if (chunkId) out.chunkId = chunkId
+        return out
+      }
+      function mergeEvidenceRecordsHost(primary, secondary, limit) {
+        const cap = Number.isInteger(limit) && limit > 0 ? limit : 8
+        const out = []
+        const seen = new Set()
+        for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
+          if (!item || typeof item !== 'object' || out.length >= cap) continue
+          const quote = typeof item.quote === 'string' ? item.quote.trim().slice(0, 600) : ''
+          const paragraph = Number(item.paragraph)
+          if (!Number.isInteger(paragraph) || paragraph < 0 || !quote) continue
+          const normalized = evidenceRecordHost(paragraph, quote, null, item)
+          const key = evidenceKeyHost(normalized)
+          if (!key || seen.has(key)) continue
+          seen.add(key)
+          out.push(normalized)
+        }
+        return out
+      }
+      function refreshNodeGroundingStatusHost(node) {
+        if (!node || typeof node !== 'object') return node
+        const evidence = Array.isArray(node.evidence) ? node.evidence.filter((item) => item && typeof item.quote === 'string' && item.quote.trim()) : []
+        const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
+        node.groundingStatus = evidence.length > 0 ? 'grounded' : (quote ? 'unsupported' : 'candidate')
+        if (!ENTAILMENT_STATUSES.has(node.entailmentStatus)) node.entailmentStatus = 'unverified'
+        return node
+      }
+      function provenanceForParagraphHost(graph, paragraph) {
+        const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+        const staging = graph && graph.staging && typeof graph.staging === 'object' ? graph.staging : {}
+        const chunks = Array.isArray(staging.chunks) ? staging.chunks : []
+        const chunk = Number.isInteger(paragraph)
+          ? chunks.find((item) => item && Number.isInteger(item.startParagraph) && Number.isInteger(item.endParagraph) && paragraph >= item.startParagraph && paragraph <= item.endParagraph)
+          : null
+        return {
+          documentId: source.documentId || staging.documentId || null,
+          sourceId: chunk && chunk.sourceId ? chunk.sourceId : (source.id || staging.sourceId || null),
+          chunkId: chunk && chunk.chunkId ? chunk.chunkId : null,
+        }
+      }
+      function preserveEntailmentAuthorityHost(currentGraph, incomingGraph) {
+        if (!incomingGraph || typeof incomingGraph !== 'object') return incomingGraph
+        const current = new Map((Array.isArray(currentGraph && currentGraph.nodes) ? currentGraph.nodes : [])
+          .filter((node) => node && typeof node.id === 'string' && node.id)
+          .map((node) => [node.id, ENTAILMENT_STATUSES.has(node.entailmentStatus) ? node.entailmentStatus : 'unverified']))
+        for (const node of Array.isArray(incomingGraph.nodes) ? incomingGraph.nodes : []) {
+          if (!node || typeof node !== 'object') continue
+          node.entailmentStatus = current.has(node.id) ? current.get(node.id) : 'unverified'
+        }
+        return incomingGraph
+      }
+      function authenticateGraphEvidenceHost(graph, sourceText) {
+        if (!graph || typeof graph !== 'object') return graph
+        const paragraphs = splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '')
+        const quoteMatches = (paragraph, quote) => {
+          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphs.length || !quote) return false
+          const source = String(paragraphs[paragraph] || '')
+          const normalizedSource = source.replace(/\s+/g, ' ').trim()
+          const normalizedQuote = String(quote).replace(/\s+/g, ' ').trim()
+          return source.includes(quote) || Boolean(normalizedQuote && normalizedSource.includes(normalizedQuote))
+        }
+        for (const node of Array.isArray(graph.nodes) ? graph.nodes : []) {
+          if (!node || typeof node !== 'object') continue
+          const authenticated = []
+          for (const item of Array.isArray(node.evidence) ? node.evidence : []) {
+            if (!item || !Number.isInteger(item.paragraph) || typeof item.quote !== 'string' || !item.quote.trim()) continue
+            const quote = item.quote.trim().slice(0, 600)
+            if (!quoteMatches(item.paragraph, quote)) continue
+            authenticated.push(evidenceRecordHost(item.paragraph, quote, provenanceForParagraphHost(graph, item.paragraph), item))
+          }
+          const quote = typeof node.quote === 'string' ? node.quote.trim().slice(0, 600) : ''
+          if (quote && Number.isInteger(node.paragraph) && quoteMatches(node.paragraph, quote)) {
+            authenticated.push(evidenceRecordHost(node.paragraph, quote, provenanceForParagraphHost(graph, node.paragraph), null))
+          }
+          node.evidence = mergeEvidenceRecordsHost([], authenticated, 8)
+          refreshNodeGroundingStatusHost(node)
+        }
+        for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
+          if (!edge || typeof edge !== 'object') continue
+          const authenticated = []
+          for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) {
+            if (!item || !Number.isInteger(item.paragraph) || typeof item.quote !== 'string' || !item.quote.trim()) continue
+            const quote = item.quote.trim().slice(0, 600)
+            if (!quoteMatches(item.paragraph, quote)) continue
+            authenticated.push(evidenceRecordHost(item.paragraph, quote, provenanceForParagraphHost(graph, item.paragraph), item))
+          }
+          edge.evidence = mergeEvidenceRecordsHost([], authenticated, 8)
+        }
+        return graph
+      }
 
       function validateGraphInvariantsHost(graph, sourceText, options = {}) {
         const includeQuality = options.includeQuality === true
@@ -1240,14 +1347,27 @@ export default function hostPlugin() {
           } else if (!quote && pNum == null) {
             add('node_unanchored', true, 'error', 'grounding', 'node', id,
               '节点没有可验证的原文锚点', '节点既没有 quote，也没有有效 paragraph。', [], { action: 'none' })
-          } else if (includeQuality && quote && !declaredQuoteMatch && quoteOffset == null && pNum != null) {
-            add('node_quote_unresolved', false, 'warning', 'grounding', 'node', id,
-              '摘录无法在原文中找到', 'paragraph 仍可用于定位，但 quote 不是可验证的原文逐字摘录。',
-              [{ paragraph: pNum, quote: '' }], { action: 'none' })
-          } else if (includeQuality && !quote && pNum != null) {
-            add('node_quote_missing', false, 'suggestion', 'grounding', 'node', id,
-              '缺少原文摘录', '节点有 paragraph 锚点，但补充 quote 会更利于人工核验。',
-              [{ paragraph: pNum, quote: '' }], { action: 'none' })
+          }
+          if (includeQuality) {
+            const groundingStatus = declaredQuoteMatch || quotePara != null
+              ? 'grounded'
+              : (quote ? 'unsupported' : 'candidate')
+            const claimLike = EVIDENCE_REQUIRED_NODE_TYPES.has(node.type)
+            if (groundingStatus === 'unsupported') {
+              add('node_evidence_unsupported', false, 'warning', 'grounding', 'node', id,
+                '节点摘录无法作为可验证证据',
+                'paragraph 只能证明位置；当前 quote 无法在 source 中认证，因此该节点不能视为 evidence-backed claim。',
+                pNum != null ? [{ paragraph: pNum, quote: '' }] : [], { action: 'none' })
+            } else if (groundingStatus === 'candidate' && claimLike) {
+              add('claim_evidence_missing', false, 'warning', 'grounding', 'node', id,
+                '声明节点只有锚点，没有原文证据',
+                '该节点可定位到 source unit，但没有可认证 evidence quote；它只能作为 candidate/unverified claim。',
+                pNum != null ? [{ paragraph: pNum, quote: '' }] : [], { action: 'none' })
+            } else if (groundingStatus === 'candidate') {
+              add('node_evidence_missing', false, 'suggestion', 'grounding', 'node', id,
+                '节点只有锚点，没有原文证据', '建议补充可在 source 中定位的 evidence quote。',
+                pNum != null ? [{ paragraph: pNum, quote: '' }] : [], { action: 'none' })
+            }
           }
         }
 
@@ -1308,7 +1428,9 @@ export default function hostPlugin() {
         })
 
         const coveredParas = new Set()
+        let anchorOk = 0
         let evidenceOk = 0
+        let entailmentVerified = 0
         for (const node of skipGrounding ? [] : nodes) {
           if (!node || typeof node !== 'object' || !node.id) continue
           const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
@@ -1316,7 +1438,9 @@ export default function hostPlugin() {
           const declaredQuoteMatch = quote && pNum != null && quoteInParagraph(quote, pNum)
           const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '') : null
           const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paragraphIndexOfOffset(paras, quoteOffset) : null)
-          if (declaredQuoteMatch || quoteOffset != null || pNum != null) evidenceOk += 1
+          if (declaredQuoteMatch || quoteOffset != null || pNum != null) anchorOk += 1
+          if (declaredQuoteMatch || quoteOffset != null || node.groundingStatus === 'grounded') evidenceOk += 1
+          if (node.entailmentStatus === 'verified') entailmentVerified += 1
           if (pNum != null) coveredParas.add(pNum)
           if (quotePara != null) coveredParas.add(quotePara)
         }
@@ -1383,7 +1507,10 @@ export default function hostPlugin() {
             invariantErrorCount: issues.filter((issue) => issue.blocking).length,
             qualityWarningCount: issues.filter((issue) => !issue.blocking && issue.severity === 'warning').length,
             qualitySuggestionCount: issues.filter((issue) => !issue.blocking && issue.severity === 'suggestion').length,
+            anchorCoverage: nodes.length > 0 ? Math.round((anchorOk / nodes.length) * 100) : 0,
             evidenceCoverage: nodes.length > 0 ? Math.round((evidenceOk / nodes.length) * 100) : 0,
+            entailmentVerifiedCount: entailmentVerified,
+            entailmentCoverage: nodes.length > 0 ? Math.round((entailmentVerified / nodes.length) * 100) : 0,
             paragraphCoverage: paras.length > 0 ? Math.round((coveredParas.size / paras.length) * 100) : 0,
           },
         }
@@ -1405,11 +1532,14 @@ export default function hostPlugin() {
             if (node && Number.isInteger(paragraph)) {
               node.paragraph = paragraph
               if (typeof node.quote === 'string' && node.quote.trim()) {
+                const provenance = { documentId: node.documentId, sourceId: node.sourceId, chunkId: node.chunkId }
                 const evidence = Array.isArray(node.evidence) ? node.evidence.slice(0, 4) : []
-                if (evidence.length === 0) evidence.push({ paragraph, quote: node.quote.trim() })
-                else evidence[0] = { ...evidence[0], paragraph, quote: node.quote.trim() }
+                const repaired = evidenceRecordHost(paragraph, node.quote.trim(), provenance, evidence[0])
+                if (evidence.length === 0) evidence.push(repaired)
+                else evidence[0] = repaired
                 node.evidence = evidence
               }
+              refreshNodeGroundingStatusHost(node)
               repairs.push({ code: issue.code, targetId: node.id, action: 'set_paragraph', paragraph })
             }
           } else if (allowEdgeDrops && Number.isInteger(issue.edgeIndex) && issue.edgeIndex >= 0 && issue.edgeIndex < edges.length) {
@@ -1514,7 +1644,7 @@ export default function hostPlugin() {
             const normalizedQuote = quote.replace(/\s+/g, ' ').trim()
             if (!source.includes(quote) && !normalizedSource.includes(normalizedQuote)) continue
           }
-          out.push({ paragraph, quote })
+          out.push(evidenceRecordHost(paragraph, quote, sourceContext, item))
           if (out.length >= 4) break
         }
         if (out.length === 0 && warnings) warnings.push('edge_dropped:missing_relation_evidence:' + edgeLabel)
@@ -1556,9 +1686,12 @@ export default function hostPlugin() {
           const paragraphMeta = sourceContext && Array.isArray(sourceContext.paragraphMeta) && pNum != null
             ? sourceContext.paragraphMeta[pNum]
             : null
-          const evidence = (quote || pNum != null)
-            ? [{ paragraph: pNum, quote }]
-            : []
+          const paragraphs = sourceContext && Array.isArray(sourceContext.paragraphTexts) ? sourceContext.paragraphTexts : null
+          const sourceParagraph = paragraphs && pNum != null && typeof paragraphs[pNum] === 'string' ? paragraphs[pNum] : ''
+          const normalizedSource = sourceParagraph.replace(/\s+/g, ' ').trim()
+          const normalizedQuote = quote.replace(/\s+/g, ' ').trim()
+          const quoteAuthenticated = Boolean(quote && pNum != null && sourceParagraph && (sourceParagraph.includes(quote) || (normalizedQuote && normalizedSource.includes(normalizedQuote))))
+          const evidence = quoteAuthenticated ? [evidenceRecordHost(pNum, quote, sourceContext, null)] : []
           const sourceFields = sourceContext && sourceContext.sourceId
             ? {
               documentId: sourceContext.documentId || null,
@@ -1568,8 +1701,13 @@ export default function hostPlugin() {
               sectionTitle: paragraphMeta && paragraphMeta.sectionTitle ? paragraphMeta.sectionTitle : null,
             }
             : {}
+          const groundingStatus = evidence.length > 0 ? 'grounded' : (quote ? 'unsupported' : 'candidate')
+          // Extraction is a proposer, not the independent entailment authority.
+          // A generated node can authenticate provenance but cannot self-certify
+          // that its normalized claim text is semantically entailed.
+          const entailmentStatus = 'unverified'
           seen.add(id)
-          nodes.push({ id, type, text, quote, paragraph: pNum, evidence, ...sourceFields })
+          nodes.push({ id, type, text, quote, paragraph: pNum, evidence, groundingStatus, entailmentStatus, ...sourceFields })
         }
 
         const edges = []
@@ -1623,7 +1761,9 @@ export default function hostPlugin() {
           }
           const key = e.fromNodeId + '>' + e.toNodeId + ':' + e.relation
           if (acc.edgeKeys.has(key)) {
-            acc.warnings.push(prefix + 'edge_dropped:duplicate:' + key)
+            const existing = acc.edges.find((edge) => edge && edge.fromNodeId === e.fromNodeId && edge.toNodeId === e.toNodeId && edge.relation === e.relation)
+            if (existing) existing.evidence = mergeEvidenceRecordsHost(existing.evidence, e.evidence, 8)
+            acc.warnings.push(prefix + 'edge_merged:duplicate:' + key)
             continue
           }
           acc.edgeKeys.add(key)
@@ -2360,14 +2500,12 @@ export default function hostPlugin() {
         if (!target || !incoming) return
         if ((!target.quote || !target.quote.trim()) && incoming.quote) target.quote = incoming.quote
         if (!Number.isInteger(target.paragraph) && Number.isInteger(incoming.paragraph)) target.paragraph = incoming.paragraph
-        const evidence = Array.isArray(target.evidence) ? target.evidence.slice(0, 4) : []
-        const incomingEvidence = Array.isArray(incoming.evidence) ? incoming.evidence : []
-        for (const item of incomingEvidence) {
-          if (!item || evidence.length >= 4) break
-          const key = String(item.paragraph) + '|' + String(item.quote || '')
-          if (!evidence.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') === key)) evidence.push({ paragraph: item.paragraph, quote: String(item.quote || '').slice(0, 600) })
+        target.evidence = mergeEvidenceRecordsHost(target.evidence, incoming.evidence, 8)
+        if (incoming.groundingStatus === 'grounded' || target.evidence.length > 0) target.groundingStatus = 'grounded'
+        else if (!GROUNDING_STATUSES.has(target.groundingStatus)) target.groundingStatus = incoming.groundingStatus || 'candidate'
+        if (target.entailmentStatus !== 'verified') {
+          target.entailmentStatus = ENTAILMENT_STATUSES.has(incoming.entailmentStatus) ? incoming.entailmentStatus : (target.entailmentStatus || 'unverified')
         }
-        target.evidence = evidence
       }
       function registerNodeLookupKeyHost(acc, node) {
         const key = graphNodeLookupKeyHost(node)
@@ -2500,6 +2638,13 @@ export default function hostPlugin() {
            baseRevision: Number.isInteger(task.baseRevision) ? task.baseRevision : null,
            baseSource,
            baseStaging,
+           ...(effectiveTaskKind === 'trajectory' || effectiveTaskKind === 'trajectory-append' ? {
+             traceEvents: Array.isArray(task.traceEvents) ? task.traceEvents.map((event) => event && typeof event === 'object' ? { ...event } : event) : [],
+           } : {}),
+           ...(effectiveTaskKind === 'trajectory-append' ? {
+             baseTraceText: typeof task.baseTraceText === 'string' ? task.baseTraceText : '',
+             baseTraceEvents: Array.isArray(task.baseTraceEvents) ? task.baseTraceEvents.map((event) => event && typeof event === 'object' ? { ...event } : event) : [],
+           } : {}),
            summary: summary || '',
            graph: {
              summary: summary || '', nodes, edges, warnings: acc.warnings.slice(-300),
@@ -2594,20 +2739,30 @@ export default function hostPlugin() {
               const id = typeof n.id === 'string' ? n.id.trim() : ''
               const text = typeof n.text === 'string' ? n.text.trim() : ''
               if (!id || !text) continue
-              acc.nodes.set(id, {
+              const nodeProvenance = { documentId: n.documentId, sourceId: n.sourceId, chunkId: n.chunkId }
+              const evidence = mergeEvidenceRecordsHost([], (Array.isArray(n.evidence) ? n.evidence : []).map((item) => (
+                item && Number.isInteger(item.paragraph) && typeof item.quote === 'string' && item.quote.trim()
+                  ? evidenceRecordHost(item.paragraph, item.quote.trim(), nodeProvenance, item)
+                  : null
+              )), 8)
+              const seededNode = {
                 id,
                 type: TYPE_ALIASES[typeof n.type === 'string' ? n.type.trim().toLowerCase() : ''] || 'fact',
                 text,
                 quote: typeof n.quote === 'string' ? n.quote : '',
                 paragraph: typeof n.paragraph === 'number' ? n.paragraph : null,
-                 evidence: Array.isArray(n.evidence) ? n.evidence.slice(0, 4) : [],
-                 documentId: typeof n.documentId === 'string' ? n.documentId : null,
-                 sourceId: typeof n.sourceId === 'string' ? n.sourceId : null,
-                 chunkId: typeof n.chunkId === 'string' ? n.chunkId : null,
-                 sectionId: typeof n.sectionId === 'string' ? n.sectionId : null,
-                 sectionTitle: typeof n.sectionTitle === 'string' ? n.sectionTitle : null,
-              })
-              registerNodeLookupKeyHost(acc, acc.nodes.get(id))
+                evidence,
+                groundingStatus: GROUNDING_STATUSES.has(n.groundingStatus) ? n.groundingStatus : undefined,
+                entailmentStatus: ENTAILMENT_STATUSES.has(n.entailmentStatus) ? n.entailmentStatus : 'unverified',
+                documentId: typeof n.documentId === 'string' ? n.documentId : null,
+                sourceId: typeof n.sourceId === 'string' ? n.sourceId : null,
+                chunkId: typeof n.chunkId === 'string' ? n.chunkId : null,
+                sectionId: typeof n.sectionId === 'string' ? n.sectionId : null,
+                sectionTitle: typeof n.sectionTitle === 'string' ? n.sectionTitle : null,
+              }
+              refreshNodeGroundingStatusHost(seededNode)
+              acc.nodes.set(id, seededNode)
+              registerNodeLookupKeyHost(acc, seededNode)
                existingIds.add(id)
             }
             for (const e of existing.edges || []) {
@@ -2619,11 +2774,16 @@ export default function hostPlugin() {
               const key = from + '>' + to + ':' + rel
               if (acc.edgeKeys.has(key)) continue
               acc.edgeKeys.add(key)
+              const edgeProvenance = { documentId: e.documentId, sourceId: e.sourceId, chunkId: e.chunkId }
               acc.edges.push({
                  fromNodeId: from,
                  toNodeId: to,
                  relation: rel,
-                 evidence: Array.isArray(e.evidence) ? e.evidence.slice(0, 4) : [],
+                 evidence: mergeEvidenceRecordsHost([], (Array.isArray(e.evidence) ? e.evidence : []).map((item) => (
+                   item && Number.isInteger(item.paragraph) && typeof item.quote === 'string' && item.quote.trim()
+                     ? evidenceRecordHost(item.paragraph, item.quote.trim(), edgeProvenance, item)
+                     : null
+                 )), 8),
                  ...(typeof e.documentId === 'string' ? { documentId: e.documentId } : {}),
                  ...(typeof e.sourceId === 'string' ? { sourceId: e.sourceId } : {}),
                  ...(typeof e.chunkId === 'string' ? { chunkId: e.chunkId } : {}),
@@ -2884,7 +3044,7 @@ export default function hostPlugin() {
                chunkCount: allChunks.length,
                chunks: allChunks,
              },
-            ...task.kind === 'trajectory' ? { traceText: task.traceText, traceEvents: task.traceEvents } : {},
+            ...effectiveTaskKind === 'trajectory' ? { traceText: task.traceText, traceEvents: task.traceEvents } : {},
             ...isTrajAppend ? {
               traceText: trajAppendPrefix + task.text,
               traceEvents: trajAppendEvents,
@@ -2894,9 +3054,16 @@ export default function hostPlugin() {
 
            // Final merge is another trust boundary: batch-valid components can
            // still become invalid after ID rewrites, dedupe or append merge.
+           const finalAuditPartial = isDocumentAppend && !priorSourceText
+           // Persistent/canonical append has the complete source and can
+           // re-authenticate every evidence item. The legacy dynamic append API
+           // may lack the prior source text; in that compatibility mode the new
+           // batch was already authenticated before its paragraph offset was
+           // applied, so do not destroy it by pretending the partial text is
+           // the full source.
+           if (!finalAuditPartial) authenticateGraphEvidenceHost(fullResult, canonicalSourceText)
            // Safe deterministic repairs run once, then unresolved blockers make
            // the extraction fail explicitly instead of publishing a bad graph.
-           const finalAuditPartial = isDocumentAppend && !priorSourceText
            let finalGate = validateGraphInvariantsHost(fullResult, canonicalSourceText, { includeQuality: false, skipGrounding: finalAuditPartial })
            const finalRepairs = applySafeInvariantRepairsHost(fullResult, finalGate, { allowEdgeDrops: true }).repairs
            if (finalRepairs.length > 0) {
@@ -2908,14 +3075,37 @@ export default function hostPlugin() {
              const detail = formatInvariantFeedbackHost(finalGate.blockingIssues)
              return failTask(task, 'invariant_violation', '生成结果未通过确定性验收，未写入 canonical graph：' + detail.replace(/\n/g, '；'))
            }
+           const groundingCounts = { grounded: 0, candidate: 0, unsupported: 0, claimGrounded: 0, claimCandidate: 0, claimUnsupported: 0, entailmentVerified: 0 }
+           for (const node of fullResult.nodes) {
+             refreshNodeGroundingStatusHost(node)
+             const status = GROUNDING_STATUSES.has(node.groundingStatus) ? node.groundingStatus : 'candidate'
+             groundingCounts[status] += 1
+             if (EVIDENCE_REQUIRED_NODE_TYPES.has(node.type)) {
+               if (status === 'grounded') groundingCounts.claimGrounded += 1
+               else if (status === 'unsupported') groundingCounts.claimUnsupported += 1
+               else groundingCounts.claimCandidate += 1
+             }
+             if (node.entailmentStatus === 'verified') groundingCounts.entailmentVerified += 1
+           }
+           const groundingWarnings = groundingCounts.claimCandidate + groundingCounts.claimUnsupported
            fullResult.generation = {
-             invariantVersion: 1,
-             status: generationInvariantRepairs.length > 0 || generationInvariantRetries > 0 ? 'succeeded_with_warnings' : 'succeeded',
+             invariantVersion: 2,
+             status: generationInvariantRepairs.length > 0 || generationInvariantRetries > 0 || groundingWarnings > 0 ? 'succeeded_with_warnings' : 'succeeded',
              invariantErrors: 0,
              sourceAudit: finalAuditPartial ? 'partial_existing_source_unavailable' : 'full',
              retryCount: generationInvariantRetries,
              autoRepairCount: generationInvariantRepairs.length,
              autoRepairs: generationInvariantRepairs.slice(-100),
+             grounding: {
+               groundedNodes: groundingCounts.grounded,
+               candidateNodes: groundingCounts.candidate,
+               unsupportedNodes: groundingCounts.unsupported,
+               evidenceBackedClaims: groundingCounts.claimGrounded,
+               candidateClaims: groundingCounts.claimCandidate,
+               unsupportedClaims: groundingCounts.claimUnsupported,
+               entailmentVerifiedNodes: groundingCounts.entailmentVerified,
+               entailmentStatus: groundingCounts.entailmentVerified === fullResult.nodes.length && fullResult.nodes.length > 0 ? 'verified' : 'unverified',
+             },
            }
            // The durable completed checkpoint must describe the accepted graph,
            // not the pre-gate accumulator state.
@@ -3914,8 +4104,10 @@ export default function hostPlugin() {
          } catch (error) {
            return { error: { code: 'invalid_operation', message: error && error.message ? error.message : '无法应用 canonical graph operation' } }
          }
+         preserveEntailmentAuthorityHost(current.graph, incoming)
          const merged = mergeGraphViewHost(operated, incoming, a.baseNodeIds, a.baseEdgeKeys)
          if (!merged) return { error: { code: 'invalid_input', message: '无法合并知识图工作窗口' } }
+         authenticateGraphEvidenceHost(merged, current.sourceText)
          const gate = validateGraphInvariantsHost(merged, current.sourceText, { includeQuality: false })
          if (gate.blockingIssues.length > 0) {
            return {
@@ -4137,12 +4329,22 @@ export default function hostPlugin() {
         const sessions = ctx.get('sessions')
         const session = sessions ? sessions.get(sessionId) : undefined
         if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
-        const existing = a.existing && typeof a.existing === 'object' ? a.existing : null
-        if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
-          return { error: { code: 'invalid_input', message: '当前没有可追加的轨迹图，请先完成一次拆解' } }
+        const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+        if (!documentId) return { error: { code: 'invalid_input', message: '轨迹追加缺少 documentId；请先重新拆解当前轨迹' } }
+        const canonical = loadCanonicalDocumentHost(documentId)
+        if (!canonical || !canonical.graph || !Array.isArray(canonical.graph.nodes) || canonical.graph.nodes.length === 0) {
+          return { error: { code: 'not_found', message: 'Host 中找不到该轨迹 canonical graph；请重新拆解当前轨迹' } }
         }
-        const baseTraceText = typeof existing.traceText === 'string' ? existing.traceText : ''
+        const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : canonical.revision
+        if (expectedRevision !== canonical.revision) {
+          return { error: { code: 'revision_conflict', message: '轨迹知识图已被其他修改更新，请重新载入后再追加', currentRevision: canonical.revision } }
+        }
+        const existing = canonical.graph
+        const baseTraceText = typeof existing.traceText === 'string' && existing.traceText ? existing.traceText : canonical.sourceText
         const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
+        if (baseTraceText && baseTraceEvents.length === 0) {
+          return { error: { code: 'trajectory_state_incomplete', message: '旧轨迹缺少 canonical traceEvents，无法安全增量追加；请重新拆解一次轨迹' } }
+        }
         // Only events AFTER the last included one are serialized (incremental).
         let fromSeq = -1
         for (const ev of baseTraceEvents) if (ev.seq > fromSeq) fromSeq = ev.seq
@@ -4160,8 +4362,9 @@ export default function hostPlugin() {
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+          documentId, existingSourceText: canonical.sourceText || baseTraceText,
           baseTraceText, baseTraceEvents, existing, paragraphOffset,
-          baseRevision: existing && existing.source && Number.isInteger(existing.source.revision) ? existing.source.revision : null,
+          baseRevision: canonical.revision,
           baseSource: existing && existing.source ? existing.source : null,
           baseStaging: existing && existing.staging ? existing.staging : null,
           model, createdAt: Date.now(),
