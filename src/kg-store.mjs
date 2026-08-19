@@ -135,7 +135,7 @@ CREATE INDEX IF NOT EXISTS graph_revisions_document_idx ON graph_revisions(docum
 `
 
 const ENTITY_TYPES = new Set(['concept', 'definition'])
-const CLAIM_TYPES = new Set(['fact', 'inference', 'rule', 'definition', 'counter_example'])
+const CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
 const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
 
 function stableHash(value) {
