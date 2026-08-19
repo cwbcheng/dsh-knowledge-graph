@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS documents (
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chunks (
-  chunk_id TEXT PRIMARY KEY,
+  chunk_id TEXT NOT NULL,
   document_id TEXT NOT NULL,
   source_id TEXT NOT NULL,
   start_paragraph INTEGER,
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   warnings_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
+  PRIMARY KEY (document_id, source_id, chunk_id),
   FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS chunks_document_idx ON chunks(document_id, start_paragraph);
@@ -164,6 +165,128 @@ function normalizeStatus(value) {
   return CANDIDATE_STATUSES.has(value) ? value : 'candidate'
 }
 
+function edgeIdentity(edge) {
+  return edge && typeof edge === 'object'
+    ? String(edge.fromNodeId || '') + '>' + String(edge.toNodeId || '') + ':' + String(edge.relation || '')
+    : ''
+}
+
+function nodeFromRow(node) {
+  return {
+    id: node.node_id,
+    type: node.type,
+    text: node.text,
+    quote: node.quote,
+    paragraph: node.paragraph,
+    evidence: parseJson(node.evidence_json, []),
+    documentId: node.document_id,
+    sourceId: node.source_id,
+    chunkId: node.chunk_id,
+    sectionId: node.section_id,
+    sectionTitle: node.section_title,
+    state: node.state,
+  }
+}
+
+function edgeFromRow(edge) {
+  return {
+    fromNodeId: edge.from_node_id,
+    toNodeId: edge.to_node_id,
+    relation: edge.relation,
+    evidence: parseJson(edge.evidence_json, []),
+    documentId: edge.document_id,
+    sourceId: edge.source_id,
+    chunkId: edge.chunk_id,
+    state: edge.state,
+  }
+}
+
+function chunkFromRow(chunk) {
+  return {
+    chunkId: chunk.chunk_id,
+    sourceId: chunk.source_id,
+    startParagraph: chunk.start_paragraph,
+    endParagraph: chunk.end_paragraph,
+    sectionIds: parseJson(chunk.section_ids_json, []),
+    sectionTitles: parseJson(chunk.section_titles_json, []),
+    summary: chunk.summary,
+    status: chunk.status,
+    nodeIds: parseJson(chunk.node_ids_json, []),
+    edgeCount: chunk.edge_count,
+    warnings: parseJson(chunk.warnings_json, []),
+  }
+}
+
+function escapeLike(value) {
+  return String(value == null ? '' : value).replace(/[\\%_]/g, (match) => '\\' + match)
+}
+
+function mergeEvidence(primary, secondary, limit = 8) {
+  const out = []
+  for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
+    if (!item || typeof item !== 'object' || out.length >= limit) continue
+    const key = String(item.paragraph) + '|' + String(item.quote || '') + '|' + String(item.sourceId || '') + '|' + String(item.chunkId || '')
+    if (!out.some((existing) => String(existing.paragraph) + '|' + String(existing.quote || '') + '|' + String(existing.sourceId || '') + '|' + String(existing.chunkId || '') === key)) out.push({ ...item })
+  }
+  return out
+}
+
+function applyCanonicalOperations(graph, operations) {
+  let next = {
+    ...graph,
+    nodes: (Array.isArray(graph && graph.nodes) ? graph.nodes : []).map((node) => ({ ...node, evidence: mergeEvidence([], node.evidence) })),
+    edges: (Array.isArray(graph && graph.edges) ? graph.edges : []).map((edge) => ({ ...edge, evidence: mergeEvidence([], edge.evidence) })),
+  }
+  for (const operation of Array.isArray(operations) ? operations : []) {
+    if (!operation || operation.kind !== 'merge_node') continue
+    const fromId = text(operation.fromNodeId)
+    const intoId = text(operation.intoNodeId)
+    if (!fromId || !intoId || fromId === intoId) {
+      const error = new Error('invalid merge_node operation')
+      error.code = 'invalid_operation'
+      throw error
+    }
+    const from = next.nodes.find((node) => node && node.id === fromId)
+    const intoIndex = next.nodes.findIndex((node) => node && node.id === intoId)
+    if (!from) {
+      if (intoIndex >= 0) continue
+      const error = new Error('merge target not found: ' + intoId)
+      error.code = 'invalid_operation'
+      throw error
+    }
+    if (intoIndex < 0) {
+      const error = new Error('merge target not found: ' + intoId)
+      error.code = 'invalid_operation'
+      throw error
+    }
+    const target = { ...next.nodes[intoIndex] }
+    if ((!target.quote || !String(target.quote).trim()) && from.quote) target.quote = from.quote
+    if (!Number.isInteger(target.paragraph) && Number.isInteger(from.paragraph)) target.paragraph = from.paragraph
+    for (const field of ['documentId', 'sourceId', 'chunkId', 'sectionId', 'sectionTitle']) {
+      if (target[field] == null && from[field] != null) target[field] = from[field]
+    }
+    target.evidence = mergeEvidence(target.evidence, from.evidence)
+    next.nodes[intoIndex] = target
+    next.nodes = next.nodes.filter((node) => node && node.id !== fromId)
+    const edgeMap = new Map()
+    for (const edge of next.edges) {
+      if (!edge) continue
+      const rewritten = {
+        ...edge,
+        fromNodeId: edge.fromNodeId === fromId ? intoId : edge.fromNodeId,
+        toNodeId: edge.toNodeId === fromId ? intoId : edge.toNodeId,
+      }
+      if (rewritten.fromNodeId === rewritten.toNodeId) continue
+      const key = edgeIdentity(rewritten)
+      const previous = edgeMap.get(key)
+      if (previous) previous.evidence = mergeEvidence(previous.evidence, rewritten.evidence)
+      else edgeMap.set(key, rewritten)
+    }
+    next.edges = Array.from(edgeMap.values())
+  }
+  return next
+}
+
 export function defaultStorePath() {
   if (typeof process !== 'undefined' && process.env && process.env.DSH_KG_DB) return process.env.DSH_KG_DB
   return '.dsh-knowledge-graph.sqlite'
@@ -191,6 +314,7 @@ export class SqliteKnowledgeStore {
     this.db = db
     this.filename = filename
     this.db.exec(SCHEMA)
+    this.migrateChunkIdentitySchema()
     // CREATE TABLE IF NOT EXISTS does not add columns to databases created by
     // older releases. Keep migrations additive and deterministic.
     this.ensureColumn('documents', 'source_text', "TEXT NOT NULL DEFAULT ''")
@@ -206,6 +330,61 @@ export class SqliteKnowledgeStore {
     const columns = this.db.prepare('PRAGMA table_info(' + table + ')').all()
     if (columns.some((row) => row && row.name === column)) return
     this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + declaration)
+  }
+
+  migrateChunkIdentitySchema() {
+    const info = this.db.prepare('PRAGMA table_info(chunks)').all()
+    const primary = info.filter((row) => row && row.pk > 0).sort((a, b) => a.pk - b.pk).map((row) => row.name)
+    if (primary.join(',') === 'document_id,source_id,chunk_id') return
+    // Legacy releases used chunk_id as a database-global primary key even
+    // though extraction restarts numbering per source. Rebuild the table with
+    // the real provenance identity; already-overwritten rows cannot be
+    // reconstructed, but future documents/appends cannot move each other's chunks.
+    this.db.exec('PRAGMA foreign_keys = OFF')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.exec('DROP INDEX IF EXISTS chunks_document_idx')
+      this.db.exec('ALTER TABLE chunks RENAME TO chunks_legacy_identity')
+      this.db.exec(`
+        CREATE TABLE chunks (
+          chunk_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          start_paragraph INTEGER,
+          end_paragraph INTEGER,
+          section_ids_json TEXT NOT NULL,
+          section_titles_json TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'completed',
+          node_ids_json TEXT NOT NULL,
+          edge_count INTEGER NOT NULL DEFAULT 0,
+          warnings_json TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (document_id, source_id, chunk_id),
+          FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+        )
+      `)
+      this.db.exec(`
+        INSERT OR IGNORE INTO chunks (
+          chunk_id, document_id, source_id, start_paragraph, end_paragraph,
+          section_ids_json, section_titles_json, summary, status, node_ids_json,
+          edge_count, warnings_json, payload_json, updated_at
+        )
+        SELECT chunk_id, document_id, source_id, start_paragraph, end_paragraph,
+          section_ids_json, section_titles_json, summary, status, node_ids_json,
+          edge_count, warnings_json, payload_json, updated_at
+        FROM chunks_legacy_identity
+      `)
+      this.db.exec('DROP TABLE chunks_legacy_identity')
+      this.db.exec('CREATE INDEX chunks_document_idx ON chunks(document_id, start_paragraph)')
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch (e) {}
+      throw error
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON')
+    }
   }
 
   close() {
@@ -226,6 +405,7 @@ export class SqliteKnowledgeStore {
     const graphMeta = {
       summary: text(graph.summary),
       warnings: Array.isArray(graph.warnings) ? graph.warnings : [],
+      ...(graph.generation && typeof graph.generation === 'object' ? { generation: graph.generation } : {}),
       ...(graph.verification && typeof graph.verification === 'object' ? { verification: graph.verification } : {}),
       ...(graph.factCheck && typeof graph.factCheck === 'object' ? { factCheck: graph.factCheck } : {}),
     }
@@ -286,9 +466,7 @@ export class SqliteKnowledgeStore {
       const chunkStmt = this.db.prepare(`
         INSERT INTO chunks (chunk_id, document_id, source_id, start_paragraph, end_paragraph, section_ids_json, section_titles_json, summary, status, node_ids_json, edge_count, warnings_json, payload_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(chunk_id) DO UPDATE SET
-          document_id = excluded.document_id,
-          source_id = excluded.source_id,
+        ON CONFLICT(document_id, source_id, chunk_id) DO UPDATE SET
           start_paragraph = excluded.start_paragraph,
           end_paragraph = excluded.end_paragraph,
           section_ids_json = excluded.section_ids_json,
@@ -307,7 +485,7 @@ export class SqliteKnowledgeStore {
         chunkStmt.run(
           chunkId,
           documentId,
-          sourceId,
+          text(chunk.sourceId, sourceId),
           int(chunk.startParagraph, 0),
           int(chunk.endParagraph, 0),
           json(Array.isArray(chunk.sectionIds) ? chunk.sectionIds : [], []),
@@ -567,6 +745,7 @@ export class SqliteKnowledgeStore {
     }))
     const chunks = this.db.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY start_paragraph, chunk_id').all(documentId).map((chunk) => ({
       chunkId: chunk.chunk_id,
+      sourceId: chunk.source_id,
       startParagraph: chunk.start_paragraph,
       endParagraph: chunk.end_paragraph,
       sectionIds: parseJson(chunk.section_ids_json, []),
@@ -601,6 +780,132 @@ export class SqliteKnowledgeStore {
     }
   }
 
+  getDocumentWindow(documentId, options = {}) {
+    const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
+    if (!row) return null
+    const limit = Math.max(1, Math.min(800, int(options.limit, 800)))
+    const edgeLimit = Math.max(limit, Math.min(4800, int(options.edgeLimit, limit * 6)))
+    const totalNodesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId)
+    const totalEdgesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId)
+    const totalNodes = totalNodesRow ? Number(totalNodesRow.count) || 0 : 0
+    const totalEdges = totalEdgesRow ? Number(totalEdgesRow.count) || 0 : 0
+    const requestedOffset = Number.isInteger(options.offset) && options.offset > 0 ? options.offset : 0
+    const offset = Math.min(requestedOffset, Math.max(0, totalNodes - 1))
+    const query = text(options.query).trim().slice(0, 200)
+
+    const fetchNodesByIds = (ids, remaining) => {
+      const result = []
+      const unique = Array.from(new Set(ids.filter(Boolean)))
+      for (let start = 0; start < unique.length && result.length < remaining; start += 400) {
+        const part = unique.slice(start, start + 400)
+        const marks = part.map(() => '?').join(',')
+        const rows = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id IN (' + marks + ') ORDER BY paragraph, node_id').all(documentId, ...part)
+        for (const item of rows) {
+          if (result.length >= remaining) break
+          result.push(item)
+        }
+      }
+      return result
+    }
+    const fetchIncidentEdges = (ids, maxRows) => {
+      const result = new Map()
+      const unique = Array.from(new Set(ids.filter(Boolean)))
+      for (let start = 0; start < unique.length && result.size < maxRows; start += 300) {
+        const part = unique.slice(start, start + 300)
+        const marks = part.map(() => '?').join(',')
+        const remaining = maxRows - result.size
+        const rows = this.db.prepare(
+          'SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN (' + marks + ') OR to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id LIMIT ?'
+        ).all(documentId, ...part, ...part, remaining)
+        for (const item of rows) result.set(item.edge_key || (item.from_node_id + '>' + item.to_node_id + ':' + item.relation), item)
+      }
+      return Array.from(result.values())
+    }
+    const fetchWindowEdges = (ids, maxRows) => {
+      const selected = new Set(ids.filter(Boolean))
+      const result = new Map()
+      const unique = Array.from(selected)
+      for (let start = 0; start < unique.length && result.size < maxRows; start += 400) {
+        const part = unique.slice(start, start + 400)
+        const marks = part.map(() => '?').join(',')
+        const remaining = maxRows - result.size
+        const rows = this.db.prepare(
+          'SELECT * FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') ORDER BY from_node_id, to_node_id LIMIT ?'
+        ).all(documentId, ...part, remaining)
+        for (const item of rows) {
+          if (!selected.has(item.to_node_id)) continue
+          result.set(item.edge_key || (item.from_node_id + '>' + item.to_node_id + ':' + item.relation), item)
+        }
+      }
+      return Array.from(result.values())
+    }
+
+    let nodeRows = []
+    let matchedNodes = null
+    let viewKind = 'window'
+    if (query) {
+      viewKind = 'query'
+      const pattern = '%' + query.toLowerCase().replace(/[%_]/g, '') + '%'
+      const where = `document_id = ? AND (
+        LOWER(node_id) LIKE ? OR LOWER(type) LIKE ? OR LOWER(text) LIKE ? OR
+        LOWER(quote) LIKE ? OR LOWER(COALESCE(section_id, '')) LIKE ? OR LOWER(COALESCE(section_title, '')) LIKE ?
+      )`
+      const params = [documentId, pattern, pattern, pattern, pattern, pattern, pattern]
+      const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + where).get(...params)
+      matchedNodes = countRow ? Number(countRow.count) || 0 : 0
+      const direct = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + where + ' ORDER BY paragraph, node_id LIMIT ?').all(...params, limit)
+      const selected = new Map(direct.map((item) => [item.node_id, item]))
+      if (selected.size > 0 && selected.size < limit) {
+        const incident = fetchIncidentEdges(Array.from(selected.keys()), edgeLimit)
+        const neighborIds = []
+        for (const edge of incident) {
+          if (!selected.has(edge.from_node_id)) neighborIds.push(edge.from_node_id)
+          if (!selected.has(edge.to_node_id)) neighborIds.push(edge.to_node_id)
+        }
+        const neighbors = fetchNodesByIds(neighborIds, limit - selected.size)
+        for (const item of neighbors) if (!selected.has(item.node_id) && selected.size < limit) selected.set(item.node_id, item)
+      }
+      nodeRows = Array.from(selected.values())
+    } else {
+      nodeRows = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id LIMIT ? OFFSET ?').all(documentId, limit, offset)
+    }
+    const nodeIds = nodeRows.map((item) => item.node_id)
+    const edgeRows = fetchWindowEdges(nodeIds, edgeLimit)
+    const chunks = this.db.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY start_paragraph, chunk_id').all(documentId).map(chunkFromRow)
+    const meta = parseJson(row.graph_meta_json, {})
+    const revision = Number.isInteger(row.graph_revision) ? row.graph_revision : 0
+    const source = {
+      ...parseJson(row.source_json, {
+        id: row.source_id,
+        documentId: row.document_id,
+        title: row.title,
+        chars: row.chars,
+        paragraphCount: row.paragraph_count,
+        chunkCount: row.chunk_count,
+        sectionCount: row.section_count,
+      }),
+      revision,
+    }
+    return {
+      ...meta,
+      source,
+      sourceText: options.includeSourceText === false ? '' : (row.source_text || ''),
+      revision,
+      nodes: nodeRows.map(nodeFromRow),
+      edges: edgeRows.map(edgeFromRow),
+      staging: { sourceId: row.source_id, documentId: row.document_id, chunkCount: chunks.length, chunks },
+      view: {
+        kind: viewKind,
+        nodeOffset: query ? 0 : offset,
+        nodeLimit: limit,
+        totalNodes,
+        totalEdges,
+        truncated: totalNodes > nodeRows.length || totalEdges > edgeRows.length,
+        ...(query ? { query, matchedNodes } : {}),
+      },
+    }
+  }
+
   commitViewGraph(options = {}) {
     const documentId = text(options.documentId)
     const incoming = options.graph && typeof options.graph === 'object' ? options.graph : null
@@ -618,26 +923,36 @@ export class SqliteKnowledgeStore {
       error.currentRevision = current.revision
       throw error
     }
+    const working = applyCanonicalOperations(current, options.operations)
     const baseNodeIds = new Set(Array.isArray(options.baseNodeIds) ? options.baseNodeIds.filter((id) => typeof id === 'string' && id) : [])
     const baseEdgeKeys = new Set(Array.isArray(options.baseEdgeKeys) ? options.baseEdgeKeys.filter((key) => typeof key === 'string' && key) : [])
-    const nodeMap = new Map((current.nodes || []).filter((node) => node && node.id).map((node) => [node.id, node]))
+    const canonicalNodeIds = new Set((current.nodes || []).filter((node) => node && node.id).map((node) => node.id))
+    const nodeMap = new Map((working.nodes || []).filter((node) => node && node.id).map((node) => [node.id, node]))
     for (const id of baseNodeIds) nodeMap.delete(id)
     for (const node of Array.isArray(incoming.nodes) ? incoming.nodes : []) {
-      if (node && typeof node.id === 'string' && node.id && typeof node.text === 'string' && node.text.trim()) nodeMap.set(node.id, node)
+      if (!node || typeof node.id !== 'string' || !node.id || typeof node.text !== 'string' || !node.text.trim()) continue
+      if (canonicalNodeIds.has(node.id) && !baseNodeIds.has(node.id)) {
+        const error = new Error('incoming node id collides with an unseen canonical node: ' + node.id)
+        error.code = 'node_id_conflict'
+        error.nodeId = node.id
+        throw error
+      }
+      nodeMap.set(node.id, node)
     }
-    const edgeKey = (edge) => edge && typeof edge === 'object'
-      ? String(edge.fromNodeId || '') + '>' + String(edge.toNodeId || '') + ':' + String(edge.relation || '')
-      : ''
-    const edgeMap = new Map((current.edges || []).filter((edge) => edgeKey(edge)).map((edge) => [edgeKey(edge), edge]))
+    const edgeMap = new Map((working.edges || []).filter((edge) => edgeIdentity(edge)).map((edge) => [edgeIdentity(edge), edge]))
     for (const key of baseEdgeKeys) edgeMap.delete(key)
     for (const edge of Array.isArray(incoming.edges) ? incoming.edges : []) {
-      const key = edgeKey(edge)
-      if (key) edgeMap.set(key, edge)
+      const key = edgeIdentity(edge)
+      if (key) {
+        const previous = edgeMap.get(key)
+        if (previous) previous.evidence = mergeEvidence(previous.evidence, edge.evidence)
+        else edgeMap.set(key, edge)
+      }
     }
     const nodeIds = new Set(nodeMap.keys())
     const edges = Array.from(edgeMap.values()).filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId))
     const nextGraph = {
-      ...current,
+      ...working,
       ...incoming,
       source: current.source,
       staging: current.staging,

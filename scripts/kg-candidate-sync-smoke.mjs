@@ -85,8 +85,16 @@ async function persistentSmoke() {
     baseEdgeKeys: [],
   }, 'graph-commit')
   assert(committed && !committed.error && committed.revision === 2, 'persistent graph-commit did not advance revision')
+  const rejectedCommit = await request(api, {
+    documentId: graph.source.documentId,
+    expectedRevision: 2,
+    graph: { summary: 'invalid route commit', nodes: [{ id: 'bad-node', type: 'fact', text: '无锚点节点', quote: '', paragraph: null }], edges: [] },
+    baseNodeIds: [],
+    baseEdgeKeys: [],
+  }, 'graph-commit')
+  assert(rejectedCommit && rejectedCommit.error && rejectedCommit.error.code === 'invariant_violation', 'persistent graph-commit bypassed the canonical invariant gate')
   const exported = await request(api, { documentId: graph.source.documentId }, 'document-export')
-  assert(exported && exported.revision === 2 && exported.graph.nodes.length === 2, 'persistent document-export did not return canonical graph')
+  assert(exported && exported.revision === 2 && exported.graph.nodes.length === 2, 'rejected persistent graph-commit mutated canonical state')
   const afterCommit = await request(api, { documentId: graph.source.documentId, kind: 'entity', status: 'rejected', limit: 20 }, 'candidate-list')
   assert(afterCommit.candidates.length === 1 && afterCommit.candidates[0].nodeId === 'n-concept', 'candidate review state was lost across graph revision')
   rmSync(dir, { recursive: true, force: true })

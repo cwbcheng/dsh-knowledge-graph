@@ -23,7 +23,7 @@ jobs:
       - name: Build and run all knowledge-graph regressions
         run: npm test
       - name: Verify generated artifacts are committed
-        run: git diff --exit-code -- lib extension/viewer.js
+        run: git diff --exit-code -- lib extension/viewer.js extension/viewer.css extension/d3
       - name: Reject committed private keys
         shell: bash
         run: |

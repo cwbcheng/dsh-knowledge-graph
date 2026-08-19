@@ -6,6 +6,10 @@ function assert(condition, message) {
 
 const pack = readFileSync(new URL('./pack-extension.mjs', import.meta.url), 'utf8')
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+const host = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
+const store = readFileSync(new URL('../src/kg-store.mjs', import.meta.url), 'utf8')
+const buildLib = readFileSync(new URL('./build-lib.mjs', import.meta.url), 'utf8')
+const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
 const lock = JSON.parse(readFileSync(new URL('./signing/package-lock.json', import.meta.url), 'utf8'))
 const crx3 = lock && lock.packages && lock.packages['node_modules/crx3']
 
@@ -19,5 +23,21 @@ assert(client.includes("localStorage.setItem(LS_RESULT, JSON.stringify({ title, 
 assert(client.includes("return sourceUnits.length > 0 ? { text: '', sourceUnits } : {}"), 'scoped verification still sends full source text over the wire')
 assert(client.includes("host.call('graph-commit'"), 'UI graph edits are not committed to the canonical Host graph')
 assert(client.includes("host.call('document-load'"), 'history/result restore does not hydrate from Host/SQLite')
+assert(host.includes('function validateGraphInvariantsHost'), 'shared deterministic invariant evaluator is missing')
+assert(host.includes('const evaluated = validateGraphInvariantsHost(graph, sourceText, { includeQuality: true })'), 'quick-check does not reuse the invariant evaluator')
+assert(host.includes('上一次候选图未通过确定性验收'), 'generation does not feed typed invariant failures back into retry')
+assert(host.includes("failTask(task, 'invariant_violation'"), 'final generation gate cannot fail explicitly with invariant_violation')
+assert(host.includes("code: 'invariant_violation'"), 'graph-commit invariant rejection path is missing')
+assert(!client.includes('function nextNodeId(') && client.includes('function newNodeId()') && client.includes('randomUUID'), 'browser still allocates sequential canonical node ids from a bounded window')
+assert(client.includes("kind: 'merge_node'") && client.includes('operations: pendingOperations'), 'client does not submit semantic canonical merge operations')
+assert(host.includes('function applyGraphOperationsHost') && host.includes("raw.kind !== 'merge_node'"), 'Host semantic merge operation path is missing')
+assert(host.includes('function sha256HexHost') && host.includes('randomDocumentIdHost') && !host.includes("String(text || '').slice(0, 4000)"), 'document/source identity still relies on weak/prefix hashing')
+assert(store.includes('PRIMARY KEY (document_id, source_id, chunk_id)'), 'chunk identity is not scoped by document/source/chunk')
+assert(store.includes('migrateChunkIdentitySchema()'), 'legacy chunk primary-key migration is missing')
+assert(store.includes('getDocumentWindow(documentId, options = {})') && store.includes('LIMIT ? OFFSET ?'), 'SQLite document-load is not a true bounded window query')
+assert(buildLib.includes('store.getDocumentWindow(documentId'), 'persistent HTTP document-load still materializes the full graph')
+assert(buildLib.includes('expectedRevision: task.baseRevision'), 'append persistence does not carry the base revision fence')
+assert(host.includes('baseRevision: Number.isInteger(task.baseRevision)') && host.includes('baseStaging'), 'append checkpoint does not preserve base revision/staging metadata')
+assert(ci.includes('extension/viewer.css extension/d3'), 'CI generated-artifact gate does not cover viewer.css/d3')
 
-console.log(JSON.stringify({ ok: true, signing: 'locked-local-crx3', browserPersistence: 'reference-only', wireScope: 'bounded' }))
+console.log(JSON.stringify({ ok: true, signing: 'locked-local-crx3', browserPersistence: 'reference-only', wireScope: 'bounded', generationGate: 'shared-invariant-evaluator', identity: 'uuid-sha256-composite-chunks', canonicalOps: true, sqliteWindow: true, appendFence: true }))

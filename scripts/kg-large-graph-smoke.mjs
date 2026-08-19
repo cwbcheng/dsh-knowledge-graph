@@ -66,20 +66,57 @@ assert(queried.graph.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNod
 const exported = await handlers.get('document-export')({ documentId })
 assert(exported && exported.graph && exported.graph.nodes.length === 801, 'canonical export was truncated to the renderer window')
 
-// Deleting a node from a tail window must also remove canonical cross-window
-// edges that are not visible in that window; otherwise pagination can create
-// dangling relations in dynamic-package mode.
+// A window must never be able to allocate an id that overwrites a canonical
+// node outside the baseline. The UI now uses UUID ids, and Host rejects this
+// legacy n801 collision defensively.
+const idConflict = await handlers.get('graph-commit')({
+  documentId,
+  expectedRevision: loaded.revision,
+  graph: {
+    summary: loaded.graph.summary,
+    nodes: loaded.graph.nodes.concat([{ id: 'n801', type: 'fact', text: '错误的新 n801', quote: '大型图测试', paragraph: 0 }]),
+    edges: loaded.graph.edges,
+  },
+  baseNodeIds: loaded.graph.nodes.map((node) => node.id),
+  baseEdgeKeys: loaded.graph.edges.map((edge) => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation),
+})
+assert(idConflict && idConflict.error && idConflict.error.code === 'node_id_conflict', 'hidden canonical node id collision was not rejected')
+
+// merge_node is a semantic canonical operation. n1->n801 is invisible on the
+// first 800-node window, but merging n1 into n2 must redirect that hidden edge
+// to n2->n801 rather than silently deleting it.
+const mergeCommit = await handlers.get('graph-commit')({
+  documentId,
+  expectedRevision: loaded.revision,
+  operations: [{ kind: 'merge_node', fromNodeId: 'n1', intoNodeId: 'n2' }],
+  graph: { summary: loaded.graph.summary, nodes: loaded.graph.nodes.filter((node) => node.id !== 'n1'), edges: loaded.graph.edges },
+  baseNodeIds: loaded.graph.nodes.map((node) => node.id),
+  baseEdgeKeys: loaded.graph.edges.map((edge) => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation),
+})
+assert(mergeCommit && !mergeCommit.error && mergeCommit.revision === loaded.revision + 1, 'canonical merge operation failed')
+const afterMerge = await handlers.get('document-export')({ documentId })
+assert(!afterMerge.graph.nodes.some((node) => node.id === 'n1') && afterMerge.graph.nodes.some((node) => node.id === 'n2'), 'canonical merge did not remove the source node')
+assert(afterMerge.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n801'), 'merge did not redirect a hidden cross-window edge')
+assert(!afterMerge.graph.edges.some((edge) => edge.fromNodeId === 'n1' || edge.toNodeId === 'n1'), 'merge left hidden relations pointing at the removed node')
+
+// Deleting a node from a tail window must remove incident cross-window edges.
+const tailAfterMerge = await handlers.get('document-load')({ documentId, query: '知识节点 801' })
+assert(tailAfterMerge && tailAfterMerge.graph.nodes.some((node) => node.id === 'n801'), 'merged hidden node was no longer queryable')
 const tailCommit = await handlers.get('graph-commit')({
   documentId,
-  expectedRevision: tail.revision,
-  graph: { summary: tail.graph.summary, nodes: [], edges: [] },
-  baseNodeIds: tail.graph.nodes.map((node) => node.id),
-  baseEdgeKeys: [],
+  expectedRevision: mergeCommit.revision,
+  graph: {
+    summary: tailAfterMerge.graph.summary,
+    nodes: tailAfterMerge.graph.nodes.filter((node) => node.id !== 'n801'),
+    edges: tailAfterMerge.graph.edges.filter((edge) => edge.fromNodeId !== 'n801' && edge.toNodeId !== 'n801'),
+  },
+  baseNodeIds: tailAfterMerge.graph.nodes.map((node) => node.id),
+  baseEdgeKeys: tailAfterMerge.graph.edges.map((edge) => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation),
 })
 assert(tailCommit && !tailCommit.error, 'tail-window graph commit failed')
 const afterTailCommit = await handlers.get('document-export')({ documentId })
-assert(afterTailCommit.graph.nodes.length === 800 && !afterTailCommit.graph.nodes.some((node) => node.id === 'n801'), 'tail-window node deletion did not update the canonical graph')
-assert(!afterTailCommit.graph.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n801'), 'tail-window node deletion left a dangling cross-window edge')
+assert(afterTailCommit.graph.nodes.length === 799 && !afterTailCommit.graph.nodes.some((node) => node.id === 'n801'), 'tail-window node deletion did not update the canonical graph')
+assert(!afterTailCommit.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n801'), 'tail-window node deletion left a dangling cross-window edge')
 
 const relationStarted = await handlers.get('extract')({ title: 'relation evidence', text: 'A 发生了\n\nB 也发生了' })
 let relationResult = null

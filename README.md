@@ -11,7 +11,7 @@
 
 ## 它能做什么
 
-- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；Host 按内容块分批处理，并生成确定性的来源 ID、章节地图、chunk ID 与逐节点 evidence。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
+- **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；`documentId` 是随机稳定的逻辑文档 UUID，`sourceId` 是全文 SHA-256 的不可变版本身份，`chunkId` 绑定 sourceId + batch + paragraph range，因此不同文档/追加版本不会因局部 `chunk-0001` 重号而覆盖。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
 - **7 类节点 / 6 类关系**：
   - 节点：`fact` 事实 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
   - 关系：`supports` 支持 · `example` 例子 · `counter_example` 反例 · `defines` 定义 · `infers` 推断 · `causes` 因果。
@@ -248,16 +248,18 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
-- **关系证据必须证明关系本身**：每条 edge 必须由模型直接给出 `evidence[{ paragraph, quote }]`；Host 会验证 quote 确实存在于对应原文单元。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等关系；缺少可定位 relation evidence 的边会被丢弃并写入 warning。
-- **typed 失败、不静默**：CLI/进程失败、非 JSON、schema 不合法（先 typed 重试 2 次）、队列忙碌、无模型等情况都有明确原因码与中文文案；无效节点/边丢弃但写入 warnings。
+- **关系证据必须证明关系本身**：每条 edge 必须由模型直接给出 `evidence[{ paragraph, quote }]`；Host 会验证 quote 确实存在于对应原文单元。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等关系；缺少可定位 relation evidence 的边不会直接进入 canonical graph。
+- **生成即验收（Generate → Verify → Repair → Accept）**：`validateGraphInvariantsHost()` 是生成与快速体检共用的 deterministic truth gate。每个 batch 在 merge 前都会经过 schema normalize + invariant 检查；blocking invariant 会把 typed 错误回灌给模型做定向重试（最多 3 次），paragraph 等可确定问题由 Host 安全修复，最终仍不合格的边可安全省略，但无法安全修复/锚定的节点会让任务以 `invariant_violation` 显式失败。所有 batch merge 完成后还会再做一次整图 gate，只有 `invariantErrors=0` 才能写入 canonical graph / SQLite。
+- **快速体检区分正确性与质量**：快速体检复用同一 invariant evaluator；`确定性错误` 是生成/提交阶段本不应通过的 blocking 问题，`质量警告/建议` 则是孤立节点、疑似重复/矛盾、覆盖率、缺 quote 等 heuristic finding。正常的新生成图应为“确定性错误 0”，但仍可能存在质量警告。
+- **typed 失败、不静默**：CLI/进程失败、非 JSON、schema/invariant 不合法、队列忙碌、无模型等情况都有明确原因码与中文文案；无法安全修复的语义状态不会伪装成成功。
 - **不猜偏移**：锚点解析失败时节点在图/原文间不可回链，但绝不臆造偏移，统一暴露在诊断列表（`anchor_unresolved:node:...`）中。
 - **轨迹事件即内容单元**：会话执行轨迹序列化为编号内容单元（用户消息 / 工具调用 / 工具结果 / AI 回复）；每个事件记录自身在轨迹文本中的 `[start, end)` 偏移，超长事件被切分成多个单元后仍能确定性映射回原事件，复用同一套「内容单元编号即锚点」机制做图与事件的确定性双向回链。
 - **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、单元号偏移（对齐全文编号）与边去重，客户端原地合并视图。
 - **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃；验证/质疑输入限制最多 800 个节点，避免恶意大图拖垮 Host。
-- **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`，并通过 `expectedRevision + baseline window` 提交到 canonical graph；冲突会显式返回 `revision_conflict`，不会让浏览器与 SQLite 各自形成一份“真相”。追加拆分后旧报告自动标记 `stale`。
+- **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`。窗口化以后浏览器不再分配连续 canonical node id：新增节点使用 `node_<UUID>`，Host/SQLite 仍会拒绝不可见节点 ID 碰撞。`merge_nodes` 通过 semantic operation `merge_node(from→into)` 交给 Host 在完整 canonical graph 上执行，因此窗口外 incident edges 会被重定向而不是静默删除。所有提交都受 `expectedRevision` + invariant gate 保护；blocking 修改返回 `invariant_violation`，并发冲突返回 `revision_conflict`。
 - **任务可观测、可取消，而非超时即失败**：模型任务跑到完成或由用户取消为止；进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮，慢流不会被静默判死。
-- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图、staging chunk 摘要和来源身份；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化。浏览器不保存 checkpoint；只有 `task-status=not_found` 且 SQLite 中仍是 `running` 的任务才允许恢复，确定性失败不会自动续跑。
-- **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；浏览器一次只加载最多 800 个节点的工作窗口。工作台会显示「当前节点区间 / 全量节点数」，提供上一页 / 下一页 / 指定页跳转，并支持按节点 ID、文本、类型或章节查询有界子图；查询结果优先返回直接命中的节点，再补一跳邻居以恢复跨窗口关系上下文。JSON/CSV 导出遇到截断视图时会向 Host 请求完整 canonical graph；布局、双向定位和交互仍在浏览器完成。
+- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图，以及 append 的 `baseRevision / baseSource / baseStaging`。Host 重启恢复 append 前会核对 canonical revision，并重新挂回旧 chunks/sections；已完成 batch 不重跑。checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
+- **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；常驻模式的 `document-load` 直接在 SQLite 执行 `LIMIT/OFFSET`，子图查询只读取直接命中节点、bounded incident edges 与一跳邻居，不再先把整图 materialize 到 Node 内存。浏览器一次最多加载 800 个节点，提供上一页 / 下一页 / 指定页跳转与按节点 ID、文本、类型或章节查询。JSON/CSV 完整导出仍显式读取 canonical graph。
 - **章节 / 候选审核视图**：章节筛选只改变当前浏览器结果视图，不修改原始图；候选状态以 `documentId | kind | nodeId` 稳定键保存，保留原文 evidence 和回链能力。
 - **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；canonical revision 提交时会删除已经失效的候选，同时用稳定 candidate id 保留仍存在候选的 accepted/rejected 状态。用户也可以通过 CLI 更新审核状态。
 - **可插拔声明抽取器**：Host 可选读取 `kgExtractor` 服务；它实现 `extractChunk(input)`，输入一个自有 JSON 内容块和已有节点 id，返回标准图对象或 JSON 文本。未提供时自动回退到当前 LLM 路径，因此动态插件和常驻包都不增加硬依赖。
@@ -265,11 +267,13 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ## 数据契约
 
 ```
-KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], verification? }
+KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], generation?, verification? }
+GenerationAudit { invariantVersion, status: 'succeeded' | 'succeeded_with_warnings', invariantErrors: 0, sourceAudit: 'full' | 'partial_existing_source_unavailable', retryCount, autoRepairCount, autoRepairs[] }
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
-Checkpoint { version: 2, taskKind, sourceId, documentId, nextBatchIndex, totalBatches, graph /* 无损 */, staging }
+Checkpoint { version: 2, taskKind, sourceId, documentId, baseRevision?, baseSource?, baseStaging?, nextBatchIndex, totalBatches, graph /* 无损 */, staging }
 GraphView { nodes[<=800], edges[], view: { kind: 'window' | 'query', nodeOffset, nodeLimit, totalNodes, totalEdges, truncated, query?, matchedNodes? } }
+GraphOperation { kind: 'merge_node', fromNodeId, intoNodeId }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
 ExtractionRun { runId, documentId?, sourceId?, status, nextBatchIndex, totalBatches, checkpoint }

@@ -1019,10 +1019,18 @@
         for (const it of issues) {
           if ((it.status === 'open' || it.status === 'accepted') && counts[it.severity] != null) counts[it.severity] += 1
         }
+        const invariantErrorCount = issues.filter((it) => (it.status === 'open' || it.status === 'accepted') && it.blocking === true).length
+        const qualityWarningCount = issues.filter((it) => (it.status === 'open' || it.status === 'accepted') && it.blocking !== true && it.severity === 'warning').length
         return {
           ...report,
           issues,
-          metrics: { ...(report.metrics || {}), errorCount: counts.error, warningCount: counts.warning, suggestionCount: counts.suggestion },
+          metrics: {
+            ...(report.metrics || {}),
+            errorCount: counts.error,
+            warningCount: counts.warning,
+            suggestionCount: counts.suggestion,
+            ...(report.mode === 'quick' ? { invariantErrorCount, qualityWarningCount } : {}),
+          },
         }
       }
       // One-click fix: apply every OPEN issue that has an applicable patch, in
@@ -1049,16 +1057,31 @@
         }
         return { graph: g, report: r, applied, skipped }
       }
-      function nextNodeId(graph) {
-        let max = 0
-        for (const n of graph.nodes || []) {
-          const m = /^n(\d+)$/.exec(n && n.id ? n.id : '')
-          if (m) max = Math.max(max, parseInt(m[1], 10))
+      function newNodeId() {
+        const c = typeof globalThis !== 'undefined' ? globalThis.crypto : null
+        if (c && typeof c.randomUUID === 'function') return 'node_' + c.randomUUID()
+        if (c && typeof c.getRandomValues === 'function') {
+          const bytes = new Uint8Array(16)
+          c.getRandomValues(bytes)
+          return 'node_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
         }
-        return 'n' + (max + 1)
+        return 'node_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 14)
       }
+      const graphSemanticOperations = new WeakMap()
       function cloneNodes(nodes) { return (nodes || []).map((n) => ({ ...n })) }
       function cloneEdges(edges) { return (edges || []).map((e) => ({ ...e })) }
+      function semanticOperationsOf(graph) {
+        return graph && typeof graph === 'object' && graphSemanticOperations.has(graph)
+          ? graphSemanticOperations.get(graph).map((operation) => ({ ...operation }))
+          : []
+      }
+      function carrySemanticOperations(previous, next, operation) {
+        if (!next || typeof next !== 'object') return next
+        const pending = semanticOperationsOf(previous)
+        if (operation) pending.push(operation)
+        if (pending.length > 0) graphSemanticOperations.set(next, pending)
+        return next
+      }
       // Compute human-readable old -> new differences from an audit entry's
       // before/after snapshots. Used by the verification panel's "修复记录"
       // section so every applied fix shows WHAT actually changed.
@@ -1194,7 +1217,9 @@
        // graph (original untouched). Structural fixes are deterministic; text
       // patches come from the AI and are still a user-confirmed action.
       function applyPatch(graph, issue) {
+        const originalGraph = graph
         const fix = issue && issue.proposedFix ? issue.proposedFix : { action: 'none' }
+        let semanticOperation = null
         const nodes = cloneNodes(graph.nodes)
         let edges = cloneEdges(graph.edges)
         const ids = new Set(nodes.map((n) => n.id))
@@ -1237,7 +1262,12 @@
           const intoIdx = nodes.findIndex((x) => x.id === into)
           if (fromNode && intoIdx >= 0) nodes[intoIdx] = mergeNodeProvenance(nodes[intoIdx], fromNode)
           const idx = nodes.findIndex((x) => x.id === from)
-          if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'merge_nodes:' + from + '>' + into }
+          if (idx >= 0) {
+            nodes.splice(idx, 1)
+            changed = true
+            auditDetail = 'merge_nodes:' + from + '>' + into
+            semanticOperation = { kind: 'merge_node', fromNodeId: from, intoNodeId: into }
+          }
         } else if ((fix.action === 'update_edge' || fix.action === 'delete_edge' || fix.action === 'add_edge') && fix.edgePatch) {
           const p = fix.edgePatch
           let idx = Number.isInteger(p.index) && p.index >= 0 && p.index < edges.length ? p.index : -1
@@ -1263,7 +1293,10 @@
           }
         } else if (fix.action === 'add_node' && fix.nodePatch) {
           const p = fix.nodePatch.patch || {}
-          const id = fix.nodePatch.id && /^n\d+$/.test(fix.nodePatch.id) && !ids.has(fix.nodePatch.id) ? fix.nodePatch.id : nextNodeId(graph)
+          // A browser window never has enough information to allocate the next
+          // sequential canonical id. UUID identity is collision-safe across
+          // invisible windows; Host/SQLite still reject any unexpected clash.
+          const id = newNodeId()
           if (p.type && TYPE_META[p.type] && typeof p.text === 'string' && p.text.trim()) {
             nodes.push({ id, type: p.type, text: p.text.trim(), quote: typeof p.quote === 'string' ? p.quote.trim() : '', paragraph: Number.isInteger(p.paragraph) ? p.paragraph : null })
             changed = true
@@ -1281,7 +1314,7 @@
         const compact = compactAuditSnapshots(graph, next, 6, 12)
         next = appendAudit(next, fix.action, issue.targetId || null, auditDetail, issue.reportId || null,
           compact.before, compact.after)
-        return next
+        return carrySemanticOperations(originalGraph, next, semanticOperation)
       }
       // A patch may be a no-op because the target was already fixed elsewhere
       // (e.g. the paragraph was corrected by an earlier action, or the graph
@@ -3007,8 +3040,8 @@
           report
             ? h('div', { className: 'kg-verify-metrics' },
                 h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
-                h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, '错误 ' + (report.metrics && report.metrics.errorCount || 0)),
-                h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, '警告 ' + (report.metrics && report.metrics.warningCount || 0)),
+                h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
+                h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, (report.mode === 'quick' ? '质量警告 ' : '警告 ') + (report.metrics && report.metrics.warningCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),
                 h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),

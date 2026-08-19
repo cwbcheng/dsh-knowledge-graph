@@ -40,7 +40,8 @@ export function apply(ctx) {
     return store.saveGraph(graph, {
       runId: task && task.id ? task.id : undefined,
       sourceText: task && typeof task.canonicalSourceText === 'string' ? task.canonicalSourceText : (task && typeof task.text === 'string' ? task.text : ''),
-      kind: task && (task.kind === 'append' || task.kind === 'trajectory-append') ? 'append' : 'extract',
+      kind: task && (task.kind === 'append' || task.kind === 'trajectory-append' || (task.kind === 'resume' && task.checkpoint && (task.checkpoint.taskKind === 'append' || task.checkpoint.taskKind === 'trajectory-append'))) ? 'append' : 'extract',
+      ...(task && Number.isInteger(task.baseRevision) ? { expectedRevision: task.baseRevision } : {}),
     })
   }
   const persistCheckpoint = async (checkpoint, task, status) => {
@@ -245,15 +246,21 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const documentId = payload && typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
               const store = await getSqliteStore()
-              const saved = store.getDocument(documentId)
-              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该文档' } })
-              const revision = Number.isInteger(saved.revision) ? saved.revision : 0
-              const fullGraph = { ...saved, source: { ...(saved.source || {}), revision } }
-              delete fullGraph.sourceText
-              rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
               const nodeOffset = Number.isInteger(payload.nodeOffset) ? payload.nodeOffset : 0
               const query = typeof payload.query === 'string' ? payload.query : ''
-              return writeJson(res, 200, { documentId, sourceText: saved.sourceText || '', revision, graph: buildGraphViewHost(fullGraph, nodeOffset, query) })
+              const saved = store.getDocumentWindow(documentId, {
+                offset: nodeOffset,
+                limit: MAX_GRAPH_VIEW_NODES,
+                edgeLimit: MAX_GRAPH_VIEW_EDGES,
+                query,
+                includeSourceText: payload.includeSourceText !== false,
+              })
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该文档' } })
+              const revision = Number.isInteger(saved.revision) ? saved.revision : 0
+              const sourceText = saved.sourceText || ''
+              const graph = { ...saved, source: { ...(saved.source || {}), revision } }
+              delete graph.sourceText
+              return writeJson(res, 200, { documentId, sourceText, revision, graph })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-export') {
               const raw = await readBody(req, 256 * 1024)
@@ -278,12 +285,31 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!documentId || !a.graph || typeof a.graph !== 'object') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } })
               try {
                 const store = await getSqliteStore()
+                const current = store.getDocument(documentId)
+                if (!current) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要提交的 canonical graph' } })
+                const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : current.revision
+                if (expectedRevision !== current.revision) {
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
+                }
+                const operated = applyGraphOperationsHost(current, a.operations)
+                const preview = mergeGraphViewHost(operated, a.graph, a.baseNodeIds, a.baseEdgeKeys)
+                const gate = validateGraphInvariantsHost(preview, current.sourceText || '', { includeQuality: false })
+                if (gate.blockingIssues.length > 0) {
+                  return writeJson(res, 200, {
+                    error: {
+                      code: 'invariant_violation',
+                      message: '修改后的知识图未通过确定性验收，canonical graph 未更新',
+                      issues: gate.blockingIssues.slice(0, 20).map((issue) => ({ code: issue.code, targetKind: issue.targetKind, targetId: issue.targetId, title: issue.title })),
+                    },
+                  })
+                }
                 const committed = store.commitViewGraph({
                   documentId,
                   graph: a.graph,
+                  operations: Array.isArray(a.operations) ? a.operations : [],
                   baseNodeIds: Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [],
                   baseEdgeKeys: Array.isArray(a.baseEdgeKeys) ? a.baseEdgeKeys : [],
-                  expectedRevision: Number.isInteger(a.expectedRevision) ? a.expectedRevision : undefined,
+                  expectedRevision,
                   kind: 'ui_patch',
                 })
                 const saved = store.getDocument(documentId)
@@ -296,6 +322,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               } catch (error) {
                 if (error && error.code === 'revision_conflict') {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: error.currentRevision } })
+                }
+                if (error && error.code === 'node_id_conflict') {
+                  return writeJson(res, 200, { error: { code: 'node_id_conflict', message: '新增节点 id 与当前窗口外的 canonical node 冲突：' + error.nodeId, nodeId: error.nodeId } })
+                }
+                if (error && error.code === 'invalid_operation') {
+                  return writeJson(res, 200, { error: { code: 'invalid_operation', message: error.message || '无法应用 canonical graph operation' } })
                 }
                 if (error && error.code === 'not_found') return writeJson(res, 200, { error: { code: 'not_found', message: error.message } })
                 throw error
@@ -321,6 +353,26 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '持久化 checkpoint 不完整，无法安全续跑' } })
               }
               const previous = savedRun.documentId ? store.getDocument(savedRun.documentId) : null
+              const appendRecovery = checkpoint.taskKind === 'append' || checkpoint.taskKind === 'trajectory-append'
+              if (appendRecovery) {
+                if (!previous || !Number.isInteger(checkpoint.baseRevision)) {
+                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'append checkpoint 缺少 base revision/canonical document，无法安全恢复' } })
+                }
+                if (previous.revision !== checkpoint.baseRevision) {
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'append checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + previous.revision + '；禁止覆盖恢复' } })
+                }
+              }
+              const baseSource = checkpoint.baseSource && typeof checkpoint.baseSource === 'object'
+                ? checkpoint.baseSource
+                : (appendRecovery && previous ? previous.source : null)
+              const baseStaging = checkpoint.baseStaging && typeof checkpoint.baseStaging === 'object'
+                ? checkpoint.baseStaging
+                : (appendRecovery && previous ? previous.staging : null)
+              const existing = {
+                ...checkpoint.graph,
+                ...(baseSource ? { source: baseSource } : {}),
+                ...(baseStaging ? { staging: baseStaging } : {}),
+              }
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               const task = {
                 id: runId,
@@ -330,8 +382,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 text: savedRun.sourceText,
                 documentId: savedRun.documentId || checkpoint.documentId || '',
                 checkpoint,
-                existing: checkpoint.graph,
-                existingSourceText: checkpoint.taskKind === 'append' && previous ? (previous.sourceText || '') : '',
+                existing,
+                existingSourceText: appendRecovery && previous ? (previous.sourceText || '') : '',
+                baseRevision: appendRecovery ? checkpoint.baseRevision : null,
+                baseSource,
+                baseStaging,
                 paragraphOffset: Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
                 model,
                 createdAt: Date.now(),
@@ -524,8 +579,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
-                baseTraceText, baseTraceEvents, existing, paragraphOffset, model,
-                createdAt: Date.now(),
+                baseTraceText, baseTraceEvents, existing, paragraphOffset,
+                baseRevision: existing && existing.source && Number.isInteger(existing.source.revision) ? existing.source.revision : null,
+                baseSource: existing && existing.source ? existing.source : null,
+                baseStaging: existing && existing.staging ? existing.staging : null,
+                model, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
@@ -567,7 +625,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
-                title, text, existing, existingSourceText, documentId, paragraphOffset, model, createdAt: Date.now(),
+                title, text, existing, existingSourceText, documentId, paragraphOffset,
+                baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : null,
+                baseSource: existing && existing.source ? existing.source : null,
+                baseStaging: existing && existing.staging ? existing.staging : null,
+                model, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
               busy = true
