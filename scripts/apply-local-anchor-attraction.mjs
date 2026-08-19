@@ -5,6 +5,11 @@ const testPath = 'scripts/kg-semantic-layout-smoke.mjs'
 let client = readFileSync(clientPath, 'utf8')
 let test = readFileSync(testPath, 'utf8')
 
+const earlyReturn = `        const placed = placeLevels()\n        if (backbonePaths.length === 0) return placed\n\n        // Keep every substantial reasoning backbone in a stable vertical lane.\n`
+const noEarlyReturn = `        const placed = placeLevels()\n\n        // Keep every substantial reasoning backbone in a stable vertical lane.\n`
+if (client.split(earlyReturn).length !== 2) throw new Error('backbone early-return target mismatch')
+client = client.replace(earlyReturn, noEarlyReturn)
+
 const oldTail = `        if (pinnedXOut && typeof pinnedXOut.set === 'function') {
           if (typeof pinnedXOut.clear === 'function') pinnedXOut.clear()
           for (const [id, laneX] of backboneLane) if (placed.has(id)) pinnedXOut.set(id, laneX)
@@ -94,6 +99,11 @@ assert(!source.includes("strongLocalRelations = new Set(['supports'"), 'supports
 `
 if (!test.includes(marker)) throw new Error('semantic layout assertion insertion target mismatch')
 test = test.replace(marker, marker + assertions)
+
+const layeredSourceMarker = `const layeredSource = extractFunction(source, 'layoutLayered')\n`
+const extraAssertion = `assert(!layeredSource.includes('if (backbonePaths.length === 0) return placed'), 'strong local attraction is incorrectly gated on a reasoning backbone')\n`
+if (!test.includes(layeredSourceMarker)) throw new Error('layered source assertion target mismatch')
+test = test.replace(layeredSourceMarker, layeredSourceMarker + extraAssertion)
 
 writeFileSync(clientPath, client)
 writeFileSync(testPath, test)
