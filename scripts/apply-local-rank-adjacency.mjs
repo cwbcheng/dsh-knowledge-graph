@@ -16,15 +16,11 @@ if (client.split(rankMarker).length !== 2) throw new Error('rank insertion marke
 client = client.replace(rankMarker, rankReplacement)
 
 const lateSet = `        const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])\n`
-if (client.split(lateSet).length !== 3) throw new Error('expected two strong-local declarations after insertion')
-client = client.replace(lateSet, '')
-// The first declaration was removed by replace(); restore it once next to the
-// relation authority sets, leaving the later x-pass to reuse that same set.
-if (!client.includes("const reasoningRankIds = new Set()")) throw new Error('reasoning rank ids missing')
-client = client.replace(
-  `        const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])\n        // One shared view-only set drives both local rank adjacency and the\n`,
-  `        const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])\n        const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])\n        // One shared view-only set drives both local rank adjacency and the\n`,
-)
+const firstSet = client.indexOf(lateSet)
+const secondSet = client.indexOf(lateSet, firstSet + lateSet.length)
+const thirdSet = client.indexOf(lateSet, secondSet + lateSet.length)
+if (firstSet < 0 || secondSet < 0 || thirdSet >= 0) throw new Error('expected exactly two strong-local declarations after insertion')
+client = client.slice(0, secondSet) + client.slice(secondSet + lateSet.length)
 
 const edgeMarker = `  { fromNodeId: 'p', toNodeId: 'q', relation: 'supports' },\n  { fromNodeId: 'system', toNodeId: 'flow', relation: 'contains' },\n  { fromNodeId: 'far', toNodeId: 'system', relation: 'supports' },\n]`
 const edgeReplacement = `  { fromNodeId: 'p', toNodeId: 'q', relation: 'supports' },\n  { fromNodeId: 'c', toNodeId: 'system', relation: 'supports' },\n  { fromNodeId: 'e', toNodeId: 'flow', relation: 'supports' },\n  { fromNodeId: 'system', toNodeId: 'flow', relation: 'contains' },\n  { fromNodeId: 'far', toNodeId: 'system', relation: 'supports' },\n]`
