@@ -42,10 +42,10 @@ jobs:
           test -s /tmp/coverage-hints.patch
           git reset --hard HEAD
           git fetch origin main
-          git checkout -B codex/coverage-hints-final origin/main
+          git checkout -B codex/coverage-hints-final-v2 origin/main
           git apply /tmp/coverage-hints.patch
           git add src/index.host.js lib/index.js scripts/fixtures/preface-qa-cases.json scripts/kg-worked-example-coverage-smoke.mjs
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix: surface omitted worked examples to coverage review'
-          git push --force origin HEAD:refs/heads/codex/coverage-hints-final
+          git push --force origin HEAD:refs/heads/codex/coverage-hints-final-v2
