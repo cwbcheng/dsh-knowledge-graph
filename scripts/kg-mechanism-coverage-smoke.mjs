@@ -22,6 +22,13 @@ const extractor = {
         edges: [],
       }
     }
+    if (title === 'zero-section-coverage') {
+      return {
+        summary: '第二部分已有内容',
+        nodes: [{ id: 'z1', type: 'claim', text: '当前部分已有节点。', quote: '当前部分已有节点。', paragraph: 3 }],
+        edges: [],
+      }
+    }
     if (title === 'plain-fact') {
       return { summary: '直接事实', nodes: [{ id: 'f1', type: 'fact', text: '项目包含三个文件', quote: '项目包含三个文件。', paragraph: 0 }], edges: [] }
     }
@@ -32,6 +39,15 @@ const extractor = {
     assert(args.systemPrompt.includes('只补漏，不重做'), 'coverage pass is not scoped as missing-node repair')
     assert(args.systemPrompt.includes('纯修辞、只重复已有原则的比喻优先省略'), 'example selection does not prefer mechanism-bearing examples')
     assert(args.prompt.includes('首轮已接受节点'), 'coverage reviewer did not receive the accepted graph')
+    if (args.title === 'zero-section-coverage') {
+      assert(args.prompt.includes('完全未覆盖 section 候选'), 'zero-node section was not surfaced to coverage review')
+      assert(args.prompt.includes('第一部分'), 'zero-node section title was not surfaced')
+      assert(args.systemPrompt.includes('显式流程步骤') && args.systemPrompt.includes('不得把可能性、能力或条件性表述提升为无条件事实'), 'coverage prompt does not protect process-step semantic strength')
+      return {
+        nodes: [{ id: 'm1', type: 'claim', text: '这一部分介绍颜色标记体系。', quote: '这一部分介绍颜色标记体系。', paragraph: 1 }],
+        edges: [],
+      }
+    }
     if (args.title === 'coverage-partial-prune') {
       return {
         nodes: [
@@ -117,10 +133,25 @@ assert(!(partial.result.warnings || []).some((warning) => String(warning).includ
 const partialCoverage = partial.result.generation && partial.result.generation.coverage
 assert(partialCoverage && partialCoverage.attemptedBatches === 1 && partialCoverage.repairedBatches === 1 && partialCoverage.addedNodes === 1 && partialCoverage.addedEdges === 1, 'partial-prune coverage metadata is incorrect: ' + JSON.stringify(partialCoverage))
 
+const zeroSectionText = [
+  '第一部分',
+  '这一部分介绍颜色标记体系。',
+  '第二部分',
+  '当前部分已有节点。',
+].join('\n\n')
+const zeroSectionStart = await handlers.get('extract')({ title: 'zero-section-coverage', text: zeroSectionText })
+const zeroSection = await waitTask(zeroSectionStart.taskId)
+assert(zeroSection.status === 'succeeded', 'zero-section coverage extraction failed: ' + JSON.stringify(zeroSection))
+const zeroSectionCall = coverageCalls.find((call) => call.title === 'zero-section-coverage')
+assert(zeroSectionCall, 'zero-node section did not trigger the existing coverage pass')
+assert(zeroSection.result.nodes.some((node) => node.id === 'm1' && node.sectionTitle === '第一部分'), 'missing section knowledge was not recovered into the correct section')
+const zeroSectionCoverage = zeroSection.result.generation && zeroSection.result.generation.coverage
+assert(zeroSectionCoverage && zeroSectionCoverage.attemptedBatches === 1 && zeroSectionCoverage.repairedBatches === 1 && zeroSectionCoverage.addedNodes === 1, 'zero-section coverage metadata is incorrect: ' + JSON.stringify(zeroSectionCoverage))
+
 const beforePlain = coverageCalls.length
 const plainStart = await handlers.get('extract')({ title: 'plain-fact', text: '项目包含三个文件。' })
 const plain = await waitTask(plainStart.taskId)
 assert(plain.status === 'succeeded', 'plain extraction failed')
 assert(coverageCalls.length === beforePlain, 'non-mechanism text triggered an unnecessary second model pass')
 
-console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, partialPrune: true, plainSkipped: true }))
+console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, partialPrune: true, zeroSectionCoverage: true, plainSkipped: true }))

@@ -9,6 +9,20 @@ const weaveCalls = []
 let manualRetryWeaveCalls = 0
 const extractor = {
   async extractChunk({ title, existingNodeIds }) {
+    if (title === 'example-role-recall') {
+      return {
+        summary: '例子角色方向召回',
+        nodes: [
+          { id: 'r1', type: 'claim', text: '在物质世界中再次遇到完全相同现象的概率几乎为零。', quote: '在物质世界中再次遇到完全相同现象的概率几乎为零。', paragraph: 0 },
+          { id: 'e1', type: 'example', text: '人不能两次踏进同一条河流。', quote: '人不能两次踏进同一条河流。', paragraph: 1 },
+          { id: 'r2', type: 'claim', text: '河流水的微观粒子排列状态每时每刻都在变化。', quote: '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。', paragraph: 2 },
+        ],
+        edges: [
+          { fromNodeId: 'r1', toNodeId: 'r2', relation: 'supports', evidence: [{ paragraph: 0, quote: '在物质世界中再次遇到完全相同现象的概率几乎为零。' }, { paragraph: 2, quote: '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。' }] },
+          { fromNodeId: 'r2', toNodeId: 'e1', relation: 'analogy', evidence: [{ paragraph: 1, quote: '人不能两次踏进同一条河流。' }, { paragraph: 2, quote: '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。' }] },
+        ],
+      }
+    }
     if (title === 'sequence-relation-recall') {
       return {
         summary: '连续流程关系召回',
@@ -93,6 +107,20 @@ const extractor = {
   },
   async weaveRelations(args) {
     weaveCalls.push(args)
+    if (args.title === 'example-role-recall') {
+      assert(args.systemPrompt.includes('例子角色候选'), 'relation-weave contract does not keep example-role hints recall-only')
+      assert(args.prompt.includes('例子角色候选关系对'), 'relation-weave prompt omitted example-role candidates')
+      assert(args.prompt.includes('e1->r2'), 'role-deficient example was not surfaced in example-to-principle direction')
+      return {
+        edges: [{
+          fromNodeId: 'e1', toNodeId: 'r2', relation: 'analogy',
+          evidence: [
+            { paragraph: 1, quote: '人不能两次踏进同一条河流。' },
+            { paragraph: 2, quote: '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。' },
+          ],
+        }],
+      }
+    }
     if (args.title === 'sequence-relation-recall') {
       assert(args.systemPrompt.includes('连续流程候选'), 'relation-weave contract does not describe sequence candidates as recall-only')
       assert(args.prompt.includes('连续流程候选关系对'), 'relation-weave prompt omitted explicit sequence candidates')
@@ -227,6 +255,22 @@ assert(sequenceCompleted.result.edges.some((edge) => edge.fromNodeId === 'v1' &&
 assert(sequenceCompleted.result.edges.some((edge) => edge.fromNodeId === 'v2' && edge.toNodeId === 'v3' && edge.relation === 'supports'), 'second process-step relation was not admitted')
 assert(sequenceCompleted.result.edges.every((edge) => Array.isArray(edge.evidence) && edge.evidence.length > 0), 'sequence relation entered without direct evidence')
 
+// An example that only has incoming/reversed role edges is still missing its
+// queryable example->principle role. The candidate is a recall hint only; the
+// reviewer must provide direct evidence before the outgoing relation is added.
+const roleText = [
+  '在物质世界中再次遇到完全相同现象的概率几乎为零。',
+  '人不能两次踏进同一条河流。',
+  '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。',
+].join('\n\n')
+const roleStarted = await handlers.get('extract')({ title: 'example-role-recall', text: roleText })
+const roleCompleted = await waitTask(roleStarted.taskId)
+assert(roleCompleted.status === 'succeeded' && roleCompleted.result, 'example-role recall extraction failed: ' + JSON.stringify(roleCompleted))
+assert(roleCompleted.result.edges.some((edge) => edge.fromNodeId === 'e1' && edge.toNodeId === 'r2' && edge.relation === 'analogy'), 'outgoing example role was not recovered')
+assert(roleCompleted.result.edges.some((edge) => edge.fromNodeId === 'r2' && edge.toNodeId === 'e1' && edge.relation === 'analogy'), 'existing reverse edge was unexpectedly rewritten or removed')
+const roleEdge = roleCompleted.result.edges.find((edge) => edge.fromNodeId === 'e1' && edge.toNodeId === 'r2' && edge.relation === 'analogy')
+assert(roleEdge && Array.isArray(roleEdge.evidence) && roleEdge.evidence.length === 2, 'example-role edge entered without direct evidence')
+
 // Append mode must weave against the complete canonical source so a new node
 // can connect to old nodes with evidence from both source revisions.
 const baseText = ['明确目标提高学习效率', '学习方法必须由目标驱动'].join('\n\n')
@@ -287,5 +331,6 @@ console.log(JSON.stringify({
   ok: true,
   weaveCalls: weaveCalls.length,
   edges: completed.result.edges.length,
+  exampleRoleRecall: true,
   connectivity,
 }))
