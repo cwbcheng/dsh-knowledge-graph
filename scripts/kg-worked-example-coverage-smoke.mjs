@@ -8,7 +8,7 @@ const handlers = new Map()
 const coverageCalls = []
 let producerPrompt = ''
 
-const source = '拿函数定义来说，面对函数定义时，学习者可能反复阅读，直到感觉懂了，然后努力记住讲解。'
+const source = '例子：“函数定义描述一种对应关系。”\n\n面对函数定义时，学习者可能反复阅读并记住这句话。'
 
 const extractor = {
   async extractChunk(args) {
@@ -18,9 +18,9 @@ const extractor = {
       nodes: [{
         id: 'n1',
         type: 'example',
-        text: '学习者可能反复阅读，直到感觉懂了，然后努力记住讲解。',
-        quote: '学习者可能反复阅读，直到感觉懂了，然后努力记住讲解',
-        paragraph: 0,
+        text: '面对函数定义时，学习者可能反复阅读并记住这句话。',
+        quote: '面对函数定义时，学习者可能反复阅读并记住这句话',
+        paragraph: 1,
       }],
       edges: [],
     }
@@ -29,19 +29,24 @@ const extractor = {
   async reviewCoverage(args) {
     coverageCalls.push(args)
     assert(args.systemPrompt.includes('明确命名对象/定义型 worked example'), 'coverage prompt does not protect named worked-example context')
+    assert(args.prompt.includes('结构性 worked-example 候选'), 'coverage prompt did not surface structural worked-example hints')
+    assert(args.prompt.includes('[P0] 例子：“函数定义描述一种对应关系。”'), 'coverage prompt did not point at the omitted definition example')
     return {
       nodes: [{
         id: 'm1',
         type: 'example',
-        text: '面对函数定义时的学习场景。',
-        quote: '面对函数定义时',
+        text: '函数定义的学习例子。',
+        quote: '函数定义描述一种对应关系',
         paragraph: 0,
       }],
       edges: [{
         fromNodeId: 'm1',
         toNodeId: 'n1',
         relation: 'example',
-        evidence: [{ paragraph: 0, quote: source }],
+        evidence: [
+          { paragraph: 0, quote: '例子：“函数定义描述一种对应关系。”' },
+          { paragraph: 1, quote: '面对函数定义时，学习者可能反复阅读并记住这句话。' },
+        ],
       }],
     }
   },
@@ -69,6 +74,6 @@ const done = await waitTask(started.taskId)
 assert(done.status === 'succeeded', 'worked-example extraction failed: ' + JSON.stringify(done))
 assert(producerPrompt.includes('高知识密度 worked example'), 'producer prompt does not retain high-density worked examples')
 assert(coverageCalls.length === 1, 'worked-example omission did not receive one bounded coverage review')
-assert(done.result.nodes.some((node) => node.id === 'm1' && String(node.text || '').includes('面对函数定义')), 'worked-example context anchor was not recovered')
+assert(done.result.nodes.some((node) => node.id === 'm1' && String(node.text || '').includes('函数定义')), 'worked-example context anchor was not recovered')
 assert(done.result.edges.some((edge) => edge.fromNodeId === 'm1' && edge.toNodeId === 'n1' && edge.relation === 'example'), 'worked-example anchor was not connected to the downstream behavior')
 console.log(JSON.stringify({ ok: true, workedExampleRecovered: true, boundedCoverage: true }))
