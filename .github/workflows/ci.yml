@@ -49,6 +49,7 @@ jobs:
             > /tmp/semantic-role-hardening.patch
           test -s /tmp/semantic-role-hardening.patch
           git checkout -B codex/semantic-role-hardening-final origin/main
+          git reset --hard origin/main
           git apply /tmp/semantic-role-hardening.patch
           git add src/index.host.js lib/index.js package.json scripts/kg-semantic-role-hardening-smoke.mjs
           git config user.name 'github-actions[bot]'
