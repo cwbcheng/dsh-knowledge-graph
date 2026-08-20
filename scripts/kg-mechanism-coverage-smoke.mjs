@@ -15,6 +15,13 @@ const extractor = {
         edges: [],
       }
     }
+    if (title === 'coverage-partial-prune') {
+      return {
+        summary: '预测支撑日常行动',
+        nodes: [{ id: 'n1', type: 'claim', text: '预测能力支撑着人的行动', quote: '预测能力支撑着人的行动。', paragraph: 0 }],
+        edges: [],
+      }
+    }
     if (title === 'plain-fact') {
       return { summary: '直接事实', nodes: [{ id: 'f1', type: 'fact', text: '项目包含三个文件', quote: '项目包含三个文件。', paragraph: 0 }], edges: [] }
     }
@@ -25,6 +32,18 @@ const extractor = {
     assert(args.systemPrompt.includes('只补漏，不重做'), 'coverage pass is not scoped as missing-node repair')
     assert(args.systemPrompt.includes('纯修辞、只重复已有原则的比喻优先省略'), 'example selection does not prefer mechanism-bearing examples')
     assert(args.prompt.includes('首轮已接受节点'), 'coverage reviewer did not receive the accepted graph')
+    if (args.title === 'coverage-partial-prune') {
+      return {
+        nodes: [
+          { id: 'm1', type: 'example', text: '不经意的翻页动作基于大脑预测翻页后会看到后续内容而采取', quote: '哪怕是不经意的翻页动作，也是基于大脑预测翻页后会看到后续内容而采取的行动。', paragraph: 1 },
+          { id: 'm2', type: 'claim', text: '这个现象说明预测能力持续参与日常行动', quote: '这个现象可能说明预测能力持续参与日常行动。', paragraph: 2 },
+        ],
+        edges: [
+          { fromNodeId: 'm1', toNodeId: 'n1', relation: 'example', evidence: [{ paragraph: 1, quote: '哪怕是不经意的翻页动作，也是基于大脑预测翻页后会看到后续内容而采取的行动。' }] },
+          { fromNodeId: 'm2', toNodeId: 'n1', relation: 'supports', evidence: [{ paragraph: 2, quote: '这个现象可能说明预测能力持续参与日常行动。' }] },
+        ],
+      }
+    }
     return {
       nodes: [
         { id: 'm1', type: 'claim', text: '以感觉懂了驱动学习时，人无法根据明确目标判断学习是否完成', quote: '以感觉懂了驱动学习时，人无法根据明确目标判断学习是否完成。', paragraph: 0 },
@@ -81,10 +100,27 @@ assert(coverage && coverage.attemptedBatches === 1 && coverage.repairedBatches =
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm5' && edge.toNodeId === 'n1' && edge.relation === 'causes'), 'recovered mechanism chain is not connected to the original endpoint')
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm6' && edge.toNodeId === 'm3' && edge.relation === 'example'), 'mechanism-bearing function example was not integrated')
 
+const partialText = [
+  '预测能力支撑着人的行动。',
+  '哪怕是不经意的翻页动作，也是基于大脑预测翻页后会看到后续内容而采取的行动。',
+  '这个现象可能说明预测能力持续参与日常行动。',
+].join('\n\n')
+const partialStart = await handlers.get('extract')({ title: 'coverage-partial-prune', text: partialText })
+const partial = await waitTask(partialStart.taskId)
+assert(partial.status === 'succeeded', 'coverage partial-prune extraction failed: ' + JSON.stringify(partial))
+assert(partial.result.nodes.some((node) => node.id === 'm1'), 'valid coverage candidate was lost with the drifted sibling')
+assert(!partial.result.nodes.some((node) => node.id === 'm2'), 'semantic-strength-drift coverage node was admitted')
+assert(partial.result.edges.some((edge) => edge.fromNodeId === 'm1' && edge.toNodeId === 'n1' && edge.relation === 'example'), 'valid coverage edge was lost after pruning')
+assert(!partial.result.edges.some((edge) => edge.fromNodeId === 'm2' || edge.toNodeId === 'm2'), 'incident edge of drifted coverage node survived pruning')
+assert((partial.result.warnings || []).some((warning) => String(warning).includes('coverage_pruned:node_semantic_strength_drift:m2')), 'coverage pruning was not auditable in warnings')
+assert(!(partial.result.warnings || []).some((warning) => String(warning).includes('coverage_review_failed')), 'one prunable drift incorrectly failed the whole coverage review')
+const partialCoverage = partial.result.generation && partial.result.generation.coverage
+assert(partialCoverage && partialCoverage.attemptedBatches === 1 && partialCoverage.repairedBatches === 1 && partialCoverage.addedNodes === 1 && partialCoverage.addedEdges === 1, 'partial-prune coverage metadata is incorrect: ' + JSON.stringify(partialCoverage))
+
 const beforePlain = coverageCalls.length
 const plainStart = await handlers.get('extract')({ title: 'plain-fact', text: '项目包含三个文件。' })
 const plain = await waitTask(plainStart.taskId)
 assert(plain.status === 'succeeded', 'plain extraction failed')
 assert(coverageCalls.length === beforePlain, 'non-mechanism text triggered an unnecessary second model pass')
 
-console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, plainSkipped: true }))
+console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, partialPrune: true, plainSkipped: true }))

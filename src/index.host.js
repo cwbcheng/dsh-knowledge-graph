@@ -584,6 +584,26 @@ export default function hostPlugin() {
         return text
       }
 
+      function pruneCoverageSemanticStrengthDriftHost(repair, gate) {
+        if (!repair || !Array.isArray(repair.nodes) || !gate || !Array.isArray(gate.blockingIssues)) return []
+        const repairIds = new Set(repair.nodes.map((node) => node && node.id).filter(Boolean))
+        const prunedIds = []
+        const seen = new Set()
+        for (const issue of gate.blockingIssues) {
+          if (!issue || issue.code !== 'node_semantic_strength_drift' || typeof issue.targetId !== 'string') continue
+          if (!repairIds.has(issue.targetId) || seen.has(issue.targetId)) continue
+          seen.add(issue.targetId)
+          prunedIds.push(issue.targetId)
+        }
+        if (prunedIds.length === 0) return []
+        const drop = new Set(prunedIds)
+        repair.nodes = repair.nodes.filter((node) => node && !drop.has(node.id))
+        repair.edges = (Array.isArray(repair.edges) ? repair.edges : []).filter((edge) => edge && !drop.has(edge.fromNodeId) && !drop.has(edge.toNodeId))
+        repair.warnings = Array.isArray(repair.warnings) ? repair.warnings : []
+        for (const id of prunedIds) repair.warnings.push('coverage_pruned:node_semantic_strength_drift:' + id)
+        return prunedIds
+      }
+
       async function repairMechanismCoverageHost(task, model, batch, accepted, acc, existingIds, existingDigest, batchContext, totalParagraphs) {
         const result = { attempted: false, addedNodes: 0, addedEdges: 0 }
         if (!mechanismCoverageNeededHost(batch, accepted)) return result
@@ -631,6 +651,22 @@ export default function hostPlugin() {
             normalizationWarnings: repair.warnings,
             ignoreSafeNormalizationDrops: true,
           })
+          if (gate.blockingIssues.length > 0) {
+            // Coverage is a bounded additive recovery transaction. A bad new
+            // candidate must not authorize a rewrite, but one isolated
+            // semantic-strength drift should not veto unrelated valid recovery
+            // candidates either. Drop only drifted coverage nodes and all
+            // incident coverage edges, then re-run the complete invariant gate.
+            const pruned = pruneCoverageSemanticStrengthDriftHost(repair, gate)
+            if (pruned.length > 0) {
+              gate = validateGraphInvariantsHost(repair, task.text, {
+                includeQuality: false,
+                extraNodes: knownNodes,
+                normalizationWarnings: repair.warnings,
+                ...(safe.length > 0 ? { ignoreSafeNormalizationDrops: true } : {}),
+              })
+            }
+          }
           if (gate.blockingIssues.length > 0) throw new Error(formatInvariantFeedbackHost(gate.blockingIssues))
           accepted.nodes.push(...repair.nodes)
           accepted.edges.push(...repair.edges)
