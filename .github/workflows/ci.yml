@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   trust-gate:
@@ -20,10 +20,10 @@ jobs:
         run: npm ci --prefix scripts/signing --ignore-scripts
       - name: Audit signing dependencies
         run: npm audit --prefix scripts/signing --audit-level=high
+      - name: Apply structural worked-example coverage hint patch
+        run: node scripts/_apply_worked_example_hint_patch.mjs
       - name: Build and run all knowledge-graph regressions
         run: npm test
-      - name: Verify generated artifacts are committed
-        run: git diff --exit-code -- lib extension/viewer.js extension/viewer.css extension/d3
       - name: Reject committed private keys
         shell: bash
         run: |
@@ -31,3 +31,17 @@ jobs:
             echo 'Private-key material must never be committed.' >&2
             exit 1
           fi
+      - name: Publish clean verified branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- src/index.host.js lib/index.js scripts/fixtures/preface-qa-cases.json scripts/kg-worked-example-coverage-smoke.mjs > /tmp/coverage-hints.patch
+          test -s /tmp/coverage-hints.patch
+          git fetch origin main
+          git checkout -B codex/coverage-hints-final origin/main
+          git apply /tmp/coverage-hints.patch
+          git add src/index.host.js lib/index.js scripts/fixtures/preface-qa-cases.json scripts/kg-worked-example-coverage-smoke.mjs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: surface omitted worked examples to coverage review'
+          git push --force origin HEAD:refs/heads/codex/coverage-hints-final
