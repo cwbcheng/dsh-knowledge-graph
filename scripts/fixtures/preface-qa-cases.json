@@ -63,8 +63,19 @@
     "id": "feeling-understood-not-goal",
     "question": "‘感觉懂了’是不是明确的行为目标？",
     "category": "answerability",
-    "kind": "node",
-    "selector": { "all": ["感觉懂了", "不是", "行为目标"] }
+    "kind": "any-of",
+    "options": [
+      {
+        "kind": "node",
+        "selector": { "all": ["感觉懂了", "不是", "行为目标"] }
+      },
+      {
+        "kind": "relation",
+        "from": { "all": ["感觉懂了"] },
+        "to": { "all": ["行为目标"] },
+        "relations": ["not_is"]
+      }
+    ]
   },
   {
     "id": "methods-not-the-problem",
@@ -73,7 +84,7 @@
     "kind": "node",
     "selector": {
       "all": [
-        ["手段本身并非有问题", "方法本身并非有问题", "并非这些手段有问题", "并非这些方法有问题"]
+        ["手段本身并非有问题", "方法本身并非有问题", "并非这些手段有问题", "并非这些方法有问题", "并非因为这些手段本身有问题", "并非因为这些方法本身有问题"]
       ]
     }
   },
