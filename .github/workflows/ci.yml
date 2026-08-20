@@ -40,6 +40,7 @@ jobs:
           set -euo pipefail
           git diff -- src/index.host.js lib/index.js scripts/fixtures/preface-qa-cases.json scripts/kg-worked-example-coverage-smoke.mjs > /tmp/coverage-hints.patch
           test -s /tmp/coverage-hints.patch
+          git reset --hard HEAD
           git fetch origin main
           git checkout -B codex/coverage-hints-final origin/main
           git apply /tmp/coverage-hints.patch
