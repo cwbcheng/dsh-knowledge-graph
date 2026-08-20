@@ -137,10 +137,11 @@ function evaluateCase(graph, testCase) {
   throw new Error(`unknown case kind: ${kind}`)
 }
 
-export function runGraphQaBenchmark(graph, cases) {
-  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) throw new Error('graph must contain nodes[] and edges[]')
-  if (!Array.isArray(cases) || cases.length === 0) throw new Error('cases must be a non-empty array')
-  const results = cases.map((testCase) => ({ id: testCase.id, question: testCase.question, category: testCase.category || 'answerability', ...evaluateCase(graph, testCase) }))
+function evaluateCases(graph, cases) {
+  return cases.map((testCase) => ({ id: testCase.id, question: testCase.question, category: testCase.category || 'answerability', ...evaluateCase(graph, testCase) }))
+}
+
+function aggregateResults(results) {
   const categories = {}
   for (const result of results) {
     const entry = categories[result.category] || { passed: 0, total: 0 }
@@ -148,14 +149,41 @@ export function runGraphQaBenchmark(graph, cases) {
     if (result.pass) entry.passed += 1
     categories[result.category] = entry
   }
-  const passed = results.filter((r) => r.pass).length
+  const passed = results.filter((result) => result.pass).length
+  return { passed, total: results.length, score: Math.round((passed / results.length) * 100), categories }
+}
+
+function withoutUnsupportedNodes(graph) {
+  const nodes = (graph.nodes || []).filter((node) => node && node.groundingStatus !== 'unsupported')
+  const ids = new Set(nodes.map((node) => node.id))
+  const edges = (graph.edges || []).filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
+  return { ...graph, nodes, edges }
+}
+
+export function runGraphQaBenchmark(graph, cases) {
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) throw new Error('graph must contain nodes[] and edges[]')
+  if (!Array.isArray(cases) || cases.length === 0) throw new Error('cases must be a non-empty array')
+  const semanticResults = evaluateCases(graph, cases)
+  const trustedGraph = withoutUnsupportedNodes(graph)
+  const trustedResults = evaluateCases(trustedGraph, cases)
+  const semantic = aggregateResults(semanticResults)
+  const trusted = aggregateResults(trustedResults)
+  const excludedUnsupportedNodeIds = (graph.nodes || []).filter((node) => node && node.groundingStatus === 'unsupported').map((node) => node.id)
   return {
-    ok: passed === results.length,
-    passed,
-    total: results.length,
-    score: Math.round((passed / results.length) * 100),
-    categories,
-    results,
+    ok: semantic.passed === semantic.total && trusted.passed === trusted.total,
+    passed: trusted.passed,
+    total: trusted.total,
+    score: trusted.score,
+    semanticPassed: semantic.passed,
+    trustedPassed: trusted.passed,
+    semanticScore: semantic.score,
+    trustedScore: trusted.score,
+    categories: trusted.categories,
+    semanticCategories: semantic.categories,
+    trustedCategories: trusted.categories,
+    excludedUnsupportedNodeIds,
+    results: trustedResults,
+    semanticResults,
   }
 }
 

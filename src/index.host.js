@@ -1438,6 +1438,50 @@ export default function hostPlugin() {
         if (!ENTAILMENT_STATUSES.has(node.entailmentStatus)) node.entailmentStatus = 'unverified'
         return node
       }
+      function foldEvidenceTypographyHost(value) {
+        const source = String(value || '')
+        const chars = []
+        const map = []
+        let lastWasSpace = true
+        const doubleQuotes = new Set(['"', '“', '”', '„', '‟', '「', '」', '『', '』'])
+        const singleQuotes = new Set(["'", '‘', '’', '‚', '‛'])
+        for (let i = 0; i < source.length; i++) {
+          const raw = source[i]
+          let ch = raw
+          if (doubleQuotes.has(raw)) ch = '"'
+          else if (singleQuotes.has(raw)) ch = "'"
+          else if (/\s/.test(raw) || raw === IDEO_SPACE_HOST) ch = ' '
+          if (ch === ' ') {
+            if (lastWasSpace) continue
+            chars.push(' ')
+            map.push(i)
+            lastWasSpace = true
+            continue
+          }
+          chars.push(ch)
+          map.push(i)
+          lastWasSpace = false
+        }
+        if (chars.length > 0 && chars[chars.length - 1] === ' ') { chars.pop(); map.pop() }
+        return { text: chars.join(''), map }
+      }
+      function exactOrUniqueTypographicQuoteHost(sourceText, rawQuote) {
+        const source = String(sourceText || '')
+        const quote = String(rawQuote || '').trim().slice(0, 600)
+        if (!source || !quote) return ''
+        if (source.includes(quote)) return quote
+        const foldedSource = foldEvidenceTypographyHost(source)
+        const foldedQuote = foldEvidenceTypographyHost(quote).text
+        if (!foldedQuote) return ''
+        const first = foldedSource.text.indexOf(foldedQuote)
+        if (first < 0 || foldedSource.text.indexOf(foldedQuote, first + 1) >= 0) return ''
+        const last = first + foldedQuote.length - 1
+        const startOffset = foldedSource.map[first]
+        const endOffset = foldedSource.map[last]
+        if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset)) return ''
+        return source.slice(startOffset, endOffset + 1).trim()
+      }
+
       function provenanceForParagraphHost(graph, paragraph) {
         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
         const staging = graph && graph.staging && typeof graph.staging === 'object' ? graph.staging : {}
@@ -1477,12 +1521,9 @@ export default function hostPlugin() {
       function authenticateGraphEvidenceHost(graph, sourceText) {
         if (!graph || typeof graph !== 'object') return graph
         const paragraphs = splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '')
-        const quoteMatches = (paragraph, quote) => {
-          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphs.length || !quote) return false
-          const source = String(paragraphs[paragraph] || '')
-          const normalizedSource = source.replace(/\s+/g, ' ').trim()
-          const normalizedQuote = String(quote).replace(/\s+/g, ' ').trim()
-          return source.includes(quote) || Boolean(normalizedQuote && normalizedSource.includes(normalizedQuote))
+        const quoteMatch = (paragraph, quote) => {
+          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphs.length || !quote) return ''
+          return exactOrUniqueTypographicQuoteHost(String(paragraphs[paragraph] || ''), quote)
         }
         for (const node of Array.isArray(graph.nodes) ? graph.nodes : []) {
           if (!node || typeof node !== 'object') continue
@@ -1493,13 +1534,17 @@ export default function hostPlugin() {
           const authenticated = []
           for (const item of Array.isArray(node.evidence) ? node.evidence : []) {
             if (!item || !Number.isInteger(item.paragraph) || typeof item.quote !== 'string' || !item.quote.trim()) continue
-            const quote = item.quote.trim().slice(0, 600)
-            if (!quoteMatches(item.paragraph, quote)) continue
-            authenticated.push(evidenceRecordHost(item.paragraph, quote, provenanceForParagraphHost(graph, item.paragraph), item))
+            const matchedQuote = quoteMatch(item.paragraph, item.quote.trim().slice(0, 600))
+            if (!matchedQuote) continue
+            authenticated.push(evidenceRecordHost(item.paragraph, matchedQuote, provenanceForParagraphHost(graph, item.paragraph), item))
           }
           const quote = typeof node.quote === 'string' ? node.quote.trim().slice(0, 600) : ''
-          if (quote && Number.isInteger(node.paragraph) && quoteMatches(node.paragraph, quote)) {
-            authenticated.push(evidenceRecordHost(node.paragraph, quote, provenanceForParagraphHost(graph, node.paragraph), null))
+          if (quote && Number.isInteger(node.paragraph)) {
+            const matchedQuote = quoteMatch(node.paragraph, quote)
+            if (matchedQuote) {
+              node.quote = matchedQuote
+              authenticated.push(evidenceRecordHost(node.paragraph, matchedQuote, provenanceForParagraphHost(graph, node.paragraph), null))
+            }
           }
           node.evidence = mergeEvidenceRecordsHost([], authenticated, 8)
           refreshNodeGroundingStatusHost(node)
@@ -1509,9 +1554,9 @@ export default function hostPlugin() {
           const authenticated = []
           for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) {
             if (!item || !Number.isInteger(item.paragraph) || typeof item.quote !== 'string' || !item.quote.trim()) continue
-            const quote = item.quote.trim().slice(0, 600)
-            if (!quoteMatches(item.paragraph, quote)) continue
-            authenticated.push(evidenceRecordHost(item.paragraph, quote, provenanceForParagraphHost(graph, item.paragraph), item))
+            const matchedQuote = quoteMatch(item.paragraph, item.quote.trim().slice(0, 600))
+            if (!matchedQuote) continue
+            authenticated.push(evidenceRecordHost(item.paragraph, matchedQuote, provenanceForParagraphHost(graph, item.paragraph), item))
           }
           edge.evidence = mergeEvidenceRecordsHost([], authenticated, 8)
         }
@@ -1568,10 +1613,7 @@ export default function hostPlugin() {
         const paragraphTexts = paras.map((paragraph) => paragraph.text)
         const quoteInParagraph = (quote, paragraph) => {
           if (!quote || !Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphTexts.length) return false
-          const source = String(paragraphTexts[paragraph] || '')
-          const normalizedSource = source.replace(/\s+/g, ' ').trim()
-          const normalizedQuote = String(quote).replace(/\s+/g, ' ').trim()
-          return source.includes(quote) || (normalizedQuote && normalizedSource.includes(normalizedQuote))
+          return Boolean(exactOrUniqueTypographicQuoteHost(String(paragraphTexts[paragraph] || ''), quote))
         }
 
         // Normalization rejections are part of the same acceptance contract.
@@ -1958,13 +2000,12 @@ export default function hostPlugin() {
           const paragraph = Number(String(rawParagraph == null ? '' : rawParagraph).trim())
           const quote = typeof item.quote === 'string' ? item.quote.trim().slice(0, 600) : ''
           if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= totalParagraphs || !quote) continue
+          let authenticatedQuote = quote
           if (paragraphs && typeof paragraphs[paragraph] === 'string') {
-            const source = paragraphs[paragraph]
-            const normalizedSource = source.replace(/\s+/g, ' ').trim()
-            const normalizedQuote = quote.replace(/\s+/g, ' ').trim()
-            if (!source.includes(quote) && !normalizedSource.includes(normalizedQuote)) continue
+            authenticatedQuote = exactOrUniqueTypographicQuoteHost(paragraphs[paragraph], quote)
+            if (!authenticatedQuote) continue
           }
-          out.push(evidenceRecordHost(paragraph, quote, sourceContext, item))
+          out.push(evidenceRecordHost(paragraph, authenticatedQuote, sourceContext, item))
           if (out.length >= 8) break
         }
         if (out.length === 0 && warnings) warnings.push('edge_dropped:missing_relation_evidence:' + edgeLabel)
@@ -2008,10 +2049,9 @@ export default function hostPlugin() {
             : null
           const paragraphs = sourceContext && Array.isArray(sourceContext.paragraphTexts) ? sourceContext.paragraphTexts : null
           const sourceParagraph = paragraphs && pNum != null && typeof paragraphs[pNum] === 'string' ? paragraphs[pNum] : ''
-          const normalizedSource = sourceParagraph.replace(/\s+/g, ' ').trim()
-          const normalizedQuote = quote.replace(/\s+/g, ' ').trim()
-          const quoteAuthenticated = Boolean(quote && pNum != null && sourceParagraph && (sourceParagraph.includes(quote) || (normalizedQuote && normalizedSource.includes(normalizedQuote))))
-          const evidence = quoteAuthenticated ? [evidenceRecordHost(pNum, quote, sourceContext, null)] : []
+          const authenticatedQuote = quote && pNum != null && sourceParagraph ? exactOrUniqueTypographicQuoteHost(sourceParagraph, quote) : ''
+          const quoteAuthenticated = Boolean(authenticatedQuote)
+          const evidence = quoteAuthenticated ? [evidenceRecordHost(pNum, authenticatedQuote, sourceContext, null)] : []
           const sourceFields = sourceContext && sourceContext.sourceId
             ? {
               documentId: sourceContext.documentId || null,
