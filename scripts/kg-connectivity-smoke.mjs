@@ -9,6 +9,17 @@ const weaveCalls = []
 let manualRetryWeaveCalls = 0
 const extractor = {
   async extractChunk({ title, existingNodeIds }) {
+    if (title === 'sequence-relation-recall') {
+      return {
+        summary: '连续流程关系召回',
+        nodes: [
+          { id: 'v1', type: 'fact', text: '物体反光进入眼睛并在视网膜上聚焦。', quote: '首先，物体的反光进入眼睛并在视网膜上聚焦。', paragraph: 0 },
+          { id: 'v2', type: 'fact', text: '视网膜感光细胞将反光转换成神经电信号。', quote: '接着，视网膜感光细胞将反光转换成神经电信号。', paragraph: 1 },
+          { id: 'v3', type: 'fact', text: '神经电信号传到视觉皮层并形成宏观预测结果。', quote: '然后，这些神经电信号传到视觉皮层并形成宏观预测结果。', paragraph: 2 },
+        ],
+        edges: [],
+      }
+    }
     if (title === 'append-connectivity') {
       if (Array.isArray(existingNodeIds) && existingNodeIds.length > 0) {
         return {
@@ -82,6 +93,30 @@ const extractor = {
   },
   async weaveRelations(args) {
     weaveCalls.push(args)
+    if (args.title === 'sequence-relation-recall') {
+      assert(args.systemPrompt.includes('连续流程候选'), 'relation-weave contract does not describe sequence candidates as recall-only')
+      assert(args.prompt.includes('连续流程候选关系对'), 'relation-weave prompt omitted explicit sequence candidates')
+      assert(args.prompt.includes('v1<>v2|P0->P1'), 'first adjacent process step was not surfaced as a sequence candidate')
+      assert(args.prompt.includes('v2<>v3|P1->P2'), 'second adjacent process step was not surfaced as a sequence candidate')
+      return {
+        edges: [
+          {
+            fromNodeId: 'v1', toNodeId: 'v2', relation: 'supports',
+            evidence: [
+              { paragraph: 0, quote: '首先，物体的反光进入眼睛并在视网膜上聚焦。' },
+              { paragraph: 1, quote: '接着，视网膜感光细胞将反光转换成神经电信号。' },
+            ],
+          },
+          {
+            fromNodeId: 'v2', toNodeId: 'v3', relation: 'supports',
+            evidence: [
+              { paragraph: 1, quote: '接着，视网膜感光细胞将反光转换成神经电信号。' },
+              { paragraph: 2, quote: '然后，这些神经电信号传到视觉皮层并形成宏观预测结果。' },
+            ],
+          },
+        ],
+      }
+    }
     if (args.title === 'explicit-relation-seed') return { edges: [] }
     if (args.title === 'manual-relation-retry') {
       manualRetryWeaveCalls += 1
@@ -176,6 +211,21 @@ assert(connectivity.after.componentCount === 1 && connectivity.after.isolatedNod
 const quick = await handlers.get('verify-graph')({ text, graph: completed.result, mode: 'quick' })
 assert(quick && quick.report && quick.report.metrics.connectedComponents === 1, 'quick verification omitted connectivity metrics')
 assert(quick.report.metrics.isolatedNodes === 0, 'quick verification still reports isolated nodes after weaving')
+
+// Adjacent process units with explicit “首先/接着/然后” markers are recall
+// candidates only. The relation reviewer must still supply direct source
+// evidence before any edge enters the canonical graph.
+const sequenceText = [
+  '首先，物体的反光进入眼睛并在视网膜上聚焦。',
+  '接着，视网膜感光细胞将反光转换成神经电信号。',
+  '然后，这些神经电信号传到视觉皮层并形成宏观预测结果。',
+].join('\n\n')
+const sequenceStarted = await handlers.get('extract')({ title: 'sequence-relation-recall', text: sequenceText })
+const sequenceCompleted = await waitTask(sequenceStarted.taskId)
+assert(sequenceCompleted.status === 'succeeded' && sequenceCompleted.result, 'sequence relation recall extraction failed: ' + JSON.stringify(sequenceCompleted))
+assert(sequenceCompleted.result.edges.some((edge) => edge.fromNodeId === 'v1' && edge.toNodeId === 'v2' && edge.relation === 'supports'), 'first process-step relation was not admitted')
+assert(sequenceCompleted.result.edges.some((edge) => edge.fromNodeId === 'v2' && edge.toNodeId === 'v3' && edge.relation === 'supports'), 'second process-step relation was not admitted')
+assert(sequenceCompleted.result.edges.every((edge) => Array.isArray(edge.evidence) && edge.evidence.length > 0), 'sequence relation entered without direct evidence')
 
 // Append mode must weave against the complete canonical source so a new node
 // can connect to old nodes with evidence from both source revisions.

@@ -443,12 +443,36 @@ export default function hostPlugin() {
         '1. 只能输出首轮图中真正缺失的新节点，以及至少一端连接这些新节点的必要关系；禁止改写、删除、合并已有节点，禁止只补已有节点之间的关系。',
         '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。若一个明确命名的稳定对象被多个核心命题反复引用却没有独立 concept anchor，也可补回该对象；concept 名称使用稳定对象本身。',
         '3. 一节点一命题。不要把多个步骤再次压成一个总结节点；不要为追求完整而把每句话都建成节点。',
-        '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。counter_example 只用于真正削弱/限制某个命题的案例；负向结果或对照情形若仍在支持原命题，不得标为 counter_example。若首轮已经保留后续行为或机制，却把承载该行为的明确命名对象/定义型 worked example 整段省略，应补回最小 example/definition/concept 锚点，并只用原文直接支持的 example/analogy/supports 等关系把新锚点连接到已有机制；不得因此收录所有例子。',
+        '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。counter_example 只用于真正削弱/限制某个命题的案例；负向结果或对照情形若仍在支持原命题，不得标为 counter_example。若首轮已经保留后续行为或机制，却把承载该行为的明确命名对象/定义型 worked example 整段省略，应补回最小 example/definition/concept 锚点，并只用原文直接支持的 example/analogy/supports 等关系把新锚点连接到已有机制；不得因此收录所有例子。若一个完整原文单元没有任何已接受节点，但它以“例如/想象一下/哪怕/当…时/如果…就…”等具体场景直接说明已出现的抽象主张或机制，也应逐项检查是否漏掉一个最小 example 节点及必要的 example/supports/analogy 边；这只是补漏，不得因此收录纯修辞或所有例子。',
         '5. 所有新节点和关系必须由当前编号原文直接支持。quote/evidence 必须逐字来自原文；保留“可能、多数、通常、必须、如果、不是”等限定。若原文明示“并非X/不是X/不意味着X/问题不在X而在Y”，检查防误推理所需的X侧限定是否漏掉；若原文明示问题将在后文回答，可补一条普通 claim 记录“当前范围尚未给出具体答案”，不得猜答案或新增 question/unresolved 类型。',
         '6. 不要因为节点孤立、图不够漂亮或边太少而补知识。原文没有缺口时返回空 nodes/edges。',
         '7. 最多补 12 个新节点。type/relation 与主抽取器完全相同。',
         '8. 只输出合法 JSON：{"nodes":[{"id":"m1","type":"claim","text":"缺失的原子命题","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"m1","toNodeId":"n3","relation":"causes","evidence":[{"paragraph":2,"quote":"直接证明关系的原文"}]}]}。无缺口时输出 {"nodes":[],"edges":[]}。',
       ].join(NL)
+
+      function simpleIllustrativeCoverageHintsHost(batch, graph) {
+        const units = batch && Array.isArray(batch.units) ? batch.units : []
+        const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
+        if (units.length === 0) return []
+        const frameCue = /(?:例如|比如|譬如|想象一下|哪怕|就好比|就拿|我们之所以|还有一个现象|当.{1,80}时|如果.{1,80}(?:就|会))/
+        const explanatoryCue = /(?:因为|基于|据此|说明|意味着|预测|不符|导致|所以|因此|从而|用于|支撑)/
+        const nodeByParagraph = new Map()
+        for (const node of nodes) {
+          if (!node || !Number.isInteger(node.paragraph)) continue
+          const list = nodeByParagraph.get(node.paragraph) || []
+          list.push(node)
+          nodeByParagraph.set(node.paragraph, list)
+        }
+        const hints = []
+        for (const unit of units) {
+          if (hints.length >= 4 || !unit || !Number.isInteger(unit.num)) continue
+          const text = String(unit.text || '').trim()
+          if (text.length < 12 || !frameCue.test(text) || !explanatoryCue.test(text)) continue
+          if ((nodeByParagraph.get(unit.num) || []).length > 0) continue
+          hints.push({ paragraph: unit.num, text: text.slice(0, 320) })
+        }
+        return hints
+      }
 
       function workedExampleCoverageHintsHost(batch, graph) {
         const units = batch && Array.isArray(batch.units) ? batch.units : []
@@ -531,7 +555,7 @@ export default function hostPlugin() {
             if (!covered) explanatoryBoundaryGap = true
           }
         }
-        return workedExampleCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
+        return workedExampleCoverageHintsHost(batch, graph).length > 0 || simpleIllustrativeCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
       }
 
       function buildCoverageUserTextHost(title, batch, accepted, existingDigest) {
@@ -549,6 +573,12 @@ export default function hostPlugin() {
           text += NL + '结构性 worked-example 候选（只是补漏召回提示，不是建节点或连边的证据；已有等价覆盖就跳过）：' + NL
           for (const hint of workedExampleHints) text += '[P' + hint.paragraph + '] ' + hint.text + NL
           text += '请逐项检查这些候选是否承载了后续行为、误区、机制或验证区分；只有确实缺失时才补最小锚点。' + NL
+        }
+        const simpleExampleHints = simpleIllustrativeCoverageHintsHost(batch, accepted)
+        if (simpleExampleHints.length > 0) {
+          text += NL + '独立说明例子候选（完整原文单元尚无节点；只是召回提示，不是建节点或连边的证据）：' + NL
+          for (const hint of simpleExampleHints) text += '[P' + hint.paragraph + '] ' + hint.text + NL
+          text += '只在该具体场景确实承担说明已有主张/机制的作用且当前图完全遗漏时，补最小 example 节点及原文直接支持的必要关系。' + NL
         }
         if (existingDigest) text += NL + '前文/已有图可引用节点（禁止重复创建）：' + NL + existingDigest + NL
         return text
@@ -630,7 +660,7 @@ export default function hostPlugin() {
         '3. 每条边必须给 evidence；quote 必须逐字来自原文，并直接证明该 relation。跨段关系列出共同证明关系所需的全部摘录。',
         '4. 优先使用精确关系：is_a 下位→上位；contains 整体→组成；driven_by 手段/行为→目标；not_is A→B；analogy 类比案例→被说明原则；aims_at 主体/方案/作品→目标。只有确实只是论证支持时才用 supports。',
         '5. 其它方向：例子→被说明项，定义→被定义项，事实/主张→推论，因→果。counter_example 必须由真正反驳/限制一般命题的案例指向被挑战命题；仅仅是负向结果或对照情形时使用 example + supports/analogy。example/counter_example/defines 的源节点类型仍应分别为 example/counter_example/definition。',
-        '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。',
+        '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。连续流程候选同样只是召回提示；只有原文直接呈现前一步产物/状态进入后一步，或直接支持 causes/infers/supports 中某一关系时才连边，单纯时间相邻不得连边。',
         '7. 原文明示“属于/是一种/包含/由…驱动/不是/类比/旨在/导致/因此/例子/定义”等关系时，应选择对应的最精确 relation。若原文使用“拿…来说/好比/类似于/类比”等显式跨域说明语气，且具体案例用于解释一个抽象原则，优先使用 analogy（案例→原则），不要因为它是具体案例就退化成 example 或 supports。',
         '8. 每次最多补充 24 条高置信关系；宁缺毋滥。',
         '9. 只输出合法 JSON，结构固定为：{"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"is_a","evidence":[{"paragraph":2,"quote":"直接证明关系的原文逐字摘录"}]}]}',
@@ -3058,9 +3088,48 @@ export default function hostPlugin() {
         }
         return units
       }
+      function sequentialRelationCandidatePairsHost(groupNodes, existingEdges, paragraphTexts) {
+        const byParagraph = new Map()
+        for (const node of Array.isArray(groupNodes) ? groupNodes : []) {
+          if (!node || !Number.isInteger(node.paragraph)) continue
+          const list = byParagraph.get(node.paragraph) || []
+          list.push(node)
+          byParagraph.set(node.paragraph, list)
+        }
+        const existingPairs = new Set()
+        for (const edge of Array.isArray(existingEdges) ? existingEdges : []) {
+          if (!edge || !edge.fromNodeId || !edge.toNodeId) continue
+          existingPairs.add([edge.fromNodeId, edge.toNodeId].sort().join('|'))
+        }
+        const startCue = /^(?:首先|第一步|先(?:是|将|把|由|让|从|经过)?|接着|然后|随后|其次|再次|最后|再然后)/
+        const continuationCue = /^(?:接着|然后|随后|其次|再次|最后|再然后)/
+        const paragraphs = Array.from(byParagraph.keys()).sort((a, b) => a - b)
+        const pairs = []
+        for (let i = 0; i + 1 < paragraphs.length && pairs.length < 12; i++) {
+          const fromParagraph = paragraphs[i]
+          const toParagraph = paragraphs[i + 1]
+          if (toParagraph !== fromParagraph + 1) continue
+          const fromText = String(paragraphTexts[fromParagraph] || '').trim()
+          const toText = String(paragraphTexts[toParagraph] || '').trim()
+          if (!startCue.test(fromText) || !continuationCue.test(toText)) continue
+          for (const a of byParagraph.get(fromParagraph) || []) {
+            for (const b of byParagraph.get(toParagraph) || []) {
+              if (!a || !b || a.id === b.id) continue
+              const pairKey = [a.id, b.id].sort().join('|')
+              if (existingPairs.has(pairKey)) continue
+              pairs.push({ a, b, fromParagraph, toParagraph })
+              if (pairs.length >= 12) break
+            }
+            if (pairs.length >= 12) break
+          }
+        }
+        return pairs
+      }
+
       function buildRelationWeaveUserTextHost(title, groupNodes, existingEdges, paragraphTexts, stats, index, total) {
         const ids = new Set(groupNodes.map((node) => node.id))
         const units = relationEvidenceUnitsHost(groupNodes, paragraphTexts)
+        const sequencePairs = sequentialRelationCandidatePairsHost(groupNodes, existingEdges, paragraphTexts)
         let text = ''
         if (title) text += '资料标题：' + title + NL
         text += '关系编织窗口：' + (index + 1) + '/' + total + NL
@@ -3101,6 +3170,11 @@ export default function hostPlugin() {
           text += pair.a.id + '<>' + pair.b.id + '|' + proximity + '|component=' + (stats.componentById.get(pair.a.id) || 0) + '/' + (stats.componentById.get(pair.b.id) || 0) + NL
         }
         if (candidatePairs.length === 0) text += '（无）' + NL
+        text += NL + '连续流程候选关系对（相邻原文含“首先/接着/然后”等显式步骤标记；只是召回提示，不是关系证据）：' + NL
+        for (const pair of sequencePairs) {
+          text += pair.a.id + '<>' + pair.b.id + '|P' + pair.fromParagraph + '->P' + pair.toParagraph + NL
+        }
+        if (sequencePairs.length === 0) text += '（无）' + NL
         text += NL + '已有关系（禁止重复）：' + NL
         let listed = 0
         for (const edge of existingEdges) {
