@@ -48,11 +48,23 @@ const cases = [
 
 const result = runGraphQaBenchmark(graph, cases)
 assert(result.ok, 'benchmark fixture did not fully pass: ' + JSON.stringify(result.results.filter((r) => !r.pass)))
-assert(result.score === 100 && result.total === 7, 'benchmark aggregate score is wrong')
+assert(result.score === 100 && result.semanticScore === 100 && result.trustedScore === 100 && result.total === 7, 'benchmark aggregate score is wrong')
 assert(result.categories.answerability.passed === 3, 'answerability metric is wrong')
 assert(result.categories['unknown-calibration'].passed === 1, 'unknown calibration metric is wrong')
 assert(result.results.find((r) => r.id === 'path').edgeEvidence.includes('progress>relearn:causes'), 'faithful path evidence is missing')
 assert(result.results.find((r) => r.id === 'atomic-or-path').matchedKind === 'node', 'atomic proposition was not accepted as alternative evidence')
 assert(result.results.find((r) => r.id === 'unknown').verdict === 'insufficient', 'unknown answer was not calibrated as insufficient')
 assert(result.results.find((r) => r.id === 'unknown').evidence.includes('goal'), 'unknown calibration did not preserve the topic anchor as evidence')
-console.log(JSON.stringify({ ok: true, score: result.score, categories: result.categories }))
+
+const unsupportedGraph = {
+  ...graph,
+  nodes: graph.nodes.map((node) => node.id === 'relearn' ? { ...node, groundingStatus: 'unsupported' } : node),
+}
+const trustResult = runGraphQaBenchmark(unsupportedGraph, cases)
+assert(trustResult.semanticScore === 100, 'semantic score should still describe the full graph')
+assert(trustResult.trustedScore < 100 && trustResult.score === trustResult.trustedScore, 'unsupported node still earned trusted benchmark credit')
+assert(trustResult.semanticResults.find((r) => r.id === 'path').pass, 'semantic result unexpectedly lost the unsupported path')
+assert(!trustResult.results.find((r) => r.id === 'path').pass, 'trusted result used an unsupported path endpoint')
+assert(trustResult.excludedUnsupportedNodeIds.includes('relearn'), 'benchmark did not report excluded unsupported evidence')
+assert(!trustResult.ok, 'benchmark should not be green when trusted evidence fails')
+console.log(JSON.stringify({ ok: true, score: result.score, semanticScore: result.semanticScore, trustedScore: result.trustedScore, categories: result.categories }))
