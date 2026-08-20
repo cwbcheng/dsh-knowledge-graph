@@ -33,11 +33,31 @@
     "id": "why-learning-rituals",
     "question": "为什么学习者会依赖读几遍、抄几遍来判断结束？",
     "category": "answerability",
-    "kind": "path",
-    "from": { "all": ["无法判断", "完成学习"] },
-    "to": { "any": ["仪式", "阅读、抄写、画图"] },
-    "relations": ["causes", "infers", "supports"],
-    "maxHops": 3
+    "kind": "any-of",
+    "options": [
+      {
+        "kind": "node",
+        "selector": {
+          "all": [
+            ["无法判断", "无法通过对照目标来判断"],
+            ["学习是否完成", "是否完成学习", "是否完成了学习"],
+            ["仪式", "阅读、抄写", "画图"]
+          ]
+        }
+      },
+      {
+        "kind": "path",
+        "from": {
+          "all": [
+            ["无法判断", "无法通过对照目标来判断"],
+            ["学习是否完成", "是否完成学习", "是否完成了学习"]
+          ]
+        },
+        "to": { "any": ["仪式", "阅读、抄写", "画图"] },
+        "relations": ["causes", "infers", "supports"],
+        "maxHops": 3
+      }
+    ]
   },
   {
     "id": "feeling-understood-not-goal",
@@ -105,7 +125,7 @@
     "kind": "relation",
     "from": { "any": ["肌纤维微损伤", "增肌"] },
     "to": { "any": ["目标", "手段", "驱动"] },
-    "relations": ["analogy"]
+    "relations": ["analogy", "example"]
   },
   {
     "id": "weight-loss-not-counterexample",
