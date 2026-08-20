@@ -22,24 +22,16 @@ function patchFile(path) {
 patchFile('src/index.host.js')
 
 const fixturePath = 'scripts/fixtures/preface-qa-cases.json'
-const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'))
-for (const item of fixture) {
-  if (item.id === 'feeling-understood-not-goal') {
-    item.kind = 'any-of'
-    delete item.selector
-    item.options = [
-      { kind: 'node', selector: { all: ['感觉懂了', '不是', '行为目标'] } },
-      { kind: 'relation', from: { all: ['感觉懂了'] }, to: { all: ['行为目标'] }, relations: ['not_is'] },
-    ]
-  }
-  if (item.id === 'methods-not-the-problem') {
-    item.selector = { all: [[
-      '手段本身并非有问题', '方法本身并非有问题', '并非这些手段有问题', '并非这些方法有问题',
-      '并非因为这些手段本身有问题', '并非因为这些方法本身有问题',
-    ]] }
-  }
-}
-writeFileSync(fixturePath, JSON.stringify(fixture, null, 2) + '\n')
+let fixture = readFileSync(fixturePath, 'utf8')
+const feelingOld = `  {\n    "id": "feeling-understood-not-goal",\n    "question": "‘感觉懂了’是不是明确的行为目标？",\n    "category": "answerability",\n    "kind": "node",\n    "selector": { "all": ["感觉懂了", "不是", "行为目标"] }\n  },`
+const feelingNew = `  {\n    "id": "feeling-understood-not-goal",\n    "question": "‘感觉懂了’是不是明确的行为目标？",\n    "category": "answerability",\n    "kind": "any-of",\n    "options": [\n      {\n        "kind": "node",\n        "selector": { "all": ["感觉懂了", "不是", "行为目标"] }\n      },\n      {\n        "kind": "relation",\n        "from": { "all": ["感觉懂了"] },\n        "to": { "all": ["行为目标"] },\n        "relations": ["not_is"]\n      }\n    ]\n  },`
+if (!fixture.includes(feelingOld)) throw new Error('feeling-understood fixture marker not found')
+fixture = fixture.replace(feelingOld, feelingNew)
+const methodsOld = `        ["手段本身并非有问题", "方法本身并非有问题", "并非这些手段有问题", "并非这些方法有问题"]`
+const methodsNew = `        ["手段本身并非有问题", "方法本身并非有问题", "并非这些手段有问题", "并非这些方法有问题", "并非因为这些手段本身有问题", "并非因为这些方法本身有问题"]`
+if (!fixture.includes(methodsOld)) throw new Error('methods fixture marker not found')
+fixture = fixture.replace(methodsOld, methodsNew)
+writeFileSync(fixturePath, fixture)
 
 const smokePath = 'scripts/kg-worked-example-coverage-smoke.mjs'
 let smoke = readFileSync(smokePath, 'utf8')
