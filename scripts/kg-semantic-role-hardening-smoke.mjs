@@ -63,6 +63,16 @@ const extractor = {
             quote: '拿增肌来说，运动只有以肌纤维微损伤为目标才能增肌。',
             paragraph: 0,
           },
+          // Relation weaving intentionally starts at 3 nodes; keep the fixture
+          // inside the real production eligibility rule instead of adding a
+          // test-only execution path.
+          {
+            id: 'c1',
+            type: 'concept',
+            text: '运动',
+            quote: '运动',
+            paragraph: 0,
+          },
         ],
         edges: [],
       }
