@@ -8,6 +8,26 @@ const handlers = new Map()
 const calls = []
 const extractor = async ({ title, attempt, prompt }) => {
   calls.push({ title, attempt, prompt })
+  if (title === 'gate-retry-collapse') {
+    const nodes = Array.from({ length: 10 }, (_, index) => ({
+      id: 'c' + (index + 1),
+      type: 'fact',
+      text: '候选节点 ' + (index + 1),
+      quote: '候选节点 ' + (index + 1),
+      paragraph: index,
+    }))
+    if (attempt === 1) return { summary: '错误地只返回修复片段', nodes: nodes.slice(0, 1), edges: [] }
+    return {
+      summary: attempt === 0 ? '包含一个关系类型错误的完整候选' : '保留完整知识后的修复候选',
+      nodes,
+      edges: [{
+        fromNodeId: 'c1',
+        toNodeId: 'c2',
+        relation: attempt === 0 ? 'example' : 'supports',
+        evidence: [{ paragraph: 0, quote: '候选节点 1' }],
+      }],
+    }
+  }
   if (title === 'gate-fatal') {
     return {
       summary: '无法验收',
@@ -105,6 +125,17 @@ const provenanceEdge = completed.result.edges[0]
 assert(provenanceNode && provenanceNode.evidence[0] && provenanceNode.evidence[0].documentId && provenanceNode.evidence[0].sourceId && provenanceNode.evidence[0].chunkId, 'node evidence does not carry full provenance')
 assert(provenanceEdge && provenanceEdge.evidence[0] && provenanceEdge.evidence[0].documentId && provenanceEdge.evidence[0].sourceId && provenanceEdge.evidence[0].chunkId, 'edge evidence does not carry full provenance')
 assert(provenanceNode.groundingStatus === 'grounded' && provenanceNode.entailmentStatus === 'unverified', 'anchor/evidence/entailment states are not separated')
+
+const collapseSource = Array.from({ length: 10 }, (_, index) => '候选节点 ' + (index + 1)).join('\n\n')
+const collapseStarted = await handlers.get('extract')({ title: 'gate-retry-collapse', text: collapseSource })
+const collapseCompleted = await waitTask(collapseStarted.taskId)
+assert(collapseCompleted.status === 'succeeded' && collapseCompleted.result, 'complete retry after collapse must succeed: ' + JSON.stringify(collapseCompleted))
+assert(collapseCompleted.result.nodes.length === 10, 'collapsed repair candidate was incorrectly published')
+const collapseCalls = calls.filter((call) => call.title === 'gate-retry-collapse')
+assert(collapseCalls.length === 3, 'collapse guard did not use the bounded third attempt')
+assert(collapseCalls[1].prompt.includes('上一次完整候选 JSON') && collapseCalls[1].prompt.includes('候选节点 10'), 'first repair retry did not receive the full rejected candidate')
+assert(collapseCalls[2].prompt.includes('repair_candidate_collapse'), 'catastrophic repair shrinkage was not fed back to the model')
+assert(collapseCompleted.result.generation && collapseCompleted.result.generation.collapseRetryCount === 1, 'collapse retry audit metadata is incorrect')
 
 const quick = await handlers.get('verify-graph')({
   text: source,

@@ -181,6 +181,24 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 
 常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-candidates` 额外验证动态 Host RPC 与常驻 HTTP/SQLite 的候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
+### 冻结质量回归门禁
+
+`kg:quality-regression` 固定使用 2844 字的 world-recognition 原文与 calibrated-v2 的 25 个 QA case。默认门禁要求：trusted QA 至少 21/25（冻结基线 22/25，最多退化 1 case）、score 至少 80、节点至少 20。节点下限只是 catastrophic-collapse sentinel，不能替代 QA 分数。
+
+```bash
+# 检查已有 graph（不会调用模型）
+npm run kg:quality-regression -- --graph ./graph.json
+
+# 调用当前 DSH Host 做真实抽取，再检查并保存结果
+npm run kg:quality-regression -- \
+  --base-url http://127.0.0.1:3080 \
+  --provider codex-proxy \
+  --model gpt-5.6-sol \
+  --output ./quality-run.json
+```
+
+CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODEL` 后直接运行 `npm run kg:quality-regression`。门禁同时校验冻结原文的字符数与 SHA-256，防止通过改评测原文或 QA 尺子掩盖回归。
+
 ## 更新插件
 
 - **动态安装（方式 A/B）**：仓库有更新后重复方式 A——让 Agent 重新读取两个源文件并 `cordis_define`（在同一个插件下追加新 Package），再 `cordis_run`（update 模式）切换到新版本；若你之前点了双勾，新版本会自动运行。
@@ -271,7 +289,7 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 
 ```
 KnowledgeGraphDto { summary: string, source?, staging?, nodes[], edges[], warnings[], generation?, verification? }
-GenerationAudit { invariantVersion, status: 'succeeded' | 'succeeded_with_warnings', invariantErrors: 0, sourceAudit, retryCount, autoRepairCount, autoRepairs[], grounding: { groundedNodes, candidateNodes, unsupportedNodes, evidenceBackedClaims, candidateClaims, unsupportedClaims, entailmentVerifiedNodes, entailmentStatus } }
+GenerationAudit { invariantVersion, status: 'succeeded' | 'succeeded_with_warnings', invariantErrors: 0, sourceAudit, retryCount, collapseRetryCount, autoRepairCount, autoRepairs[], initial: { nodes, edges }, coverage: { attemptedBatches, repairedBatches, addedNodes, addedEdges, prunedNodes }, connectivity?, grounding: { groundedNodes, candidateNodes, unsupportedNodes, evidenceBackedClaims, candidateClaims, unsupportedClaims, entailmentVerifiedNodes, entailmentStatus } }
 Source { id, documentId, title, chars, paragraphCount, chunkCount, sectionCount, sections[] }
 Staging { sourceId, documentId, chunkCount, chunks[] }
 Evidence { documentId, sourceId, chunkId, paragraph, quote }

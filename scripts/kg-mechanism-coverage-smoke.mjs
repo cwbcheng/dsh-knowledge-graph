@@ -111,8 +111,10 @@ assert(completed.result.nodes.length === 7, 'missing mechanism nodes were not re
 for (const text of ['无法根据明确目标判断学习是否完成', '依赖读几遍、抄几遍、画图等学习仪式', '记住讲解误认为学会知识', '无法根据已经完成的程度接着学习', '复习实质上变成重新学习', '函数定义学习案例']) {
   assert(completed.result.nodes.some((node) => String(node.text || '').includes(text)), 'missing recovered knowledge: ' + text)
 }
+const initial = completed.result.generation && completed.result.generation.initial
 const coverage = completed.result.generation && completed.result.generation.coverage
-assert(coverage && coverage.attemptedBatches === 1 && coverage.repairedBatches === 1 && coverage.addedNodes === 6, 'coverage metadata is incorrect: ' + JSON.stringify(coverage))
+assert(initial && initial.nodes === 1 && initial.edges === 0, 'primary-pass metadata is incorrect: ' + JSON.stringify(initial))
+assert(coverage && coverage.attemptedBatches === 1 && coverage.repairedBatches === 1 && coverage.addedNodes === 6 && coverage.prunedNodes === 0, 'coverage metadata is incorrect: ' + JSON.stringify(coverage))
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm5' && edge.toNodeId === 'n1' && edge.relation === 'causes'), 'recovered mechanism chain is not connected to the original endpoint')
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm6' && edge.toNodeId === 'm3' && edge.relation === 'example'), 'mechanism-bearing function example was not integrated')
 
@@ -130,8 +132,10 @@ assert(partial.result.edges.some((edge) => edge.fromNodeId === 'm1' && edge.toNo
 assert(!partial.result.edges.some((edge) => edge.fromNodeId === 'm2' || edge.toNodeId === 'm2'), 'incident edge of drifted coverage node survived pruning')
 assert((partial.result.warnings || []).some((warning) => String(warning).includes('coverage_pruned:node_semantic_strength_drift:m2')), 'coverage pruning was not auditable in warnings')
 assert(!(partial.result.warnings || []).some((warning) => String(warning).includes('coverage_review_failed')), 'one prunable drift incorrectly failed the whole coverage review')
+const partialInitial = partial.result.generation && partial.result.generation.initial
 const partialCoverage = partial.result.generation && partial.result.generation.coverage
-assert(partialCoverage && partialCoverage.attemptedBatches === 1 && partialCoverage.repairedBatches === 1 && partialCoverage.addedNodes === 1 && partialCoverage.addedEdges === 1, 'partial-prune coverage metadata is incorrect: ' + JSON.stringify(partialCoverage))
+assert(partialInitial && partialInitial.nodes === 1 && partialInitial.edges === 0, 'partial-prune primary-pass metadata is incorrect: ' + JSON.stringify(partialInitial))
+assert(partialCoverage && partialCoverage.attemptedBatches === 1 && partialCoverage.repairedBatches === 1 && partialCoverage.addedNodes === 1 && partialCoverage.addedEdges === 1 && partialCoverage.prunedNodes === 1, 'partial-prune coverage metadata is incorrect: ' + JSON.stringify(partialCoverage))
 
 const zeroSectionText = [
   '第一部分',

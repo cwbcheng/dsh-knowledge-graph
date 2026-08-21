@@ -628,7 +628,7 @@ export default function hostPlugin() {
       }
 
       async function repairMechanismCoverageHost(task, model, batch, accepted, acc, existingIds, existingDigest, batchContext, totalParagraphs) {
-        const result = { attempted: false, addedNodes: 0, addedEdges: 0 }
+        const result = { attempted: false, addedNodes: 0, addedEdges: 0, prunedNodes: 0 }
         if (!mechanismCoverageNeededHost(batch, accepted)) return result
         if (!model && !hasKgCoverageReviewer) return result
         result.attempted = true
@@ -681,6 +681,7 @@ export default function hostPlugin() {
             // candidates either. Drop only drifted coverage nodes and all
             // incident coverage edges, then re-run the complete invariant gate.
             const pruned = pruneCoverageSemanticStrengthDriftHost(repair, gate)
+            result.prunedNodes += pruned.length
             if (pruned.length > 0) {
               gate = validateGraphInvariantsHost(repair, task.text, {
                 includeQuality: false,
@@ -2013,6 +2014,32 @@ export default function hostPlugin() {
           const target = issue && issue.targetId != null ? ' target=' + issue.targetId : ''
           return (index + 1) + '. ' + String(issue && issue.code || 'invariant_error') + target + '：' + String(issue && issue.title || issue && issue.detail || '不符合生成约束')
         }).join(NL)
+      }
+
+      function invariantRepairSnapshotHost(graph) {
+        const candidate = graph && typeof graph === 'object' ? graph : {}
+        return JSON.stringify({
+          summary: typeof candidate.summary === 'string' ? candidate.summary : '',
+          nodes: (Array.isArray(candidate.nodes) ? candidate.nodes : []).map((node) => ({
+            id: node && node.id,
+            type: node && node.type,
+            text: node && node.text,
+            quote: node && node.quote,
+            paragraph: node && node.paragraph,
+          })),
+          edges: (Array.isArray(candidate.edges) ? candidate.edges : []).map((edge) => ({
+            fromNodeId: edge && edge.fromNodeId,
+            toNodeId: edge && edge.toNodeId,
+            relation: edge && edge.relation,
+            evidence: Array.isArray(edge && edge.evidence) ? edge.evidence.map((item) => ({ paragraph: item && item.paragraph, quote: item && item.quote })) : [],
+          })),
+        })
+      }
+
+      function invariantRepairCandidateCollapsedHost(baseline, candidate) {
+        if (!baseline || !candidate || !Array.isArray(candidate.nodes) || baseline.nodes < 8) return false
+        const minimumRetainedNodes = Math.max(5, Math.ceil(baseline.nodes * 0.6))
+        return candidate.nodes.length < minimumRetainedNodes
       }
 
       function buildLocalReport(graph, sourceText) {
@@ -3686,10 +3713,14 @@ export default function hostPlugin() {
           const sectionSummaryParts = new Map()
           const generationInvariantRepairs = []
           let generationInvariantRetries = 0
+          let generationInvariantCollapseRetries = 0
+          let initialAcceptedNodes = 0
+          let initialAcceptedEdges = 0
           let coverageAttemptedBatches = 0
           let coverageRepairedBatches = 0
           let coverageAddedNodes = 0
           let coverageAddedEdges = 0
+          let coveragePrunedNodes = 0
           // ---- append mode: seed the accumulator with the existing graph ----
                      const isAppend = task.kind === 'append' || task.kind === 'trajectory-append' || isResume
           const isTrajAppend = effectiveTaskKind === 'trajectory-append'
@@ -3806,10 +3837,16 @@ export default function hostPlugin() {
             let lastErr = ''
             let lastFailureCode = 'schema_invalid'
             let repairFeedback = ''
+            let repairSnapshot = ''
+            let repairBaseline = null
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
                 const attemptPrompt = repairFeedback
-                  ? userText + NL + NL + '上一次候选图未通过确定性验收。只修复下面列出的 invariant，不要扩大知识图；所有节点/关系仍必须由当前原文支持：' + NL + repairFeedback
+                  ? userText + NL + NL
+                    + '上一次候选图未通过确定性验收。必须返回“修复后的完整候选图”，保留所有未被指出有问题的节点和关系；禁止只返回修复项、局部片段、单个章节或总结节点。不得为了通过验收而大幅减少节点。所有节点/关系仍必须由当前原文支持。' + NL
+                    + '需要修复的 invariant：' + NL + repairFeedback + NL
+                    + (repairBaseline ? '上一次候选规模：nodes=' + repairBaseline.nodes + ', edges=' + repairBaseline.edges + '。' + NL : '')
+                    + (repairSnapshot ? '上一次完整候选 JSON（以此为基础做最小修复）：' + NL + repairSnapshot : '')
                   : userText
                 const raw = hasKgExtractor && task.kind !== 'verify' && task.kind !== 'question' && task.kind !== 'fact-check'
                    ? await (typeof kgExtractor === 'function' ? kgExtractor({
@@ -3835,6 +3872,19 @@ export default function hostPlugin() {
                 const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
                 const r = normalizeGraph(obj, paras.length, existingIds, batchContext)
                 if (r.error) { lastFailureCode = 'schema_invalid'; lastErr = r.error; continue }
+                if (invariantRepairCandidateCollapsedHost(repairBaseline, r)) {
+                  const minimumRetainedNodes = Math.max(5, Math.ceil(repairBaseline.nodes * 0.6))
+                  const collapseFeedback = 'repair_candidate_collapse：修复候选仅返回 ' + r.nodes.length + ' 个节点，低于上一次 ' + repairBaseline.nodes + ' 个节点的安全保留下限 ' + minimumRetainedNodes + '。必须基于上一次完整候选 JSON 修复 invariant，保留所有未被指出有问题的节点和关系。'
+                  repairFeedback = collapseFeedback + (repairFeedback ? NL + repairFeedback : '')
+                  lastFailureCode = 'invariant_violation'
+                  lastErr = collapseFeedback
+                  if (attempt < 2) {
+                    generationInvariantRetries += 1
+                    generationInvariantCollapseRetries += 1
+                    taskStage('第 ' + (i + 1) + '/' + batches.length + ' 个内容块修复候选发生灾难性缩水，正在要求完整重试…')
+                  }
+                  continue
+                }
 
                 // The same deterministic gate used by quick-check runs before
                 // a batch is admitted. Safe paragraph repairs are applied
@@ -3853,6 +3903,8 @@ export default function hostPlugin() {
                 })
                 if (gate.blockingIssues.length > 0 && attempt < 2) {
                   generationInvariantRetries += 1
+                  repairBaseline = { nodes: r.nodes.length, edges: r.edges.length }
+                  repairSnapshot = invariantRepairSnapshotHost(r)
                   repairFeedback = formatInvariantFeedbackHost(gate.blockingIssues)
                   lastFailureCode = 'invariant_violation'
                   lastErr = 'deterministic invariant 未通过：' + repairFeedback.replace(/\n/g, '；')
@@ -3893,9 +3945,12 @@ export default function hostPlugin() {
               const prefix = lastFailureCode === 'invariant_violation' ? 'AI 候选图未通过确定性验收' : 'AI 返回结果无法解析'
               return failTask(task, lastFailureCode, prefix + '（第 ' + (i + 1) + '/' + batches.length + ' 批，已自动重试）：' + lastErr)
             }
+            initialAcceptedNodes += norm.nodes.length
+            initialAcceptedEdges += norm.edges.length
             if (effectiveTaskKind === 'extract' || effectiveTaskKind === 'append') {
               const coverage = await repairMechanismCoverageHost(task, model, batch, norm, acc, existingIds, existingDigest, batchContext, paras.length)
               if (coverage.attempted) coverageAttemptedBatches += 1
+              coveragePrunedNodes += coverage.prunedNodes
               if (coverage.addedNodes > 0) {
                 coverageRepairedBatches += 1
                 coverageAddedNodes += coverage.addedNodes
@@ -4108,14 +4163,20 @@ export default function hostPlugin() {
              invariantErrors: 0,
              sourceAudit: finalAuditPartial ? 'partial_existing_source_unavailable' : 'full',
              retryCount: generationInvariantRetries,
+             collapseRetryCount: generationInvariantCollapseRetries,
              autoRepairCount: generationInvariantRepairs.length,
              autoRepairs: generationInvariantRepairs.slice(-100),
               connectivity: relationWeave,
+             initial: {
+               nodes: initialAcceptedNodes,
+               edges: initialAcceptedEdges,
+             },
              coverage: {
                attemptedBatches: coverageAttemptedBatches,
                repairedBatches: coverageRepairedBatches,
                addedNodes: coverageAddedNodes,
                addedEdges: coverageAddedEdges,
+               prunedNodes: coveragePrunedNodes,
              },
              grounding: {
                groundedNodes: groundingCounts.grounded,
