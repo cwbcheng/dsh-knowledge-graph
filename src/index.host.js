@@ -441,7 +441,7 @@ export default function hostPlugin() {
         '',
         '只补漏，不重做：',
         '1. 只能输出首轮图中真正缺失的新节点，以及至少一端连接这些新节点的必要关系；禁止改写、删除、合并已有节点，禁止只补已有节点之间的关系。',
-        '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。若一个明确命名的稳定对象被多个核心命题反复引用却没有独立 concept anchor，也可补回该对象；concept 名称使用稳定对象本身。',
+        '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。若原文明示“某方法看似合理，然而/但是在条件C下却行不通、失效、无法应用或难以发挥作用”，不得只保留条件或原因而遗漏这个限制结论本身；补回只表达该限制结果的最小原子 claim，并在原文直接证明时用 causes/supports 连接已经独立存在的原因或条件节点，禁止把原因、条件和结果重新压成一个总结节点。若一个明确命名的稳定对象被多个核心命题反复引用却没有独立 concept anchor，也可补回该对象；concept 名称使用稳定对象本身。',
         '3. 一节点一命题。不要把多个步骤再次压成一个总结节点；不要为追求完整而把每句话都建成节点。',
         '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。counter_example 只用于真正削弱/限制某个命题的案例；负向结果或对照情形若仍在支持原命题，不得标为 counter_example。若首轮已经保留后续行为或机制，却把承载该行为的明确命名对象/定义型 worked example 整段省略，应补回最小 example/definition/concept 锚点，并只用原文直接支持的 example/analogy/supports 等关系把新锚点连接到已有机制；不得因此收录所有例子。若一个完整原文单元没有任何已接受节点，但它以“例如/想象一下/哪怕/当…时/如果…就…”等具体场景直接说明已出现的抽象主张或机制，也应逐项检查是否漏掉一个最小 example 节点及必要的 example/supports/analogy 边；这只是补漏，不得因此收录纯修辞或所有例子。',
         '5. 所有新节点和关系必须由当前编号原文直接支持。quote/evidence 必须逐字来自原文；保留“可能、多数、通常、必须、如果、不是、会、能、可、将、应、只有”等限定。对“首先/接着/然后/随后”等显式流程步骤，text 要尽量贴近原句拆成原子陈述并保留原文的会/可能/能/可/将/应/必须/如果/只有等语义强度与条件；不得把可能性、能力或条件性表述提升为无条件事实。若原文明示“并非X/不是X/不意味着X/问题不在X而在Y”，检查防误推理所需的X侧限定是否漏掉；若原文明示问题将在后文回答，可补一条普通 claim 记录“当前范围尚未给出具体答案”，不得猜答案或新增 question/unresolved 类型。',
@@ -521,6 +521,38 @@ export default function hostPlugin() {
         return hints
       }
 
+      function explicitLimitationCoverageHintsHost(batch, graph) {
+        const units = batch && Array.isArray(batch.units) ? batch.units : []
+        const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
+        if (units.length === 0) return []
+        const contrastCue = /(?:然而|但是|不过|尽管|即使|却|但在|可当)/
+        const explicitFailureCue = /(?:行不通|无处发力|失效|不起作用|不能奏效|无法(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|不能(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|难以(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持))/
+        const outcomeGroups = [
+          { label: '行不通/失效/无法发挥', source: explicitFailureCue, retained: explicitFailureCue },
+        ]
+        const nodeByParagraph = new Map()
+        for (const node of nodes) {
+          if (!node || !Number.isInteger(node.paragraph)) continue
+          const list = nodeByParagraph.get(node.paragraph) || []
+          list.push(node)
+          nodeByParagraph.set(node.paragraph, list)
+        }
+        const hints = []
+        for (const unit of units) {
+          if (hints.length >= 4 || !unit || !Number.isInteger(unit.num)) continue
+          const text = String(unit.text || '').trim()
+          if (text.length < 12) continue
+          const paragraphNodes = nodeByParagraph.get(unit.num) || []
+          const missing = outcomeGroups.filter((group) => {
+            if (!group.source.test(text)) return false
+            return !paragraphNodes.some((node) => group.retained.test(String(node.text || '') + ' ' + String(node.quote || '')))
+          })
+          if (missing.length === 0 || (!contrastCue.test(text) && missing.length < 2)) continue
+          hints.push({ paragraph: unit.num, missing: missing.map((group) => group.label), text: text.slice(0, 360) })
+        }
+        return hints
+      }
+
       function zeroNodeSectionCoverageHintsHost(batch, graph) {
         const sectionIds = batch && Array.isArray(batch.sectionIds) ? batch.sectionIds : []
         const sectionTitles = batch && Array.isArray(batch.sectionTitles) ? batch.sectionTitles : []
@@ -542,7 +574,7 @@ export default function hostPlugin() {
         const units = batch && Array.isArray(batch.units) ? batch.units : []
         if (units.length === 0) return false
         const mechanismCue = /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越)/g
-        const boundaryCue = /(?:并非|并不是|不是说|并不意味着|不意味着|问题不在|而在|而是)/
+        const boundaryCue = /(?:并非|并不是|不是说|并不意味着|不意味着|问题不在|而是)/
         const forwardCue = /(?:后文|下文|接下来|留待后文|本书将|将在后文|后面会|随后会|将会回答|将会解释)/
         const nodesByParagraph = new Map()
         for (const node of graph && Array.isArray(graph.nodes) ? graph.nodes : []) {
@@ -572,7 +604,7 @@ export default function hostPlugin() {
             if (!covered) explanatoryBoundaryGap = true
           }
         }
-        return zeroNodeSectionCoverageHintsHost(batch, graph).length > 0 || workedExampleCoverageHintsHost(batch, graph).length > 0 || simpleIllustrativeCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
+        return zeroNodeSectionCoverageHintsHost(batch, graph).length > 0 || explicitLimitationCoverageHintsHost(batch, graph).length > 0 || workedExampleCoverageHintsHost(batch, graph).length > 0 || simpleIllustrativeCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
       }
 
       function buildCoverageUserTextHost(title, batch, accepted, existingDigest) {
@@ -596,6 +628,12 @@ export default function hostPlugin() {
           text += NL + '独立说明例子候选（完整原文单元尚无节点；只是召回提示，不是建节点或连边的证据）：' + NL
           for (const hint of simpleExampleHints) text += '[P' + hint.paragraph + '] ' + hint.text + NL
           text += '只在该具体场景确实承担说明已有主张/机制的作用且当前图完全遗漏时，补最小 example 节点及原文直接支持的必要关系。' + NL
+        }
+        const limitationHints = explicitLimitationCoverageHintsHost(batch, accepted)
+        if (limitationHints.length > 0) {
+          text += NL + '显式限制/转折结论候选（同段原因或条件已有覆盖，但关键的“行不通/失效/无法应用或发挥”结果语义仍缺失；只是召回提示，不是建节点或连边的证据）：' + NL
+          for (const hint of limitationHints) text += '[P' + hint.paragraph + '] missing=' + hint.missing.join(',') + '|' + hint.text + NL
+          text += '逐项检查是否遗漏“某方法或机制在明确条件下受限/失效”的原子结论。新增 claim 只表达这个限制结果；原因和条件保持为独立节点，并在原文直接证明时用 causes/supports 连接。不得只写“这种方式”，不得把局部限制提升为普遍否定，也不得把原因、条件和结果压成总结节点。quote/evidence 必须逐字来自原文。' + NL
         }
         const zeroSectionHints = zeroNodeSectionCoverageHintsHost(batch, accepted)
         if (zeroSectionHints.length > 0) {
@@ -720,7 +758,7 @@ export default function hostPlugin() {
         '3. 每条边必须给 evidence；quote 必须逐字来自原文，并直接证明该 relation。跨段关系列出共同证明关系所需的全部摘录。',
         '4. 优先使用精确关系：is_a 下位→上位；contains 整体→组成；driven_by 手段/行为→目标；not_is A→B；analogy 类比案例→被说明原则；aims_at 主体/方案/作品→目标。只有确实只是论证支持时才用 supports。',
         '5. 其它方向：例子→被说明项，定义→被定义项，事实/主张→推论，因→果。counter_example 必须由真正反驳/限制一般命题的案例指向被挑战命题；仅仅是负向结果或对照情形时使用 example + supports/analogy。example/counter_example/defines 的源节点类型仍应分别为 example/counter_example/definition。',
-        '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。连续流程候选同样只是召回提示；只有原文直接呈现前一步产物/状态进入后一步，或直接支持 causes/infers/supports 中某一关系时才连边，单纯时间相邻不得连边。例子角色候选也只是召回提示；example/analogy 的语义方向仍是具体例子→被说明项，不能仅因已有反向边或相邻出现就复制、反转或补边。',
+        '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。连续流程候选同样只是召回提示；只有原文直接呈现前一步产物/状态进入后一步，或直接支持 causes/infers/supports 中某一关系时才连边，单纯时间相邻不得连边。显式限制结论依据候选用于检查前文累计论证是否直接支持“某方法在条件下行不通/失效/无法发挥”等结论；建议方向是依据→限制结论，跨段时必须列出共同证明关系的全部摘录，不能只因共享主题词连边。例子角色候选也只是召回提示；example/analogy 的语义方向仍是具体例子→被说明项，不能仅因已有反向边或相邻出现就复制、反转或补边。',
         '7. 原文明示“属于/是一种/包含/由…驱动/不是/类比/旨在/导致/因此/例子/定义”等关系时，应选择对应的最精确 relation。若原文使用“拿…来说/好比/类似于/类比”等显式跨域说明语气，且具体案例用于解释一个抽象原则，优先使用 analogy（案例→原则），不要因为它是具体案例就退化成 example 或 supports。',
         '8. 每次最多补充 24 条高置信关系；宁缺毋滥。',
         '9. 只输出合法 JSON，结构固定为：{"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"is_a","evidence":[{"paragraph":2,"quote":"直接证明关系的原文逐字摘录"}]}]}',
@@ -3212,6 +3250,44 @@ export default function hostPlugin() {
         return pairs
       }
 
+      function limitationRelationCandidatePairsHost(groupNodes, existingEdges, stats) {
+        const nodes = Array.isArray(groupNodes) ? groupNodes : []
+        const edges = Array.isArray(existingEdges) ? existingEdges : []
+        const limitationCue = /(?:行不通|无处发力|失效|不起作用|不能奏效|无法(?:应用|使用|应对|发挥|实现|继续|维持)|不能(?:应用|使用|应对|发挥|实现|继续|维持)|难以(?:应用|使用|应对|发挥|实现|继续|维持))/
+        const basisCue = /(?:因为|由于|条件|原因|概率|相同|只(?:能|可)|仅(?:能|可|限于)|缺少|不足|未见)/
+        const existingPairs = new Set()
+        for (const edge of edges) {
+          if (!edge || !edge.fromNodeId || !edge.toNodeId) continue
+          existingPairs.add([edge.fromNodeId, edge.toNodeId].sort().join('|'))
+        }
+        const pairs = []
+        for (const limitation of nodes) {
+          if (!limitation || !limitationCue.test(String(limitation.text || '') + ' ' + String(limitation.quote || ''))) continue
+          const paragraph = Number(limitation.paragraph)
+          const limitationTokens = phraseTokensHost(normalizeGraphLookupTextHost(limitation.text))
+          const related = nodes
+            .filter((basis) => {
+              if (!basis || basis.id === limitation.id) return false
+              if (limitation.sectionId && basis.sectionId && limitation.sectionId !== basis.sectionId) return false
+              const basisParagraph = Number(basis.paragraph)
+              if (Number.isInteger(paragraph) && Number.isInteger(basisParagraph) && Math.abs(paragraph - basisParagraph) > 12) return false
+              if (existingPairs.has([basis.id, limitation.id].sort().join('|'))) return false
+              if (!basisCue.test(String(basis.text || '') + ' ' + String(basis.quote || ''))) return false
+              const sameParagraph = Number.isInteger(paragraph) && Number.isInteger(basisParagraph) && paragraph === basisParagraph
+              const basisTokens = phraseTokensHost(normalizeGraphLookupTextHost(basis.text))
+              return sameParagraph || jaccardHost(limitationTokens, basisTokens) > 0
+            })
+            .map((basis) => ({ basis, score: relationCandidateScoreHost(limitation, basis, stats) }))
+            .sort((a, b) => b.score - a.score || String(a.basis.id).localeCompare(String(b.basis.id)))
+            .slice(0, 3)
+          for (const item of related) {
+            pairs.push({ basis: item.basis, limitation })
+            if (pairs.length >= 8) return pairs
+          }
+        }
+        return pairs
+      }
+
       function exampleRoleCandidatePairsHost(groupNodes, existingEdges, stats) {
         const nodes = Array.isArray(groupNodes) ? groupNodes : []
         const edges = Array.isArray(existingEdges) ? existingEdges : []
@@ -3241,6 +3317,7 @@ export default function hostPlugin() {
         const ids = new Set(groupNodes.map((node) => node.id))
         const units = relationEvidenceUnitsHost(groupNodes, paragraphTexts)
         const sequencePairs = sequentialRelationCandidatePairsHost(groupNodes, existingEdges, paragraphTexts)
+        const limitationPairs = limitationRelationCandidatePairsHost(groupNodes, existingEdges, stats)
         const exampleRolePairs = exampleRoleCandidatePairsHost(groupNodes, existingEdges, stats)
         let text = ''
         if (title) text += '资料标题：' + title + NL
@@ -3287,6 +3364,13 @@ export default function hostPlugin() {
           text += pair.a.id + '<>' + pair.b.id + '|P' + pair.fromParagraph + '->P' + pair.toParagraph + NL
         }
         if (sequencePairs.length === 0) text += '（无）' + NL
+        text += NL + '显式限制结论依据候选关系对（方向按“前置依据→行不通/失效/无法发挥等限制结论”展示；可来自同段或同节累计论证；只是召回提示，不是关系证据）：' + NL
+        for (const pair of limitationPairs) {
+          const pb = Number.isInteger(pair.basis.paragraph) ? pair.basis.paragraph : '?'
+          const pl = Number.isInteger(pair.limitation.paragraph) ? pair.limitation.paragraph : '?'
+          text += pair.basis.id + '=>' + pair.limitation.id + '|P' + pb + '->P' + pl + NL
+        }
+        if (limitationPairs.length === 0) text += '（无）' + NL
         text += NL + '例子角色候选关系对（example 节点当前缺少 outgoing example/analogy；方向按 example→候选被说明项展示；只是召回提示，不是关系证据）：' + NL
         for (const pair of exampleRolePairs) {
           const pe = Number.isInteger(pair.example.paragraph) ? pair.example.paragraph : '?'

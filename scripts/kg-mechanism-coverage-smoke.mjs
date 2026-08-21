@@ -29,6 +29,19 @@ const extractor = {
         edges: [],
       }
     }
+    if (title === 'explicit-limitation-coverage') {
+      return {
+        summary: '实时输入限制缓存复用',
+        nodes: [
+          { id: 'l1', type: 'claim', text: '缓存只能处理已经见过的相同输入。', quote: '因为缓存只能处理已经见过的相同输入', paragraph: 0 },
+          { id: 'l2', type: 'claim', text: '实时输入几乎都是未见输入。', quote: '实时输入几乎都是未见输入。', paragraph: 0 },
+        ],
+        edges: [],
+      }
+    }
+    if (title === 'covered-limitation') {
+      return { summary: '限制结论已覆盖', nodes: [{ id: 'c1', type: 'claim', text: '旧缓存策略在数据持续变化时行不通。', quote: '旧缓存策略看似有效', paragraph: 0 }], edges: [] }
+    }
     if (title === 'plain-fact') {
       return { summary: '直接事实', nodes: [{ id: 'f1', type: 'fact', text: '项目包含三个文件', quote: '项目包含三个文件。', paragraph: 0 }], edges: [] }
     }
@@ -46,6 +59,27 @@ const extractor = {
       return {
         nodes: [{ id: 'm1', type: 'claim', text: '这一部分介绍颜色标记体系。', quote: '这一部分介绍颜色标记体系。', paragraph: 1 }],
         edges: [],
+      }
+    }
+    if (args.title === 'explicit-limitation-coverage') {
+      assert(args.prompt.includes('显式限制/转折结论候选'), 'omitted limitation conclusion was not surfaced to coverage review')
+      assert(args.prompt.includes('missing=行不通/失效/无法发挥'), 'specific missing limitation outcome was not identified')
+      assert(args.prompt.includes('原因和条件保持为独立节点'), 'limitation hint does not preserve atomic reason/result nodes')
+      assert(args.systemPrompt.includes('禁止把原因、条件和结果重新压成一个总结节点'), 'coverage contract does not protect atomic limitation conclusions')
+      return {
+        nodes: [{
+          id: 'm1',
+          type: 'claim',
+          text: '缓存复用在输入持续变化的实时系统中行不通。',
+          quote: '缓存复用符合直觉，然而在输入持续变化的实时系统中，这种方式却行不通。',
+          paragraph: 0,
+        }],
+        edges: [{
+          fromNodeId: 'l2',
+          toNodeId: 'm1',
+          relation: 'causes',
+          evidence: [{ paragraph: 0, quote: '因为缓存只能处理已经见过的相同输入，而实时输入几乎都是未见输入。' }],
+        }],
       }
     }
     if (args.title === 'coverage-partial-prune') {
@@ -137,6 +171,15 @@ const partialCoverage = partial.result.generation && partial.result.generation.c
 assert(partialInitial && partialInitial.nodes === 1 && partialInitial.edges === 0, 'partial-prune primary-pass metadata is incorrect: ' + JSON.stringify(partialInitial))
 assert(partialCoverage && partialCoverage.attemptedBatches === 1 && partialCoverage.repairedBatches === 1 && partialCoverage.addedNodes === 1 && partialCoverage.addedEdges === 1 && partialCoverage.prunedNodes === 1, 'partial-prune coverage metadata is incorrect: ' + JSON.stringify(partialCoverage))
 
+const limitationText = '缓存复用符合直觉，然而在输入持续变化的实时系统中，这种方式却行不通。因为缓存只能处理已经见过的相同输入，而实时输入几乎都是未见输入。'
+const limitationStart = await handlers.get('extract')({ title: 'explicit-limitation-coverage', text: limitationText })
+const limitation = await waitTask(limitationStart.taskId)
+assert(limitation.status === 'succeeded', 'explicit limitation coverage extraction failed: ' + JSON.stringify(limitation))
+assert(limitation.result.nodes.some((node) => node.id === 'm1' && String(node.text || '').includes('行不通')), 'explicit limitation conclusion was not recovered')
+assert(limitation.result.edges.some((edge) => edge.fromNodeId === 'l2' && edge.toNodeId === 'm1' && edge.relation === 'causes'), 'limitation cause was not connected with direct evidence')
+const limitationCoverage = limitation.result.generation && limitation.result.generation.coverage
+assert(limitationCoverage && limitationCoverage.attemptedBatches === 1 && limitationCoverage.addedNodes === 1 && limitationCoverage.prunedNodes === 0, 'explicit limitation coverage metadata is incorrect: ' + JSON.stringify(limitationCoverage))
+
 const zeroSectionText = [
   '第一部分',
   '这一部分介绍颜色标记体系。',
@@ -152,10 +195,16 @@ assert(zeroSection.result.nodes.some((node) => node.id === 'm1' && node.sectionT
 const zeroSectionCoverage = zeroSection.result.generation && zeroSection.result.generation.coverage
 assert(zeroSectionCoverage && zeroSectionCoverage.attemptedBatches === 1 && zeroSectionCoverage.repairedBatches === 1 && zeroSectionCoverage.addedNodes === 1, 'zero-section coverage metadata is incorrect: ' + JSON.stringify(zeroSectionCoverage))
 
+const beforeCoveredLimitation = coverageCalls.length
+const coveredLimitationStart = await handlers.get('extract')({ title: 'covered-limitation', text: '旧缓存策略看似有效，然而在数据持续变化时无法继续发挥作用。' })
+const coveredLimitation = await waitTask(coveredLimitationStart.taskId)
+assert(coveredLimitation.status === 'succeeded', 'covered limitation extraction failed')
+assert(coverageCalls.length === beforeCoveredLimitation, 'cross-wording covered limitation or “然而在” false boundary triggered a redundant model pass')
+
 const beforePlain = coverageCalls.length
 const plainStart = await handlers.get('extract')({ title: 'plain-fact', text: '项目包含三个文件。' })
 const plain = await waitTask(plainStart.taskId)
 assert(plain.status === 'succeeded', 'plain extraction failed')
 assert(coverageCalls.length === beforePlain, 'non-mechanism text triggered an unnecessary second model pass')
 
-console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, partialPrune: true, zeroSectionCoverage: true, plainSkipped: true }))
+console.log(JSON.stringify({ ok: true, recoveredNodes: coverage.addedNodes, boundedReview: true, partialPrune: true, explicitLimitationCoverage: true, zeroSectionCoverage: true, plainSkipped: true }))

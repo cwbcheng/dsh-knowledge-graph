@@ -34,6 +34,17 @@ const extractor = {
         edges: [],
       }
     }
+    if (title === 'limitation-relation-recall') {
+      return {
+        summary: '实时服务限制关系召回',
+        nodes: [
+          { id: 'b1', type: 'fact', text: '实时服务的输入持续变化，完全相同请求出现的概率很低。', quote: '实时服务的输入持续变化，完全相同请求出现的概率很低。', paragraph: 0 },
+          { id: 'b2', type: 'claim', text: '固定缓存策略在实时服务中行不通。', quote: '因此，固定缓存策略在实时服务中行不通。', paragraph: 3 },
+          { id: 'b3', type: 'concept', text: '实时服务', quote: '实时服务', paragraph: 1 },
+        ],
+        edges: [],
+      }
+    }
     if (title === 'append-connectivity') {
       if (Array.isArray(existingNodeIds) && existingNodeIds.length > 0) {
         return {
@@ -117,6 +128,20 @@ const extractor = {
           evidence: [
             { paragraph: 1, quote: '人不能两次踏进同一条河流。' },
             { paragraph: 2, quote: '我们可以从物理学的角度重新诠释这句话：河流水的微观粒子排列状态每时每刻都在变化。' },
+          ],
+        }],
+      }
+    }
+    if (args.title === 'limitation-relation-recall') {
+      assert(args.systemPrompt.includes('显式限制结论依据候选'), 'relation-weave contract does not keep limitation-basis hints evidence-gated')
+      assert(args.prompt.includes('显式限制结论依据候选关系对'), 'relation-weave prompt omitted limitation-basis candidates')
+      assert(args.prompt.includes('b1=>b2'), 'upstream basis was not surfaced toward the explicit limitation conclusion')
+      return {
+        edges: [{
+          fromNodeId: 'b1', toNodeId: 'b2', relation: 'supports',
+          evidence: [
+            { paragraph: 0, quote: '实时服务的输入持续变化，完全相同请求出现的概率很低。' },
+            { paragraph: 3, quote: '因此，固定缓存策略在实时服务中行不通。' },
           ],
         }],
       }
@@ -240,6 +265,19 @@ const quick = await handlers.get('verify-graph')({ text, graph: completed.result
 assert(quick && quick.report && quick.report.metrics.connectedComponents === 1, 'quick verification omitted connectivity metrics')
 assert(quick.report.metrics.isolatedNodes === 0, 'quick verification still reports isolated nodes after weaving')
 
+// A source-explicit limitation conclusion may summarize cumulative reasoning
+// across its section. The model still supplies and authenticates the edge.
+const limitationText = [
+  '实时服务的输入持续变化，完全相同请求出现的概率很低。',
+  '固定缓存策略依赖重复请求。',
+  '实时服务持续接收新请求。',
+  '因此，固定缓存策略在实时服务中行不通。',
+].join('\n\n')
+const limitationStarted = await handlers.get('extract')({ title: 'limitation-relation-recall', text: limitationText })
+const limitationCompleted = await waitTask(limitationStarted.taskId)
+assert(limitationCompleted.status === 'succeeded' && limitationCompleted.result, 'limitation relation recall extraction failed: ' + JSON.stringify(limitationCompleted))
+assert(limitationCompleted.result.edges.some((edge) => edge.fromNodeId === 'b1' && edge.toNodeId === 'b2' && edge.relation === 'supports'), 'upstream basis did not reach the explicit limitation conclusion: ' + JSON.stringify(limitationCompleted.result))
+
 // Adjacent process units with explicit “首先/接着/然后” markers are recall
 // candidates only. The relation reviewer must still supply direct source
 // evidence before any edge enters the canonical graph.
@@ -331,6 +369,8 @@ console.log(JSON.stringify({
   ok: true,
   weaveCalls: weaveCalls.length,
   edges: completed.result.edges.length,
+  limitationRelationRecall: true,
+  sequenceRelationRecall: true,
   exampleRoleRecall: true,
   connectivity,
 }))
