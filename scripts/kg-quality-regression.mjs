@@ -10,9 +10,9 @@ const DEFAULT_CASES = new URL('./fixtures/world-recognition-part1-qa-cases-calib
 const DEFAULT_SOURCE_SHA256 = '9c926c36af919f6f5afb6f1d3b273853d8ceb9461197bb97649040bf2337658e'
 const DEFAULT_THRESHOLDS = Object.freeze({
   expectedCases: 25,
-  frozenBaselinePassed: 22,
+  frozenBaselinePassed: 24,
   maxCaseDrop: 1,
-  minScore: 80,
+  minScore: 92,
   minNodes: 20,
 })
 
@@ -45,6 +45,23 @@ function normalizedSource(pathOrUrl) {
 
 function sourceSha256(sourceText) {
   return createHash('sha256').update(sourceText, 'utf8').digest('hex')
+}
+
+export function evaluateFrozenSourceApplicability(sourceText, options = {}) {
+  const expectedChars = Number.isSafeInteger(options.expectedChars) ? options.expectedChars : 2844
+  const expectedSha256 = typeof options.expectedSha256 === 'string' && options.expectedSha256 ? options.expectedSha256 : DEFAULT_SOURCE_SHA256
+  const normalized = typeof sourceText === 'string' ? sourceText.replace(/\r\n/g, '\n').replace(/\n$/, '') : ''
+  const actualChars = normalized.length
+  const actualSha256 = normalized ? sourceSha256(normalized) : null
+  const missing = !normalized
+  const matches = !missing && actualChars === expectedChars && actualSha256 === expectedSha256
+  return {
+    ok: matches,
+    applicable: matches,
+    code: matches ? null : (missing ? 'frozen_source_missing' : 'frozen_source_mismatch'),
+    expected: { chars: expectedChars, sha256: expectedSha256 },
+    actual: { chars: actualChars, sha256: actualSha256 },
+  }
 }
 
 function endpoint(baseUrl, suffix) {
@@ -149,7 +166,8 @@ CI may provide DSH_KG_QA_BASE_URL, DSH_KG_QA_PROVIDER, and DSH_KG_QA_MODEL
 instead of command-line flags.
 
 Defaults freeze the 2844-character world-recognition source, calibrated-v2 25-case QA,
-22/25 baseline, at most one-case regression, score >= 80, and nodes >= 20.
+24/25 observed baseline, at most one-case regression (minimum 23/25), score >= 92,
+and nodes >= 20. Existing graphs with a missing or mismatched source are not scored.
 `)
 }
 
@@ -169,26 +187,45 @@ async function main(argv) {
   }
 
   const baseUrl = args['base-url'] || process.env.DSH_KG_QA_BASE_URL || ''
+  const expectedSourceChars = integerArg(args['expected-source-chars'], 2844, 'expected-source-chars')
+  const expectedSourceHash = args['expected-source-sha256'] || DEFAULT_SOURCE_SHA256
   let graph
   let mode
   let sourceChars = null
   let sourceHash = null
   let model = null
+  let applicability = null
   if (args.graph) {
     graph = readJson(args.graph)
     mode = 'existing-graph'
+    applicability = evaluateFrozenSourceApplicability(graph && graph.sourceText, {
+      expectedChars: expectedSourceChars,
+      expectedSha256: expectedSourceHash,
+    })
+    sourceChars = applicability.actual.chars
+    sourceHash = applicability.actual.sha256
+    if (!applicability.ok) {
+      process.stdout.write(JSON.stringify({
+        ok: false,
+        applicable: false,
+        code: applicability.code,
+        mode,
+        sourceChars,
+        sourceSha256: sourceHash,
+        source: applicability,
+        message: 'graph source does not match the frozen QA source; no score was computed',
+      }, null, 2) + '\n')
+      return 2
+    }
   } else if (baseUrl) {
     const sourceText = normalizedSource(sourcePath)
-    const expectedSourceChars = integerArg(args['expected-source-chars'], 2844, 'expected-source-chars')
-    if (expectedSourceChars > 0 && sourceText.length !== expectedSourceChars) {
-      throw new Error(`frozen source changed: expected ${expectedSourceChars} chars, received ${sourceText.length}`)
-    }
-    sourceChars = sourceText.length
-    sourceHash = sourceSha256(sourceText)
-    const expectedSourceHash = args['expected-source-sha256'] || DEFAULT_SOURCE_SHA256
-    if (expectedSourceHash && sourceHash !== expectedSourceHash) {
-      throw new Error(`frozen source hash changed: expected ${expectedSourceHash}, received ${sourceHash}`)
-    }
+    applicability = evaluateFrozenSourceApplicability(sourceText, {
+      expectedChars: expectedSourceChars,
+      expectedSha256: expectedSourceHash,
+    })
+    if (!applicability.ok) throw new Error(`frozen source changed: expected ${JSON.stringify(applicability.expected)}, received ${JSON.stringify(applicability.actual)}`)
+    sourceChars = applicability.actual.chars
+    sourceHash = applicability.actual.sha256
     model = {
       provider: args.provider || process.env.DSH_KG_QA_PROVIDER || '',
       model: args.model || process.env.DSH_KG_QA_MODEL || '',
@@ -212,9 +249,11 @@ async function main(argv) {
   const result = evaluateQualityGate(graph, cases, thresholds)
   const report = {
     ok: result.ok,
+    applicable: true,
     mode,
     sourceChars,
     sourceSha256: sourceHash,
+    source: applicability,
     model,
     graph: { nodes: result.nodeCount, edges: result.edgeCount },
     qa: {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { evaluateQualityGate } from './kg-quality-regression.mjs'
+import { evaluateFrozenSourceApplicability, evaluateQualityGate } from './kg-quality-regression.mjs'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -12,6 +12,14 @@ const frozenCases = JSON.parse(readFileSync(new URL('./fixtures/world-recognitio
 assert(frozenSource.length === 2844, 'frozen source character count changed: ' + frozenSource.length)
 assert(frozenSourceHash === '9c926c36af919f6f5afb6f1d3b273853d8ceb9461197bb97649040bf2337658e', 'frozen source hash changed: ' + frozenSourceHash)
 assert(frozenCases.length === 25, 'frozen calibrated-v2 case count changed: ' + frozenCases.length)
+const applicableSource = evaluateFrozenSourceApplicability(frozenSource)
+assert(applicableSource.ok && applicableSource.applicable, 'exact frozen source was rejected: ' + JSON.stringify(applicableSource))
+const wrongLengthSource = evaluateFrozenSourceApplicability(frozenSource + '不同文章')
+assert(!wrongLengthSource.ok && wrongLengthSource.code === 'frozen_source_mismatch', 'different-length source was scored')
+const sameLengthWrongSource = evaluateFrozenSourceApplicability('错' + frozenSource.slice(1))
+assert(!sameLengthWrongSource.ok && sameLengthWrongSource.actual.chars === frozenSource.length, 'same-length wrong source bypassed SHA-256 identity')
+const missingSource = evaluateFrozenSourceApplicability(null)
+assert(!missingSource.ok && missingSource.code === 'frozen_source_missing', 'missing graph source bypassed applicability check')
 
 const cases = [
   { id: 'alpha', category: 'answerability', kind: 'node', selector: { all: ['甲', '成立'] } },
@@ -51,4 +59,4 @@ const changedCases = evaluateQualityGate(graph, cases.slice(0, 1), { ...threshol
 assert(!changedCases.ok, 'changed frozen-case count unexpectedly passed')
 assert(changedCases.issues.some((issue) => issue.code === 'frozen_case_count_changed'), 'frozen-case count drift was not reported')
 
-console.log(JSON.stringify({ ok: true, scoreGate: true, baselineGate: true, collapseSentinel: true, frozenSource: true, frozenCases: true }))
+console.log(JSON.stringify({ ok: true, scoreGate: true, baselineGate: true, collapseSentinel: true, frozenSource: true, sourceMismatchRejected: true, frozenCases: true }))

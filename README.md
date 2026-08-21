@@ -183,7 +183,7 @@ npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 
 ### 冻结质量回归门禁
 
-`kg:quality-regression` 固定使用 2844 字的 world-recognition 原文与 calibrated-v2 的 25 个 QA case。默认门禁要求：trusted QA 至少 21/25（冻结基线 22/25，最多退化 1 case）、score 至少 80、节点至少 20。节点下限只是 catastrophic-collapse sentinel，不能替代 QA 分数。
+`kg:quality-regression` 固定使用 2844 字的 world-recognition 原文与 calibrated-v2 的 25 个 QA case。修复后观察基线为 24/25；默认门禁要求 trusted QA 至少 23/25（最多退化 1 case）、score 至少 92、节点至少 20。节点下限只是 catastrophic-collapse sentinel，不能替代 QA 分数。`--graph` 模式也会先校验 `graph.sourceText` 的字符数和 SHA-256；缺少原文或换了文章时返回 `frozen_source_missing` / `frozen_source_mismatch`，不会输出误导性分数。
 
 ```bash
 # 检查已有 graph（不会调用模型）
