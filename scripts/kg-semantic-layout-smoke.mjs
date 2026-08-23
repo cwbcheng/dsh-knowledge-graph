@@ -21,6 +21,7 @@ const mirroredFunctions = [
   'resolveLayeredOverlaps',
   'packDisconnectedComponents',
   'layoutLayeredComponents',
+  'buildLayeredEdgeLanes',
   'corridorFree',
   'findCorridor',
   'channelBand',
@@ -28,7 +29,7 @@ const mirroredFunctions = [
 ]
 const mirroredSnippets = [
   'return layoutLayeredComponents(nodes, edges, sizes)',
-  "const prefix = componentKey == null ? '' : 'component' + componentKey + ':'",
+  'return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)',
   'layout.componentNodesById.get(edge.fromNodeId) || nodes',
 ]
 for (const [file, generated] of generatedSources) {
@@ -57,6 +58,7 @@ const layoutLayeredComponents = new Function(
   'return (' + extractFunction(source, 'layoutLayeredComponents') + ')',
 )(layoutLayered, resolveLayeredOverlaps, packDisconnectedComponents)
 const layerYGap = values[names.indexOf('LAYER_Y_GAP')]
+const buildLayeredEdgeLanes = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'buildLayeredEdgeLanes') + ')')(layerYGap)
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const corridorFree = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'corridorFree') + ')')(layerYGap)
 const findCorridor = new Function('corridorFree', 'return (' + extractFunction(source, 'findCorridor') + ')')(corridorFree)
@@ -125,7 +127,8 @@ assert(layeredSource.includes('not_is: 7'), 'not_is must retain explicit-classif
 assert(source.includes("const reasoningRelations = new Set(['causes', 'infers'])"), 'relation-aware layered backbone is missing')
 assert(source.includes("return 'layered'"), 'new sessions do not default to the semantic layered projection')
 assert(source.includes('return layoutLayeredComponents(nodes, edges, sizes)'), 'layered view does not use component-aware layout')
-assert(source.includes("const prefix = componentKey == null ? '' : 'component' + componentKey + ':'"), 'layered edge lanes are not component-local')
+assert(source.includes('return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)'), 'layered view does not use multi-track edge lanes')
+assert(source.includes('sourcePort: 0, targetPort: 0, sourceChannel: 0, targetChannel: 0, corridor: 0'), 'layered lane dimensions are incomplete')
 assert(source.includes('layout.componentNodesById.get(edge.fromNodeId) || nodes'), 'orthogonal routing is not scoped to the edge component')
 
 // Many disconnected two-node components used to share global rank rows. Wide
@@ -211,12 +214,13 @@ for (const point of cycleLayout.pos.values()) assert(Number.isFinite(point.x) &&
 // every edge against its component metadata and verify every orthogonal segment
 // still avoids every non-endpoint node rectangle, including neighbouring boxes.
 const pathPoints = (path) => Array.from(path.matchAll(/[ML]\s+(-?[0-9.]+)\s+(-?[0-9.]+)/g), (match) => ({ x: Number(match[1]), y: Number(match[2]) }))
+const disconnectedLanes = buildLayeredEdgeLanes(disconnectedEdges, disconnectedPos, disconnectedLayout.componentKeyById, disconnectedLayout.componentNodesById)
 let routedSegments = 0
 for (const edge of disconnectedEdges) {
   const from = disconnectedPos.get(edge.fromNodeId)
   const to = disconnectedPos.get(edge.toNodeId)
   const routeNodes = disconnectedLayout.componentNodesById.get(edge.fromNodeId)
-  const points = pathPoints(layeredOrthoPath(edge, from, to, disconnectedSizes, disconnectedPos, routeNodes, 0).d)
+  const points = pathPoints(layeredOrthoPath(edge, from, to, disconnectedSizes, disconnectedPos, routeNodes, disconnectedLanes.get(edge)).d)
   assert(points.length >= 4, 'layered orthogonal route omitted bends')
   for (let segmentIndex = 1; segmentIndex < points.length; segmentIndex++) {
     const start = points[segmentIndex - 1]
@@ -241,6 +245,183 @@ for (const edge of disconnectedEdges) {
   }
 }
 
+// A dense fan-in should no longer collapse onto one arrow entry or one channel
+// line. Six incoming edges are spread across the target border and the shared
+// inter-row channel in deterministic source-x order.
+const fanTarget = { id: 'fan-target', type: 'claim' }
+const fanSources = Array.from({ length: 6 }, (_, index) => ({ id: 'fan-source-' + index, type: 'claim' }))
+const fanNodes = [...fanSources, fanTarget]
+const fanEdges = fanSources.map((node) => ({ fromNodeId: node.id, toNodeId: fanTarget.id, relation: 'supports' }))
+const fanPos = new Map([[fanTarget.id, { x: 0, y: layerYGap }]])
+fanSources.forEach((node, index) => fanPos.set(node.id, { x: (index - 2.5) * 160, y: 0 }))
+const fanSizes = new Map(fanNodes.map((node) => [node.id, { w: 170, h: 72 }]))
+const fanComponentKey = new Map(fanNodes.map((node) => [node.id, 0]))
+const fanComponentNodes = new Map(fanNodes.map((node) => [node.id, fanNodes]))
+const fanLanes = buildLayeredEdgeLanes(fanEdges, fanPos, fanComponentKey, fanComponentNodes)
+const fanEntries = []
+const fanChannels = []
+for (const edge of fanEdges) {
+  const lane = fanLanes.get(edge)
+  const points = pathPoints(layeredOrthoPath(edge, fanPos.get(edge.fromNodeId), fanPos.get(edge.toNodeId), fanSizes, fanPos, fanNodes, lane).d)
+  fanEntries.push(points[points.length - 1].x)
+  fanChannels.push(points[1].y)
+}
+const minimumGap = (values) => {
+  const ordered = values.slice().sort((a, b) => a - b)
+  let gap = Infinity
+  for (let index = 1; index < ordered.length; index++) gap = Math.min(gap, ordered[index] - ordered[index - 1])
+  return gap
+}
+const minimumFanEntryGap = minimumGap(fanEntries)
+const minimumFanChannelGap = minimumGap(fanChannels)
+assert(minimumFanEntryGap >= 20, 'fan-in arrow entries still overlap: ' + JSON.stringify(fanEntries))
+assert(minimumFanChannelGap >= 8, 'shared channel tracks still overlap: ' + JSON.stringify(fanChannels))
+const targetPorts = fanEdges.map((edge) => fanLanes.get(edge).targetPort)
+assert(targetPorts.every((slot, index) => index === 0 || slot > targetPorts[index - 1]), 'fan-in ports are not deterministically ordered')
+assert(fanEdges.every((edge) => fanLanes.get(edge).corridor === 0), 'adjacent-row fan allocated useless vertical corridor tracks')
+
+// Incoming and outgoing edges that use the same physical side of a mixed hub
+// must share one port allocator instead of independently choosing duplicates.
+const mixedHub = { id: 'mixed-hub', type: 'claim' }
+const mixedIncoming = Array.from({ length: 4 }, (_, index) => ({ id: 'mixed-in-' + index, type: 'claim' }))
+const mixedOutgoing = Array.from({ length: 4 }, (_, index) => ({ id: 'mixed-out-' + index, type: 'claim' }))
+const mixedNodes = [mixedHub, ...mixedIncoming, ...mixedOutgoing]
+const mixedEdges = [
+  ...mixedIncoming.map((node) => ({ fromNodeId: node.id, toNodeId: mixedHub.id, relation: 'supports' })),
+  ...mixedOutgoing.map((node) => ({ fromNodeId: mixedHub.id, toNodeId: node.id, relation: 'supports' })),
+]
+const mixedPos = new Map([[mixedHub.id, { x: 0, y: layerYGap }]])
+mixedIncoming.forEach((node, index) => mixedPos.set(node.id, { x: (index - 1.5) * 180 - 45, y: layerYGap * 2 }))
+mixedOutgoing.forEach((node, index) => mixedPos.set(node.id, { x: (index - 1.5) * 180 + 45, y: layerYGap * 2 }))
+const mixedKey = new Map(mixedNodes.map((node) => [node.id, 0]))
+const mixedComponent = new Map(mixedNodes.map((node) => [node.id, mixedNodes]))
+const mixedLanes = buildLayeredEdgeLanes(mixedEdges, mixedPos, mixedKey, mixedComponent)
+const mixedBottomPorts = [
+  ...mixedEdges.slice(0, 4).map((edge) => mixedLanes.get(edge).targetPort),
+  ...mixedEdges.slice(4).map((edge) => mixedLanes.get(edge).sourcePort),
+]
+assert(new Set(mixedBottomPorts).size === mixedBottomPorts.length, 'mixed fan-in/out reused border ports')
+const mixedBottomEntryX = mixedBottomPorts.map((slot) => slot * (170 / 2 - 8))
+const minimumMixedPortGap = minimumGap(mixedBottomEntryX)
+assert(minimumMixedPortGap >= 14, 'mixed fan-in/out ports remain visually merged: ' + JSON.stringify(mixedBottomEntryX))
+
+// Overlapping multi-row intervals must receive distinct vertical corridor tracks.
+const corridorPos = new Map()
+const corridorNodes = []
+const corridorEdges = []
+for (let index = 0; index < 4; index++) {
+  const from = { id: 'corridor-from-' + index, type: 'claim' }
+  const to = { id: 'corridor-to-' + index, type: 'claim' }
+  corridorNodes.push(from, to)
+  corridorEdges.push({ fromNodeId: from.id, toNodeId: to.id, relation: 'causes' })
+  corridorPos.set(from.id, { x: 0, y: 0 })
+  corridorPos.set(to.id, { x: 0, y: layerYGap * 3 })
+}
+const corridorComponentKey = new Map(corridorNodes.map((node) => [node.id, 0]))
+const corridorComponentNodes = new Map(corridorNodes.map((node) => [node.id, corridorNodes]))
+const corridorLanes = buildLayeredEdgeLanes(corridorEdges, corridorPos, corridorComponentKey, corridorComponentNodes)
+assert(new Set(corridorEdges.map((edge) => corridorLanes.get(edge).corridor)).size === corridorEdges.length, 'overlapping vertical spans reused one corridor track')
+const corridorSizes = new Map(corridorNodes.map((node) => [node.id, { w: 150, h: 72 }]))
+const renderedCorridorX = corridorEdges.map((edge) => {
+  const points = pathPoints(layeredOrthoPath(edge, corridorPos.get(edge.fromNodeId), corridorPos.get(edge.toNodeId), corridorSizes, corridorPos, corridorNodes, corridorLanes.get(edge)).d)
+  return points[2].x
+})
+const minimumCorridorGap = minimumGap(renderedCorridorX)
+assert(minimumCorridorGap >= 13.9, 'distinct corridor tracks rendered onto one vertical line: ' + JSON.stringify(renderedCorridorX))
+
+// Disjoint vertical intervals may safely reuse the same track.
+const reuseNodes = ['reuse-a0','reuse-a2','reuse-b2','reuse-b4'].map((id) => ({ id, type: 'claim' }))
+const reuseEdges = [
+  { fromNodeId: 'reuse-a0', toNodeId: 'reuse-a2', relation: 'causes' },
+  { fromNodeId: 'reuse-b2', toNodeId: 'reuse-b4', relation: 'causes' },
+]
+const reusePos = new Map([
+  ['reuse-a0', { x: -100, y: 0 }],
+  ['reuse-a2', { x: -100, y: layerYGap * 2 }],
+  ['reuse-b2', { x: 100, y: layerYGap * 2 }],
+  ['reuse-b4', { x: 100, y: layerYGap * 4 }],
+])
+const reuseKey = new Map(reuseNodes.map((node) => [node.id, 0]))
+const reuseComponent = new Map(reuseNodes.map((node) => [node.id, reuseNodes]))
+const reuseLanes = buildLayeredEdgeLanes(reuseEdges, reusePos, reuseKey, reuseComponent)
+assert(reuseEdges.every((edge) => reuseLanes.get(edge).corridor === 0), 'disjoint vertical intervals did not reuse one corridor track')
+
+const denseCorridorNodes = []
+const denseCorridorEdges = []
+const denseCorridorPos = new Map()
+for (let index = 0; index < 40; index++) {
+  const from = { id: 'dense-corridor-from-' + index, type: 'claim' }
+  const to = { id: 'dense-corridor-to-' + index, type: 'claim' }
+  denseCorridorNodes.push(from, to)
+  denseCorridorEdges.push({ fromNodeId: from.id, toNodeId: to.id, relation: 'supports' })
+  denseCorridorPos.set(from.id, { x: index * 12, y: 0 })
+  denseCorridorPos.set(to.id, { x: index * 12, y: layerYGap * 3 })
+}
+const denseCorridorKey = new Map(denseCorridorNodes.map((node) => [node.id, 0]))
+const denseCorridorComponent = new Map(denseCorridorNodes.map((node) => [node.id, denseCorridorNodes]))
+const denseCorridorLanes = buildLayeredEdgeLanes(denseCorridorEdges, denseCorridorPos, denseCorridorKey, denseCorridorComponent)
+const denseCorridorOffsets = denseCorridorEdges.map((edge) => denseCorridorLanes.get(edge).corridor)
+assert(Math.max(...denseCorridorOffsets.map(Math.abs)) <= 8, 'dense corridor fan exceeded bounded horizontal spread')
+assert(new Set(denseCorridorOffsets).size === denseCorridorEdges.length, 'bounded dense corridor tracks collapsed to identical lanes')
+
+// Exercise every rendered routing branch: same-row above a negatively shifted
+// component, upward flow, and a multi-row corridor that must dodge blockers.
+const assertRouteCase = (name, caseNodes, edge, casePos) => {
+  const caseSizes = new Map(caseNodes.map((node) => [node.id, { w: 150, h: 72 }]))
+  const caseKey = new Map(caseNodes.map((node) => [node.id, 0]))
+  const caseComponent = new Map(caseNodes.map((node) => [node.id, caseNodes]))
+  const caseLanes = buildLayeredEdgeLanes([edge], casePos, caseKey, caseComponent)
+  const points = pathPoints(layeredOrthoPath(edge, casePos.get(edge.fromNodeId), casePos.get(edge.toNodeId), caseSizes, casePos, caseNodes, caseLanes.get(edge)).d)
+  for (let segmentIndex = 1; segmentIndex < points.length; segmentIndex++) {
+    const start = points[segmentIndex - 1]
+    const end = points[segmentIndex]
+    const vertical = Math.abs(start.x - end.x) < 1e-9
+    const horizontal = Math.abs(start.y - end.y) < 1e-9
+    assert(vertical || horizontal, name + ' route contains a non-orthogonal segment')
+    for (const node of caseNodes) {
+      if (node.id === edge.fromNodeId || node.id === edge.toNodeId) continue
+      const point = casePos.get(node.id)
+      const size = caseSizes.get(node.id)
+      const x0 = point.x - size.w / 2 + 1
+      const x1 = point.x + size.w / 2 - 1
+      const y0 = point.y - size.h / 2 + 1
+      const y1 = point.y + size.h / 2 - 1
+      const hits = vertical
+        ? start.x > x0 && start.x < x1 && Math.max(Math.min(start.y, end.y), y0) < Math.min(Math.max(start.y, end.y), y1)
+        : start.y > y0 && start.y < y1 && Math.max(Math.min(start.x, end.x), x0) < Math.min(Math.max(start.x, end.x), x1)
+      assert(!hits, name + ' route crosses blocker ' + node.id)
+    }
+  }
+  return points
+}
+const sameRowNodes = [{ id: 'same-left' }, { id: 'same-right' }]
+const sameRowEdge = { fromNodeId: 'same-left', toNodeId: 'same-right', relation: 'supports' }
+const sameRowPos = new Map([
+  ['same-left', { x: -120, y: -layerYGap * 2 }],
+  ['same-right', { x: 120, y: -layerYGap * 2 }],
+])
+const sameRowPoints = assertRouteCase('same-row', sameRowNodes, sameRowEdge, sameRowPos)
+assert(sameRowPoints[1].y < sameRowPos.get('same-left').y, 'last negative row did not route through the upper channel')
+const upwardNodes = [{ id: 'up-from' }, { id: 'up-to' }, { id: 'up-blocker' }]
+const upwardEdge = { fromNodeId: 'up-from', toNodeId: 'up-to', relation: 'causes' }
+const upwardPos = new Map([
+  ['up-from', { x: 0, y: layerYGap * 2 }],
+  ['up-to', { x: 220, y: 0 }],
+  ['up-blocker', { x: 0, y: layerYGap }],
+])
+const upwardPoints = assertRouteCase('upward', upwardNodes, upwardEdge, upwardPos)
+assert(upwardPoints[0].y < upwardPos.get('up-from').y, 'upward edge did not exit through the source top border')
+const multiRowNodes = [{ id: 'multi-from' }, { id: 'multi-to' }, { id: 'multi-blocker-1' }, { id: 'multi-blocker-2' }]
+const multiRowEdge = { fromNodeId: 'multi-from', toNodeId: 'multi-to', relation: 'causes' }
+const multiRowPos = new Map([
+  ['multi-from', { x: -220, y: 0 }],
+  ['multi-to', { x: -220, y: layerYGap * 3 }],
+  ['multi-blocker-1', { x: -220, y: layerYGap }],
+  ['multi-blocker-2', { x: -220, y: layerYGap * 2 }],
+])
+const multiRowPoints = assertRouteCase('multi-row', multiRowNodes, multiRowEdge, multiRowPos)
+assert(Math.abs(multiRowPoints[2].x + 220) > 75, 'multi-row corridor did not dodge aligned blockers')
+
 // Keep an inexpensive upper-bound guard around the supported ~800-node view.
 // The generous ceiling avoids machine-speed flakiness while catching accidental
 // cubic regressions in component discovery, ranking, or overlap resolution.
@@ -264,6 +445,12 @@ console.log(JSON.stringify({
   deterministic: true,
   cycleSafe: true,
   routedSegments,
+  minimumFanEntryGap,
+  minimumFanChannelGap,
+  minimumMixedPortGap,
+  minimumCorridorGap,
+  corridorTracks: corridorEdges.length,
+  routeBranches: 3,
   largeNodes: largeLayout.pos.size,
   largeElapsedMs,
 }))

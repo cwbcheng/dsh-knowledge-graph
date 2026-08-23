@@ -2833,6 +2833,156 @@ export default function clientPlugin() {
         return pos
       }
 
+      // Allocate independent view-only tracks for layered edges. Endpoint ports
+      // fan incoming/outgoing arrows across each node border; channel slots
+      // separate horizontal runs that share an inter-row band; interval-coloured
+      // corridor lanes separate vertical runs whose row spans overlap.
+      function buildLayeredEdgeLanes(edges, pos, componentKeyById, componentNodesById) {
+        const lanes = new Map()
+        const items = []
+        const safeEdges = Array.isArray(edges) ? edges : []
+        const addGroup = (groups, key, item) => {
+          const list = groups.get(key) || []
+          list.push(item)
+          groups.set(key, list)
+        }
+        for (let index = 0; index < safeEdges.length; index++) {
+          const edge = safeEdges[index]
+          if (!edge) continue
+          const a = pos.get(edge.fromNodeId)
+          const b = pos.get(edge.toNodeId)
+          if (!a || !b) continue
+          const componentKey = componentKeyById && componentKeyById.has(edge.fromNodeId)
+            ? componentKeyById.get(edge.fromNodeId)
+            : 0
+          const info = { sourcePort: 0, targetPort: 0, sourceChannel: 0, targetChannel: 0, corridor: 0 }
+          const item = {
+            edge,
+            index,
+            a,
+            b,
+            componentKey,
+            r1: Math.round(a.y / LAYER_Y_GAP),
+            r2: Math.round(b.y / LAYER_Y_GAP),
+            info,
+          }
+          items.push(item)
+          lanes.set(edge, info)
+        }
+        const normalizedSlot = (index, count, spread) => count <= 1 ? 0 : ((index / (count - 1)) * 2 - 1) * spread
+
+        const maxRowByComponent = new Map()
+        for (const item of items) {
+          if (maxRowByComponent.has(item.componentKey)) continue
+          const componentNodes = componentNodesById && componentNodesById.get(item.edge.fromNodeId)
+          let maxRow = Math.max(item.r1, item.r2)
+          for (const node of componentNodes || []) {
+            const point = pos.get(node.id)
+            if (point) maxRow = Math.max(maxRow, Math.round(point.y / LAYER_Y_GAP))
+          }
+          maxRowByComponent.set(item.componentKey, maxRow)
+        }
+        // Co-distribute incoming and outgoing attachments that use the same
+        // physical node side. This prevents a mixed-direction hub from assigning
+        // identical arrowhead and arrow-tail positions independently.
+        const portGroups = new Map()
+        const addPort = (item, nodeId, side, field, other) => {
+          const key = item.componentKey + ':port:' + nodeId + ':' + side
+          const list = portGroups.get(key) || []
+          list.push({ item, field, other })
+          portGroups.set(key, list)
+        }
+        for (const item of items) {
+          let sourceSide
+          let targetSide
+          if (item.r1 === item.r2) {
+            const below = item.r1 < maxRowByComponent.get(item.componentKey)
+            sourceSide = targetSide = below ? 'bottom' : 'top'
+          } else if (item.r1 < item.r2) {
+            sourceSide = 'bottom'
+            targetSide = 'top'
+          } else {
+            sourceSide = 'top'
+            targetSide = 'bottom'
+          }
+          addPort(item, item.edge.fromNodeId, sourceSide, 'sourcePort', item.b)
+          addPort(item, item.edge.toNodeId, targetSide, 'targetPort', item.a)
+        }
+        for (const list of portGroups.values()) {
+          list.sort((x, y) => x.other.x - y.other.x || x.other.y - y.other.y || x.item.index - y.item.index || x.field.localeCompare(y.field))
+          list.forEach((entry, index) => { entry.item.info[entry.field] = normalizedSlot(index, list.length, 0.84) })
+        }
+
+        const channelGroups = new Map()
+        const addChannel = (item, boundary, fields, x) => {
+          const key = item.componentKey + ':channel:' + boundary
+          const list = channelGroups.get(key) || []
+          list.push({ item, fields, x })
+          channelGroups.set(key, list)
+        }
+        for (const item of items) {
+          if (item.r1 === item.r2) {
+            const maxRow = maxRowByComponent.get(item.componentKey)
+            const boundary = item.r1 >= maxRow ? item.r1 - 1 : item.r1
+            addChannel(item, boundary, ['sourceChannel', 'targetChannel'], (item.a.x + item.b.x) / 2)
+            continue
+          }
+          const sourceBoundary = item.r1 < item.r2 ? item.r1 : item.r1 - 1
+          const targetBoundary = item.r1 < item.r2 ? item.r2 - 1 : item.r2
+          if (sourceBoundary === targetBoundary) {
+            addChannel(item, sourceBoundary, ['sourceChannel', 'targetChannel'], (item.a.x + item.b.x) / 2)
+          } else {
+            addChannel(item, sourceBoundary, ['sourceChannel'], item.a.x)
+            addChannel(item, targetBoundary, ['targetChannel'], item.b.x)
+          }
+        }
+        for (const list of channelGroups.values()) {
+          list.sort((x, y) => x.x - y.x || x.item.index - y.item.index || x.fields.length - y.fields.length)
+          list.forEach((entry, index) => {
+            const slot = normalizedSlot(index, list.length, 0.86)
+            for (const field of entry.fields) entry.item.info[field] = slot
+          })
+        }
+
+        // Corridor colours are bounded separation hints. The router still owns
+        // obstacle avoidance and may converge tracks only in an exceptionally
+        // dense row where no distinct free columns remain.
+        const corridorGroups = new Map()
+        for (const item of items) {
+          // Adjacent rows share one channel and have no visible vertical
+          // corridor segment, so assigning hundreds of useless corridor tracks
+          // to a wide fan would only stretch its horizontal runs.
+          if (Math.abs(item.r1 - item.r2) <= 1) continue
+          addGroup(corridorGroups, item.componentKey, item)
+        }
+        for (const list of corridorGroups.values()) {
+          list.sort((x, y) => {
+            const xLo = Math.min(x.r1, x.r2)
+            const yLo = Math.min(y.r1, y.r2)
+            const xHi = Math.max(x.r1, x.r2)
+            const yHi = Math.max(y.r1, y.r2)
+            return xLo - yLo || xHi - yHi || (x.a.x + x.b.x) - (y.a.x + y.b.x) || x.index - y.index
+          })
+          const trackEnds = []
+          const trackOf = new Map()
+          for (const item of list) {
+            const lo = Math.min(item.r1, item.r2)
+            const hi = Math.max(item.r1, item.r2)
+            let track = trackEnds.findIndex((end) => end <= lo)
+            if (track < 0) { track = trackEnds.length; trackEnds.push(hi) }
+            else trackEnds[track] = hi
+            trackOf.set(item, track)
+          }
+          const middle = (trackEnds.length - 1) / 2
+          const maxLane = Math.min(middle, 8)
+          for (const item of list) {
+            const track = trackOf.get(item)
+            item.info.corridor = trackEnds.length <= 1 ? 0 : ((track / (trackEnds.length - 1)) * 2 - 1) * maxLane
+          }
+        }
+        return lanes
+      }
+
       // ---- orthogonal (right-angle) edge routing for the layered layout ----
       // Rows are horizontal bands separated by empty channels. Every cross-row
       // edge runs: vertical inside its own row band -> horizontal in a channel
@@ -2888,62 +3038,62 @@ export default function clientPlugin() {
       }
 
       function layeredOrthoPath(edge, a, b, sizes, pos, nodes, lane) {
-        const offY = lane * 8
-        const offX = lane * 12
-        // Start/end on the node BORDERS, not the centers (node fills are
-        // translucent, so a center-starting line shows through the body).
+        const tracks = lane && typeof lane === 'object'
+          ? lane
+          : { sourcePort: 0, targetPort: 0, sourceChannel: 0, targetChannel: 0, corridor: Number(lane) || 0 }
+        // Start/end on distinct points of the node borders. Normalized port
+        // slots distribute any fan-in/fan-out count across the usable top/bottom
+        // edge while keeping arrowheads clear of rounded corners.
         const s1 = sizes.get(edge.fromNodeId)
         const s2 = sizes.get(edge.toNodeId)
         const h1 = s1 ? s1.h / 2 : 40
         const h2 = s2 ? s2.h / 2 : 40
-        // Lane offsets separate parallel edges, but the entry/exit x must
-        // stay ON the node's border span: with many siblings (n up to ~17)
-        // the offset (lane*12, lane up to (n-1)/2) can exceed the node
-        // half-width, leaving the arrow floating BESIDE the node. Clamp to
-        // within the border (8px margin keeps the arrowhead clear of the
-        // rounded corner).
         const w1 = s1 ? Math.max(s1.w / 2 - 8, 8) : 40
         const w2 = s2 ? Math.max(s2.w / 2 - 8, 8) : 40
-        const ax = clamp(a.x + offX, a.x - w1, a.x + w1)
-        const bx = clamp(b.x + offX, b.x - w2, b.x + w2)
+        const ax = a.x + clamp(Number(tracks.sourcePort) || 0, -1, 1) * w1
+        const bx = b.x + clamp(Number(tracks.targetPort) || 0, -1, 1) * w2
+        const channelY = (band, slot) => {
+          const middle = (band[0] + band[1]) / 2
+          const half = Math.max((band[1] - band[0]) / 2 - 1, 0)
+          return clamp(middle + clamp(Number(slot) || 0, -1, 1) * half, band[0], band[1])
+        }
         const r1 = Math.round(a.y / LAYER_Y_GAP)
         const r2 = Math.round(b.y / LAYER_Y_GAP)
         if (r1 === r2) {
-          let maxRow = 0
+          let maxRow = -Infinity
           for (const n of nodes) maxRow = Math.max(maxRow, Math.round(pos.get(n.id).y / LAYER_Y_GAP))
-          // detour through the channel below the row (above, for the last row),
-          // clamped into that channel's node-free band so lane offsets can
-          // never push the run into a row band or a node body
+          if (!isFinite(maxRow)) maxRow = r1
+          // Same-row edges share one channel, but every edge receives its own
+          // uniformly distributed horizontal track within the node-free band.
           const band = channelBand(r1 >= maxRow ? r1 - 1 : r1, nodes, sizes, pos)
-          const cy = r1 >= maxRow ? r1 * LAYER_Y_GAP - LAYER_Y_GAP / 2 : r1 * LAYER_Y_GAP + LAYER_Y_GAP / 2
-          const cye = clamp(cy + offY, band[0], band[1])
+          const cye = channelY(band, tracks.sourceChannel)
           const y0 = a.y + (cye > a.y ? h1 : -h1)
           const y1 = b.y - (b.y > cye ? h2 : -h2)
           const d = 'M ' + ax + ' ' + y0 + ' L ' + ax + ' ' + cye
             + ' L ' + bx + ' ' + cye + ' L ' + bx + ' ' + y1
-          const lblY = cye + (cy > a.y ? 14 : -14)
-          return { d, lblX: (a.x + b.x) / 2, lblY }
+          const lblY = cye + (cye > a.y ? 14 : -14)
+          return { d, lblX: (ax + bx) / 2, lblY }
         }
-        // Direction-aware: edges may run upward (deeper row to shallower row),
-        // so each endpoint exits/enters through the channel on ITS OWN side.
+        // Direction-aware: source and target horizontal runs may occupy
+        // different channels, while interval-coloured corridor tracks separate
+        // vertical runs whose row spans overlap.
         const lo = Math.min(r1, r2)
         const hi = Math.max(r1, r2)
-        const ch1 = r1 < r2 ? r1 * LAYER_Y_GAP + LAYER_Y_GAP / 2 : (r1 - 1) * LAYER_Y_GAP + LAYER_Y_GAP / 2
-        const ch2 = r1 < r2 ? (r2 - 1) * LAYER_Y_GAP + LAYER_Y_GAP / 2 : r2 * LAYER_Y_GAP + LAYER_Y_GAP / 2
-        let xc = a.x
-        if (!corridorFree(xc, lo, hi, nodes, sizes, pos)) {
-          xc = b.x
-          if (!corridorFree(xc, lo, hi, nodes, sizes, pos)) {
-            xc = findCorridor(a.x, lo, hi, nodes, sizes, pos)
-          }
-        }
-        const xce = corridorFree(xc + offX, lo, hi, nodes, sizes, pos) ? xc + offX : xc
-        // clamp the channel runs into their node-free bands (lane offsets and
-        // row drift must never push a run into a row band or node body)
         const band1 = channelBand(r1 < r2 ? r1 : r1 - 1, nodes, sizes, pos)
         const band2 = channelBand(r1 < r2 ? r2 - 1 : r2, nodes, sizes, pos)
-        const ch1e = clamp(ch1 + offY, band1[0], band1[1])
-        const ch2e = clamp(ch2 + offY, band2[0], band2[1])
+        const ch1e = channelY(band1, tracks.sourceChannel)
+        const ch2e = channelY(band2, tracks.targetChannel)
+        const corridorOffset = (Number(tracks.corridor) || 0) * 14
+        let xce = a.x + corridorOffset
+        if (!corridorFree(xce, lo, hi, nodes, sizes, pos)) {
+          xce = b.x + corridorOffset
+          if (!corridorFree(xce, lo, hi, nodes, sizes, pos)) {
+            const middle = (a.x + b.x) / 2 + corridorOffset
+            xce = corridorFree(middle, lo, hi, nodes, sizes, pos)
+              ? middle
+              : findCorridor(middle, lo, hi, nodes, sizes, pos)
+          }
+        }
         const y0 = a.y + (ch1e > a.y ? h1 : -h1)
         const y1 = b.y - (b.y > ch2e ? h2 : -h2)
         const d = 'M ' + ax + ' ' + y0 + ' L ' + ax + ' ' + ch1e
@@ -3202,37 +3352,28 @@ export default function clientPlugin() {
           return curve
         }, [edges, layout])
 
-        // Per-edge lanes: edges sharing a row pair (layered) or ring pair
-        // (radial) get a lane index so their channel/corridor/arc runs separate
-        // by a few px instead of stacking into one indistinguishable line.
+        // Layered edges use independent endpoint/channel/corridor tracks;
+        // radial edges only need one signed arc lane per ring pair.
         const edgeLanes = useMemo(() => {
+          if (layoutMode === 'layered') {
+            return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)
+          }
           const lanes = new Map()
-          if (layoutMode !== 'layered' && layoutMode !== 'radial') return lanes
+          if (layoutMode !== 'radial') return lanes
           const groups = new Map()
-          const keyOf = (edge) => {
+          for (const edge of edges || []) {
             const a = layout.pos.get(edge.fromNodeId)
             const b = layout.pos.get(edge.toNodeId)
-            if (!a || !b) return null
-            if (layoutMode === 'layered') {
-              const r1 = Math.round(a.y / LAYER_Y_GAP)
-              const r2 = Math.round(b.y / LAYER_Y_GAP)
-              const componentKey = layout.componentKeyById ? layout.componentKeyById.get(edge.fromNodeId) : null
-              const prefix = componentKey == null ? '' : 'component' + componentKey + ':'
-              return prefix + (r1 === r2 ? 'row' + r1 : Math.min(r1, r2) + '>' + Math.max(r1, r2))
-            }
+            if (!a || !b) continue
             const r1 = Math.round(Math.hypot(a.x, a.y) / 280)
             const r2 = Math.round(Math.hypot(b.x, b.y) / 280)
-            return Math.min(r1, r2) + '>' + Math.max(r1, r2)
-          }
-          for (const edge of edges || []) {
-            const key = keyOf(edge)
-            if (key == null) continue
+            const key = Math.min(r1, r2) + '>' + Math.max(r1, r2)
             if (!groups.has(key)) groups.set(key, [])
             groups.get(key).push(edge)
           }
           for (const list of groups.values()) {
             const n = list.length
-            list.forEach((e, k) => lanes.set(e, k - (n - 1) / 2))
+            list.forEach((edge, index) => lanes.set(edge, index - (n - 1) / 2))
           }
           return lanes
         }, [layoutMode, edges, layout])
