@@ -334,7 +334,7 @@ export default function clientPlugin() {
       const HISTORY_MAX = 20
       const LS_LAYOUT = 'dsh-kg-layout-v1'
        const LS_CANDIDATE_REVIEW = 'dsh-kg-candidate-review-v1'
-      const LAYER_Y_GAP = 140
+      const LAYER_Y_GAP = 240
       const LAYER_X_GAP = 220
       const LAYER_COL_GAP = 20
       // A single layered row must not stretch much wider than the visible

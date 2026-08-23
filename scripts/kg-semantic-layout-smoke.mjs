@@ -246,15 +246,15 @@ for (const edge of disconnectedEdges) {
 }
 
 // A dense fan-in should no longer collapse onto one arrow entry or one channel
-// line. Six incoming edges are spread across the target border and the shared
+// line. Eight incoming edges are spread across the target border and the shared
 // inter-row channel in deterministic source-x order.
 const fanTarget = { id: 'fan-target', type: 'claim' }
-const fanSources = Array.from({ length: 6 }, (_, index) => ({ id: 'fan-source-' + index, type: 'claim' }))
+const fanSources = Array.from({ length: 8 }, (_, index) => ({ id: 'fan-source-' + index, type: 'claim' }))
 const fanNodes = [...fanSources, fanTarget]
 const fanEdges = fanSources.map((node) => ({ fromNodeId: node.id, toNodeId: fanTarget.id, relation: 'supports' }))
 const fanPos = new Map([[fanTarget.id, { x: 0, y: layerYGap }]])
-fanSources.forEach((node, index) => fanPos.set(node.id, { x: (index - 2.5) * 160, y: 0 }))
-const fanSizes = new Map(fanNodes.map((node) => [node.id, { w: 170, h: 72 }]))
+fanSources.forEach((node, index) => fanPos.set(node.id, { x: (index - 3.5) * 180, y: 0 }))
+const fanSizes = new Map(fanNodes.map((node) => [node.id, { w: 190, h: 100 }]))
 const fanComponentKey = new Map(fanNodes.map((node) => [node.id, 0]))
 const fanComponentNodes = new Map(fanNodes.map((node) => [node.id, fanNodes]))
 const fanLanes = buildLayeredEdgeLanes(fanEdges, fanPos, fanComponentKey, fanComponentNodes)
@@ -275,7 +275,7 @@ const minimumGap = (values) => {
 const minimumFanEntryGap = minimumGap(fanEntries)
 const minimumFanChannelGap = minimumGap(fanChannels)
 assert(minimumFanEntryGap >= 20, 'fan-in arrow entries still overlap: ' + JSON.stringify(fanEntries))
-assert(minimumFanChannelGap >= 8, 'shared channel tracks still overlap: ' + JSON.stringify(fanChannels))
+assert(minimumFanChannelGap >= 15, 'shared horizontal channel tracks are still too close: ' + JSON.stringify(fanChannels))
 const targetPorts = fanEdges.map((edge) => fanLanes.get(edge).targetPort)
 assert(targetPorts.every((slot, index) => index === 0 || slot > targetPorts[index - 1]), 'fan-in ports are not deterministically ordered')
 assert(fanEdges.every((edge) => fanLanes.get(edge).corridor === 0), 'adjacent-row fan allocated useless vertical corridor tracks')
