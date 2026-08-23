@@ -521,14 +521,15 @@ export default function hostPlugin() {
         return hints
       }
 
+      const EXPLICIT_LIMITATION_CONTRAST_CUE_HOST = /(?:然而|但是|不过|可是|尽管|即使|却|但在|可当)/
+      const EXPLICIT_LIMITATION_FAILURE_CUE_HOST = /(?:行不通|无处发力|失效|不起作用|不能奏效|无法(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|不能(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|难以(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持))/
+
       function explicitLimitationCoverageHintsHost(batch, graph) {
         const units = batch && Array.isArray(batch.units) ? batch.units : []
         const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
         if (units.length === 0) return []
-        const contrastCue = /(?:然而|但是|不过|尽管|即使|却|但在|可当)/
-        const explicitFailureCue = /(?:行不通|无处发力|失效|不起作用|不能奏效|无法(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|不能(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持)|难以(?:应用|使用|应对|发挥(?:作用)?|实现|继续|维持))/
         const outcomeGroups = [
-          { label: '行不通/失效/无法发挥', source: explicitFailureCue, retained: explicitFailureCue },
+          { label: '行不通/失效/无法发挥', source: EXPLICIT_LIMITATION_FAILURE_CUE_HOST, retained: EXPLICIT_LIMITATION_FAILURE_CUE_HOST },
         ]
         const nodeByParagraph = new Map()
         for (const node of nodes) {
@@ -547,10 +548,110 @@ export default function hostPlugin() {
             if (!group.source.test(text)) return false
             return !paragraphNodes.some((node) => group.retained.test(String(node.text || '') + ' ' + String(node.quote || '')))
           })
-          if (missing.length === 0 || (!contrastCue.test(text) && missing.length < 2)) continue
+          if (missing.length === 0 || (!EXPLICIT_LIMITATION_CONTRAST_CUE_HOST.test(text) && missing.length < 2)) continue
           hints.push({ paragraph: unit.num, missing: missing.map((group) => group.label), text: text.slice(0, 360) })
         }
         return hints
+      }
+
+      function deriveExplicitLimitationClaimHost(sentence) {
+        const quote = String(sentence || '').trim()
+        if (quote.length < 12 || !EXPLICIT_LIMITATION_FAILURE_CUE_HOST.test(quote)) return null
+        const contrast = quote.match(/(?:然而|但是|不过|可是|但|可(?=当))/)
+        if (!contrast || !Number.isInteger(contrast.index)) return null
+        const before = quote.slice(0, contrast.index).trim().replace(/^[，,；;。.!！?？\s]+|[，,；;。.!！?？\s]+$/g, '')
+        const subjectMatch = before.match(/([^，,。！？!?；;\n]{2,48}?)(?:符合(?:我们的)?直觉|看似(?:合理|有效|可行|正确)?|似乎(?:合理|有效|可行|正确)?|本来(?:有效|可行)?|原本(?:有效|可行)?|起初(?:有效|可行)?|表面上(?:合理|有效|可行)?)$/)
+        const subject = subjectMatch ? subjectMatch[1].trim().replace(/^[“”"'‘’]+|[“”"'‘’]+$/g, '') : ''
+        if (!subject || /^(?:这种方式|该(?:方式|方法|机制|策略|做法|方案)|它|这|此)$/.test(subject)) return null
+        const after = quote.slice(contrast.index + contrast[0].length)
+        const failure = after.match(EXPLICIT_LIMITATION_FAILURE_CUE_HOST)
+        if (!failure || !Number.isInteger(failure.index)) return null
+        let condition = after.slice(0, failure.index).trim()
+        condition = condition
+          .replace(/^[，,；;。.!！?？\s]+/, '')
+          .replace(/[，,\s]*(?:(?:这种|该|上述|此|这个)(?:方式|方法|机制|策略|做法|方案)?|它)(?:却|仍然?|也|就)?\s*$/, '')
+          .replace(/[，,\s]*(?:却|仍然?|也|就)\s*$/, '')
+          .trim()
+        const outcome = failure[0].trim()
+        const text = (subject + condition + outcome).replace(/[ \t]+/g, ' ').replace(/[。.!！?？]+$/g, '') + '。'
+        if (text.length < 8 || text.length > 160) return null
+        return { text, quote, subject }
+      }
+
+      function explicitLimitationSeedCandidatesHost(batch, graph) {
+        const units = batch && Array.isArray(batch.units) ? batch.units : []
+        const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
+        const candidates = []
+        const seededSubjects = new Set()
+        for (const unit of units) {
+          if (candidates.length >= 4 || !unit || !Number.isInteger(unit.num)) continue
+          const sentences = String(unit.text || '').match(/[^。！？!?；;\n]+(?:[。！？!?；;]|$)/g) || []
+          for (const sentence of sentences) {
+            const derived = deriveExplicitLimitationClaimHost(sentence)
+            if (!derived) continue
+            const subjectKey = normalizeGraphLookupTextHost(derived.subject)
+            if (!subjectKey || seededSubjects.has(subjectKey)) continue
+            const covered = nodes.some((node) => {
+              const material = String(node && node.text || '') + ' ' + String(node && node.quote || '')
+              return normalizeGraphLookupTextHost(material).includes(subjectKey) && EXPLICIT_LIMITATION_FAILURE_CUE_HOST.test(material)
+            })
+            if (covered) continue
+            seededSubjects.add(subjectKey)
+            candidates.push({
+              id: 'limitation_seed_' + unit.num + '_' + (candidates.length + 1),
+              type: 'claim',
+              text: derived.text,
+              quote: derived.quote,
+              paragraph: unit.num,
+            })
+            if (candidates.length >= 4) break
+          }
+        }
+        return candidates
+      }
+
+      function applyDeterministicLimitationCoverageHost(task, batch, accepted, acc, existingIds, batchContext, totalParagraphs) {
+        const rawNodes = explicitLimitationSeedCandidatesHost(batch, accepted)
+        if (rawNodes.length === 0) return { addedNodes: 0, prunedNodes: 0 }
+        try {
+          const allowedIds = new Set([...existingIds, ...accepted.nodes.map((node) => node && node.id).filter(Boolean)])
+          const repair = normalizeGraph({ summary: '', nodes: rawNodes, edges: [] }, totalParagraphs, allowedIds, batchContext)
+          if (repair.error) throw new Error(repair.error)
+          const knownNodes = new Map(acc.nodes)
+          for (const node of accepted.nodes) if (node && node.id) knownNodes.set(node.id, node)
+          renumberNewIds(repair, { nodes: knownNodes })
+          let gate = validateGraphInvariantsHost(repair, task.text, {
+            includeQuality: false,
+            extraNodes: knownNodes,
+            normalizationWarnings: repair.warnings,
+          })
+          const safe = applySafeInvariantRepairsHost(repair, gate, { allowEdgeDrops: true }).repairs
+          if (safe.length > 0) gate = validateGraphInvariantsHost(repair, task.text, {
+            includeQuality: false,
+            extraNodes: knownNodes,
+            normalizationWarnings: repair.warnings,
+            ignoreSafeNormalizationDrops: true,
+          })
+          let prunedNodes = 0
+          if (gate.blockingIssues.length > 0) {
+            const pruned = pruneCoverageSemanticStrengthDriftHost(repair, gate)
+            prunedNodes = pruned.length
+            if (pruned.length > 0) gate = validateGraphInvariantsHost(repair, task.text, {
+              includeQuality: false,
+              extraNodes: knownNodes,
+              normalizationWarnings: repair.warnings,
+              ...(safe.length > 0 ? { ignoreSafeNormalizationDrops: true } : {}),
+            })
+          }
+          if (gate.blockingIssues.length > 0) throw new Error(formatInvariantFeedbackHost(gate.blockingIssues))
+          accepted.nodes.push(...repair.nodes)
+          for (const warning of repair.warnings) accepted.warnings.push('coverage_seed:' + warning)
+          if (repair.nodes.length > 0) accepted.warnings.push('coverage_seed:explicit_limitation:nodes=' + repair.nodes.length)
+          return { addedNodes: repair.nodes.length, prunedNodes }
+        } catch (error) {
+          accepted.warnings.push('coverage_seed_failed:' + (error && error.message ? error.message : String(error)))
+          return { addedNodes: 0, prunedNodes: 0 }
+        }
       }
 
       function zeroNodeSectionCoverageHintsHost(batch, graph) {
@@ -604,7 +705,7 @@ export default function hostPlugin() {
             if (!covered) explanatoryBoundaryGap = true
           }
         }
-        return zeroNodeSectionCoverageHintsHost(batch, graph).length > 0 || explicitLimitationCoverageHintsHost(batch, graph).length > 0 || workedExampleCoverageHintsHost(batch, graph).length > 0 || simpleIllustrativeCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
+        return zeroNodeSectionCoverageHintsHost(batch, graph).length > 0 || explicitLimitationSeedCandidatesHost(batch, graph).length > 0 || explicitLimitationCoverageHintsHost(batch, graph).length > 0 || workedExampleCoverageHintsHost(batch, graph).length > 0 || simpleIllustrativeCoverageHintsHost(batch, graph).length > 0 || explanatoryBoundaryGap || (suspiciousUnits > 0 && (mechanismUnits >= 2 || units.some((unit) => ((String(unit && unit.text || '').match(mechanismCue) || []).length >= 2))))
       }
 
       function buildCoverageUserTextHost(title, batch, accepted, existingDigest) {
@@ -633,7 +734,7 @@ export default function hostPlugin() {
         if (limitationHints.length > 0) {
           text += NL + '显式限制/转折结论候选（同段原因或条件已有覆盖，但关键的“行不通/失效/无法应用或发挥”结果语义仍缺失；只是召回提示，不是建节点或连边的证据）：' + NL
           for (const hint of limitationHints) text += '[P' + hint.paragraph + '] missing=' + hint.missing.join(',') + '|' + hint.text + NL
-          text += '逐项检查是否遗漏“某方法或机制在明确条件下受限/失效”的原子结论。新增 claim 只表达这个限制结果；原因和条件保持为独立节点，并在原文直接证明时用 causes/supports 连接。不得只写“这种方式”，不得把局部限制提升为普遍否定，也不得把原因、条件和结果压成总结节点。quote/evidence 必须逐字来自原文。' + NL
+          text += '逐项检查是否遗漏“某方法或机制在明确条件下受限/失效”的原子结论。限制结论节点必须显式保留原文已经命名的受限方法/机制；已有近义节点若只写“经验”“这种方式”或其它代词而丢失方法名，仍不算可检索覆盖。新增 claim 只表达这个限制结果；原因和条件保持为独立节点，并在原文直接证明时用 causes/supports 连接。不得只写“这种方式”，不得把局部限制提升为普遍否定，也不得把原因、条件和结果压成总结节点。quote/evidence 必须逐字来自原文。' + NL
         }
         const zeroSectionHints = zeroNodeSectionCoverageHintsHost(batch, accepted)
         if (zeroSectionHints.length > 0) {
@@ -668,8 +769,11 @@ export default function hostPlugin() {
       async function repairMechanismCoverageHost(task, model, batch, accepted, acc, existingIds, existingDigest, batchContext, totalParagraphs) {
         const result = { attempted: false, addedNodes: 0, addedEdges: 0, prunedNodes: 0 }
         if (!mechanismCoverageNeededHost(batch, accepted)) return result
-        if (!model && !hasKgCoverageReviewer) return result
         result.attempted = true
+        const seeded = applyDeterministicLimitationCoverageHost(task, batch, accepted, acc, existingIds, batchContext, totalParagraphs)
+        result.addedNodes += seeded.addedNodes
+        result.prunedNodes += seeded.prunedNodes
+        if (!model && !hasKgCoverageReviewer) return result
         taskStage('正在复核第 ' + ((task.progress && task.progress.batch && task.progress.batch.index) || '?') + ' 个内容块的机制覆盖…')
         try {
           const prompt = buildCoverageUserTextHost(task.title, batch, accepted, existingDigest)
@@ -733,8 +837,8 @@ export default function hostPlugin() {
           accepted.nodes.push(...repair.nodes)
           accepted.edges.push(...repair.edges)
           for (const warning of repair.warnings) accepted.warnings.push('coverage_repair:' + warning)
-          result.addedNodes = repair.nodes.length
-          result.addedEdges = repair.edges.length
+          result.addedNodes += repair.nodes.length
+          result.addedEdges += repair.edges.length
           return result
         } catch (error) {
           if (error && error.code === 'cancelled') throw error
@@ -3533,16 +3637,16 @@ export default function hostPlugin() {
           before: connectivitySnapshotHost(before),
           after: connectivitySnapshotHost(before),
         }
-        if (!shouldWeaveRelationsHost(before) || (!model && !hasKgRelationWeaver)) return result
-        result.attempted = true
         const seededEdges = seedExplicitRelationEdgesHost(acc, paragraphTexts)
         result.seededEdges = seededEdges
         result.addedEdges = seededEdges
         const working = graphConnectivityHost(nodes, acc.edges)
-        if (!shouldWeaveRelationsHost(working)) {
-          result.after = connectivitySnapshotHost(working)
+        result.after = connectivitySnapshotHost(working)
+        if (!shouldWeaveRelationsHost(working) || (!model && !hasKgRelationWeaver)) {
+          result.attempted = seededEdges > 0
           return result
         }
+        result.attempted = true
         const groups = buildRelationWeaveGroupsHost(nodes, acc.edges, working)
         result.groups = groups.length
         const allIds = new Set(nodes.map((node) => node.id))

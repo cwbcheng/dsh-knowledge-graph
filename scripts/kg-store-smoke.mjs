@@ -145,6 +145,45 @@ try {
     throw new Error('SQLite bounded subgraph query did not restore one-hop context')
   }
 
+  const integrityGraph = {
+    summary: 'integrity fixture',
+    source: { id: 'source-integrity', documentId: 'document-integrity', title: 'integrity', chars: 6, paragraphCount: 1, chunkCount: 0, sectionCount: 0, sections: [] },
+    staging: { sourceId: 'source-integrity', documentId: 'document-integrity', chunkCount: 0, chunks: [] },
+    nodes: [
+      { id: 'i1', type: 'fact', text: '完整性节点一', quote: '完整性原文', paragraph: 0, evidence: [{ paragraph: 0, quote: '完整性原文' }] },
+      { id: 'i2', type: 'fact', text: '完整性节点二', quote: '完整性原文', paragraph: 0, evidence: [{ paragraph: 0, quote: '完整性原文' }] },
+    ],
+    edges: [{ fromNodeId: 'i1', toNodeId: 'i2', relation: 'supports', evidence: [{ paragraph: 0, quote: '完整性原文' }] }],
+  }
+  store.saveGraph(integrityGraph, { sourceText: '完整性原文' })
+  const integrityCandidateCount = store.listCandidates({ documentId: 'document-integrity', limit: 20 }).length
+  const invalidReplacements = [
+    { label: 'null graph', graph: null },
+    { label: 'array graph', graph: [] },
+    { label: 'primitive graph', graph: 'invalid' },
+    { label: 'non-array nodes', graph: { ...integrityGraph, nodes: {} } },
+    { label: 'non-array edges', graph: { ...integrityGraph, edges: {} } },
+    { label: 'empty node text', graph: { ...integrityGraph, nodes: [integrityGraph.nodes[0], { ...integrityGraph.nodes[1], text: '' }] } },
+    { label: 'whitespace node id', graph: { ...integrityGraph, nodes: [{ ...integrityGraph.nodes[0], id: ' i1 ' }, integrityGraph.nodes[1]] } },
+    { label: 'whitespace node text', graph: { ...integrityGraph, nodes: [{ ...integrityGraph.nodes[0], text: ' 完整性节点一 ' }, integrityGraph.nodes[1]] } },
+    { label: 'duplicate node id', graph: { ...integrityGraph, nodes: [integrityGraph.nodes[0], { ...integrityGraph.nodes[1], id: 'i1' }] } },
+    { label: 'whitespace edge endpoint', graph: { ...integrityGraph, edges: [{ fromNodeId: ' i1 ', toNodeId: 'i2', relation: 'supports' }] } },
+    { label: 'whitespace relation', graph: { ...integrityGraph, edges: [{ fromNodeId: 'i1', toNodeId: 'i2', relation: ' supports ' }] } },
+    { label: 'dangling edge', graph: { ...integrityGraph, edges: [{ fromNodeId: 'i1', toNodeId: 'ghost', relation: 'supports' }] } },
+    { label: 'self-loop', graph: { ...integrityGraph, edges: [{ fromNodeId: 'i1', toNodeId: 'i1', relation: 'supports' }] } },
+    { label: 'duplicate edge', graph: { ...integrityGraph, edges: [integrityGraph.edges[0], { ...integrityGraph.edges[0] }] } },
+  ]
+  for (const fixture of invalidReplacements) {
+    let failure = null
+    try { store.saveGraph(fixture.graph, { sourceText: 'replacement', expectedRevision: 1 }) } catch (error) { failure = error }
+    if (!failure || failure.code !== 'invalid_graph') throw new Error('store accepted invalid replacement (' + fixture.label + ')')
+    const preserved = store.getDocument('document-integrity')
+    const candidatesAfter = store.listCandidates({ documentId: 'document-integrity', limit: 20 }).length
+    if (!preserved || preserved.revision !== 1 || preserved.sourceText !== '完整性原文' || preserved.nodes.length !== 2 || preserved.edges.length !== 1 || preserved.edges[0].fromNodeId !== 'i1' || preserved.edges[0].toNodeId !== 'i2' || candidatesAfter !== integrityCandidateCount) {
+      throw new Error('invalid replacement changed canonical state (' + fixture.label + '): ' + JSON.stringify(preserved))
+    }
+  }
+
   const legacyDb = new DatabaseSync(':memory:')
   legacyDb.exec(`
     CREATE TABLE chunks (
@@ -160,7 +199,7 @@ try {
   if (pkColumns.join(',') !== 'document_id,source_id,chunk_id') throw new Error('legacy chunk PK migration failed: ' + pkColumns.join(','))
   migratedStore.close()
 
-  console.log(JSON.stringify({ ok: true, saved, candidates: candidates.length, accepted, run, restoredNodes: restored.nodes.length, revision: patched.revision, chunkIdentity: 'composite', legacyChunkMigration: true, semanticMerge: true, sqliteWindow: dbWindow.nodes.length }))
+  console.log(JSON.stringify({ ok: true, saved, candidates: candidates.length, accepted, run, restoredNodes: restored.nodes.length, revision: patched.revision, chunkIdentity: 'composite', legacyChunkMigration: true, semanticMerge: true, graphIntegrity: true, sqliteWindow: dbWindow.nodes.length }))
 } finally {
   store.close()
 }

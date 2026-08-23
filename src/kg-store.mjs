@@ -401,10 +401,50 @@ export class SqliteKnowledgeStore {
   }
 
   saveGraph(graph, options = {}) {
-    if (!graph || typeof graph !== 'object') throw new Error('graph must be an object')
+    const invalidGraph = (message) => {
+      const error = new Error(message)
+      error.code = 'invalid_graph'
+      return error
+    }
+    if (!graph || typeof graph !== 'object' || Array.isArray(graph)) throw invalidGraph('graph must be an object')
+    const hasNodes = Object.prototype.hasOwnProperty.call(graph, 'nodes')
+    const hasEdges = Object.prototype.hasOwnProperty.call(graph, 'edges')
+    if (hasNodes && !Array.isArray(graph.nodes)) throw invalidGraph('graph.nodes must be an array when provided')
+    if (hasEdges && !Array.isArray(graph.edges)) throw invalidGraph('graph.edges must be an array when provided')
     const sourceInput = graph.source && typeof graph.source === 'object' ? graph.source : {}
-    const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter((node) => node && typeof node === 'object') : []
-    const edges = Array.isArray(graph.edges) ? graph.edges.filter((edge) => edge && typeof edge === 'object') : []
+    const nodes = hasNodes ? graph.nodes.slice() : []
+    const edges = hasEdges ? graph.edges.slice() : []
+    const nodeIds = new Set()
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]
+      if (!node || typeof node !== 'object' || Array.isArray(node)) throw invalidGraph('graph node at index ' + index + ' must be an object')
+      const rawNodeId = text(node.id)
+      const rawNodeText = text(node.text)
+      const nodeId = rawNodeId.trim()
+      const nodeText = rawNodeText.trim()
+      if (!nodeId || !nodeText) throw invalidGraph('graph node at index ' + index + ' must have non-empty id and text')
+      if (rawNodeId !== nodeId || rawNodeText !== nodeText) throw invalidGraph('graph node at index ' + index + ' has leading or trailing whitespace')
+      if (nodeIds.has(nodeId)) throw invalidGraph('duplicate graph node id: ' + nodeId)
+      nodeIds.add(nodeId)
+    }
+    const edgeIds = new Set()
+    for (let index = 0; index < edges.length; index++) {
+      const edge = edges[index]
+      if (!edge || typeof edge !== 'object' || Array.isArray(edge)) throw invalidGraph('graph edge at index ' + index + ' must be an object')
+      const rawFromNodeId = text(edge.fromNodeId)
+      const rawToNodeId = text(edge.toNodeId)
+      const rawRelation = text(edge.relation)
+      const fromNodeId = rawFromNodeId.trim()
+      const toNodeId = rawToNodeId.trim()
+      const relation = rawRelation.trim()
+      if (!fromNodeId || !toNodeId || !relation) throw invalidGraph('graph edge at index ' + index + ' must have non-empty endpoints and relation')
+      if (rawFromNodeId !== fromNodeId || rawToNodeId !== toNodeId || rawRelation !== relation) throw invalidGraph('graph edge at index ' + index + ' has leading or trailing whitespace')
+      if (fromNodeId === toNodeId) throw invalidGraph('graph edge at index ' + index + ' is a self-loop: ' + fromNodeId)
+      if (!nodeIds.has(fromNodeId) || !nodeIds.has(toNodeId)) throw invalidGraph('graph edge at index ' + index + ' references a missing node: ' + fromNodeId + '>' + toNodeId)
+      const identity = fromNodeId + '>' + toNodeId + ':' + relation
+      if (edgeIds.has(identity)) throw invalidGraph('duplicate graph edge: ' + identity)
+      edgeIds.add(identity)
+    }
     const staging = graph.staging && typeof graph.staging === 'object' ? graph.staging : {}
     const sourceId = text(sourceInput.id || sourceInput.sourceId || graph.sourceId || options.sourceId) || 'source_' + stableHash(JSON.stringify({ title: sourceInput.title || options.title || '', nodes }))
     const documentId = text(sourceInput.documentId || graph.documentId || options.documentId) || 'document_' + stableHash(sourceId)
