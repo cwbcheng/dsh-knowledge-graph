@@ -1785,11 +1785,35 @@
           if (deg.has(e.toNodeId)) deg.set(e.toNodeId, deg.get(e.toNodeId) + 1)
         }
         const adj = new Map()
-        for (const node of nodes) adj.set(node.id, [])
+        const weightedAdj = new Map()
+        for (const node of nodes) { adj.set(node.id, []); weightedAdj.set(node.id, []) }
+        // View-only edge weights make the crossing sweeps prefer short,
+        // semantically precise relations without changing canonical graph data.
+        // `supports` remains a soft preference rather than the old hard local
+        // projection, since one claim may legitimately support several anchors.
+        const layeredRelationWeights = {
+          causes: 9,
+          infers: 9,
+          defines: 7,
+          contains: 7,
+          is_a: 7,
+          not_is: 7,
+          example: 6,
+          counter_example: 6,
+          analogy: 5,
+          supports: 4,
+          driven_by: 4,
+          aims_at: 4,
+        }
         for (const e of edges) {
           const fa = adj.get(e.fromNodeId)
           const tb = adj.get(e.toNodeId)
-          if (fa && tb) { fa.push(e.toNodeId); tb.push(e.fromNodeId) }
+          if (fa && tb) {
+            fa.push(e.toNodeId); tb.push(e.fromNodeId)
+            const weight = layeredRelationWeights[e.relation] || 2
+            weightedAdj.get(e.fromNodeId).push({ id: e.toNodeId, weight })
+            weightedAdj.get(e.toNodeId).push({ id: e.fromNodeId, weight })
+          }
         }
         // Relation-aware ranking. A causal/inference chain is the visual
         // backbone; examples/analogies/definitions become nearby branches.
@@ -2050,14 +2074,14 @@
           const idx = new Map(list.map((node, i) => [node.id, i]))
           const meanOf = (node) => {
             const id = node.id
-            let sum = 0
-            let cnt = 0
-            for (const nb of adj.get(id) || []) {
-              if (!filter(level.get(nb))) continue
-              const p = pos.get(nb)
-              if (p) { sum += p.x; cnt += 1 }
+            let weightedSum = 0
+            let totalWeight = 0
+            for (const link of weightedAdj.get(id) || []) {
+              if (!filter(level.get(link.id))) continue
+              const p = pos.get(link.id)
+              if (p) { weightedSum += p.x * link.weight; totalWeight += link.weight }
             }
-            return cnt > 0 ? sum / cnt : Infinity
+            return totalWeight > 0 ? weightedSum / totalWeight : Infinity
           }
           list.sort((a, b) => {
             const ma = meanOf(a)
@@ -2357,6 +2381,70 @@
         return pos
       }
 
+      // Run the semantic layered projection independently inside every
+      // undirected connected component, then pack the resolved component boxes.
+      // Mixing unrelated components in one global rank used to turn one logical
+      // layer into several wrapped visual rows, making even direct neighbours
+      // appear hundreds of pixels apart.
+      function layoutLayeredComponents(nodes, edges, sizes) {
+        const merged = new Map()
+        const componentNodesById = new Map()
+        const componentKeyById = new Map()
+        if (!Array.isArray(nodes) || nodes.length === 0) return { pos: merged, componentNodesById, componentKeyById }
+        const safeEdges = Array.isArray(edges) ? edges : []
+        const nodeById = new Map(nodes.map((node) => [node.id, node]))
+        const adjacency = new Map(nodes.map((node) => [node.id, new Set()]))
+        for (const edge of safeEdges) {
+          if (!edge || edge.fromNodeId === edge.toNodeId) continue
+          if (!adjacency.has(edge.fromNodeId) || !adjacency.has(edge.toNodeId)) continue
+          adjacency.get(edge.fromNodeId).add(edge.toNodeId)
+          adjacency.get(edge.toNodeId).add(edge.fromNodeId)
+        }
+        const seen = new Set()
+        const components = []
+        const componentOf = new Map()
+        for (const node of nodes) {
+          if (seen.has(node.id)) continue
+          const component = []
+          const queue = [node.id]
+          seen.add(node.id)
+          while (queue.length > 0) {
+            const id = queue.shift()
+            componentOf.set(id, components.length)
+            component.push(nodeById.get(id))
+            for (const neighbor of adjacency.get(id) || []) {
+              if (seen.has(neighbor)) continue
+              seen.add(neighbor)
+              queue.push(neighbor)
+            }
+          }
+          components.push(component)
+        }
+        components.forEach((component, index) => {
+          for (const node of component) {
+            componentNodesById.set(node.id, component)
+            componentKeyById.set(node.id, index)
+          }
+        })
+        const componentEdges = components.map(() => [])
+        for (const edge of safeEdges) {
+          if (!edge) continue
+          const fromComponent = componentOf.get(edge.fromNodeId)
+          const toComponent = componentOf.get(edge.toNodeId)
+          if (fromComponent == null || fromComponent !== toComponent) continue
+          componentEdges[fromComponent].push(edge)
+        }
+        for (let index = 0; index < components.length; index++) {
+          const componentNodes = components[index]
+          const pinnedX = new Map()
+          const local = layoutLayered(componentNodes, componentEdges[index], sizes, pinnedX)
+          resolveLayeredOverlaps(componentNodes, sizes, local, 18, pinnedX)
+          for (const [id, point] of local) merged.set(id, point)
+        }
+        const pos = packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38)
+        return { pos, componentNodesById, componentKeyById }
+      }
+
       // Center-line overlap resolution shared by deterministic layouts.
       function resolveNodeOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
@@ -2633,11 +2721,10 @@
           return { pos: resolveAngleOverlaps(nodes, sizes, pos, 18) }
         }
         if (mode === 'layered') {
-          // channels between rows already guarantee node-free paths; keep the
-          // rows perfectly aligned so the channel lines stay outside nodes
-          const pinnedX = new Map()
-          const pos = layoutLayered(nodes, edges, sizes, pinnedX)
-          return { pos: resolveLayeredOverlaps(nodes, sizes, pos, 18, pinnedX) }
+          // Each connected component gets its own semantic ranks and overlap
+          // resolution before deterministic rectangle packing. Orthogonal row
+          // channels remain valid because packing translates whole components.
+          return layoutLayeredComponents(nodes, edges, sizes)
         }
         return layoutForce(nodes, edges, sizes)
       }      function computeBBox(nodes, layout, sizes) {
@@ -2831,7 +2918,9 @@
             if (layoutMode === 'layered') {
               const r1 = Math.round(a.y / LAYER_Y_GAP)
               const r2 = Math.round(b.y / LAYER_Y_GAP)
-              return r1 === r2 ? 'row' + r1 : Math.min(r1, r2) + '>' + Math.max(r1, r2)
+              const componentKey = layout.componentKeyById ? layout.componentKeyById.get(edge.fromNodeId) : null
+              const prefix = componentKey == null ? '' : 'component' + componentKey + ':'
+              return prefix + (r1 === r2 ? 'row' + r1 : Math.min(r1, r2) + '>' + Math.max(r1, r2))
             }
             const r1 = Math.round(Math.hypot(a.x, a.y) / 280)
             const r2 = Math.round(Math.hypot(b.x, b.y) / 280)
@@ -3024,7 +3113,8 @@
           let lblX
           let lblY
           if (layoutMode === 'layered') {
-            const o = layeredOrthoPath(edge, a, b, sizes, layout.pos, nodes, edgeLanes.get(edge) || 0)
+            const routeNodes = layout.componentNodesById ? (layout.componentNodesById.get(edge.fromNodeId) || nodes) : nodes
+            const o = layeredOrthoPath(edge, a, b, sizes, layout.pos, routeNodes, edgeLanes.get(edge) || 0)
             d = o.d
             lblX = o.lblX
             lblY = o.lblY
