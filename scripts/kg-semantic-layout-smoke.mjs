@@ -22,6 +22,7 @@ const mirroredFunctions = [
   'packDisconnectedComponents',
   'layoutLayeredComponents',
   'buildLayeredEdgeLanes',
+  'placeLayeredEdgeLabel',
   'corridorFree',
   'findCorridor',
   'channelBand',
@@ -30,6 +31,8 @@ const mirroredFunctions = [
 const mirroredSnippets = [
   'return layoutLayeredComponents(nodes, edges, sizes)',
   'return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)',
+  "placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')",
+  'const layeredEdgeGeometry = useMemo(() => {',
   'layout.componentNodesById.get(edge.fromNodeId) || nodes',
 ]
 for (const [file, generated] of generatedSources) {
@@ -59,6 +62,7 @@ const layoutLayeredComponents = new Function(
 )(layoutLayered, resolveLayeredOverlaps, packDisconnectedComponents)
 const layerYGap = values[names.indexOf('LAYER_Y_GAP')]
 const buildLayeredEdgeLanes = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'buildLayeredEdgeLanes') + ')')(layerYGap)
+const placeLayeredEdgeLabel = new Function('return (' + extractFunction(source, 'placeLayeredEdgeLabel') + ')')()
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const corridorFree = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'corridorFree') + ')')(layerYGap)
 const findCorridor = new Function('corridorFree', 'return (' + extractFunction(source, 'findCorridor') + ')')(corridorFree)
@@ -244,6 +248,65 @@ for (const edge of disconnectedEdges) {
     }
   }
 }
+
+// Relation chips on neighbouring horizontal tracks must stagger instead of
+// rendering Chinese labels on top of each other. A nearby node also blocks the
+// first preferred offset, exercising deterministic alternate placement.
+const labelNodeRects = [{ x0: -52, x1: -24, y0: -5, y1: 23 }]
+const placeLabelSeries = () => {
+  const occupied = []
+  const placements = [0, 9, 18, 27].map((y, index) => placeLayeredEdgeLabel(0, y, 30, 15, occupied, labelNodeRects, index, 'x'))
+  return { occupied, placements }
+}
+const labelSeries = placeLabelSeries()
+assert(JSON.stringify(labelSeries.placements) === JSON.stringify(placeLabelSeries().placements), 'layered label staggering is not deterministic')
+for (let i = 0; i < labelSeries.occupied.length; i++) {
+  const a = labelSeries.occupied[i]
+  for (let j = i + 1; j < labelSeries.occupied.length; j++) {
+    const b = labelSeries.occupied[j]
+    const overlap = a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+    assert(!overlap, 'layered relation labels still overlap after staggering')
+  }
+  const blocker = labelNodeRects[0]
+  const hitsBlocker = a.x0 < blocker.x1 && a.x1 > blocker.x0 && a.y0 < blocker.y1 && a.y1 > blocker.y0
+  assert(!hitsBlocker, 'staggered relation label overlaps a node')
+}
+const staggeredLabelCount = labelSeries.placements.filter((point) => point.x !== 0 || ![0, 9, 18, 27].includes(point.y)).length
+assert(staggeredLabelCount >= 2, 'crowded relation labels were not visibly staggered')
+const verticalLabels = []
+const verticalFirst = placeLayeredEdgeLabel(20, 40, 30, 15, verticalLabels, [], 0, 'y')
+const verticalSecond = placeLayeredEdgeLabel(20, 40, 30, 15, verticalLabels, [], 1, 'y')
+assert(verticalFirst.x === 20 && verticalSecond.x === 20 && verticalSecond.y !== 40, 'vertical corridor labels did not stagger along the route axis')
+
+// Dense clusters must keep searching for the nearest bounded slot instead of
+// giving up and stacking labels at their original point.
+const denseLabels = []
+const denseLabelPlacements = Array.from({ length: 24 }, (_, index) => placeLayeredEdgeLabel(0, 0, 30, 15, denseLabels, [], index, 'x'))
+assert(denseLabelPlacements.every((point) => !point.hidden), 'dense label cluster exhausted bounded slots too early')
+assert(denseLabels.length === denseLabelPlacements.length, 'visible dense labels were not registered as occupied')
+for (let i = 0; i < denseLabels.length; i++) {
+  for (let j = i + 1; j < denseLabels.length; j++) {
+    const a = denseLabels[i]
+    const b = denseLabels[j]
+    assert(!(a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0), 'dense label cluster retained an overlap')
+  }
+}
+const maxDenseLabelShift = Math.max(...denseLabelPlacements.map((point) => point.distance))
+assert(maxDenseLabelShift <= 180, 'dense label displacement exceeded the ambiguity cap')
+const overflowLabels = []
+const hiddenOverflow = placeLayeredEdgeLabel(0, 0, 30, 15, overflowLabels, [{ x0: -220, x1: 220, y0: -220, y1: 220 }], 0, 'x')
+assert(hiddenOverflow.hidden && overflowLabels.length === 0, 'unplaceable label fell back to an overlapping visible chip')
+
+const labelPerfOccupied = []
+const labelPerfStartedAt = Date.now()
+for (let index = 0; index < 800; index++) {
+  const x = (index % 40) * 48
+  const y = Math.floor(index / 40) * 28
+  const point = placeLayeredEdgeLabel(x, y, 30, 15, labelPerfOccupied, [], index, 'x')
+  assert(!point.hidden, 'ordinary 800-label grid unexpectedly hid a chip')
+}
+const labelPerfElapsedMs = Date.now() - labelPerfStartedAt
+assert(labelPerfElapsedMs < 1000, '800-label placement exceeded regression ceiling: ' + labelPerfElapsedMs + 'ms')
 
 // A dense fan-in should no longer collapse onto one arrow entry or one channel
 // line. Eight incoming edges are spread across the target border and the shared
@@ -445,6 +508,9 @@ console.log(JSON.stringify({
   deterministic: true,
   cycleSafe: true,
   routedSegments,
+  staggeredLabelCount,
+  maxDenseLabelShift,
+  labelPerfElapsedMs,
   minimumFanEntryGap,
   minimumFanChannelGap,
   minimumMixedPortGap,
