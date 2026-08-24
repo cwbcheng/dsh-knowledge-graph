@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -155,6 +155,7 @@ c = c.split('styles.insert(').join('insertStyles(')
 if (!c.includes("host.call('candidate-list'")) throw new Error('candidate-list call not found')
 if (!c.includes("host.call('candidate-update'")) throw new Error('candidate-update call not found')
 if (!c.includes("host.call('document-load'")) throw new Error('document-load call not found')
+if (!c.includes("host.call('image-load'")) throw new Error('image-load call not found')
 if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
 if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
 if (!c.includes("host.call('resume-extract'")) throw new Error('resume-extract call not found')
@@ -176,6 +177,7 @@ if (!c.includes("host.call('answer-graph'")) throw new Error('answer-graph call 
 c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('document-load'").join("rpc('document-load'")
+c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
 c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
@@ -194,6 +196,8 @@ c = c.split("host.call('list-models'").join("rpc('list-models'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")
 c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
+if (c.includes('host.call(')) throw new Error('unmapped host.call remains in persistent client build')
+if (!c.includes("rpc('image-load'")) throw new Error('image-load RPC rewrite missing from persistent client')
 
 // tail: close apply + module
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')

@@ -2,15 +2,16 @@
 
 **[English](README.en.md) | [中文](README.md)**
 
-**DSH (DeepSeek Harness) Cordis plugin**: turn any piece of source text — or an AI session execution trace — into an **AI-generated knowledge graph**, with **two-way linking between the graph and the original text**.
+**DSH (DeepSeek Harness) Cordis plugin**: turn source text, images containing text / diagrams / tables, or an AI session execution trace into an **AI-generated knowledge graph**, with **two-way linking between the graph and the original text**.
 
-> Paste text → AI asynchronously builds the graph → two-way anchor navigation. A standalone, reusable plugin realization of NovelStudio's "资料 ⇄ 知识图" (Source ⇄ Knowledge Graph).
+> Paste text or upload images → AI asynchronously builds the graph → two-way anchor navigation. A standalone, reusable plugin realization of NovelStudio's "资料 ⇄ 知识图" (Source ⇄ Knowledge Graph).
 
 ---
 
 ## What it does
 
 - **Asynchronous AI extraction**: paste any text (chapters, technical docs, study notes…); a background task calls the LLM and returns a knowledge graph in ~15–40 s. `documentId` is a random stable logical-document UUID, `sourceId` is a SHA-256 identity of the complete immutable source version, and each `chunkId` binds sourceId + batch + paragraph range, so different documents and appended source versions cannot overwrite one another through local `chunk-0001` reuse. In persistent mode the full source, canonical graph, and lossless checkpoint live in SQLite; the browser restores by `documentId/runId`, and only a `running` task orphaned by a Host restart may resume from checkpoint. Explicit `failed/cancelled` tasks are never auto-retried.
+- **Build a graph directly from images**: the workbench accepts 1–4 PNG / JPEG / WebP / GIF images (up to 6 MiB each and 16 MiB total), including text screenshots, flowcharts / architecture diagrams, charts, formulas, and tables; optional instruction text may accompany them. The Host first admits the bounded browser base64 through DSH `attachments.saveImages()`, then asks a multimodal model for a canonical visual transcript with per-image paragraph ranges. The existing text graph extractor consumes only that transcript. The result preserves an original-image gallery and `source.visualSource` provenance, and clicking an image jumps to its transcript. A visual transcript is model-derived rather than deterministic pixel OCR, so important words, values, table cells, and diagram arrows must be checked against the original. Image input currently creates a **new** graph; incremental append remains text-only.
 - **8 node types / 12 relation types**:
   - Nodes: `fact` · `claim` · `inference` · `concept` · `definition` · `example` · `counter_example` · `rule`.
   - Relations: `supports` · `example` · `counter_example` · `defines` · `infers` · `causes` · `is_a` · `contains` · `driven_by` · `not_is` · `analogy` · `aims_at`.
@@ -79,7 +80,7 @@ This is a **DSH dynamic Cordis plugin**: one Host half (Node process) + one Clie
 ### 0. Prerequisites
 
 - **DSH Web** is running (`dsh web`) and you are inside a session;
-- An **AI model provider** is configured (Settings → Models, or `agentDefaultModel`). The plugin follows the system default by default; both the workbench and the “Trajectory Knowledge Graph” tab include a model dropdown so you can manually choose the model used for extraction, appends, AI audit, questioning, and external fact-checking (the choice is saved in browser local storage). If none is configured, it shows a clear Chinese error message.
+- An **AI model provider** is configured (Settings → Models, or `agentDefaultModel`). The plugin follows the system default by default; both the workbench and the “Trajectory Knowledge Graph” tab include a model dropdown so you can manually choose the model used for extraction, appends, AI audit, questioning, and external fact-checking (the choice is saved in browser local storage). If none is configured, it shows a clear Chinese error message. Image extraction requires a multimodal model that accepts `image` input. The picker labels known **image** and **text-only** models; models with unknown metadata may be attempted, while provider rejection is surfaced as typed `model_image_unsupported`.
 
 ### 1. Get the source
 
@@ -132,7 +133,7 @@ After the restart: the 「知识图」button appears at the right of each conver
 
 | File | Purpose (persistent package) |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes for extraction/append, task status, `document-load`/`document-export`, revisioned `graph-commit`, `graph-query`, `answer-graph`, safe `resume-extract`, verification/questioning, plus automatic SQLite canonical-graph/checkpoint persistence |
+| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes for extraction/append, task status, `document-load`/canonical-membership-checked `image-load`/`document-export`, revisioned `graph-commit`, `graph-query`, `answer-graph`, safe `resume-extract`, verification/questioning, plus automatic SQLite canonical-graph/checkpoint persistence |
 | [`lib/client.js`](lib/client.js) | Client half: `__ModuleLoader__` browser module (fetch RPC + manual style injection) |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch: inserts the `dsh-knowledge-graph` row into the composition |
 
@@ -169,7 +170,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database; `npm run test:kg-consumption` covers dynamic RPC, persistent HTTP and SQLite query parity, retrieval beyond the 800-node view and beyond 600 common early candidates, relation-only selection, aggregate context budgets, revision fencing, invalid filters, node/edge/source citation admission, unknown and valid-but-unrelated evidence IDs, authority qualification, clause-smuggling rejection, and both frontend mounts; `npm run test:kg-timeout` uses non-cooperative providers to cover real wall-clock deadlines, late-iterator cleanup, and immediate cancellation; `npm run test:kg-performance` exercises keyset paging and bounded responses on a graph with more than 10,000 nodes and edges; `npm run test:kg-candidates` covers candidate list/update flows. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
+The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database; `npm run test:kg-consumption` covers dynamic RPC, persistent HTTP and SQLite query parity, retrieval beyond the 800-node view and beyond 600 common early candidates, relation-only selection, aggregate context budgets, revision fencing, invalid filters, node/edge/source citation admission, unknown and valid-but-unrelated evidence IDs, authority qualification, clause-smuggling rejection, and both frontend mounts; `npm run test:kg-timeout` uses non-cooperative providers to cover real wall-clock deadlines, late-iterator cleanup, and immediate cancellation; `npm run test:kg-image` covers dynamic/persistent image admission, multimodal content blocks, text/table/diagram transcription, typed text-only-model rejection, visual provenance, canonical-membership-checked image reads, forged visual-checkpoint rejection, immediate post-transcription checkpoint/run-ID recovery, and the no-raw-base64 SQLite boundary; `npm run test:kg-performance` exercises keyset paging and bounded responses on a graph with more than 10,000 nodes and edges; `npm run test:kg-candidates` covers candidate list/update flows. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
 
 ## Updating
 
@@ -186,13 +187,13 @@ Window layout, history indexes, and other lightweight UI state live in browser `
 ## Notes
 
 - A dynamic plugin runs **inside the DSH process**: it disappears after a process restart and must be reinstalled (Option A, or switch to persistent Option C; browser data remains); the persistent plugin loads with the service and is unaffected by restarts;
-- The Host half needs a working LLM (see prerequisites); AI calls happen only inside your own DSH environment — whether they leave it depends on the model provider you configured;
+- The Host half needs a working LLM (see prerequisites); AI calls happen only inside your own DSH environment — whether they leave it depends on the model provider you configured. Image extraction sends DSH-admitted originals to the selected multimodal provider, so review that provider's data policy before using sensitive images;
 - This project has **no paid / quota features**: extraction, history, and two-way linking all run locally.
 
 ## Usage
 
 1. Click the 「知识图」button at the right of the conversation title to open the floating workbench;
-2. Paste text into 「输入资料」(title optional), click **AI 拆分** (the input area collapses; result height and text/graph width ratio are drag-adjustable and remembered);
+2. Paste text into 「输入资料」, or click **上传图片** to choose images containing text, diagrams, or tables (optional instruction text and title may accompany them). Choose an image-capable model and click **AI 拆分 / 图片生成知识图**. Image-derived results show an original-image gallery and visual-transcript warning above the source column (the input area collapses; result height and text/graph width ratio are drag-adjustable and remembered);
 3. Once the summary / graph appears, **click a graph node to view the detail card (full content) and locate the source**, or **click a source paragraph to focus its node**;
 4. In **Use this knowledge graph**, switch between structured search and evidence Q&A: find nodes by text/type/chapter, or ask the canonical graph directly; click a result/citation to link back to node, relation, and source evidence;
 5. Click **⚡ 快速体检 (quick check)** for an instant deterministic report, or **🤖 AI 深度审校 (deep audit)** for an evidence-grounded adversarial LLM review; click an issue to tint its graph target and locate its source paragraph, then **apply the fix** or **dismiss**; question a node from its detail card, an edge from its selected-edge card, or the whole graph from the verification panel;
@@ -280,6 +281,11 @@ The final result uses admitted answer parts and authenticated citations:
 
 Trust boundary:
 
+- Image requests are limited in both Client and Host to 4 files, 6 MiB each, 16 MiB total, and PNG / JPEG / WebP / GIF. Before publishing a task, the Host decodes canonical base64 and calls DSH `attachments.saveImages()`. From then on, task state, checkpoints, canonical graphs, `task-status`, and SQLite retain immutable attachment refs/metadata only — **never raw base64**.
+- The plugin preflights models explicitly declared text-only before `saveImages()`, avoiding attachment writes for that deterministic failure. DSH's current public attachment contract is persistent and content-addressed and exposes no plugin deletion API; if an unknown-capability model, timeout, or visual-schema failure occurs after admission, retention is governed by the configured DSH attachment backend. Sensitive-image deployments should apply that backend's retention and cleanup policy.
+- `image-load` cannot read an arbitrary attachment ID. It first loads the canonical source by `documentId` (and optional expected revision), verifies that `imageId` belongs to `source.visualSource.images`, and only then reads bounded bytes. Public graph metadata may expose a durable ref for provenance, but never image bytes.
+- Image-derived node quotes are deterministically authenticated against the immutable canonical visual transcript. This proves fidelity to the transcript, not fidelity of the transcript to pixels; the UI therefore exposes the original, per-image paragraph ranges, warnings, and an explicit human-review notice.
+- `image-load`, like the other canonical-document APIs, relies on the DSH Web same-origin/workspace trust boundary. A `documentId` is a high-entropy random UUID, not a multi-tenant authorization token; do not expose one DSH Web origin to mutually untrusted tenants. The Chrome extension `/dsh-kg` allowlist does not expose `image-load`.
 - Requests carrying a `documentId` are resolved from Host memory or SQLite canonical state; client-supplied `graph`/`text` is not an authority.
 - Before calling the model, Host authenticates node evidence, edge evidence, and source-only fallback paragraphs, then assigns at most 24 non-forgeable `evidenceId` values.
 - The model may return only `parts[].evidenceIds`. Host drops unknown/no-evidence IDs and valid-but-lexically-unrelated citations. A `candidate/unverified/uncertain` citation also requires source-qualified wording, while `unsupported` evidence cannot be presented as a verified conclusion. Admission is clause-local and polarity-aware, so a caveat cannot bleed into another clause and a lexically similar negation is rejected. If no `answered` part survives, the result downgrades to `insufficient`. Even after admission, raw model prose is never surfaced: Host deterministically renders each part from authenticated node/edge/source evidence, while `insufficient/out_of_scope` use fixed Host text and no follow-ups. `answered` follow-ups are generated deterministically from citation target IDs/paragraphs, so no model prose is surfaced through clickable prompts either.

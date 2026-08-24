@@ -73,18 +73,21 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             const url = new URL(req.url ?? '/', 'http://dsh.local')
             const pathname = url.pathname
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/extract') {
-              const raw = await readBody(req, 4 * 1024 * 1024)
+              const raw = await readBody(req, 24 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
               const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
               const text = typeof a.text === 'string' ? a.text.trim() : ''
-              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴资料正文' } })
+              const imageInputs = Array.isArray(a.images) ? a.images : []
+              if (!text && imageInputs.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴资料正文或上传图片' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+              if (checkpoint && imageInputs.length > 0) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 恢复不能重新附带图片' } })
+              if (checkpointHasVisualSourceHost(checkpoint)) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '包含图片来源的 checkpoint 只能由 Host 按 runId 从 SQLite 恢复' } })
               const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
                 ? a.documentId.trim().slice(0, 160)
                 : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
@@ -97,6 +100,31 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
               let baseRevision = currentRevision
+              let selectedModel = model
+              let imageAttachments = []
+              try {
+                if (checkpoint) {
+                  if (!Number.isInteger(checkpoint.baseRevision)) {
+                    busy = false
+                    return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } })
+                  }
+                  if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) {
+                    busy = false
+                    return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } })
+                  }
+                  if (checkpoint.baseRevision !== currentRevision) {
+                    busy = false
+                    return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } })
+                  }
+                  baseRevision = checkpoint.baseRevision
+                }
+                const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
+                if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
+                imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
+              } catch (error) {
+                busy = false
+                return writeJson(res, 200, { error: { code: error && error.code ? error.code : 'image_invalid', message: error && error.message ? error.message : '图片读取失败', ...(error && error.reason ? { details: { reason: error.reason } } : {}) } })
+              }
               if (checkpoint) {
                 if (!Number.isInteger(checkpoint.baseRevision)) {
                   busy = false
@@ -116,6 +144,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
+                 imageAttachments,
+                 imageSource: null,
                  title,
                  text,
                  documentId: requestedDocumentId,
@@ -123,7 +153,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  checkpoint,
                  existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
                  paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
-                 model,
+                 model: selectedModel,
                  createdAt: Date.now(),
                }
               tasks.set(task.id, task)
@@ -213,7 +243,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                     providers.push({
                       id: r.p.id,
                       name: r.p.name || r.p.id,
-                      models: r.models.filter((m) => m && m.id).map((m) => ({ id: m.id, name: m.name || m.id })),
+                      models: r.models.filter((m) => m && m.id).map((m) => ({ id: m.id, name: m.name || m.id, ...(Array.isArray(m.inputModalities) ? { inputModalities: m.inputModalities.filter((value) => value === 'text' || value === 'image') } : {}) })),
                     })
                   }
                 } catch (e) { /* no providers */ }
@@ -287,6 +317,34 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const graph = { ...saved, source: { ...(saved.source || {}), revision } }
               delete graph.sourceText
               return writeJson(res, 200, { documentId, sourceText, revision, graph })
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-load') {
+              res.setHeader('Cache-Control', 'no-store')
+              res.setHeader('Pragma', 'no-cache')
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const imageId = typeof a.imageId === 'string' ? a.imageId.trim().slice(0, 80) : ''
+              const store = await getSqliteStore()
+              const saved = documentId ? store.getDocument(documentId) : null
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到图片所属的 canonical 文档' } })
+              const revision = Number.isInteger(saved.revision) ? saved.revision : 0
+              if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '图片所属文档 revision 已更新', currentRevision: revision } })
+              const visualSource = saved.source && saved.source.visualSource
+              const images = visualSource && Array.isArray(visualSource.images) ? visualSource.images : []
+              const image = images.find((item) => item && item.id === imageId)
+              if (!image || !image.attachment || !image.attachment.attachmentId) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该 canonical 图片' } })
+              const attachments = ctx.get('attachments')
+              if (!attachments || typeof attachments.readImage !== 'function') return writeJson(res, 200, { error: { code: 'image_service_unavailable', message: '当前 DSH 没有可用的图片附件服务' } })
+              try {
+                const stored = await attachments.readImage(image.attachment)
+                if (!stored || !(stored.data instanceof Uint8Array) || stored.data.length > MAX_IMAGE_INPUT_BYTES_HOST) return writeJson(res, 200, { error: { code: 'image_too_large', message: 'canonical 图片超过可返回上限' } })
+                return writeJson(res, 200, { documentId, revision, imageId, name: image.name || image.attachment.name || imageId, mediaType: stored.ref && stored.ref.mediaType ? stored.ref.mediaType : image.attachment.mediaType, data: Buffer.from(stored.data).toString('base64') })
+              } catch (error) {
+                return writeJson(res, 200, { error: { code: 'image_read_failed', message: 'canonical 图片读取失败：' + (error && error.message ? error.message : String(error)) } })
+              }
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-export') {
               const raw = await readBody(req, 256 * 1024)
@@ -492,6 +550,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 existing,
                 existingSourceText: appendRecovery && previous ? (previous.sourceText || '') : '',
                 baseRevision: checkpoint.baseRevision,
+                 imageAttachments: [],
+                 imageSource: checkpoint.imageSource && typeof checkpoint.imageSource === 'object' ? checkpoint.imageSource : null,
                 baseSource,
                 baseStaging,
                 ...(checkpoint.taskKind === 'trajectory' || checkpoint.taskKind === 'trajectory-append' ? {

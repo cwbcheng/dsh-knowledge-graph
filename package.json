@@ -1,7 +1,7 @@
 {
   "name": "dsh-knowledge-graph",
   "version": "1.0.0",
-  "description": "DSH Cordis plugin: turn arbitrary source text into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text, plus evidence-grounded verification, questioning, one-click fixes and an audit log.",
+  "description": "DSH Cordis plugin: turn arbitrary source text or images with text, diagrams, and tables into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text, plus evidence-grounded verification, questioning, one-click fixes and an audit log.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -55,6 +55,7 @@
     "test:kg": "node scripts/kg-store-smoke.mjs",
     "test:kg-consumption": "node scripts/kg-consumption-smoke.mjs",
     "test:kg-timeout": "node scripts/kg-timeout-cancellation-smoke.mjs",
+    "test:kg-image": "node scripts/kg-image-extraction-smoke.mjs",
     "test:kg-performance": "node scripts/kg-consumption-performance-smoke.mjs",
     "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs",
     "test:kg-incremental": "node scripts/kg-incremental-smoke.mjs",
@@ -72,7 +73,7 @@
     "test:kg-connectivity": "node scripts/kg-connectivity-smoke.mjs",
     "test:kg-layout": "node scripts/kg-layout-smoke.mjs",
     "test:kg-policy": "node scripts/kg-policy-smoke.mjs",
-    "test": "npm run build && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy",
+    "test": "npm run build && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-image && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy",
     "test:kg-trust-boundary": "node scripts/kg-trust-boundary-smoke.mjs",
     "test:kg-semantic-contract": "node scripts/kg-semantic-contract-smoke.mjs",
     "test:kg-mechanism-coverage": "node scripts/kg-mechanism-coverage-smoke.mjs",

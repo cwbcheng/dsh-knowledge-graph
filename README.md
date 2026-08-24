@@ -2,7 +2,7 @@
 
 **[中文](README.md) | [English](README.en.md)**
 
-**DSH（DeepSeek Harness）Cordis 插件**：把任意一段资料正文——或一段 AI 会话执行轨迹——用 AI 拆解成一张**知识图**，并在**知识图与原文之间双向定位**。
+**DSH（DeepSeek Harness）Cordis 插件**：把任意一段资料正文、包含文字 / 图示 / 表格的图片——或一段 AI 会话执行轨迹——用 AI 拆解成一张**知识图**，并在**知识图与原文之间双向定位**。
 
 
 > 贴原文 → AI 异步拆图 → 双向锚点定位。是 NovelStudio「资料 ⇄ 知识图」落地为独立、可复用插件的形态。
@@ -12,6 +12,7 @@
 ## 它能做什么
 
 - **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；`documentId` 是随机稳定的逻辑文档 UUID，`sourceId` 是全文 SHA-256 的不可变版本身份，`chunkId` 绑定 sourceId + batch + paragraph range，因此不同文档/追加版本不会因局部 `chunk-0001` 重号而覆盖。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
+- **图片直接生成知识图**：工作台可一次上传 1–4 张 PNG / JPEG / WebP / GIF（单张不超过 6 MiB、合计不超过 16 MiB），支持纯文字截图、示意图 / 流程图 / 架构图、统计图、公式和表格，也可同时附带说明文字。Host 先把浏览器提交的有界 base64 图片交给 DSH `attachments.saveImages()` 验证并保存，再用多模态模型生成带图片范围的 canonical 视觉转写；现有文本抽取器只消费这份转写。结果页保留原图预览与 `source.visualSource` 回链，点击图片会定位对应转写段落。视觉转写是模型产物而非像素级确定性 OCR，关键文字、数值、表格单元和连线关系应对照原图复核；当前图片输入用于**新建**知识图，已有图的增量追加仍使用文字。
 - **8 类节点 / 12 类关系**：
   - 节点：`fact` 事实 · `claim` 主张 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
   - 关系：`supports` 支持 · `example` 例子 · `counter_example` 反例 · `defines` 定义 · `infers` 推断 · `causes` 因果 · `is_a` 属于 · `contains` 包含 · `driven_by` 受驱动于 · `not_is` 不是 · `analogy` 类比说明 · `aims_at` 旨在。
@@ -81,7 +82,7 @@
 ### 0. 前置条件
 
 - 已启动 **DSH Web**（`dsh web`）并进入任意会话；
-- 环境中已配置 **AI 模型提供方**（设置 → 模型，或 `agentDefaultModel`）。插件默认跟随系统当前模型；工作台与「轨迹知识图」顶部均提供模型下拉框，可手动指定拆分、追加、AI 审校、质疑与外部核查使用的模型（选择会保存在浏览器本地）；未配置时会给出明确的中文错误提示。
+- 环境中已配置 **AI 模型提供方**（设置 → 模型，或 `agentDefaultModel`）。插件默认跟随系统当前模型；工作台与「轨迹知识图」顶部均提供模型下拉框，可手动指定拆分、追加、AI 审校、质疑与外部核查使用的模型（选择会保存在浏览器本地）；未配置时会给出明确的中文错误提示。图片抽取需要支持 `image` 输入的多模态模型；模型下拉框会标注已知的「图像 / 仅文本」能力，能力未知的模型允许尝试，但提供方拒绝图片时会以 `model_image_unsupported` 明确失败。
 
 ### 1. 获取源码
 
@@ -92,7 +93,7 @@ cd dsh-knowledge-graph
 
 | 文件 | 作用 |
 | --- | --- |
-| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎 + canonical 结构化检索与 evidence-ID 证据问答 |
+| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（图片 admission / 多模态视觉转写、段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎 + canonical 结构化检索与 evidence-ID 证据问答 |
 | [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、共享检索/证据问答面板、验证与质疑面板、修复应用/审计、历史、宽高调节、轨迹知识图标签页 |
 | [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite 持久化层：文档、内容块、节点、关系、证据、候选实体/声明、抽取 checkpoint 与大图有界消费查询 |
 
@@ -134,7 +135,7 @@ pnpm install
 
 | 文件 | 作用（常驻包） |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（抽取/追加、task status、`document-load`/`document-export`、revisioned `graph-commit`、`graph-query`、`answer-graph`、安全 `resume-extract`、验证/质疑等）+ 自动 SQLite canonical graph / checkpoint 持久化 |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（抽取/追加、task status、`document-load`/canonical 来源成员校验 `image-load`/`document-export`、revisioned `graph-commit`、`graph-query`、`answer-graph`、安全 `resume-extract`、验证/质疑等）+ 自动 SQLite canonical graph / checkpoint 持久化 |
 | [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
 
@@ -180,7 +181,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
+常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-image` 覆盖动态 / 常驻图片 admission、多模态 content block、文字 / 表格 / 图示转写、text-only 模型 typed 拒绝、visual provenance、canonical 来源成员校验图片读取、伪造 visual checkpoint 拒绝、转写后即时 checkpoint / runId 恢复及 SQLite 不落原始 base64；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
 ### 冻结质量回归门禁
 
@@ -215,13 +216,13 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 ## 注意事项
 
 - 动态插件运行在 DSH **进程内**：进程重启后插件会消失，需要重新安装（方式 A 或改用常驻方式 C，历史数据仍保留在浏览器里）；常驻插件随服务启动自动加载，不受重启影响；
-- Host 半依赖可用的 LLM（见前置条件）；AI 调用只发生在你自己的 DSH 环境内，是否外传取决于你配置的模型提供方；
+- Host 半依赖可用的 LLM（见前置条件）；AI 调用只发生在你自己的 DSH 环境内，是否外传取决于你配置的模型提供方。图片抽取会把已由 DSH 附件服务接纳的原图发送给所选多模态模型，敏感图片请先确认提供方的数据政策；
 - 本项目**不含**付费 / 配额功能：拆分、历史、双向定位全部在本地完成。
 
 ## 使用
 
 1. 点击对话标题右侧的「知识图」按钮，打开浮动工作台；
-2. 在「输入资料」粘贴正文（可选填标题），点 **AI 拆分**（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
+2. 在「输入资料」粘贴正文，或点 **上传图片** 选择包含文字、图示或表格的图片（可同时输入说明文字、可选填标题）；选择支持图片的模型后点 **AI 拆分 / 图片生成知识图**。图片生成后，原文栏顶部会显示可点击的原图画廊与视觉转写风险提示（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
 3. 摘要 / 图出现后，**点图中节点查看详情卡片（完整内容）并定位原文**，或**点原文段落聚焦图中节点**；
 4. 在 **「使用这张知识图」** 面板切换「结构化检索 / 证据问答」：按关键词、类型、章节找节点，或直接向 canonical graph 提问；点击结果/citation 可回链节点、关系与原文证据；
 5. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点 **🔎 外部事实核查** 则用外部证据核查原文本身；点击问题/断言行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
@@ -320,6 +321,11 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 
 安全与可信边界：
 
+- 图片请求在 Client 与 Host 双侧限制为最多 4 张、单张 6 MiB、合计 16 MiB，并只接受 PNG / JPEG / WebP / GIF。Host 在任务发布前解码 canonical base64 并调用 DSH `attachments.saveImages()`；之后任务、checkpoint、canonical graph、`task-status` 与 SQLite 都只保留不可变 attachment ref / 元数据，**不持久化原始 base64**。
+- 插件会在调用 `saveImages()` 前预检已明确声明为仅文本的模型，避免这类确定性失败写入附件。DSH 当前公开附件契约是持久化、内容寻址存储且没有插件可调用的删除 API；因此能力未知的模型、模型超时或视觉 schema 失败发生在 admission 之后时，底层附件的保留周期由所配置的 DSH attachment backend 决定。对敏感图片应同时遵循该 backend 的留存 / 清理策略。
+- `image-load` 不接受任意 attachment id：它先按 `documentId`（及可选 expected revision）加载 canonical source，再确认 `imageId` 确实属于 `source.visualSource.images`，最后才读取有界图片字节。公开 graph 可包含 attachment ref 以保留证据来源，但不直接包含像素字节。
+- 图片证据的可回链文本来自模型生成的 immutable 视觉转写。Host 仍会对节点 quote 与该 canonical 转写做确定性认证，但这只能证明节点忠于“转写”，不能证明转写忠于像素；UI 因此同时展示原图、图片段落范围和风险提示，要求人工复核关键证据。
+- `image-load` 与其他 canonical document API 一样依赖 DSH Web 的同源 / 工作区信任边界；`documentId` 是高熵随机 UUID，但不是多租户授权令牌。不要把同一 DSH Web origin 暴露给互不信任的租户；Chrome 扩展的 `/dsh-kg` allowlist 不开放 `image-load`。
 - 对带 `documentId` 的请求，Host/SQLite **只从服务端加载 canonical graph 与 source**；客户端提交的 `graph` / `text` 不会成为事实源。
 - Host 在调用模型前，从已认证 node evidence、edge evidence 和 source paragraph fallback 中预分配最多 24 个 `evidenceId`。模型只能返回 `parts[].evidenceIds`，不能自行声明 `nodeId/paragraph/quote`。
 - Host 丢弃未知 evidenceId、真实但与命题词汇无关的 evidenceId，以及没有合法证据的 `answered` part；`candidate/unverified/uncertain` 证据还要求回答显式使用“资料表述/可能/未验证”等限定措辞，`unsupported` 证据不能被包装成已证实结论。若所有 part 都被丢弃，结果自动降级为 `insufficient`。即使 part 通过准入，模型原始 `part.text` 也不会直接展示：Host 会从已认证 node/edge/source evidence 确定性渲染 part，再拼接最终 `answer`；`insufficient/out_of_scope` 也只返回 Host 固定语义文案且不返回 follow-up；`answered` 的 follow-up 由 citation target ID / paragraph 确定性生成，因此模型自由文本无法借回答或可点击追问混入结果。
