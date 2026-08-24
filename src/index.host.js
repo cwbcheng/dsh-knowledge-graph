@@ -4430,7 +4430,8 @@ export default function hostPlugin() {
            let persistedRevision = null
            if (typeof persistGraph === 'function') {
              try {
-               const persisted = await persistGraph(fullResult, { ...task, canonicalSourceText })
+               const canonicalSourceUnits = splitParagraphsHost(canonicalSourceText)
+                const persisted = await persistGraph(fullResult, { ...task, canonicalSourceText, canonicalSourceUnits })
                if (persisted && Number.isInteger(persisted.revision)) persistedRevision = persisted.revision
              } catch (error) {
                if (error && error.code === 'revision_conflict') {
@@ -5124,10 +5125,29 @@ export default function hostPlugin() {
             }
             return
           }
-          const sourceFallback = consumptionSourceFallbackUnitsHost(task.document, task.question, context.sourceUnits)
-          if (sourceFallback.length > 0) {
-            context.sourceUnits = [...(Array.isArray(context.sourceUnits) ? context.sourceUnits : []), ...sourceFallback].slice(0, MAX_CONSUME_SOURCE_UNITS)
-            context.metrics = { ...(context.metrics || {}), sourceUnits: context.sourceUnits.length, sourceFallbackUnits: sourceFallback.length }
+          const sourceFallbackAlreadyEvaluated = Boolean(context.metrics && context.metrics.sourceFallbackEvaluated)
+          let sourceFallback = sourceFallbackAlreadyEvaluated
+            ? (Array.isArray(context.sourceUnits) ? context.sourceUnits.filter((unit) => unit && unit.sourceFallback === true) : [])
+            : consumptionSourceFallbackUnitsHost(task.document, task.question, context.sourceUnits)
+          if (!sourceFallbackAlreadyEvaluated) {
+            const combined = Array.isArray(context.sourceUnits) ? context.sourceUnits.slice(0, MAX_CONSUME_SOURCE_UNITS) : []
+            let sourceChars = combined.reduce((total, unit) => total + (unit && typeof unit.text === 'string' ? unit.text.length : 0), 0)
+            const admittedFallback = []
+            for (const unit of sourceFallback) {
+              const unitText = unit && typeof unit.text === 'string' ? unit.text : ''
+              if (!unitText || combined.length >= MAX_CONSUME_SOURCE_UNITS || sourceChars + unitText.length > MAX_CONSUME_SOURCE_CHARS) continue
+              combined.push(unit)
+              admittedFallback.push(unit)
+              sourceChars += unitText.length
+            }
+            sourceFallback = admittedFallback
+            context.sourceUnits = combined
+            context.metrics = {
+              ...(context.metrics || {}),
+              sourceUnits: combined.length,
+              sourceFallbackUnits: sourceFallback.length,
+              sourceFallbackEvaluated: true,
+            }
           }
           if (context.matches.length === 0 && sourceFallback.length === 0) {
             task.status = 'succeeded'

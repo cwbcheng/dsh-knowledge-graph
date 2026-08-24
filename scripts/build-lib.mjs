@@ -40,6 +40,7 @@ export function apply(ctx) {
     return store.saveGraph(graph, {
       runId: task && task.id ? task.id : undefined,
       sourceText: task && typeof task.canonicalSourceText === 'string' ? task.canonicalSourceText : (task && typeof task.text === 'string' ? task.text : ''),
+      sourceUnits: task && Array.isArray(task.canonicalSourceUnits) ? task.canonicalSourceUnits : undefined,
       kind: task && (task.kind === 'append' || task.kind === 'trajectory-append' || (task.kind === 'resume' && task.checkpoint && (task.checkpoint.taskKind === 'append' || task.checkpoint.taskKind === 'trajectory-append'))) ? 'append' : 'extract',
       ...(task && Number.isInteger(task.baseRevision) ? { expectedRevision: task.baseRevision } : {}),
     })
@@ -357,24 +358,16 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!hasSelector) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请提供 query 或至少一个结构化筛选条件' } })
               if (query.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识检索问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
               const store = await getSqliteStore()
-              const searched = store.queryDocumentGraph(documentId, { ...a, includeSourceText: true })
-              if (!searched) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可检索的 canonical knowledge graph' } })
-              if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== searched.revision) {
-                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后检索', currentRevision: searched.revision } })
+              let result
+              try {
+                result = store.queryDocumentGraph(documentId, { ...a, includeSourceFallback: false })
+              } catch (error) {
+                if (error && error.code === 'revision_conflict') {
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后检索', currentRevision: error.currentRevision } })
+                }
+                throw error
               }
-              const result = queryGraphConsumptionHost({ documentId, revision: searched.revision, sourceText: searched.sourceText || '', graph: searched }, {
-                ...a,
-                nodeIds: searched.matches.map((item) => item.nodeId),
-              })
-              if (!result) return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前知识图不可检索' } })
-              result.matches = searched.matches
-              result.metrics = {
-                ...result.metrics,
-                candidateMatches: searched.view.candidateMatches,
-                totalNodes: searched.view.totalNodes,
-                totalEdges: searched.view.totalEdges,
-              }
-              result.graph.view = { ...result.graph.view, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges, truncated: searched.view.truncated || result.graph.view.truncated }
+              if (!result) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可检索的 canonical knowledge graph' } })
               return writeJson(res, 200, result)
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/answer-graph') {
@@ -391,34 +384,27 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (question.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
               const store = await getSqliteStore()
-              const searched = store.queryDocumentGraph(documentId, {
-                ...a,
-                query: question,
-                limit: consumptionIntHost(a.limit, 12, 1, 20),
-                hops: consumptionIntHost(a.hops, 1, 0, MAX_CONSUME_HOPS),
-                maxNodes: consumptionIntHost(a.maxNodes, 60, 12, 100),
-                maxEdges: consumptionIntHost(a.maxEdges, 180, 20, 300),
-                includeSourceText: true,
-              })
-              if (!searched) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可问答的 canonical knowledge graph' } })
-              if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== searched.revision) {
-                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后提问', currentRevision: searched.revision } })
+              let context
+              try {
+                context = store.queryDocumentGraph(documentId, {
+                  ...a,
+                  query: question,
+                  limit: consumptionIntHost(a.limit, 12, 1, 20),
+                  hops: consumptionIntHost(a.hops, 1, 0, MAX_CONSUME_HOPS),
+                  maxNodes: consumptionIntHost(a.maxNodes, 60, 12, 100),
+                  maxEdges: consumptionIntHost(a.maxEdges, 180, 20, 300),
+                  includeSourceFallback: true,
+                })
+              } catch (error) {
+                if (error && error.code === 'revision_conflict') {
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后提问', currentRevision: error.currentRevision } })
+                }
+                throw error
               }
-              const context = queryGraphConsumptionHost({ documentId, revision: searched.revision, sourceText: searched.sourceText || '', graph: searched }, {
-                ...a,
-                query: question,
-                nodeIds: searched.matches.map((item) => item.nodeId),
-                limit: consumptionIntHost(a.limit, 12, 1, 20),
-                hops: consumptionIntHost(a.hops, 1, 0, MAX_CONSUME_HOPS),
-                maxNodes: consumptionIntHost(a.maxNodes, 60, 12, 100),
-                maxEdges: consumptionIntHost(a.maxEdges, 180, 20, 300),
-              })
-              context.matches = searched.matches
-              context.metrics = { ...context.metrics, candidateMatches: searched.view.candidateMatches, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges }
-              context.graph.view = { ...context.graph.view, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges, truncated: searched.view.truncated || context.graph.view.truncated }
+              if (!context) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可问答的 canonical knowledge graph' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
-              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', question, context, document: { sourceText: searched.sourceText || '' }, model, createdAt: Date.now() }
+              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', question, context, model, createdAt: Date.now() }
               tasks.set(task.id, task)
               busy = true
               Promise.resolve().then(() => runConsumptionAnswerTask(task)).catch((error) => {

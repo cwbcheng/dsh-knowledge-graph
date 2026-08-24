@@ -34,7 +34,7 @@ try {
     edges: [{ fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports', evidence: [{ paragraph: 0, quote: '按块读取' }], documentId: 'document-smoke', sourceId: 'source-smoke', chunkId: 'chunk-2' }],
   }
   const sourceText = '按块读取正文。\n\n第二段。\n\n可恢复处理。\n\n第四段。'
-  const saved = store.saveGraph(graph, { sourceText })
+  const saved = store.saveGraph(graph, { sourceText, sourceUnits: sourceText.split('\n\n') })
   if (saved.nodes !== 2 || saved.entityCandidates !== 1 || saved.claimCandidates !== 1 || saved.revision !== 1) throw new Error('graph persistence counts/revision are wrong: ' + JSON.stringify(saved))
   const candidates = store.listCandidates({ documentId: 'document-smoke', status: 'candidate', limit: 20 })
   if (candidates.length !== 2) throw new Error('candidate persistence is wrong: ' + JSON.stringify(candidates))
@@ -49,6 +49,10 @@ try {
   if (restored.traceText !== graph.traceText || !Array.isArray(restored.traceEvents) || restored.traceEvents.length !== 1) throw new Error('trajectory graph metadata was not restored')
   if (restored.nodes[0].groundingStatus !== 'grounded' || !['unverified', 'verified'].includes(restored.nodes[0].entailmentStatus)) throw new Error('grounding/entailment status was not restored')
   if (!restored.generation || restored.generation.invariantErrors !== 0 || restored.generation.sourceAudit !== 'full') throw new Error('generation audit metadata was not restored from SQLite')
+  const persistedUnits = store.db.prepare('SELECT paragraph, text FROM document_units WHERE document_id = ? ORDER BY paragraph').all('document-smoke')
+  if (persistedUnits.length !== 4 || persistedUnits[2].text !== '可恢复处理。') throw new Error('canonical source units were not persisted')
+  const consumed = store.queryDocumentGraph('document-smoke', { query: '可恢复处理', hops: 0 })
+  if (!consumed || !consumed.graph || consumed.graph.nodes[0].id !== 'n2' || !consumed.sourceUnits.some((unit) => unit.paragraph === 2 && unit.text === '可恢复处理。')) throw new Error('single-pass consumption context did not hydrate persisted source units')
 
   // Commit a UI window containing only n1 and delete n1 from that window.
   // n2 was outside the baseline window and therefore must survive; the edge

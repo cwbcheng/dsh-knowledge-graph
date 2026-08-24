@@ -369,14 +369,16 @@ const dir = mkdtempSync('/tmp/dsh-kg-consumption-')
 const dbPath = join(dir, 'consumption.sqlite')
 process.env.DSH_KG_DB = dbPath
 let store = await openSqliteStore(dbPath)
-store.saveGraph(fixture.graph, { sourceText: fixture.sourceText })
+store.saveGraph(fixture.graph, { sourceText: fixture.sourceText, sourceUnits: fixture.sourceText.split('\n\n') })
 const firstWindow = store.getDocumentWindow(fixture.documentId, { limit: 800, offset: 0 })
 assert(firstWindow && firstWindow.nodes.length === 800 && !firstWindow.nodes.some((node) => node.id === 'n801'), 'renderer-window fixture did not place n801 outside the first 800 nodes')
 const storeLate = store.queryDocumentGraph(fixture.documentId, { query: '窗口外目标', hops: 0 })
 assert(storeLate && storeLate.matches[0] && storeLate.matches[0].nodeId === 'n801', 'SQLite bounded query could not find n801 outside the renderer window')
 const storeSaturated = store.queryDocumentGraph(fixture.documentId, { query: '知识节点 窗口外目标', limit: 1, hops: 0 })
 assert(storeSaturated && storeSaturated.matches[0] && storeSaturated.matches[0].nodeId === 'n801', 'SQLite candidate cap hid a late exact match behind common early bigrams')
-assert(storeLate.nodes.length <= 160 && storeLate.edges.length <= 480, 'SQLite consumption query exceeded hard budgets')
+assert(storeLate.graph.nodes.length <= 160 && storeLate.graph.edges.length <= 480, 'SQLite consumption query exceeded hard budgets')
+assert(Array.isArray(storeLate.sourceUnits) && storeLate.sourceUnits.some((unit) => unit.paragraph === 801 && unit.text.includes('窗口外目标')), 'SQLite single-pass contract did not hydrate bounded source units')
+assert(!Object.prototype.hasOwnProperty.call(storeLate, 'sourceText'), 'SQLite single-pass contract leaked sourceText')
 const indexNames = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((row) => row.name)
 for (const name of ['graph_nodes_type_idx', 'graph_nodes_section_idx', 'graph_nodes_status_idx', 'graph_edges_from_idx', 'graph_edges_to_idx']) {
   assert(indexNames.includes(name), 'missing consumption index: ' + name)
@@ -451,6 +453,10 @@ try {
   })
   assert(JSON.stringify(parityDynamic.matches.map((item) => item.nodeId)) === JSON.stringify(parityPersistent.matches.map((item) => item.nodeId)), 'dynamic/persistent direct-match semantics diverged')
   assert(JSON.stringify(parityDynamic.graph.nodes.map((item) => item.id).sort()) === JSON.stringify(parityPersistent.graph.nodes.map((item) => item.id).sort()), 'dynamic/persistent neighbor expansion semantics diverged')
+  assert(JSON.stringify(parityDynamic.sourceUnits.map((item) => [item.paragraph, item.text])) === JSON.stringify(parityPersistent.sourceUnits.map((item) => [item.paragraph, item.text])), 'dynamic/persistent bounded source-unit assembly diverged')
+  for (const field of ['directMatches', 'returnedNodes', 'returnedEdges', 'sourceUnits', 'hops']) {
+    assert(parityDynamic.metrics[field] === parityPersistent.metrics[field], 'dynamic/persistent metric diverged: ' + field)
+  }
 
   const staleQuery = await post(api, 'graph-query', {
     documentId: fixture.documentId,
