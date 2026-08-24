@@ -2834,6 +2834,18 @@
         const band2 = channelBand(r1 < r2 ? r2 - 1 : r2, nodes, sizes, pos)
         const ch1e = channelY(band1, tracks.sourceChannel)
         const ch2e = channelY(band2, tracks.targetChannel)
+        // Adjacent rows share the same physical channel. Routing through the
+        // source-centre corridor in that case makes the horizontal segment run
+        // past a fanned-out port and then double back toward the target, leaving
+        // the visible "stub" shown beside forked edges. Collapse the zero-height
+        // corridor into one direct channel segment instead.
+        if (Math.abs(ch1e - ch2e) <= 1) {
+          const y0 = a.y + (ch1e > a.y ? h1 : -h1)
+          const y1 = b.y - (b.y > ch2e ? h2 : -h2)
+          const d = 'M ' + ax + ' ' + y0 + ' L ' + ax + ' ' + ch1e
+            + ' L ' + bx + ' ' + ch1e + ' L ' + bx + ' ' + y1
+          return { d, lblX: (ax + bx) / 2, lblY: ch1e, labelAxis: 'x' }
+        }
         const corridorOffset = (Number(tracks.corridor) || 0) * 14
         let xce = a.x + corridorOffset
         if (!corridorFree(xce, lo, hi, nodes, sizes, pos)) {

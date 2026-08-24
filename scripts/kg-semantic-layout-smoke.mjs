@@ -343,6 +343,41 @@ const targetPorts = fanEdges.map((edge) => fanLanes.get(edge).targetPort)
 assert(targetPorts.every((slot, index) => index === 0 || slot > targetPorts[index - 1]), 'fan-in ports are not deterministically ordered')
 assert(fanEdges.every((edge) => fanLanes.get(edge).corridor === 0), 'adjacent-row fan allocated useless vertical corridor tracks')
 
+// A fork from one wide source to adjacent-row targets uses distinct source
+// ports. The shared channel must connect each port straight to its target;
+// detouring through the source centre creates a visible collinear stub and
+// then doubles back (the regression shown in the UI screenshot).
+const forkSource = { id: 'fork-source', type: 'claim' }
+const forkTargets = [{ id: 'fork-left', type: 'rule' }, { id: 'fork-right', type: 'rule' }]
+const forkNodes = [forkSource, ...forkTargets]
+const forkEdges = forkTargets.map((node) => ({ fromNodeId: forkSource.id, toNodeId: node.id, relation: 'supports' }))
+const forkPos = new Map([
+  [forkSource.id, { x: 0, y: 0 }],
+  [forkTargets[0].id, { x: -260, y: layerYGap }],
+  [forkTargets[1].id, { x: 260, y: layerYGap }],
+])
+const forkSizes = new Map([
+  [forkSource.id, { w: 300, h: 100 }],
+  [forkTargets[0].id, { w: 210, h: 90 }],
+  [forkTargets[1].id, { w: 210, h: 90 }],
+])
+const forkKeys = new Map(forkNodes.map((node) => [node.id, 0]))
+const forkComponents = new Map(forkNodes.map((node) => [node.id, forkNodes]))
+const forkLanes = buildLayeredEdgeLanes(forkEdges, forkPos, forkKeys, forkComponents)
+for (const edge of forkEdges) {
+  const route = layeredOrthoPath(edge, forkPos.get(edge.fromNodeId), forkPos.get(edge.toNodeId), forkSizes, forkPos, forkNodes, forkLanes.get(edge))
+  const points = pathPoints(route.d)
+  assert(points.length === 4, 'adjacent-row fork retained a zero-height corridor detour: ' + route.d)
+  const channelStart = points[1]
+  const channelEnd = points[2]
+  const minX = Math.min(channelStart.x, channelEnd.x) - 1e-9
+  const maxX = Math.max(channelStart.x, channelEnd.x) + 1e-9
+  assert(route.lblX >= minX && route.lblX <= maxX, 'fork relation label sits on an overshooting stub')
+  for (const point of points.filter((item) => Math.abs(item.y - channelStart.y) < 1e-9)) {
+    assert(point.x >= minX && point.x <= maxX, 'adjacent-row fork channel overshoots its two ports: ' + route.d)
+  }
+}
+
 // Incoming and outgoing edges that use the same physical side of a mixed hub
 // must share one port allocator instead of independently choosing duplicates.
 const mixedHub = { id: 'mixed-hub', type: 'claim' }
