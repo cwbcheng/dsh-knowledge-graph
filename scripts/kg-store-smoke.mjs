@@ -36,6 +36,10 @@ try {
   const sourceText = '按块读取正文。\n\n第二段。\n\n可恢复处理。\n\n第四段。'
   const saved = store.saveGraph(graph, { sourceText, sourceUnits: sourceText.split('\n\n') })
   if (saved.nodes !== 2 || saved.entityCandidates !== 1 || saved.claimCandidates !== 1 || saved.revision !== 1) throw new Error('graph persistence counts/revision are wrong: ' + JSON.stringify(saved))
+  if (store.getDocumentRevision('document-smoke') !== 1 || store.getDocumentRevision('document-missing') !== 0) throw new Error('lightweight document revision lookup is wrong')
+  let creationFence = null
+  try { store.saveGraph(graph, { sourceText, expectedRevision: 0 }) } catch (error) { creationFence = error }
+  if (!creationFence || creationFence.code !== 'revision_conflict' || creationFence.currentRevision !== 1) throw new Error('new-document revision fence allowed an existing canonical graph to be replaced')
   const candidates = store.listCandidates({ documentId: 'document-smoke', status: 'candidate', limit: 20 })
   if (candidates.length !== 2) throw new Error('candidate persistence is wrong: ' + JSON.stringify(candidates))
   const accepted = store.updateCandidate('entity', candidates.find((candidate) => candidate.kind === 'entity').id, 'accepted')

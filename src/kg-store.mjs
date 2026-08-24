@@ -218,6 +218,120 @@ function edgeFromRow(edge) {
   }
 }
 
+function consumeEvidenceProjection(value) {
+  const out = []
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== 'object') continue
+    const paragraph = Number(item.paragraph)
+    const quote = text(item.quote).trim().slice(0, 600)
+    if (!Number.isInteger(paragraph) || paragraph < 0 || !quote) continue
+    out.push({
+      documentId: typeof item.documentId === 'string' ? item.documentId.slice(0, 160) : null,
+      sourceId: typeof item.sourceId === 'string' ? item.sourceId.slice(0, 160) : null,
+      chunkId: typeof item.chunkId === 'string' ? item.chunkId.slice(0, 160) : null,
+      paragraph,
+      quote,
+    })
+    if (out.length >= 2) break
+  }
+  return out
+}
+
+function consumeNodeFromRow(node) {
+  return {
+    id: text(node.node_id).slice(0, 160),
+    type: text(node.type).slice(0, 40),
+    text: text(node.text).slice(0, 1200),
+    quote: text(node.quote).slice(0, 600),
+    paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
+    evidence: consumeEvidenceProjection(parseJson(node.evidence_json, [])),
+    documentId: typeof node.document_id === 'string' ? node.document_id.slice(0, 160) : null,
+    sourceId: typeof node.source_id === 'string' ? node.source_id.slice(0, 160) : null,
+    chunkId: typeof node.chunk_id === 'string' ? node.chunk_id.slice(0, 160) : null,
+    sectionId: typeof node.section_id === 'string' ? node.section_id.slice(0, 160) : null,
+    sectionTitle: typeof node.section_title === 'string' ? node.section_title.slice(0, 300) : null,
+    groundingStatus: text(node.grounding_status, 'candidate'),
+    entailmentStatus: text(node.entailment_status, 'unverified'),
+    state: text(node.state, 'candidate'),
+  }
+}
+
+function consumeEdgeFromRow(edge) {
+  return {
+    fromNodeId: text(edge.from_node_id).slice(0, 160),
+    toNodeId: text(edge.to_node_id).slice(0, 160),
+    relation: text(edge.relation).slice(0, 40),
+    evidence: consumeEvidenceProjection(parseJson(edge.evidence_json, [])),
+    documentId: typeof edge.document_id === 'string' ? edge.document_id.slice(0, 160) : null,
+    sourceId: typeof edge.source_id === 'string' ? edge.source_id.slice(0, 160) : null,
+    chunkId: typeof edge.chunk_id === 'string' ? edge.chunk_id.slice(0, 160) : null,
+    state: text(edge.state, 'candidate'),
+  }
+}
+
+function consumeSourceProjection(value, row, revision) {
+  const raw = value && typeof value === 'object' ? value : {}
+  const sections = []
+  for (const item of Array.isArray(raw.sections) ? raw.sections : []) {
+    if (!item || typeof item !== 'object') continue
+    sections.push({
+      id: typeof item.id === 'string' ? item.id.slice(0, 160) : '',
+      title: typeof item.title === 'string' ? item.title.slice(0, 300) : '',
+      startParagraph: Number.isInteger(Number(item.startParagraph)) ? Number(item.startParagraph) : null,
+      endParagraph: Number.isInteger(Number(item.endParagraph)) ? Number(item.endParagraph) : null,
+    })
+    if (sections.length >= 80) break
+  }
+  return {
+    id: typeof raw.id === 'string' ? raw.id.slice(0, 160) : null,
+    documentId: row.document_id,
+    title: typeof raw.title === 'string' ? raw.title.slice(0, 300) : '',
+    chars: Number.isFinite(Number(raw.chars)) ? Number(raw.chars) : 0,
+    paragraphCount: Number.isFinite(Number(raw.paragraphCount)) ? Number(raw.paragraphCount) : 0,
+    chunkCount: Number.isFinite(Number(raw.chunkCount)) ? Number(raw.chunkCount) : 0,
+    sectionCount: Number.isFinite(Number(raw.sectionCount)) ? Number(raw.sectionCount) : sections.length,
+    sections,
+    revision,
+  }
+}
+
+function boundConsumeGraph(nodes, edges, directIds) {
+  const direct = directIds instanceof Set ? directIds : new Set()
+  const orderedNodes = [
+    ...nodes.filter((node) => direct.has(node.id)),
+    ...nodes.filter((node) => !direct.has(node.id)),
+  ]
+  const keptNodes = []
+  const keptIds = new Set()
+  let contextChars = 0
+  const nodeBudget = Math.floor(CONSUME_CONTEXT_CHARS * 0.62)
+  for (const node of orderedNodes) {
+    const size = JSON.stringify(node).length
+    if (!direct.has(node.id) && contextChars + size > nodeBudget) continue
+    keptNodes.push(node)
+    keptIds.add(node.id)
+    contextChars += size
+  }
+  const orderedEdges = [
+    ...edges.filter((edge) => direct.has(edge.fromNodeId) || direct.has(edge.toNodeId)),
+    ...edges.filter((edge) => !direct.has(edge.fromNodeId) && !direct.has(edge.toNodeId)),
+  ]
+  const keptEdges = []
+  for (const edge of orderedEdges) {
+    if (!keptIds.has(edge.fromNodeId) || !keptIds.has(edge.toNodeId)) continue
+    const size = JSON.stringify(edge).length
+    if (contextChars + size > CONSUME_CONTEXT_CHARS) continue
+    keptEdges.push(edge)
+    contextChars += size
+  }
+  return {
+    nodes: keptNodes,
+    edges: keptEdges,
+    contextChars,
+    truncated: keptNodes.length < nodes.length || keptEdges.length < edges.length,
+  }
+}
+
 function chunkFromRow(chunk) {
   return {
     chunkId: chunk.chunk_id,
@@ -244,6 +358,7 @@ const CONSUME_GROUNDING = new Set(['grounded', 'candidate', 'unsupported'])
 const CONSUME_ENTAILMENT = new Set(['verified', 'unsupported', 'uncertain', 'unverified'])
 const CONSUME_SOURCE_UNITS = 80
 const CONSUME_SOURCE_CHARS = 24000
+const CONSUME_CONTEXT_CHARS = 384000
 const CONSUME_SOURCE_FALLBACK = 8
 function normalizeConsumeText(value) {
   return String(value == null ? '' : value).normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ' ').trim()
@@ -882,6 +997,11 @@ export class SqliteKnowledgeStore {
     }))
   }
 
+  getDocumentRevision(documentId) {
+    const row = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(text(documentId).trim())
+    return row && Number.isInteger(row.graph_revision) ? row.graph_revision : 0
+  }
+
   getDocument(documentId) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
@@ -947,7 +1067,7 @@ export class SqliteKnowledgeStore {
         const marks = part.map(() => '?').join(',')
         const remaining = maxRows - result.size
         const rows = this.db.prepare(
-          'SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN (' + marks + ') OR to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id LIMIT ?'
+          'SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN (' + marks + ') OR to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
         ).all(documentId, ...part, ...part, remaining)
         for (const item of rows) result.set(item.edge_key || (item.from_node_id + '>' + item.to_node_id + ':' + item.relation), item)
       }
@@ -962,7 +1082,7 @@ export class SqliteKnowledgeStore {
         const marks = part.map(() => '?').join(',')
         const remaining = maxRows - result.size
         const rows = this.db.prepare(
-          'SELECT * FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') ORDER BY from_node_id, to_node_id LIMIT ?'
+          'SELECT * FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') ORDER BY from_node_id, to_node_id, relation LIMIT ?'
         ).all(documentId, ...part, remaining)
         for (const item of rows) {
           if (!selected.has(item.to_node_id)) continue
@@ -1051,7 +1171,8 @@ export class SqliteKnowledgeStore {
     const queryRaw = text(options.query).trim().slice(0, 600)
     const query = normalizeConsumeText(queryRaw)
     const terms = consumeTerms(queryRaw)
-    const explicitIds = new Set(boundedConsumeList(options.nodeIds, null, 40))
+    const requestedNodeIds = boundedConsumeList(options.nodeIds, null, 40)
+    const explicitIds = new Set(requestedNodeIds)
     const types = boundedConsumeList(options.types, CONSUME_NODE_TYPES, CONSUME_NODE_TYPES.size)
     const relations = boundedConsumeList(options.relations, CONSUME_RELATIONS, CONSUME_RELATIONS.size)
     const sectionIds = boundedConsumeList(options.sectionIds, null, 40)
@@ -1063,6 +1184,25 @@ export class SqliteKnowledgeStore {
     const maxNodes = Math.max(1, Math.min(160, int(options.maxNodes, Math.min(160, limit * 4))))
     const directLimit = Math.min(limit, maxNodes)
     const maxEdges = Math.max(1, Math.min(480, int(options.maxEdges, Math.min(480, maxNodes * 3))))
+    const candidateCap = Math.min(600, Math.max(80, limit * 15))
+    const relationSeedOrder = new Map()
+    let relationCandidateEdges = 0
+    const hasNodeSelector = Boolean(query || requestedNodeIds.length > 0 || types.length > 0 || sectionIds.length > 0 || grounding.length > 0 || entailment.length > 0)
+    if (relations.length > 0 && !hasNodeSelector) {
+      const marks = relations.map(() => '?').join(',')
+      const relationWhere = 'document_id = ? AND relation IN (' + marks + ')'
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE ' + relationWhere).get(documentId, ...relations)
+      relationCandidateEdges = count ? Number(count.count) || 0 : 0
+      const seedEdges = this.db.prepare('SELECT from_node_id, to_node_id FROM graph_edges WHERE ' + relationWhere + ' ORDER BY edge_key LIMIT ?').all(documentId, ...relations, candidateCap)
+      for (const edge of seedEdges) {
+        for (const nodeId of [edge.from_node_id, edge.to_node_id]) {
+          if (relationSeedOrder.size >= candidateCap) break
+          if (!nodeId || relationSeedOrder.has(nodeId)) continue
+          relationSeedOrder.set(nodeId, relationSeedOrder.size)
+          explicitIds.add(nodeId)
+        }
+      }
+    }
     const totalNodesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId)
     const totalEdgesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId)
     const totalNodes = totalNodesRow ? Number(totalNodesRow.count) || 0 : 0
@@ -1098,13 +1238,16 @@ export class SqliteKnowledgeStore {
     const whereSql = where.join(' AND ')
     const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + whereSql).get(...params)
     const candidateCount = countRow ? Number(countRow.count) || 0 : 0
-    const candidateCap = Math.min(600, Math.max(80, limit * 15))
     const scored = []
     const seenCandidates = new Set()
     const scoreRow = (item) => {
       if (!item || seenCandidates.has(item.node_id)) return
       seenCandidates.add(item.node_id)
       const value = consumeScore(item, query, terms, explicitIds)
+      if (value && relationSeedOrder.has(item.node_id)) {
+        value.score = Math.round((value.score + 500 - Math.min(100, relationSeedOrder.get(item.node_id) / 1000)) * 100) / 100
+        value.reasons.unshift('关系端点')
+      }
       if (value) scored.push({ row: item, ...value })
     }
     const trimScored = () => {
@@ -1117,12 +1260,19 @@ export class SqliteKnowledgeStore {
       // while an exact late-document match cannot be hidden by common early
       // bigrams (dynamic mode also scores the complete filtered candidate set).
       const pageSize = 600
-      const pageStatement = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + whereSql + ' ORDER BY paragraph, node_id LIMIT ? OFFSET ?')
-      for (let offset = 0; offset < candidateCount; offset += pageSize) {
-        const page = pageStatement.all(...params, pageSize, offset)
+      const paragraphKey = 'COALESCE(paragraph, 2147483647)'
+      const pageStatement = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + whereSql + ' AND ((' + paragraphKey + ' > ?) OR (' + paragraphKey + ' = ? AND node_id > ?)) ORDER BY ' + paragraphKey + ', node_id LIMIT ?')
+      let lastParagraph = -1
+      let lastNodeId = ''
+      for (;;) {
+        const page = pageStatement.all(...params, lastParagraph, lastParagraph, lastNodeId, pageSize)
         if (page.length === 0) break
         for (const item of page) scoreRow(item)
         if (scored.length > candidateCap * 2) trimScored()
+        const last = page[page.length - 1]
+        lastParagraph = Number.isInteger(last.paragraph) ? last.paragraph : 2147483647
+        lastNodeId = last.node_id
+        if (page.length < pageSize) break
       }
     } else {
       const candidateRows = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + whereSql + ' ORDER BY paragraph, node_id LIMIT ?').all(...params, candidateCap)
@@ -1148,6 +1298,7 @@ export class SqliteKnowledgeStore {
         const marks = part.map(() => '?').join(',')
         result.push(...this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id IN (' + marks + ') ORDER BY paragraph, node_id').all(documentId, ...part))
       }
+      result.sort((a, b) => (Number.isInteger(a.paragraph) ? a.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.paragraph) ? b.paragraph : Number.MAX_SAFE_INTEGER) || a.node_id.localeCompare(b.node_id))
       return result
     }
     const fetchFrontierEdges = (ids, cap) => {
@@ -1165,7 +1316,7 @@ export class SqliteKnowledgeStore {
         const sqlParams = direction === 'both'
           ? [documentId, ...relations, ...part, ...part, cap - result.length]
           : [documentId, ...relations, ...part, cap - result.length]
-        const rows = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ?' + relationSql + ' AND ' + directionSql + ' ORDER BY from_node_id, to_node_id LIMIT ?').all(...sqlParams)
+        const rows = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ?' + relationSql + ' AND ' + directionSql + ' ORDER BY from_node_id, to_node_id, relation LIMIT ?').all(...sqlParams)
         result.push(...rows)
       }
       return result
@@ -1194,7 +1345,7 @@ export class SqliteKnowledgeStore {
       const part = selectedIds.slice(start, start + 240)
       const marks = part.map(() => '?').join(',')
       const relationSql = relations.length > 0 ? ' AND relation IN (' + relations.map(() => '?').join(',') + ')' : ''
-      const rows = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ?' + relationSql + ' AND from_node_id IN (' + marks + ') ORDER BY from_node_id, to_node_id LIMIT ?').all(documentId, ...relations, ...part, maxEdges - edgeRows.size)
+      const rows = this.db.prepare('SELECT * FROM graph_edges WHERE document_id = ?' + relationSql + ' AND from_node_id IN (' + marks + ') ORDER BY from_node_id, to_node_id, relation LIMIT ?').all(documentId, ...relations, ...part, maxEdges - edgeRows.size)
       for (const edge of rows) {
         if (!selectedIdSet.has(edge.to_node_id)) continue
         const key = edge.edge_key || (edge.from_node_id + '>' + edge.to_node_id + ':' + edge.relation)
@@ -1203,46 +1354,49 @@ export class SqliteKnowledgeStore {
       }
     }
     const meta = parseJson(row.graph_meta_json, {})
-    const source = {
-      ...parseJson(row.source_json, {
-        id: row.source_id,
-        documentId: row.document_id,
-        title: row.title,
-        chars: row.chars,
-        paragraphCount: row.paragraph_count,
-        chunkCount: row.chunk_count,
-        sectionCount: row.section_count,
-      }),
-      revision,
-    }
-    delete source.sourceText
+    const sourceRaw = parseJson(row.source_json, {
+      id: row.source_id,
+      documentId: row.document_id,
+      title: row.title,
+      chars: row.chars,
+      paragraphCount: row.paragraph_count,
+      chunkCount: row.chunk_count,
+      sectionCount: row.section_count,
+    })
+    const source = consumeSourceProjection(sourceRaw, row, revision)
     const returnedEdges = Array.from(edgeRows.values())
       .filter((edge) => selectedRows.has(edge.from_node_id) && selectedRows.has(edge.to_node_id))
       .slice(0, maxEdges)
-    const selectedNodes = Array.from(selectedRows.values()).map(nodeFromRow)
-    const selectedEdges = returnedEdges.map(edgeFromRow)
+    const projectedNodes = Array.from(selectedRows.values()).map(consumeNodeFromRow)
+    const projectedEdges = returnedEdges.map(consumeEdgeFromRow)
+    const directIds = new Set(direct.map((item) => item.row.node_id))
+    const boundedGraph = boundConsumeGraph(projectedNodes, projectedEdges, directIds)
+    const selectedNodes = boundedGraph.nodes
+    const selectedEdges = boundedGraph.edges
     const paragraphRefs = new Map()
-    const addParagraphRef = (paragraph, nodeId, edgeId, quote) => {
+    const addParagraphRef = (paragraph, nodeId, edgeId, quote, priority) => {
       if (!Number.isInteger(paragraph) || paragraph < 0) return
       let item = paragraphRefs.get(paragraph)
       if (!item) {
-        item = { paragraph, nodeIds: new Set(), edgeIds: new Set(), quotes: [] }
+        item = { paragraph, priority: Number.isInteger(priority) ? priority : 2, nodeIds: new Set(), edgeIds: new Set(), quotes: [] }
         paragraphRefs.set(paragraph, item)
-      }
+      } else if (Number.isInteger(priority)) item.priority = Math.min(item.priority, priority)
       if (nodeId) item.nodeIds.add(nodeId)
       if (edgeId) item.edgeIds.add(edgeId)
       const clipped = text(quote).trim().slice(0, 500)
       if (clipped && !item.quotes.includes(clipped) && item.quotes.length < 6) item.quotes.push(clipped)
     }
     for (const node of selectedNodes) {
+      const priority = directIds.has(node.id) ? 0 : 2
       const evidence = Array.isArray(node.evidence) ? node.evidence : []
       if (evidence.length > 0) {
-        for (const item of evidence) addParagraphRef(Number(item && item.paragraph), node.id, '', item && item.quote)
-      } else addParagraphRef(node.paragraph, node.id, '', node.quote)
+        for (const item of evidence) addParagraphRef(Number(item && item.paragraph), node.id, '', item && item.quote, priority)
+      } else addParagraphRef(node.paragraph, node.id, '', node.quote, priority)
     }
     for (const edge of selectedEdges) {
       const key = edgeIdentity(edge)
-      for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) addParagraphRef(Number(item && item.paragraph), '', key, item && item.quote)
+      const priority = directIds.has(edge.fromNodeId) || directIds.has(edge.toNodeId) ? 1 : 2
+      for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) addParagraphRef(Number(item && item.paragraph), '', key, item && item.quote, priority)
     }
     const unitTextByParagraph = new Map()
     const referencedParagraphs = Array.from(paragraphRefs.keys()).sort((a, b) => a - b)
@@ -1263,7 +1417,7 @@ export class SqliteKnowledgeStore {
       sourceUnits.push({ ...unit, text: unitText })
       return true
     }
-    for (const ref of Array.from(paragraphRefs.values()).sort((a, b) => a.paragraph - b.paragraph)) {
+    for (const ref of Array.from(paragraphRefs.values()).sort((a, b) => a.priority - b.priority || a.paragraph - b.paragraph)) {
       const storedText = text(unitTextByParagraph.get(ref.paragraph)).trim()
       const fallback = ref.quotes.join(' … ')
       appendSourceUnit({
@@ -1271,7 +1425,6 @@ export class SqliteKnowledgeStore {
         text: storedText || fallback,
         nodeIds: Array.from(ref.nodeIds),
         edgeIds: Array.from(ref.edgeIds),
-        quotes: ref.quotes,
       })
     }
     let sourceFallbackUnits = 0
@@ -1286,11 +1439,12 @@ export class SqliteKnowledgeStore {
         termParams.push(pattern)
       }
       const fallbackWhere = 'document_id = ? AND (' + termSql.join(' OR ') + ')'
-      const fallbackStatement = this.db.prepare('SELECT paragraph, text FROM document_units WHERE ' + fallbackWhere + ' ORDER BY paragraph LIMIT ? OFFSET ?')
+      const fallbackStatement = this.db.prepare('SELECT paragraph, text FROM document_units WHERE ' + fallbackWhere + ' AND paragraph > ? ORDER BY paragraph LIMIT ?')
       const ranked = []
       const pageSize = 600
-      for (let offset = 0; ; offset += pageSize) {
-        const page = fallbackStatement.all(documentId, ...termParams, pageSize, offset)
+      let lastParagraph = -1
+      for (;;) {
+        const page = fallbackStatement.all(documentId, ...termParams, lastParagraph, pageSize)
         if (page.length === 0) break
         for (const unit of page) {
           if (seenParagraphs.has(unit.paragraph)) continue
@@ -1301,6 +1455,7 @@ export class SqliteKnowledgeStore {
           ranked.sort((a, b) => b.score - a.score || a.paragraph - b.paragraph)
           ranked.splice(32)
         }
+        lastParagraph = page[page.length - 1].paragraph
         if (page.length < pageSize) break
       }
       ranked.sort((a, b) => b.score - a.score || a.paragraph - b.paragraph)
@@ -1308,28 +1463,35 @@ export class SqliteKnowledgeStore {
         if (!appendSourceUnit({
           paragraph: unit.paragraph,
           text: unit.text,
-          nodeIds: [], edgeIds: [], quotes: [text(unit.text).slice(0, 600)],
+          nodeIds: [], edgeIds: [],
           sourceFallback: true, score: unit.score,
         })) continue
         sourceFallbackUnits += 1
       }
     }
     const matches = direct.map((item) => ({ nodeId: item.row.node_id, score: item.score, reasons: item.reasons.slice(0, 4) }))
+    const graphSummary = text(meta.summary).slice(0, 2000)
+    const contextChars = boundedGraph.contextChars + sourceChars + graphSummary.length + JSON.stringify(source).length
     const view = {
       kind: 'consumption', query: queryRaw, directMatches: direct.length,
-      candidateMatches: candidateCount, totalNodes, totalEdges,
+      candidateMatches: candidateCount, relationCandidateEdges, totalNodes, totalEdges,
       returnedNodes: selectedNodes.length, returnedEdges: selectedEdges.length,
       hops, direction,
-      truncated: candidateCount > direct.length || selectedRows.size >= maxNodes || edgeRows.size >= maxEdges,
+      truncated: candidateCount > direct.length || selectedRows.size >= maxNodes || edgeRows.size >= maxEdges || boundedGraph.truncated,
     }
     return {
-      queryId: 'kgq-' + stableHash(documentId + '|' + revision + '|' + queryRaw + '|' + types.join(',') + '|' + hops + '|' + direction).slice(0, 24),
+      queryId: 'kgq-' + stableHash(JSON.stringify({
+        documentId, revision, query: queryRaw,
+        nodeIds: requestedNodeIds.slice().sort(), types: types.slice().sort(), relations: relations.slice().sort(),
+        sectionIds: sectionIds.slice().sort(), groundingStatuses: grounding.slice().sort(), entailmentStatuses: entailment.slice().sort(),
+        limit, hops, direction, maxNodes, maxEdges,
+      })).slice(0, 24),
       documentId,
       revision,
       query: queryRaw,
       matches,
       graph: {
-        summary: text(meta.summary),
+        summary: graphSummary,
         source,
         nodes: selectedNodes,
         edges: selectedEdges,
@@ -1338,12 +1500,16 @@ export class SqliteKnowledgeStore {
       sourceUnits,
       metrics: {
         candidateMatches: candidateCount,
+        relationCandidateEdges,
         directMatches: direct.length,
         returnedNodes: selectedNodes.length,
         returnedEdges: selectedEdges.length,
         sourceUnits: sourceUnits.length,
+        sourceRefsOmitted: Math.max(0, paragraphRefs.size - sourceUnits.filter((unit) => unit.sourceFallback !== true).length),
         sourceFallbackUnits,
         sourceFallbackEvaluated,
+        contextChars,
+        contextBudget: CONSUME_CONTEXT_CHARS + CONSUME_SOURCE_CHARS + 60000,
         hops,
       },
     }

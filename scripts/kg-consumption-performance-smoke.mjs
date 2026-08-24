@@ -7,7 +7,7 @@ function assert(condition, message) {
 
 const documentId = 'document-consumption-performance'
 const sourceId = 'source-consumption-performance'
-const nodeCount = 3005
+const nodeCount = 10005
 const paragraphs = []
 const nodes = []
 const edges = []
@@ -28,8 +28,8 @@ for (let index = 1; index <= nodeCount; index++) {
     documentId,
     sourceId,
     chunkId: 'chunk-performance',
-    sectionId: paragraph < 1500 ? 'section-a' : 'section-b',
-    sectionTitle: paragraph < 1500 ? '前部' : '后部',
+    sectionId: paragraph < 5000 ? 'section-a' : 'section-b',
+    sectionTitle: paragraph < 5000 ? '前部' : '后部',
     groundingStatus: 'grounded',
     entailmentStatus: 'verified',
     state: 'accepted',
@@ -59,8 +59,8 @@ const graph = {
     chunkCount: 1,
     sectionCount: 2,
     sections: [
-      { id: 'section-a', title: '前部', startParagraph: 0, endParagraph: 1499 },
-      { id: 'section-b', title: '后部', startParagraph: 1500, endParagraph: paragraphs.length - 1 },
+      { id: 'section-a', title: '前部', startParagraph: 0, endParagraph: 4999 },
+      { id: 'section-b', title: '后部', startParagraph: 5000, endParagraph: paragraphs.length - 1 },
     ],
   },
   staging: {

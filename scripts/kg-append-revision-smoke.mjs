@@ -57,13 +57,20 @@ const seedStore = await openSqliteStore(dbPath)
 seedStore.saveGraph(baseGraph, { sourceText })
 seedStore.close()
 
-let releaseExtractor
-let extractorStarted
-const waitForExtractor = new Promise((resolve) => { extractorStarted = resolve })
-const extractorGate = new Promise((resolve) => { releaseExtractor = resolve })
+let activeExtractorGate = null
+function armExtractorGate() {
+  let release
+  let markStarted
+  const started = new Promise((resolve) => { markStarted = resolve })
+  const blocked = new Promise((resolve) => { release = resolve })
+  activeExtractorGate = { started, blocked, markStarted, release }
+  return activeExtractorGate
+}
 const kgExtractor = async ({ chunk }) => {
-  extractorStarted()
-  await extractorGate
+  const gate = activeExtractorGate
+  if (!gate) throw new Error('extractor gate was not armed')
+  gate.markStarted()
+  await gate.blocked
   const unit = chunk.units[0]
   return {
     summary: 'append',
@@ -85,9 +92,10 @@ persistentHost.apply({
 })
 const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
 
+const appendGate = armExtractorGate()
 const append = await post(api, 'append-extract', { documentId, title: 'revision', text: '追加正文' })
 assert(append && append.taskId, 'append task was not created')
-await waitForExtractor
+await appendGate.started
 
 const loaded = await post(api, 'document-load', { documentId })
 assert(loaded && loaded.revision === 1, 'append base revision was not 1')
@@ -99,7 +107,7 @@ const manual = await post(api, 'graph-commit', {
   baseEdgeKeys: [],
 })
 assert(manual && !manual.error && manual.revision === 2, 'concurrent manual graph commit failed')
-releaseExtractor()
+appendGate.release()
 
 let terminal = null
 for (let i = 0; i < 200; i++) {
@@ -115,5 +123,35 @@ assert(exported && exported.revision === 2, 'stale append advanced canonical rev
 assert(exported.graph.summary === 'manual revision wins', 'stale append overwrote the concurrent manual summary')
 assert(exported.graph.nodes.length === 1 && exported.graph.nodes[0].id === 'n1', 'stale append overwrote canonical nodes')
 
+const replaceGate = armExtractorGate()
+let replacement = null
+for (let i = 0; i < 50; i++) {
+  replacement = await post(api, 'extract', { documentId, title: 'revision', text: '重新拆分正文' })
+  if (!(replacement && replacement.error && replacement.error.code === 'busy')) break
+  await new Promise((resolve) => setTimeout(resolve, 5))
+}
+assert(replacement && replacement.taskId, 'non-append replacement task was not created')
+await replaceGate.started
+const replacementBase = await post(api, 'document-load', { documentId })
+assert(replacementBase && replacementBase.revision === 2, 'replacement task did not capture revision 2')
+const replacementManual = await post(api, 'graph-commit', {
+  documentId,
+  expectedRevision: 2,
+  graph: { summary: 'manual replacement wins', nodes: replacementBase.graph.nodes, edges: replacementBase.graph.edges },
+  baseNodeIds: replacementBase.graph.nodes.map((node) => node.id),
+  baseEdgeKeys: [],
+})
+assert(replacementManual && !replacementManual.error && replacementManual.revision === 3, 'concurrent replacement graph commit failed')
+replaceGate.release()
+let replacementTerminal = null
+for (let i = 0; i < 200; i++) {
+  const status = await get(api, 'task-status', { taskId: replacement.taskId })
+  if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'succeeded') { replacementTerminal = status; break }
+  await new Promise((resolve) => setTimeout(resolve, 5))
+}
+assert(replacementTerminal && replacementTerminal.status === 'failed' && replacementTerminal.error.code === 'revision_conflict', 'stale non-append extraction overwrote a newer canonical revision: ' + JSON.stringify(replacementTerminal))
+const replacementExport = await post(api, 'document-export', { documentId })
+assert(replacementExport && replacementExport.revision === 3 && replacementExport.graph.summary === 'manual replacement wins', 'stale non-append extraction advanced or overwrote canonical state')
+
 rmSync(dir, { recursive: true, force: true })
-console.log(JSON.stringify({ ok: true, baseRevision: 1, concurrentRevision: 2, appendStatus: terminal.error.code }))
+console.log(JSON.stringify({ ok: true, baseRevision: 1, appendConcurrentRevision: 2, replacementConcurrentRevision: 3, appendStatus: terminal.error.code, replacementStatus: replacementTerminal.error.code }))

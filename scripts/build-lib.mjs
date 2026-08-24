@@ -85,15 +85,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+              const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
+                ? a.documentId.trim().slice(0, 160)
+                : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
+              const baseRevision = requestedDocumentId ? (await getSqliteStore()).getDocumentRevision(requestedDocumentId) : 0
                const task = {
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
                  title,
                  text,
-                 documentId: typeof a.documentId === 'string' && a.documentId.trim()
-                   ? a.documentId.trim().slice(0, 160)
-                   : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : ''),
+                 documentId: requestedDocumentId,
+                 baseRevision,
                  checkpoint,
                  existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
                  paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
@@ -434,13 +437,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const previous = savedRun.documentId ? store.getDocument(savedRun.documentId) : null
               const appendRecovery = checkpoint.taskKind === 'append' || checkpoint.taskKind === 'trajectory-append'
-              if (appendRecovery) {
-                if (!previous || !Number.isInteger(checkpoint.baseRevision)) {
-                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'append checkpoint 缺少 base revision/canonical document，无法安全恢复' } })
-                }
-                if (previous.revision !== checkpoint.baseRevision) {
-                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'append checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + previous.revision + '；禁止覆盖恢复' } })
-                }
+              if (!Number.isInteger(checkpoint.baseRevision)) {
+                return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复并覆盖 canonical graph' } })
+              }
+              const currentRevision = savedRun.documentId ? store.getDocumentRevision(savedRun.documentId) : 0
+              if (currentRevision !== checkpoint.baseRevision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } })
+              }
+              if (appendRecovery && !previous) {
+                return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'append checkpoint 缺少 canonical document，无法安全恢复' } })
               }
               const baseSource = checkpoint.baseSource && typeof checkpoint.baseSource === 'object'
                 ? checkpoint.baseSource
@@ -464,7 +469,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 checkpoint,
                 existing,
                 existingSourceText: appendRecovery && previous ? (previous.sourceText || '') : '',
-                baseRevision: appendRecovery ? checkpoint.baseRevision : null,
+                baseRevision: checkpoint.baseRevision,
                 baseSource,
                 baseStaging,
                 ...(checkpoint.taskKind === 'trajectory' || checkpoint.taskKind === 'trajectory-append' ? {

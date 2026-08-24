@@ -50,6 +50,7 @@ export default function hostPlugin() {
       const MAX_CONSUME_HOPS = 2
       const MAX_CONSUME_SOURCE_UNITS = 80
       const MAX_CONSUME_SOURCE_CHARS = 24000
+      const MAX_CONSUME_CONTEXT_CHARS = 384000
       const MAX_CONSUME_EVIDENCE = 24
       // Relation weaving is deliberately bounded: small/medium graphs get a
       // whole-graph pass, while large graphs use a few low-degree candidate
@@ -4500,11 +4501,12 @@ export default function hostPlugin() {
            }
            // Dynamic-package mode has no SQLite expectedRevision fence, so
            // enforce the same base-revision contract against the in-memory
-           // canonical graph before publishing an append.
-           if (isDocumentAppend && Number.isInteger(task.baseRevision) && typeof persistGraph !== 'function') {
+           // canonical state before publishing any replacement or append.
+           if (Number.isInteger(task.baseRevision) && typeof persistGraph !== 'function') {
              const live = loadCanonicalDocumentHost(source.documentId)
-             if (live && live.revision !== task.baseRevision) {
-               return failTask(task, 'revision_conflict', '追加任务基于 revision ' + task.baseRevision + '，但 canonical graph 已更新到 revision ' + live.revision + '；请重新加载后重试')
+             const liveRevision = live && Number.isInteger(live.revision) ? live.revision : 0
+              if (liveRevision !== task.baseRevision) {
+               return failTask(task, 'revision_conflict', (isDocumentAppend ? '追加' : '拆分') + '任务基于 revision ' + task.baseRevision + '，但 canonical graph 已更新到 revision ' + liveRevision + '；请重新加载后重试')
              }
            }
            let persistedRevision = null
@@ -4515,7 +4517,7 @@ export default function hostPlugin() {
                if (persisted && Number.isInteger(persisted.revision)) persistedRevision = persisted.revision
              } catch (error) {
                if (error && error.code === 'revision_conflict') {
-                 return failTask(task, 'revision_conflict', '追加期间 canonical graph 已被其他修改更新，结果未覆盖现有 revision；请重新加载后重试')
+                 return failTask(task, 'revision_conflict', (isDocumentAppend ? '追加' : '拆分') + '期间 canonical graph 已被其他修改更新，结果未覆盖现有 revision；请重新加载后重试')
                }
                return failTask(task, 'persistence_failed', 'canonical graph 持久化失败，未发布结果：' + (error && error.message ? error.message : String(error)))
              }
@@ -4747,13 +4749,123 @@ export default function hostPlugin() {
         if (node.entailmentStatus === 'verified') score += 1
         return score > 0 ? { score: Math.round(score * 100) / 100, reasons } : null
       }
+      function consumptionEvidenceProjectionHost(value) {
+        const out = []
+        for (const item of Array.isArray(value) ? value : []) {
+          if (!item || typeof item !== 'object') continue
+          const paragraph = Number(item.paragraph)
+          const quote = typeof item.quote === 'string' ? item.quote.trim().slice(0, 600) : ''
+          if (!Number.isInteger(paragraph) || paragraph < 0 || !quote) continue
+          out.push({
+            documentId: typeof item.documentId === 'string' ? item.documentId.slice(0, 160) : null,
+            sourceId: typeof item.sourceId === 'string' ? item.sourceId.slice(0, 160) : null,
+            chunkId: typeof item.chunkId === 'string' ? item.chunkId.slice(0, 160) : null,
+            paragraph,
+            quote,
+          })
+          if (out.length >= 2) break
+        }
+        return out
+      }
+      function consumptionNodeProjectionHost(node) {
+        return {
+          id: typeof node.id === 'string' ? node.id.slice(0, 160) : '',
+          type: typeof node.type === 'string' ? node.type.slice(0, 40) : '',
+          text: typeof node.text === 'string' ? node.text.slice(0, 1200) : '',
+          quote: typeof node.quote === 'string' ? node.quote.slice(0, 600) : '',
+          paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
+          evidence: consumptionEvidenceProjectionHost(node.evidence),
+          documentId: typeof node.documentId === 'string' ? node.documentId.slice(0, 160) : null,
+          sourceId: typeof node.sourceId === 'string' ? node.sourceId.slice(0, 160) : null,
+          chunkId: typeof node.chunkId === 'string' ? node.chunkId.slice(0, 160) : null,
+          sectionId: typeof node.sectionId === 'string' ? node.sectionId.slice(0, 160) : null,
+          sectionTitle: typeof node.sectionTitle === 'string' ? node.sectionTitle.slice(0, 300) : null,
+          groundingStatus: typeof node.groundingStatus === 'string' ? node.groundingStatus : 'candidate',
+          entailmentStatus: typeof node.entailmentStatus === 'string' ? node.entailmentStatus : 'unverified',
+          state: typeof node.state === 'string' ? node.state : 'candidate',
+        }
+      }
+      function consumptionEdgeProjectionHost(edge) {
+        return {
+          fromNodeId: typeof edge.fromNodeId === 'string' ? edge.fromNodeId.slice(0, 160) : '',
+          toNodeId: typeof edge.toNodeId === 'string' ? edge.toNodeId.slice(0, 160) : '',
+          relation: typeof edge.relation === 'string' ? edge.relation.slice(0, 40) : '',
+          evidence: consumptionEvidenceProjectionHost(edge.evidence),
+          documentId: typeof edge.documentId === 'string' ? edge.documentId.slice(0, 160) : null,
+          sourceId: typeof edge.sourceId === 'string' ? edge.sourceId.slice(0, 160) : null,
+          chunkId: typeof edge.chunkId === 'string' ? edge.chunkId.slice(0, 160) : null,
+          state: typeof edge.state === 'string' ? edge.state : 'candidate',
+        }
+      }
+      function consumptionSourceProjectionHost(source, documentId, revision) {
+        const raw = source && typeof source === 'object' ? source : {}
+        const sections = []
+        for (const item of Array.isArray(raw.sections) ? raw.sections : []) {
+          if (!item || typeof item !== 'object') continue
+          sections.push({
+            id: typeof item.id === 'string' ? item.id.slice(0, 160) : '',
+            title: typeof item.title === 'string' ? item.title.slice(0, 300) : '',
+            startParagraph: Number.isInteger(Number(item.startParagraph)) ? Number(item.startParagraph) : null,
+            endParagraph: Number.isInteger(Number(item.endParagraph)) ? Number(item.endParagraph) : null,
+          })
+          if (sections.length >= 80) break
+        }
+        return {
+          id: typeof raw.id === 'string' ? raw.id.slice(0, 160) : null,
+          documentId,
+          title: typeof raw.title === 'string' ? raw.title.slice(0, 300) : '',
+          chars: Number.isFinite(Number(raw.chars)) ? Number(raw.chars) : 0,
+          paragraphCount: Number.isFinite(Number(raw.paragraphCount)) ? Number(raw.paragraphCount) : 0,
+          chunkCount: Number.isFinite(Number(raw.chunkCount)) ? Number(raw.chunkCount) : 0,
+          sectionCount: Number.isFinite(Number(raw.sectionCount)) ? Number(raw.sectionCount) : sections.length,
+          sections,
+          revision,
+        }
+      }
+      function boundConsumptionGraphHost(nodes, edges, directIds) {
+        const direct = directIds instanceof Set ? directIds : new Set()
+        const orderedNodes = [
+          ...nodes.filter((node) => direct.has(node.id)),
+          ...nodes.filter((node) => !direct.has(node.id)),
+        ]
+        const keptNodes = []
+        const keptIds = new Set()
+        let contextChars = 0
+        const nodeBudget = Math.floor(MAX_CONSUME_CONTEXT_CHARS * 0.62)
+        for (const node of orderedNodes) {
+          const size = JSON.stringify(node).length
+          if (!direct.has(node.id) && contextChars + size > nodeBudget) continue
+          keptNodes.push(node)
+          keptIds.add(node.id)
+          contextChars += size
+        }
+        const orderedEdges = [
+          ...edges.filter((edge) => direct.has(edge.fromNodeId) || direct.has(edge.toNodeId)),
+          ...edges.filter((edge) => !direct.has(edge.fromNodeId) && !direct.has(edge.toNodeId)),
+        ]
+        const keptEdges = []
+        for (const edge of orderedEdges) {
+          if (!keptIds.has(edge.fromNodeId) || !keptIds.has(edge.toNodeId)) continue
+          const size = JSON.stringify(edge).length
+          if (contextChars + size > MAX_CONSUME_CONTEXT_CHARS) continue
+          keptEdges.push(edge)
+          contextChars += size
+        }
+        return {
+          nodes: keptNodes,
+          edges: keptEdges,
+          contextChars,
+          truncated: keptNodes.length < nodes.length || keptEdges.length < edges.length,
+        }
+      }
       function queryGraphConsumptionHost(document, options = {}) {
         const graph = document && document.graph && typeof document.graph === 'object' ? document.graph : null
         if (!graph || !Array.isArray(graph.nodes)) return null
         const queryRaw = typeof options.query === 'string' ? options.query.trim().slice(0, MAX_CONSUME_QUERY_CHARS) : ''
         const query = normalizeGraphLookupTextHost(queryRaw)
         const queryTokens = phraseTokensHost(query)
-        const explicitIds = new Set(boundedConsumptionListHost(options.nodeIds, null, 40))
+        const requestedNodeIds = boundedConsumptionListHost(options.nodeIds, null, 40)
+        const explicitIds = new Set(requestedNodeIds)
         const types = new Set(boundedConsumptionListHost(options.types, CONSUMPTION_NODE_TYPES, CONSUMPTION_NODE_TYPES.size))
         const relations = new Set(boundedConsumptionListHost(options.relations, CONSUMPTION_RELATIONS, CONSUMPTION_RELATIONS.size))
         const sectionIds = new Set(boundedConsumptionListHost(options.sectionIds, null, 40))
@@ -4767,7 +4879,30 @@ export default function hostPlugin() {
         const maxEdges = consumptionIntHost(options.maxEdges, Math.min(MAX_CONSUME_EDGES, maxNodes * 3), 1, MAX_CONSUME_EDGES)
         const allNodes = Array.isArray(graph.nodes) ? graph.nodes : []
         const allEdges = Array.isArray(graph.edges) ? graph.edges : []
+        const orderedEdges = allEdges.slice().sort((a, b) => {
+          const from = String(a && a.fromNodeId || '').localeCompare(String(b && b.fromNodeId || ''))
+          if (from) return from
+          const to = String(a && a.toNodeId || '').localeCompare(String(b && b.toNodeId || ''))
+          if (to) return to
+          return String(a && a.relation || '').localeCompare(String(b && b.relation || ''))
+        })
         const byId = new Map(allNodes.filter((node) => node && typeof node.id === 'string').map((node) => [node.id, node]))
+        const relationSeedOrder = new Map()
+        let relationCandidateEdges = 0
+        const hasNodeSelector = Boolean(query || requestedNodeIds.length > 0 || types.size > 0 || sectionIds.size > 0 || grounding.size > 0 || entailment.size > 0)
+        if (relations.size > 0 && !hasNodeSelector) {
+          const relationEdges = orderedEdges.filter((edge) => edge && relations.has(edge.relation))
+          relationCandidateEdges = relationEdges.length
+          for (const edge of relationEdges) {
+            if (relationSeedOrder.size >= 600) continue
+            for (const nodeId of [edge.fromNodeId, edge.toNodeId]) {
+              if (relationSeedOrder.size >= 600) break
+              if (!nodeId || relationSeedOrder.has(nodeId)) continue
+              relationSeedOrder.set(nodeId, relationSeedOrder.size)
+              explicitIds.add(nodeId)
+            }
+          }
+        }
         const candidates = []
         for (const node of allNodes) {
           if (!node || !node.id) continue
@@ -4777,6 +4912,10 @@ export default function hostPlugin() {
           if (entailment.size > 0 && !entailment.has(node.entailmentStatus || 'unverified')) continue
           const scored = consumptionNodeScoreHost(node, query, queryTokens, explicitIds)
           if (!scored) continue
+          if (relationSeedOrder.has(node.id)) {
+            scored.score = Math.round((scored.score + 500 - Math.min(100, relationSeedOrder.get(node.id) / 1000)) * 100) / 100
+            scored.reasons.unshift('关系端点')
+          }
           candidates.push({ node, ...scored })
         }
         candidates.sort((a, b) => b.score - a.score || (Number.isInteger(a.node.paragraph) ? a.node.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.node.paragraph) ? b.node.paragraph : Number.MAX_SAFE_INTEGER) || a.node.id.localeCompare(b.node.id))
@@ -4793,7 +4932,8 @@ export default function hostPlugin() {
             : ids.has(edge.fromNodeId) || ids.has(edge.toNodeId)
         for (let depth = 0; depth < hops && frontier.size > 0 && selectedIds.size < maxNodes; depth++) {
           const next = new Set()
-          for (const edge of allEdges) {
+          const neighborCandidates = new Set()
+          for (const edge of orderedEdges) {
             if (!edge || !edgeAllowed(edge) || !touchesFrontier(edge, frontier)) continue
             const key = edgeKeyHost(edge)
             if (key && !edgeSeen.has(key) && relevantEdges.length < maxEdges) {
@@ -4806,16 +4946,26 @@ export default function hostPlugin() {
                 ? [edge.fromNodeId]
                 : [edge.fromNodeId, edge.toNodeId]
             for (const id of neighborIds) {
-              if (!id || selectedIds.has(id) || !byId.has(id) || selectedIds.size >= maxNodes) continue
-              selectedIds.add(id)
-              next.add(id)
+              if (id && !selectedIds.has(id) && byId.has(id)) neighborCandidates.add(id)
             }
+          }
+          const orderedNeighborIds = Array.from(neighborCandidates).sort((a, b) => {
+            const an = byId.get(a)
+            const bn = byId.get(b)
+            const ap = Number.isInteger(an && an.paragraph) ? an.paragraph : Number.MAX_SAFE_INTEGER
+            const bp = Number.isInteger(bn && bn.paragraph) ? bn.paragraph : Number.MAX_SAFE_INTEGER
+            return ap - bp || a.localeCompare(b)
+          })
+          for (const id of orderedNeighborIds) {
+            if (selectedIds.size >= maxNodes) break
+            selectedIds.add(id)
+            next.add(id)
           }
           frontier = next
         }
         // Include edges among returned nodes even when hops=0, while retaining
         // relation filters and the hard response cap.
-        for (const edge of allEdges) {
+        for (const edge of orderedEdges) {
           if (relevantEdges.length >= maxEdges) break
           if (!edge || !edgeAllowed(edge) || !selectedIds.has(edge.fromNodeId) || !selectedIds.has(edge.toNodeId)) continue
           const key = edgeKeyHost(edge)
@@ -4823,81 +4973,105 @@ export default function hostPlugin() {
           edgeSeen.add(key)
           relevantEdges.push(edge)
         }
-        const selectedNodes = []
+        const projectedNodes = []
+        const projectedNodeIds = new Set()
         for (const item of direct) {
-          if (selectedIds.has(item.node.id)) selectedNodes.push(cloneGraphNodeHost(item.node))
+          if (!selectedIds.has(item.node.id) || projectedNodeIds.has(item.node.id)) continue
+          projectedNodeIds.add(item.node.id)
+          projectedNodes.push(consumptionNodeProjectionHost(item.node))
         }
-        for (const node of allNodes) {
-          if (!node || !selectedIds.has(node.id) || selectedNodes.some((item) => item.id === node.id)) continue
-          selectedNodes.push(cloneGraphNodeHost(node))
+        for (const nodeId of selectedIds) {
+          const node = byId.get(nodeId)
+          if (!node || projectedNodeIds.has(node.id)) continue
+          projectedNodeIds.add(node.id)
+          projectedNodes.push(consumptionNodeProjectionHost(node))
         }
-        const selectedEdgeClones = relevantEdges
+        const projectedEdges = relevantEdges
           .filter((edge) => selectedIds.has(edge.fromNodeId) && selectedIds.has(edge.toNodeId))
           .slice(0, maxEdges)
-          .map(cloneGraphEdgeHost)
+          .map(consumptionEdgeProjectionHost)
+        const directIds = new Set(direct.map((item) => item.node.id))
+        const boundedGraph = boundConsumptionGraphHost(projectedNodes, projectedEdges, directIds)
+        const selectedNodes = boundedGraph.nodes
+        const selectedEdgeClones = boundedGraph.edges
         const paragraphRefs = new Map()
-        const addParagraphRef = (paragraph, nodeId, edgeId, quote) => {
+        const addParagraphRef = (paragraph, nodeId, edgeId, quote, priority) => {
           if (!Number.isInteger(paragraph) || paragraph < 0) return
           let item = paragraphRefs.get(paragraph)
           if (!item) {
-            item = { paragraph, nodeIds: new Set(), edgeIds: new Set(), quotes: [] }
+            item = { paragraph, priority: Number.isInteger(priority) ? priority : 2, nodeIds: new Set(), edgeIds: new Set(), quotes: [] }
             paragraphRefs.set(paragraph, item)
-          }
+          } else if (Number.isInteger(priority)) item.priority = Math.min(item.priority, priority)
           if (nodeId) item.nodeIds.add(nodeId)
           if (edgeId) item.edgeIds.add(edgeId)
           const clipped = typeof quote === 'string' ? quote.trim().slice(0, 500) : ''
           if (clipped && !item.quotes.includes(clipped) && item.quotes.length < 6) item.quotes.push(clipped)
         }
         for (const node of selectedNodes) {
+          const priority = directIds.has(node.id) ? 0 : 2
           const evidence = Array.isArray(node.evidence) ? node.evidence : []
           if (evidence.length > 0) {
-            for (const item of evidence) addParagraphRef(Number(item && item.paragraph), node.id, '', item && item.quote)
-          } else addParagraphRef(node.paragraph, node.id, '', node.quote)
+            for (const item of evidence) addParagraphRef(Number(item && item.paragraph), node.id, '', item && item.quote, priority)
+          } else addParagraphRef(node.paragraph, node.id, '', node.quote, priority)
         }
         for (const edge of selectedEdgeClones) {
           const key = edgeKeyHost(edge)
-          for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) addParagraphRef(Number(item && item.paragraph), '', key, item && item.quote)
+          const priority = directIds.has(edge.fromNodeId) || directIds.has(edge.toNodeId) ? 1 : 2
+          for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) addParagraphRef(Number(item && item.paragraph), '', key, item && item.quote, priority)
         }
         const paragraphs = document && typeof document.sourceText === 'string' && document.sourceText ? splitParagraphsHost(document.sourceText) : []
         const sourceUnits = []
         let sourceChars = 0
-        for (const ref of Array.from(paragraphRefs.values()).sort((a, b) => a.paragraph - b.paragraph)) {
+        for (const ref of Array.from(paragraphRefs.values()).sort((a, b) => a.priority - b.priority || a.paragraph - b.paragraph)) {
           if (sourceUnits.length >= MAX_CONSUME_SOURCE_UNITS) break
           const sourceUnit = typeof paragraphs[ref.paragraph] === 'string' ? paragraphs[ref.paragraph].trim() : ''
           const fallback = ref.quotes.join(' … ')
           const unitText = (sourceUnit || fallback).slice(0, 1600)
           if (!unitText || sourceChars + unitText.length > MAX_CONSUME_SOURCE_CHARS) continue
           sourceChars += unitText.length
-          sourceUnits.push({ paragraph: ref.paragraph, text: unitText, nodeIds: Array.from(ref.nodeIds), edgeIds: Array.from(ref.edgeIds), quotes: ref.quotes })
+          sourceUnits.push({ paragraph: ref.paragraph, text: unitText, nodeIds: Array.from(ref.nodeIds), edgeIds: Array.from(ref.edgeIds) })
         }
         const documentId = document.documentId || canonicalDocumentIdHost(graph) || 'local'
         const revision = Number.isInteger(document.revision) ? document.revision : 0
+        const graphSummary = typeof graph.summary === 'string' ? graph.summary.slice(0, 2000) : ''
+        const safeSource = consumptionSourceProjectionHost(graph.source, documentId, revision)
+        const contextChars = boundedGraph.contextChars + sourceChars + graphSummary.length + JSON.stringify(safeSource).length
         return {
-          queryId: 'kgq-' + stableHashHost(documentId + '|' + revision + '|' + queryRaw + '|' + Array.from(types).join(',') + '|' + hops + '|' + direction),
+          queryId: 'kgq-' + stableHashHost(JSON.stringify({
+            documentId, revision, query: queryRaw,
+            nodeIds: requestedNodeIds.slice().sort(), types: Array.from(types).sort(), relations: Array.from(relations).sort(),
+            sectionIds: Array.from(sectionIds).sort(), groundingStatuses: Array.from(grounding).sort(), entailmentStatuses: Array.from(entailment).sort(),
+            limit, hops, direction, maxNodes, maxEdges,
+          })),
           documentId,
           revision,
           query: queryRaw,
           matches: direct.map((item) => ({ nodeId: item.node.id, score: item.score, reasons: item.reasons.slice(0, 4) })),
           graph: {
-            summary: typeof graph.summary === 'string' ? graph.summary : '',
-            source: graph.source && typeof graph.source === 'object' ? { ...graph.source, revision } : { documentId, revision },
+            summary: graphSummary,
+            source: safeSource,
             nodes: selectedNodes,
             edges: selectedEdgeClones,
             view: {
               kind: 'consumption', query: queryRaw, directMatches: direct.length,
+              relationCandidateEdges,
               totalNodes: allNodes.length, totalEdges: allEdges.length,
               returnedNodes: selectedNodes.length, returnedEdges: selectedEdgeClones.length,
               hops, direction,
-              truncated: candidates.length > direct.length || selectedIds.size >= maxNodes || relevantEdges.length >= maxEdges,
+              truncated: candidates.length > direct.length || selectedIds.size >= maxNodes || relevantEdges.length >= maxEdges || boundedGraph.truncated,
             },
           },
           sourceUnits,
           metrics: {
             candidateMatches: candidates.length,
+            relationCandidateEdges,
             directMatches: direct.length,
             returnedNodes: selectedNodes.length,
             returnedEdges: selectedEdgeClones.length,
             sourceUnits: sourceUnits.length,
+            sourceRefsOmitted: Math.max(0, paragraphRefs.size - sourceUnits.length),
+            contextChars,
+            contextBudget: MAX_CONSUME_CONTEXT_CHARS + MAX_CONSUME_SOURCE_CHARS + 60000,
             hops,
           },
         }
@@ -4927,7 +5101,7 @@ export default function hostPlugin() {
         ranked.sort((a, b) => b.score - a.score || a.paragraph - b.paragraph)
         return ranked.slice(0, 8).map((item) => ({
           paragraph: item.paragraph, text: item.text,
-          nodeIds: [], edgeIds: [], quotes: [item.text.slice(0, 600)],
+          nodeIds: [], edgeIds: [],
           sourceFallback: true, score: Math.round(item.score * 100) / 100,
         }))
       }
@@ -6328,15 +6502,21 @@ export default function hostPlugin() {
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+        const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
+          ? a.documentId.trim().slice(0, 160)
+          : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
+        const baseDocument = requestedDocumentId ? loadCanonicalDocumentHost(requestedDocumentId) : null
+        const baseRevision = checkpoint && Number.isInteger(checkpoint.baseRevision)
+          ? checkpoint.baseRevision
+          : (baseDocument && Number.isInteger(baseDocument.revision) ? baseDocument.revision : 0)
          const task = {
            id: 'kg-' + Date.now().toString(36) + '-' + seq,
            status: 'running',
            kind: checkpoint ? 'resume' : undefined,
            title,
            text,
-           documentId: typeof a.documentId === 'string' && a.documentId.trim()
-             ? a.documentId.trim().slice(0, 160)
-             : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : ''),
+           documentId: requestedDocumentId,
+           baseRevision,
            checkpoint,
            existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
            paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,

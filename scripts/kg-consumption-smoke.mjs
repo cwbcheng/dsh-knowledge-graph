@@ -18,6 +18,7 @@ function makeFixture() {
   paragraphs[0] = '恢复依赖检查点。'
   paragraphs[1] = '检查点支持断点续跑。'
   paragraphs[2] = 'SOURCE_ONLY_TOKEN 蓝色开关用于恢复。'
+  for (let i = 3; i <= 82; i += 1) paragraphs[i] = '早期邻居段落 ' + i + '：' + '扩展内容'.repeat(420)
   paragraphs[801] = '窗口外目标位于第八百零一个节点。'
   paragraphs[802] = '这是一个语义不确定判断。'
   paragraphs[803] = '这是一个尚不受支持的判断。'
@@ -54,6 +55,10 @@ function makeFixture() {
       state: entailmentStatus === 'verified' ? 'accepted' : 'candidate',
     })
   }
+  nodes[0].payload = 'UNBOUNDED_NODE_PAYLOAD_' + 'x'.repeat(200000)
+  for (let i = 0; i < 20; i += 1) {
+    nodes[0].evidence.push({ documentId, sourceId, chunkId: 'chunk-main', paragraph: 0, quote: '恢复依赖检查点' + '扩展'.repeat(500) })
+  }
   const graph = {
     summary: '检查点恢复机制与大量知识节点',
     revision: 1,
@@ -86,7 +91,18 @@ function makeFixture() {
       fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports',
       documentId, sourceId, chunkId: 'chunk-main', state: 'accepted',
       evidence: [{ documentId, sourceId, chunkId: 'chunk-main', paragraph: 1, quote: '检查点支持断点续跑' }],
+    }, {
+      fromNodeId: 'n800', toNodeId: 'n801', relation: 'causes',
+      documentId, sourceId, chunkId: 'chunk-main', state: 'accepted',
+      evidence: [{ documentId, sourceId, chunkId: 'chunk-main', paragraph: 801, quote: '窗口外目标位于第八百零一个节点' }],
     }],
+  }
+  for (let i = 3; i <= 82; i += 1) {
+    graph.edges.push({
+      fromNodeId: 'n' + i, toNodeId: 'n801', relation: 'supports',
+      documentId, sourceId, chunkId: 'chunk-main', state: 'accepted',
+      evidence: [{ documentId, sourceId, chunkId: 'chunk-main', paragraph: i, quote: '早期邻居段落 ' + i }],
+    })
   }
   const dynamicGraph = structuredClone(graph)
   delete dynamicGraph.source.documentId
@@ -284,6 +300,11 @@ const dynamicExpanded = await dynamicHandlers.get('graph-query')({
 assert(dynamicExpanded.matches.length === 1 && dynamicExpanded.matches[0].nodeId === 'n1', 'direct match set was not preserved')
 assert(dynamicExpanded.graph.nodes.some((node) => node.id === 'n2'), 'one-hop relation neighbor was not expanded')
 assert(!dynamicExpanded.matches.some((match) => match.nodeId === 'n2'), 'expanded neighbor was incorrectly reported as a direct match')
+const projectedDynamicNode = dynamicExpanded.graph.nodes.find((node) => node.id === 'n1')
+assert(projectedDynamicNode && !Object.prototype.hasOwnProperty.call(projectedDynamicNode, 'payload') && projectedDynamicNode.evidence.length <= 2 && projectedDynamicNode.evidence.every((item) => item.quote.length <= 600), 'dynamic consumption projection retained unbounded node fields/evidence')
+assert(dynamicExpanded.sourceUnits.every((unit) => !Object.prototype.hasOwnProperty.call(unit, 'quotes')), 'dynamic source units duplicate quote arrays outside the text budget')
+assert(dynamicExpanded.metrics.contextChars <= dynamicExpanded.metrics.contextBudget, 'dynamic consumption context exceeded its aggregate budget')
+assert(JSON.stringify(dynamicExpanded).length <= dynamicExpanded.metrics.contextBudget + 20000, 'dynamic public consumption response exceeded its aggregate envelope')
 
 const dynamicLate = await dynamicHandlers.get('graph-query')({
   graph: fixture.dynamicGraph,
@@ -292,6 +313,26 @@ const dynamicLate = await dynamicHandlers.get('graph-query')({
   hops: 0,
 })
 assert(dynamicLate.matches[0] && dynamicLate.matches[0].nodeId === 'n801', 'dynamic query could not find a node outside the renderer window')
+const dynamicLateExpanded = await dynamicHandlers.get('graph-query')({
+  graph: fixture.dynamicGraph,
+  text: fixture.sourceText,
+  query: '窗口外目标',
+  hops: 1,
+  maxNodes: 100,
+  maxEdges: 200,
+})
+assert(dynamicLateExpanded.sourceUnits[0] && dynamicLateExpanded.sourceUnits[0].paragraph === 801, 'dynamic neighbor evidence exhausted the source budget before late direct-match evidence')
+assert(dynamicLateExpanded.metrics.sourceRefsOmitted > 0, 'dynamic source-budget truncation did not expose omitted reference metrics')
+const dynamicRelationOnly = await dynamicHandlers.get('graph-query')({
+  graph: fixture.dynamicGraph,
+  text: fixture.sourceText,
+  relations: ['causes'],
+  hops: 0,
+})
+assert(dynamicRelationOnly.graph.edges.some((edge) => edge.relation === 'causes' && edge.fromNodeId === 'n800' && edge.toNodeId === 'n801'), 'dynamic relation-only selector did not seed matching edge endpoints')
+assert(dynamicRelationOnly.metrics.relationCandidateEdges === 1, 'dynamic relation-only candidate metric is wrong')
+const dynamicOtherRelation = await dynamicHandlers.get('graph-query')({ graph: fixture.dynamicGraph, text: fixture.sourceText, relations: ['supports'], hops: 0 })
+assert(dynamicOtherRelation.queryId !== dynamicRelationOnly.queryId, 'dynamic queryId omitted relation selectors')
 const dynamicSaturated = await dynamicHandlers.get('graph-query')({
   graph: fixture.dynamicGraph,
   text: fixture.sourceText,
@@ -374,6 +415,20 @@ const firstWindow = store.getDocumentWindow(fixture.documentId, { limit: 800, of
 assert(firstWindow && firstWindow.nodes.length === 800 && !firstWindow.nodes.some((node) => node.id === 'n801'), 'renderer-window fixture did not place n801 outside the first 800 nodes')
 const storeLate = store.queryDocumentGraph(fixture.documentId, { query: '窗口外目标', hops: 0 })
 assert(storeLate && storeLate.matches[0] && storeLate.matches[0].nodeId === 'n801', 'SQLite bounded query could not find n801 outside the renderer window')
+const storeLateExpanded = store.queryDocumentGraph(fixture.documentId, { query: '窗口外目标', hops: 1, maxNodes: 100, maxEdges: 200 })
+assert(storeLateExpanded.sourceUnits[0] && storeLateExpanded.sourceUnits[0].paragraph === 801, 'SQLite neighbor evidence exhausted the source budget before late direct-match evidence')
+assert(storeLateExpanded.metrics.sourceRefsOmitted > 0, 'SQLite source-budget truncation did not expose omitted reference metrics')
+const storeProjected = store.queryDocumentGraph(fixture.documentId, { query: '恢复依赖检查点', limit: 1, hops: 1 })
+const projectedStoreNode = storeProjected.graph.nodes.find((node) => node.id === 'n1')
+assert(projectedStoreNode && !Object.prototype.hasOwnProperty.call(projectedStoreNode, 'payload') && projectedStoreNode.evidence.length <= 2 && projectedStoreNode.evidence.every((item) => item.quote.length <= 600), 'SQLite consumption projection retained unbounded node fields/evidence')
+assert(storeProjected.sourceUnits.every((unit) => !Object.prototype.hasOwnProperty.call(unit, 'quotes')), 'SQLite source units duplicate quote arrays outside the text budget')
+assert(storeProjected.metrics.contextChars <= storeProjected.metrics.contextBudget, 'SQLite consumption context exceeded its aggregate budget')
+assert(JSON.stringify(storeProjected).length <= storeProjected.metrics.contextBudget + 20000, 'SQLite public consumption response exceeded its aggregate envelope')
+const storeRelationOnly = store.queryDocumentGraph(fixture.documentId, { relations: ['causes'], hops: 0 })
+assert(storeRelationOnly && storeRelationOnly.graph.edges.some((edge) => edge.relation === 'causes' && edge.fromNodeId === 'n800' && edge.toNodeId === 'n801'), 'SQLite relation-only selector did not seed matching edge endpoints')
+assert(storeRelationOnly.metrics.relationCandidateEdges === 1, 'SQLite relation-only candidate metric is wrong')
+const storeOtherRelation = store.queryDocumentGraph(fixture.documentId, { relations: ['supports'], hops: 0 })
+assert(storeOtherRelation.queryId !== storeRelationOnly.queryId, 'SQLite queryId omitted relation selectors')
 const storeSaturated = store.queryDocumentGraph(fixture.documentId, { query: '知识节点 窗口外目标', limit: 1, hops: 0 })
 assert(storeSaturated && storeSaturated.matches[0] && storeSaturated.matches[0].nodeId === 'n801', 'SQLite candidate cap hid a late exact match behind common early bigrams')
 assert(storeLate.graph.nodes.length <= 160 && storeLate.graph.edges.length <= 480, 'SQLite consumption query exceeded hard budgets')
