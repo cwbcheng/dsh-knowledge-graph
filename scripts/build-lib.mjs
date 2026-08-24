@@ -519,7 +519,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (t.status !== 'running') return writeJson(res, 200, { status: t.status })
               t.cancelled = true
               if (Array.isArray(t.cancelHooks)) {
-                for (const hook of t.cancelHooks) { try { hook() } catch (e) {} }
+                for (const hook of t.cancelHooks.slice()) { try { hook() } catch (e) {} }
               }
               if (typeof t.abortStream === 'function') { try { t.abortStream() } catch (e) {} }
               return writeJson(res, 200, { status: 'cancelling' })

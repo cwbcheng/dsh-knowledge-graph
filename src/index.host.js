@@ -852,7 +852,7 @@ export default function hostPlugin() {
           result.addedEdges += repair.edges.length
           return result
         } catch (error) {
-          if (error && error.code === 'cancelled') throw error
+          if (isTerminalTaskOperationErrorHost(error)) throw error
           accepted.warnings.push('coverage_review_failed:' + (error && error.message ? error.message : String(error)))
           return result
         }
@@ -2516,40 +2516,63 @@ export default function hostPlugin() {
           }
         })
       }
-      // Cancellation is the only way out of an in-flight resolution besides
-      // the per-provider soft fallbacks above; the global busy lock is always
-      // released by the task runner's finally.
+      function taskOperationErrorHost(code, message, phase, timeoutMs) {
+        const error = new Error(message)
+        error.code = code
+        error.phase = phase
+        if (Number.isInteger(timeoutMs)) error.timeoutMs = timeoutMs
+        return error
+      }
+      function addTaskCancelHookHost(task, hook) {
+        if (!task || typeof hook !== 'function') return () => {}
+        task.cancelHooks = Array.isArray(task.cancelHooks) ? task.cancelHooks : []
+        task.cancelHooks.push(hook)
+        let removed = false
+        return () => {
+          if (removed || !Array.isArray(task.cancelHooks)) return
+          removed = true
+          const index = task.cancelHooks.indexOf(hook)
+          if (index >= 0) task.cancelHooks.splice(index, 1)
+        }
+      }
+      function throwIfTaskCancelledHost(task) {
+        if (task && task.cancelled) throw taskOperationErrorHost('cancelled', '任务已取消', 'task')
+      }
+      function isTerminalTaskOperationErrorHost(error) {
+        return Boolean(error && (error.code === 'cancelled' || error.code === 'timeout'))
+      }
+      function effectiveModelTimeoutHost(timeoutMs) {
+        const requested = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Math.floor(Number(timeoutMs)) : 180000
+        const rawCap = globalThis.process && globalThis.process.env ? Number(globalThis.process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS) : NaN
+        const cap = Number.isFinite(rawCap) && rawCap >= 20 ? Math.floor(rawCap) : requested
+        return Math.max(20, Math.min(requested, cap))
+      }
+      // Model resolution remains cancellable even when a provider registry is
+      // slow or non-cooperative. Completed hooks are removed immediately.
       async function resolveModel() {
         const task = activeTask
         if (!task) return resolveModelInner()
+        throwIfTaskCancelledHost(task)
         return new Promise((resolve, reject) => {
           let settled = false
-          const cancel = () => {
+          let removeCancelHook = () => {}
+          const finish = (error, model) => {
             if (settled) return
             settled = true
-            const err = new Error('任务已取消')
-            err.code = 'cancelled'
-            reject(err)
+            removeCancelHook()
+            if (error) reject(error)
+            else resolve(model)
           }
-          task.cancelHooks = task.cancelHooks || []
-          task.cancelHooks.push(cancel)
-          resolveModelInner().then((model) => {
-            if (settled) return
-            settled = true
-            resolve(model)
-          }, (err) => {
-            if (settled) return
-            settled = true
-            reject(err)
-          })
+          removeCancelHook = addTaskCancelHookHost(task, () => finish(taskOperationErrorHost('cancelled', '任务已取消', 'model_resolution')))
+          resolveModelInner().then((model) => finish(null, model), (error) => finish(error))
         })
       }
 
-      // No fixed wall-clock timeout: model work runs until it finishes or the
-      // user cancels. Progress reports connection state, the AbortSignal is
-      // forwarded to the provider, and stalled streams surface visible
-      // warnings instead of silently pretending everything is fine.
-      async function callModel(model, system, userText, _timeoutMs, temperature, maxTokens) {
+      // The existing timeout argument is a real wall-clock deadline covering
+      // stream creation and iteration. Cancellation/timeout reject immediately
+      // even when a provider ignores AbortSignal; the losing collector is kept
+      // isolated and cannot mutate task progress or publish partial output.
+      async function callModel(model, system, userText, timeoutMs, temperature, maxTokens) {
         const llm = ctx.get('llm')
         if (!llm) {
           const err = new Error('模型服务不可用')
@@ -2557,28 +2580,47 @@ export default function hostPlugin() {
           throw err
         }
         const task = activeTask
+        throwIfTaskCancelledHost(task)
+        const effectiveTimeoutMs = effectiveModelTimeoutHost(timeoutMs)
         const outByIndex = new Map()
         const reasonByIndex = new Map()
+        const warnTimers = []
         let cancelled = false
+        let terminal = false
         let receivedAny = false
         let chunkTypes = ''
         let finishReason = null
+        let abortOperation = () => { cancelled = true }
+        const clearWarnTimers = () => {
+          for (const timer of warnTimers) clearTimeout(timer)
+          warnTimers.length = 0
+        }
         const collecting = (async () => {
           const controller = new AbortController()
           let iter = null
+          let controllerAborted = false
+          let iteratorClosed = false
+          const closeIterator = () => {
+            if (iteratorClosed || !iter || typeof iter.return !== 'function') return
+            iteratorClosed = true
+            try {
+              const returned = iter.return()
+              if (returned && typeof returned.catch === 'function') returned.catch(() => {})
+            } catch (e) { /* already closed */ }
+          }
           const abort = () => {
             cancelled = true
-            try { controller.abort() } catch (e) { /* already aborted */ }
-            try { if (iter && typeof iter.return === 'function') iter.return() } catch (e) { /* already closed */ }
+            if (!controllerAborted) {
+              controllerAborted = true
+              try { controller.abort() } catch (e) { /* already aborted */ }
+            }
+            closeIterator()
           }
-          const warnTimers = []
-          const clearWarnTimers = () => {
-            for (const t of warnTimers) clearTimeout(t)
-            warnTimers.length = 0
-          }
+          abortOperation = abort
           const warnAt = (ms, text) => {
+            if (ms >= effectiveTimeoutMs) return
             warnTimers.push(setTimeout(() => {
-              if (task && activeTask === task && !task.cancelled && !receivedAny) {
+              if (!terminal && task && activeTask === task && !task.cancelled && !receivedAny) {
                 task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
                 task.progress.warning = text
                 task.progress.updatedAt = Date.now()
@@ -2587,8 +2629,6 @@ export default function hostPlugin() {
           }
           if (task) {
             task.abortStream = abort
-            task.cancelHooks = task.cancelHooks || []
-            task.cancelHooks.push(() => { if (task.abortStream) task.abortStream() })
             task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
             task.progress.stage = '正在发起模型请求（' + model.provider + ' · ' + model.model + '）…'
             task.progress.updatedAt = Date.now()
@@ -2607,14 +2647,18 @@ export default function hostPlugin() {
               maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8000,
               signal: controller.signal,
             }))
-            if (task) {
+            if (terminal || cancelled || (task && task.cancelled)) {
+              closeIterator()
+              throw taskOperationErrorHost('cancelled', '任务已取消', 'llm_stream')
+            }
+            if (task && activeTask === task) {
               task.abortStream = abort
               task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
               task.progress.stage = '模型请求已发出，等待首个字符…'
               task.progress.updatedAt = Date.now()
             }
             for await (const chunk of iter) {
-              if (cancelled || (task && task.cancelled)) {
+              if (terminal || cancelled || (task && task.cancelled)) {
                 cancelled = true
                 break
               }
@@ -2641,7 +2685,7 @@ export default function hostPlugin() {
                   reasonByIndex.set(chunk.index, chunk.block.text)
                 }
               }
-              if (receivedAny && task) {
+              if (receivedAny && !terminal && task && activeTask === task) {
                 task.progress = task.progress || { stage: '模型生成中', charsReceived: 0, updatedAt: Date.now() }
                 task.progress.stage = chunk.type === 'reasoning-delta' || (chunk.block && chunk.block.type === 'reasoning') ? '模型思考中…' : '模型生成中…'
                 const outLen = Array.from(outByIndex.values()).reduce((n, s) => n + s.length, 0)
@@ -2653,10 +2697,8 @@ export default function hostPlugin() {
             }
           } finally {
             clearWarnTimers()
-            if (iter && typeof iter.return === 'function') {
-              try { iter.return() } catch (e) { /* already closed */ }
-            }
-            if (task) task.abortStream = null
+            closeIterator()
+            if (task && task.abortStream === abort) task.abortStream = null
           }
           if (cancelled || (task && task.cancelled)) {
             const err = new Error('任务已取消')
@@ -2679,7 +2721,39 @@ export default function hostPlugin() {
           }
           return out
         })()
-        return collecting
+        return new Promise((resolve, reject) => {
+          let settled = false
+          let deadlineTimer = null
+          let removeCancelHook = () => {}
+          const cleanup = () => {
+            if (deadlineTimer) clearTimeout(deadlineTimer)
+            deadlineTimer = null
+            clearWarnTimers()
+            removeCancelHook()
+            if (task && task.abortStream === abortOperation) task.abortStream = null
+          }
+          const finish = (error, value, shouldAbort) => {
+            if (settled) return
+            settled = true
+            terminal = true
+            if (shouldAbort) abortOperation()
+            cleanup()
+            if (error) reject(error)
+            else resolve(value)
+          }
+          removeCancelHook = addTaskCancelHookHost(task, () => {
+            finish(taskOperationErrorHost('cancelled', '任务已取消', 'llm_stream'), null, true)
+          })
+          deadlineTimer = setTimeout(() => {
+            if (task && activeTask === task && task.progress) {
+              task.progress.stage = '模型调用已超时'
+              task.progress.warning = '模型调用超过 ' + effectiveTimeoutMs + 'ms，已中止当前操作'
+              task.progress.updatedAt = Date.now()
+            }
+            finish(taskOperationErrorHost('timeout', '模型调用超过 ' + effectiveTimeoutMs + 'ms', 'llm_stream', effectiveTimeoutMs), null, true)
+          }, effectiveTimeoutMs)
+          collecting.then((value) => finish(null, value, false), (error) => finish(error, null, false))
+        })
       }
 
       // ---- trajectory serialization: Session.events -> numbered trace text ----
@@ -3739,7 +3813,7 @@ export default function hostPlugin() {
               accepted = norm
               break
             } catch (error) {
-              if (error && error.code === 'cancelled') throw error
+              if (isTerminalTaskOperationErrorHost(error)) throw error
               lastError = error && error.message ? error.message : String(error)
               if (attempt === 0 && isRelationRateLimitErrorHost(error)) {
                 taskStage('关系编织触发模型限流，等待 30 秒后重试…', '模型 TPM 暂时耗尽；不会立即重复请求')
@@ -3800,6 +3874,12 @@ export default function hostPlugin() {
         task.finishedAt = Date.now()
         task.errorCode = code
         task.errorMessage = message
+      }
+      function finishTaskRuntimeHost(task) {
+        if (!task) return
+        if (activeTask === task) activeTask = null
+        task.abortStream = null
+        if (Array.isArray(task.cancelHooks)) task.cancelHooks.length = 0
       }
       // Checkpoints contain only owned JSON data. They are returned on demand
        // by task-status and can be persisted by the client without keeping any
@@ -4150,8 +4230,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
-                if (e && e.code === 'cancelled') throw e
-                if (e && e.code === 'timeout') { lastErr = '超时'; break }
+                if (isTerminalTaskOperationErrorHost(e)) throw e
                 lastErr = e && e.message ? e.message : String(e)
               }
             }
@@ -4229,8 +4308,9 @@ export default function hostPlugin() {
               const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
               if (obj && typeof obj.summary === 'string' && obj.summary.trim()) summary = obj.summary.trim()
             } catch (e) {
-              // Fall back to the batch-level summary; never fail extraction
-              // just because the summary-merge call failed.
+              if (isTerminalTaskOperationErrorHost(e)) throw e
+              // Fall back only for non-terminal provider/schema failures;
+              // explicit cancellation and wall-clock deadlines stay terminal.
               acc.warnings.push('summary_consolidation_failed:' + (e && e.message ? e.message : String(e)))
             }
           }
@@ -4296,7 +4376,7 @@ export default function hostPlugin() {
                  paragraphMeta: canonicalParagraphMeta,
                }, canonicalSourceText)
              } catch (error) {
-               if (error && error.code === 'cancelled') throw error
+               if (isTerminalTaskOperationErrorHost(error)) throw error
                const connectivity = graphConnectivityHost(nodes, acc.edges)
                acc.warnings.push('relation_weave_failed:' + (error && error.message ? error.message : String(error)))
                relationWeave = {
@@ -4454,14 +4534,19 @@ export default function hostPlugin() {
 
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
-          console.error('[dsh-knowledge-graph] extraction failed:', e)
+          if (!isTerminalTaskOperationErrorHost(e)) console.error('[dsh-knowledge-graph] extraction failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 拆分超时：' + msg)
           else failTask(task, 'failed', 'AI 拆分失败：' + msg)
         } finally {
           // `return failTask(...)` paths still execute this finally block. This
           // makes deterministic failures durable instead of leaving the last
           // SQLite checkpoint marked as "running" and therefore resumable.
-          if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
+          try {
+            if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
+          } finally {
+            finishTaskRuntimeHost(task)
+          }
         }
       }
 
@@ -4559,7 +4644,10 @@ export default function hostPlugin() {
           task.result = buildGraphViewHost(graph)
         } catch (error) {
           if (error && error.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (error && error.code === 'timeout') failTask(task, 'timeout', '关系补全超时：' + (error && error.message ? error.message : String(error)))
           else failTask(task, 'failed', '关系补全失败：' + (error && error.message ? error.message : String(error)))
+        } finally {
+          finishTaskRuntimeHost(task)
         }
       }
 
@@ -5187,7 +5275,7 @@ export default function hostPlugin() {
               break
             } catch (error) {
               lastError = error
-              if (error && error.code === 'cancelled') throw error
+              if (isTerminalTaskOperationErrorHost(error)) throw error
             }
           }
           if (!parsed) return failTask(task, 'schema_invalid', '证据回答无法解析：' + (lastError && lastError.message ? lastError.message : '模型输出格式错误'))
@@ -5205,9 +5293,10 @@ export default function hostPlugin() {
           }
         } catch (error) {
           if (error && error.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          else if (error && error.code === 'timeout') failTask(task, 'timeout', '知识图证据问答超时：' + (error && error.message ? error.message : String(error)))
           else failTask(task, 'failed', '知识图证据问答失败：' + (error && error.message ? error.message : String(error)))
         } finally {
-          if (activeTask === task) activeTask = null
+          finishTaskRuntimeHost(task)
         }
       }
 
@@ -5482,6 +5571,7 @@ export default function hostPlugin() {
           }
           return candidates.filter((c) => kept.has(c.id))
         }).catch((e) => {
+          if (isTerminalTaskOperationErrorHost(e)) throw e
           warnings.push('verify_confirm_failed:' + (e && e.message ? e.message : String(e)))
           return candidates
         })
@@ -5532,8 +5622,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
-                if (e && e.code === 'cancelled') throw e
-                if (e && e.code === 'timeout') { lastErr = '超时'; break }
+                if (isTerminalTaskOperationErrorHost(e)) throw e
                 lastErr = e && e.message ? e.message : String(e)
               }
             }
@@ -5563,10 +5652,12 @@ export default function hostPlugin() {
           task.result = mapVerificationResultHost(report, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
-          console.error('[dsh-knowledge-graph] verification failed:', e)
+          if (!isTerminalTaskOperationErrorHost(e)) console.error('[dsh-knowledge-graph] verification failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 审校超时，请稍后重试')
           else failTask(task, 'failed', 'AI 审校失败：' + msg)
+        } finally {
+          finishTaskRuntimeHost(task)
         }
       }
 
@@ -5673,7 +5764,7 @@ export default function hostPlugin() {
               norm = r
               break
             } catch (e) {
-              if (e && e.code === 'timeout') { lastErr = '超时'; break }
+              if (isTerminalTaskOperationErrorHost(e)) throw e
               lastErr = e && e.message ? e.message : String(e)
             }
           }
@@ -5697,10 +5788,12 @@ export default function hostPlugin() {
           task.result = mapVerificationResultHost(result, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
-          console.error('[dsh-knowledge-graph] question task failed:', e)
+          if (!isTerminalTaskOperationErrorHost(e)) console.error('[dsh-knowledge-graph] question task failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 质疑回答超时，请稍后重试')
           else failTask(task, 'failed', 'AI 质疑回答失败：' + msg)
+        } finally {
+          finishTaskRuntimeHost(task)
         }
       }
 
@@ -5897,8 +5990,7 @@ export default function hostPlugin() {
                 norm = r
                 break
               } catch (e) {
-                if (e && e.code === 'cancelled') throw e
-                if (e && e.code === 'timeout') { lastErr = '超时'; break }
+                if (isTerminalTaskOperationErrorHost(e)) throw e
                 lastErr = e && e.message ? e.message : String(e)
               }
             }
@@ -5931,10 +6023,12 @@ export default function hostPlugin() {
           task.result = mapVerificationResultHost(result, task.paragraphMap)
         } catch (e) {
           const msg = e && e.message ? e.message : String(e)
-          console.error('[dsh-knowledge-graph] fact-check failed:', e)
+          if (!isTerminalTaskOperationErrorHost(e)) console.error('[dsh-knowledge-graph] fact-check failed:', e)
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 外部事实核查超时，请稍后重试')
           else failTask(task, 'failed', 'AI 外部事实核查失败：' + msg)
+        } finally {
+          finishTaskRuntimeHost(task)
         }
       }
 
@@ -6266,7 +6360,7 @@ export default function hostPlugin() {
         if (t.status !== 'running') return { status: t.status }
         t.cancelled = true
         if (Array.isArray(t.cancelHooks)) {
-          for (const hook of t.cancelHooks) {
+          for (const hook of t.cancelHooks.slice()) {
             try { hook() } catch (e) { /* hook already fired */ }
           }
         }

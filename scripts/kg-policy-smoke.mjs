@@ -68,6 +68,11 @@ assert(client.includes('function KnowledgeConsumePanel') && (client.match(/h\(Kn
 assert(client.includes("host.call('document-load', { documentId, query: nodeId"), 'consumption locator cannot hydrate an off-window node')
 assert(client.includes("if (askState.phase === 'submitting' || askState.phase === 'running') return") && client.includes("disabled: askState.phase === 'submitting' || askState.phase === 'running'"), 'answer UI can abandon polling by resubmitting a running task')
 assert(packageJson.scripts && packageJson.scripts['test:kg-consumption'] && packageJson.scripts.test.includes('test:kg-consumption'), 'consumption regression is not part of npm test')
+assert(packageJson.scripts['test:kg-timeout'] && packageJson.scripts.test.includes('test:kg-timeout'), 'timeout/cancellation regression is not part of npm test')
+assert(packageJson.scripts['test:kg-performance'] && packageJson.scripts.test.includes('test:kg-performance'), 'large consumption performance smoke is not part of npm test')
+assert(host.includes('function effectiveModelTimeoutHost') && host.includes("taskOperationErrorHost('timeout'") && !host.includes('userText, _timeoutMs'), 'model timeout argument is still advisory instead of a real deadline')
+assert(host.includes('function addTaskCancelHookHost') && host.includes('removeCancelHook()') && host.includes('t.cancelHooks.slice()'), 'task cancellation hooks are not removable or safe during iteration')
+assert((host.match(/finishTaskRuntimeHost\(task\)/g) || []).length >= 7, 'task runners do not consistently clear active runtime state')
 assert(host.includes("const EVIDENCE_REQUIRED_NODE_TYPES") && host.includes("claim_evidence_missing") && host.includes("const entailmentStatus = 'unverified'") && host.includes('function preserveEntailmentAuthorityHost'), 'generation/browser paths can still self-certify semantic entailment')
 assert(ci.includes('extension/viewer.css extension/d3'), 'CI generated-artifact gate does not cover viewer.css/d3')
 
