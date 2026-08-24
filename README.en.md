@@ -35,6 +35,7 @@
 - **Incremental append (追加拆分)**: once a result exists, the input panel's primary button becomes **追加拆分 (append split)** — paste the next passage / document and the AI extracts ONLY the new content, linking it into the existing graph via **cross-passage edges** (a concept that reappears is not duplicated — it gets an edge straight to the existing node); the result merges in place, paragraph numbering stays unified across the whole text, and the history entry updates in place. Selecting text in a chat message while a result exists appends it to the current graph automatically.
 - **History**: every successful split records a lightweight browser index (up to 20 entries, deletable one-by-one or all); the browser keeps only `documentId`, title, counts, and timestamps, then reloads the source and canonical graph from Host/SQLite instead of copying book-sized payloads into `localStorage`.
 - **Chapter filtering and candidate review**: filter the graph and source paragraphs by chapter; review evidence-bearing entity / claim candidates as **candidate / accepted / rejected** and click a candidate to jump back to its source. Decisions sync through the Host to SQLite (dynamic plugins retain them in the Host session, with browser localStorage as fallback).
+- **Knowledge consumption layer**: source graphs and trajectory graphs share a “Use this knowledge graph” panel. It provides bounded structured search by text, node type, chapter, grounding status, and entailment status, while keeping **direct matches** distinct from relation neighbours. Evidence Q&A reads the server-side canonical graph and authenticated source only; the model may cite only Host-assigned `evidenceId` values, and every admitted answer part must carry node, edge, or source-paragraph evidence. Clicking a result or citation links back to graph and source; if the node lies outside the current 800-node renderer window, the client loads a canonical subgraph by node ID before locating it.
 - **Knowledge graph export**: the graph toolbar exports the current rendered graph as a high-resolution PNG image, and the result toolbar exports the complete graph as JSON (including source, chunk, evidence, verification, and audit data) or as separate node and edge CSV files. Data exports always contain the full graph, independent of the active chapter filter; trajectory graphs support the same exports.
 - **Persistent entry**: a permanent 「知识图」button on the right of each conversation header; run cards also get a launch bar.
 - **Trajectory knowledge graph (conversation view tab)**: a third tab 「轨迹知识图」(beside 对话 / 轨迹) turns the **current session's full execution trace** (user messages, tool calls, tool results, assistant replies) into a knowledge graph — visualizing what the agent **found, inferred, and did** — with two-way linking between graph and trace events. Results are canonical Host/SQLite documents; the browser stores only the trajectory `documentId/revision` reference, so tab switches or page reloads rehydrate from canonical state rather than from a copied graph. Leaving mid-extraction and returning resumes polling automatically. Once the session produces new events, **追加新事件 (append new events)** submits the same document id plus the expected revision, reloads the complete canonical graph Host-side, and merges only the new events; hidden nodes beyond the 800-node browser window therefore cannot be lost. The event-column / graph-column width and result height remain drag-adjustable and remembered.
@@ -89,9 +90,9 @@ cd dsh-knowledge-graph
 
 | File | Purpose |
 | --- | --- |
-| [`src/index.host.js`](src/index.host.js) | Host half: async AI extraction engine (paragraph numbering, batching, schema validation, typed diagnostics, model routing, session-trace serialization) + graph verification/questioning engine (local checks, LLM audit, confirmation pass) |
-| [`src/index.client.js`](src/index.client.js) | Client half: floating workbench UI, graph rendering, two-way linking, verification & questioning panel, fix application/audit, history, width/height resizing, trajectory graph tab |
-| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite persistence: documents, chunks, nodes, edges, evidence, entity/claim candidates, and extraction checkpoints |
+| [`src/index.host.js`](src/index.host.js) | Host half: async AI extraction engine (paragraph numbering, batching, schema validation, typed diagnostics, model routing, session-trace serialization) + graph verification/questioning + canonical structured search and evidence-ID Q&A |
+| [`src/index.client.js`](src/index.client.js) | Client half: floating workbench UI, graph rendering, two-way linking, shared search/evidence-Q&A panel, verification & questioning, fix application/audit, history, resizing, trajectory graph tab |
+| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite persistence: documents, chunks, nodes, edges, evidence, candidates, extraction checkpoints, and bounded large-graph consumption queries |
 
 ### 2. Install (pick one)
 
@@ -131,7 +132,7 @@ After the restart: the 「知识图」button appears at the right of each conver
 
 | File | Purpose (persistent package) |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes for extraction/append, task status, `document-load`/`document-export`, revisioned `graph-commit`, safe `resume-extract`, verification/questioning, plus automatic SQLite canonical-graph/checkpoint persistence |
+| [`lib/index.js`](lib/index.js) | Host half: task engine + `/api/dsh-knowledge-graph` routes for extraction/append, task status, `document-load`/`document-export`, revisioned `graph-commit`, `graph-query`, `answer-graph`, safe `resume-extract`, verification/questioning, plus automatic SQLite canonical-graph/checkpoint persistence |
 | [`lib/client.js`](lib/client.js) | Client half: `__ModuleLoader__` browser module (fetch RPC + manual style injection) |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch: inserts the `dsh-knowledge-graph` row into the composition |
 
@@ -168,7 +169,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database; `npm run test:kg-candidates` additionally covers dynamic Host RPC and persistent HTTP/SQLite candidate list/update flows. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
+The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database; `npm run test:kg-consumption` covers dynamic RPC, persistent HTTP and SQLite query parity, retrieval beyond the 800-node view and beyond 600 common early candidates, revision fencing, invalid filters, node/edge/source citation admission, unknown and valid-but-unrelated evidence IDs, authority qualification, clause-smuggling rejection, and both frontend mounts; `npm run test:kg-candidates` covers candidate list/update flows. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
 
 ## Updating
 
@@ -193,11 +194,95 @@ Window layout, history indexes, and other lightweight UI state live in browser `
 1. Click the 「知识图」button at the right of the conversation title to open the floating workbench;
 2. Paste text into 「输入资料」(title optional), click **AI 拆分** (the input area collapses; result height and text/graph width ratio are drag-adjustable and remembered);
 3. Once the summary / graph appears, **click a graph node to view the detail card (full content) and locate the source**, or **click a source paragraph to focus its node**;
-4. Click **⚡ 快速体检 (quick check)** for an instant deterministic report, or **🤖 AI 深度审校 (deep audit)** for an evidence-grounded adversarial LLM review; click an issue to tint its graph target and locate its source paragraph, then **apply the fix** or **dismiss**; question a node from its detail card, an edge from its selected-edge card, or the whole graph from the verification panel;
-5. In **章节与候选审核 (chapter and candidate review)**, choose a chapter to filter the graph/source view, then mark candidates accepted or rejected; click a candidate card to locate its evidence in the source;
-6. To extend the graph, paste the next passage into the input area and click **追加拆分 (append split)** (or just select text in a chat message — it appends automatically): new nodes link to existing ones via cross-passage edges, paragraph numbering stays unified, and the history entry updates in place; the previous verification report is marked stale and can be re-run;
-7. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
-8. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; click a trace event to focus its node in the graph, click a node to see full content and scroll to its event; results restore after tab switches / reloads; drag the middle handle for column width and the bottom handle for result height.
+4. In **Use this knowledge graph**, switch between structured search and evidence Q&A: find nodes by text/type/chapter, or ask the canonical graph directly; click a result/citation to link back to node, relation, and source evidence;
+5. Click **⚡ 快速体检 (quick check)** for an instant deterministic report, or **🤖 AI 深度审校 (deep audit)** for an evidence-grounded adversarial LLM review; click an issue to tint its graph target and locate its source paragraph, then **apply the fix** or **dismiss**; question a node from its detail card, an edge from its selected-edge card, or the whole graph from the verification panel;
+6. In **章节与候选审核 (chapter and candidate review)**, choose a chapter to filter the graph/source view, then mark candidates accepted or rejected; click a candidate card to locate its evidence in the source;
+7. To extend the graph, paste the next passage into the input area and click **追加拆分 (append split)** (or just select text in a chat message — it appends automatically): new nodes link to existing ones via cross-passage edges, paragraph numbering stays unified, and the history entry updates in place; the previous verification report is marked stale and can be re-run;
+8. Use 「历史」to revisit previous splits (last 20 saved automatically, deletable one-by-one or all); if you close or refresh mid-task, reopening the window resumes polling automatically;
+9. Switch to the 「轨迹知识图」tab and click **拆解本会话轨迹** to generate the session's trajectory graph; the same structured-search and evidence-Q&A panel is available there. Click a trace event to focus its node, or a node/citation to scroll to the event; results restore after tab switches/reloads.
+
+## Knowledge consumption layer
+
+### Frontend
+
+Both source and trajectory graphs render the shared **Use this knowledge graph** panel:
+
+- **Structured search** combines text with node-type and chapter filters. The result list represents direct matches only; bounded relation neighbours remain in the returned subgraph as context.
+- **Evidence Q&A** retrieves canonical nodes/edges plus authenticated source-paragraph fallback, then runs an asynchronous model task. `answered`, `insufficient`, and `out_of_scope` are successful semantic outcomes.
+- Clicking a search result or citation focuses graph and source. A node outside the current 800-node renderer window is loaded with `document-load({ query: nodeId })` before navigation.
+
+### `graph-query`
+
+Dynamic packages call `host.call('graph-query', body)`; persistent packages use `POST /api/dsh-knowledge-graph/graph-query`:
+
+```json
+{
+  "documentId": "document_xxx",
+  "expectedRevision": 4,
+  "query": "checkpoint recovery",
+  "nodeIds": [],
+  "types": ["fact", "rule"],
+  "relations": ["supports", "causes"],
+  "sectionIds": ["section-2"],
+  "groundingStatuses": ["grounded"],
+  "entailmentStatuses": ["verified", "uncertain", "unverified"],
+  "limit": 20,
+  "hops": 1,
+  "direction": "both",
+  "maxNodes": 80,
+  "maxEdges": 240
+}
+```
+
+`nodeIds`, types, sections, grounding and entailment statuses are hard filters. Invalid enum values produce typed `invalid_input` errors rather than silently becoming an unfiltered query. `matches` contains direct hits; `graph.nodes/edges` may additionally contain 0–2-hop neighbours. Responses contain document/revision metadata, bounded graph data, linkable `sourceUnits`, and metrics — never the full `sourceText`.
+
+Current hard caps are 600 query characters, 40 direct hits, 160 nodes, 480 edges, 2 hops, 80 source units, and 24,000 source-context characters. Smaller caller-supplied `maxNodes/maxEdges` values remain hard caps. A stale `expectedRevision` returns `revision_conflict`.
+
+### `answer-graph`
+
+`answer-graph` starts an asynchronous task and reuses `task-status` / `task-cancel`:
+
+```json
+{
+  "documentId": "document_xxx",
+  "expectedRevision": 4,
+  "question": "Why does the checkpoint support resuming?",
+  "hops": 1,
+  "model": { "provider": "...", "model": "..." }
+}
+```
+
+The final result uses admitted answer parts and authenticated citations:
+
+```json
+{
+  "status": "answered",
+  "answer": "Host-assembled admitted answer",
+  "parts": [
+    { "id": "part-1", "text": "One independently cited proposition", "evidenceIds": ["ev3"] }
+  ],
+  "citations": [
+    {
+      "id": "ev3",
+      "targetKind": "node",
+      "targetId": "n12",
+      "nodeId": "n12",
+      "paragraph": 8,
+      "quote": "verbatim canonical source",
+      "groundingStatus": "grounded",
+      "entailmentStatus": "unverified"
+    }
+  ]
+}
+```
+
+Trust boundary:
+
+- Requests carrying a `documentId` are resolved from Host memory or SQLite canonical state; client-supplied `graph`/`text` is not an authority.
+- Before calling the model, Host authenticates node evidence, edge evidence, and source-only fallback paragraphs, then assigns at most 24 non-forgeable `evidenceId` values.
+- The model may return only `parts[].evidenceIds`. Host drops unknown/no-evidence IDs and valid-but-lexically-unrelated citations. A `candidate/unverified/uncertain` citation also requires source-qualified wording, while `unsupported` evidence cannot be presented as a verified conclusion. Admission is clause-local and polarity-aware, so a caveat cannot bleed into another clause and a lexically similar negation is rejected. If no `answered` part survives, the result downgrades to `insufficient`. Even after admission, raw model prose is never surfaced: Host deterministically renders each part from authenticated node/edge/source evidence, while `insufficient/out_of_scope` use fixed Host text and no follow-ups. `answered` follow-ups are generated deterministically from citation target IDs/paragraphs, so no model prose is surfaced through clickable prompts either.
+- `targetKind=node | edge | source` lets a proposition cite a node, a relation itself, or a source paragraph when graph coverage is incomplete.
+- `groundingStatus=grounded` means traceable to canonical source, **not externally verified truth**. Entailment status is preserved in the citation; use external fact-checking for independent truth claims.
 
 ## Chrome extension (划线拆图)
 
@@ -215,7 +300,7 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
   npm run pack:extension
   ```
   The first run creates a new private key; the extension ID is derived from it, so rotating the key changes the ID and invalidates existing installs. Never copy the key into `dist/` or commit it. The script writes the replacement CRX to `dist/dsh-knowledge-graph.crx`.
-- **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). By default the endpoint accepts only this project's new CRX origin, `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`; if you use **Load unpacked** and get a different extension ID, set `DSH_KG_EXTENSION_ORIGINS=chrome-extension://your-extension-id` before starting dsh web. `DSH_KG_ALLOW_LOCAL_ORIGIN=1` is required to additionally allow localhost/127.0.0.1 origins; empty Origin and other extension IDs are rejected. The endpoint answers with the PNA preflight header.
+- **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). By default the endpoint accepts only this project's new CRX origin, `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`; if you use **Load unpacked** and get a different extension ID, set `DSH_KG_EXTENSION_ORIGINS=chrome-extension://your-extension-id` before starting dsh web. `DSH_KG_ALLOW_LOCAL_ORIGIN=1` is required to additionally allow localhost/127.0.0.1 origins; empty Origin and other extension IDs are rejected. An endpoint allowlist exposes only `extract / task-status / task-cancel / list-models`; canonical document APIs such as `document-load / graph-query / answer-graph / graph-commit` are unavailable through `/dsh-kg`. The endpoint answers with the PNA preflight header.
 - **Data flow**: content script (any page) → `chrome.runtime.sendMessage` → service worker writes `chrome.storage.session` and calls `chrome.action.openPopup()` (Chrome 127+); the popup reads the selected text and POSTs to `http://127.0.0.1:3080/dsh-kg/extract`, then polls `task-status` to render the graph. The DSH base URL is editable at the bottom of the popup and remembered (`kgBase` in `chrome.storage.local`).
 
 ## Architecture
@@ -226,6 +311,7 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 │   trajectory-extract / trajectory-status           │   │  floating window (shell.overlay)     │
 │   verify-graph (quick / standard)                  │   │    input area (collapsible)          │
 │   question-graph (node / edge / graph)             │   │    source ⇄ graph (resizable)        │
+│   graph-query / answer-graph (evidence IDs)       │   │    structured search / evidence Q&A │
 │   split paragraphs (numbered)  ──────────────────►│   │    verify panel / fixes / audit log   │
 │   serializeTrace(session events) ────────────────►│   │    history / diagnostics / toast     │
 │   append: existing-graph node list into the       │   │  header 「知识图」button + run card   │
@@ -240,6 +326,8 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
 
 - **Content-unit index = anchor**: Host and Client first classify each blank-line block (heading / list / dialogue / table / code / quote / prose) and then number units according to that structure — headings and list items stay one unit each, dialogue turns stay separate, quotes and code organize by line; ordinary prose groups sentences by discourse markers (but/therefore/for example…) and lexical topic drift, then closes a group at ~120 chars and splits single sentences past ~180 chars at clause/punctuation boundaries, so one unit never accumulates too many node badges. The prompt requires every node to report its source unit index; the client maps units **deterministically** instead of relying on the LLM to quote verbatim.
 - **Evidence carries its own provenance, and relation evidence must prove the relation itself**: canonical node/edge evidence uses `evidence[{ documentId, sourceId, chunkId, paragraph, quote }]`. The Host re-authenticates each quote against the referenced source unit at the write gate and fills provenance from the source-version/chunk covering that paragraph; an unlocatable quote is never upgraded into evidence. If the same canonical Node/Edge appears again in a later source version, the new evidence is merged instead of discarded. Endpoint presence alone still cannot prove `supports / causes / infers`.
+- **Consumption APIs are canonical-only and bounded**: document queries/answers load canonical state from Host memory or SQLite and fence it with `expectedRevision`. SQLite SQL-prefilters type/section/status/text candidates, scores lexical candidates in 600-row pages while retaining only a bounded top set, and performs indexed from/to edge expansion. A late exact match therefore cannot be hidden behind 600 common early candidates, and the complete graph is never materialized. Direct matches and expanded graph context stay distinct, with hard node/edge/source budgets.
+- **Evidence-ID admission is per answer part**: Host authenticates node, edge, and source-fallback evidence before assigning IDs. The model emits `parts[{ text, evidenceIds }]`; Host rejects unknown/empty citations, valid-but-lexically-unrelated or polarity-inverted clauses, cross-clause authority-caveat leakage, and unqualified claims backed only by non-verified authority states. It then discards the model's free-form part text, deterministically renders admitted parts from authenticated evidence, and assembles the final answer from those Host-rendered parts. Citations are therefore an admission condition for each proposition, not a decorative link attached to unconstrained prose afterward.
 - **Generate → Verify → Repair → Accept**: `validateGraphInvariantsHost()` is the deterministic truth gate shared by generation and quick-check. Every batch is schema-normalized and invariant-checked before merge; blocking invariants are fed back to the model as typed repair instructions for a bounded three-attempt retry. Deterministic paragraph fixes are repaired Host-side, invalid edges can be safely omitted after the retry budget, but a node that cannot be safely repaired or anchored makes the task fail explicitly with `invariant_violation`. A final whole-graph gate runs after all batch merges, and only `invariantErrors=0` can be persisted. The generation audit separately counts evidence-backed, candidate, and unsupported claims; a node without an authenticated quote is never labeled grounded.
 - **Anchor / evidence / semantic entailment are separate states**: `paragraph` is only an anchor; it is not claim evidence. A source-authenticated quote yields `groundingStatus=grounded`, a node with only an anchor is `candidate`, and a supplied quote that cannot be authenticated is `unsupported`. Semantic entailment is tracked independently as `entailmentStatus=verified|unsupported|uncertain|unverified`. The deterministic gate authenticates provenance but does **not** claim that a node's text is semantically entailed merely because a quote exists. Quick-check reports anchor coverage, evidence coverage, and independently verified entailment coverage separately.
 - **Typed failures, never silent**: CLI/process failures, non-JSON output, schema/invariant violations, busy queue, and missing models all produce explicit error codes; semantic state that cannot be safely repaired is never presented as a successful canonical graph.
@@ -265,6 +353,8 @@ Staging { sourceId, documentId, chunkCount, chunks[] }
 Evidence { documentId, sourceId, chunkId, paragraph, quote }
 Checkpoint { version: 2, taskKind, sourceId, documentId, baseRevision?, baseSource?, baseStaging?, traceEvents?, baseTraceText?, baseTraceEvents?, nextBatchIndex, totalBatches, graph /* lossless */, staging }
 GraphView { nodes[<=800], edges[], view: { kind: 'window' | 'query', nodeOffset, nodeLimit, totalNodes, totalEdges, truncated, query?, matchedNodes? } }
+GraphQueryResult { documentId, revision, query, matches[{ nodeId, score, reasons[] }], graph /* bounded direct hits + neighbours */, sourceUnits[], metrics }
+GraphAnswerResult { status: 'answered'|'insufficient'|'out_of_scope', answer, parts[{ id, text, evidenceIds[] }], citations[{ id, targetKind: 'node'|'edge'|'source', targetId, paragraph, quote, ...provenance }], supportingNodeIds[], retrieval }
 GraphOperation { kind: 'merge_node', fromNodeId, intoNodeId }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }

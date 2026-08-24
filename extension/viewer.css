@@ -118,6 +118,29 @@
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
+.kg-consume-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.kg-consume-tabs { display: inline-flex; padding: 3px; border: 1px solid var(--kg-border); border-radius: 9px; background: rgba(127,127,127,0.06); }
+.kg-consume-tab { border: 0; border-radius: 7px; padding: 5px 11px; background: transparent; color: var(--kg-text-dim); font: inherit; font-size: 12px; cursor: pointer; }
+.kg-consume-tab.on { color: #2563eb; background: rgba(59,130,246,0.12); font-weight: 600; }
+@media (prefers-color-scheme: dark) { .kg-consume-tab.on { color: #93c5fd; } }
+.kg-consume-form { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(5, minmax(105px, auto)); gap: 8px; margin-top: 10px; align-items: stretch; }
+.kg-consume-form .kg-question-input { width: 100%; box-sizing: border-box; }
+.kg-consume-select { min-width: 112px; border: 1px solid var(--kg-border); border-radius: 9px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; }
+.kg-consume-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; max-height: 360px; overflow: auto; }
+.kg-consume-result { width: 100%; text-align: left; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 11px; background: var(--kg-panel); color: var(--kg-text); font: inherit; cursor: pointer; }
+.kg-consume-result:hover, .kg-consume-result:focus-visible { border-color: rgba(59,130,246,0.65); outline: none; box-shadow: 0 0 0 1px rgba(59,130,246,0.18); }
+.kg-consume-result-top { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.kg-consume-result-text { margin-top: 5px; font-size: 13px; font-weight: 600; line-height: 1.55; }
+.kg-consume-result-quote { margin-top: 4px; font-size: 12px; color: var(--kg-text-dim); line-height: 1.55; }
+.kg-consume-state { margin: 10px 0 0; padding: 8px 10px; border-radius: 9px; background: rgba(127,127,127,0.06); color: var(--kg-text-dim); font-size: 12px; }
+.kg-consume-error { border: 1px solid rgba(220,38,38,0.28); background: rgba(220,38,38,0.06); color: #dc2626; }
+.kg-consume-answer { margin-top: 10px; padding: 11px 13px; border: 1px solid rgba(59,130,246,0.35); border-radius: 10px; background: rgba(59,130,246,0.055); }
+.kg-consume-answer-text { margin: 8px 0 0; white-space: pre-wrap; font-size: 13px; line-height: 1.75; }
+.kg-consume-citations { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.kg-consume-citation { width: 100%; text-align: left; border: 1px solid var(--kg-border); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; line-height: 1.55; cursor: pointer; }
+.kg-consume-citation:hover { border-color: rgba(59,130,246,0.65); }
+.kg-consume-followups { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+@media (max-width: 760px) { .kg-consume-form { grid-template-columns: 1fr 1fr; } .kg-consume-form .kg-question-input { grid-column: 1 / -1; } }
 .kg-fact-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .kg-fact-rules { margin: 8px 0 10px; }
 .kg-fact-head-text { flex: 1; min-width: 0; }

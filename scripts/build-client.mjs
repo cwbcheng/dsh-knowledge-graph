@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "resume-extract" || method === "relation-retry") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -130,10 +130,13 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      const ep = method === "trajectory-status" ? "trajectory-status" : "task-status"
-       const checkpoint = body && body.includeCheckpoint ? "&includeCheckpoint=1" : ""
-      const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId) + checkpoint, { cache: "no-store" })
-      return res.json()
+      if (method === "task-status" || method === "trajectory-status") {
+        const ep = method === "trajectory-status" ? "trajectory-status" : "task-status"
+        const checkpoint = body && body.includeCheckpoint ? "&includeCheckpoint=1" : ""
+        const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId) + checkpoint, { cache: "no-store" })
+        return res.json()
+      }
+      throw new Error("unsupported knowledge-graph RPC method: " + method)
     }
 
     function apply(ctx) {
@@ -168,6 +171,8 @@ if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not 
 if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
 if (!c.includes("host.call('list-models'")) throw new Error('list-models call not found')
 if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
+if (!c.includes("host.call('graph-query'")) throw new Error('graph-query call not found')
+if (!c.includes("host.call('answer-graph'")) throw new Error('answer-graph call not found')
 c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('document-load'").join("rpc('document-load'")
@@ -187,6 +192,8 @@ c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
 c = c.split("host.call('list-models'").join("rpc('list-models'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
+c = c.split("host.call('graph-query'").join("rpc('graph-query'")
+c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
 
 // tail: close apply + module
 if (!c.endsWith(oldTail)) throw new Error('client tail not found')

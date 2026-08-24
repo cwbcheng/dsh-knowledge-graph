@@ -134,9 +134,12 @@ async function originSmoke() {
   assert(missing.status === 403 && !missing.headers['access-control-allow-origin'], 'missing Origin was accepted')
   const other = await invoke(route.handler, { origin: 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
   assert(other.status === 403, 'unlisted extension Origin was accepted')
-  const exact = await invoke(route.handler, { origin: 'chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof' })
-  assert(exact.status === 200 && exact.headers['access-control-allow-origin'] === 'chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof', 'rotated extension Origin was rejected')
-  return { missing: missing.status, other: other.status, exact: exact.status }
+  const exactOrigin = 'chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof'
+  const exact = await invoke(route.handler, { origin: exactOrigin })
+  assert(exact.status === 200 && exact.headers['access-control-allow-origin'] === exactOrigin, 'rotated extension Origin was rejected')
+  const deniedConsumption = await invoke(route.handler, { method: 'POST', url: '/dsh-kg/graph-query', origin: exactOrigin })
+  assert(deniedConsumption.status === 404, 'extension route exposed canonical graph consumption endpoints')
+  return { missing: missing.status, other: other.status, exact: exact.status, consumption: deniedConsumption.status }
 }
 
 const attachments = await attachmentSmoke()

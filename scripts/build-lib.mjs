@@ -343,6 +343,90 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-query') {
+              const raw = await readBody(req, 64 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const query = typeof a.query === 'string' ? a.query.trim() : ''
+              const validationError = validateConsumptionOptionsHost(a)
+              if (validationError) return writeJson(res, 200, { error: validationError })
+              const hasSelector = query || ['nodeIds', 'types', 'relations', 'sectionIds', 'groundingStatuses', 'entailmentStatuses'].some((field) => Array.isArray(a[field]) && a[field].length > 0)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识检索缺少 documentId' } })
+              if (!hasSelector) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请提供 query 或至少一个结构化筛选条件' } })
+              if (query.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识检索问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
+              const store = await getSqliteStore()
+              const searched = store.queryDocumentGraph(documentId, { ...a, includeSourceText: true })
+              if (!searched) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可检索的 canonical knowledge graph' } })
+              if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== searched.revision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后检索', currentRevision: searched.revision } })
+              }
+              const result = queryGraphConsumptionHost({ documentId, revision: searched.revision, sourceText: searched.sourceText || '', graph: searched }, {
+                ...a,
+                nodeIds: searched.matches.map((item) => item.nodeId),
+              })
+              if (!result) return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前知识图不可检索' } })
+              result.matches = searched.matches
+              result.metrics = {
+                ...result.metrics,
+                candidateMatches: searched.view.candidateMatches,
+                totalNodes: searched.view.totalNodes,
+                totalEdges: searched.view.totalEdges,
+              }
+              result.graph.view = { ...result.graph.view, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges, truncated: searched.view.truncated || result.graph.view.truncated }
+              return writeJson(res, 200, result)
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/answer-graph') {
+              const raw = await readBody(req, 64 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const question = typeof a.question === 'string' ? a.question.trim() : ''
+              const validationError = validateConsumptionOptionsHost(a)
+              if (validationError) return writeJson(res, 200, { error: validationError })
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问答缺少 documentId' } })
+              if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要向知识图提问的问题' } })
+              if (question.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
+              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              const store = await getSqliteStore()
+              const searched = store.queryDocumentGraph(documentId, {
+                ...a,
+                query: question,
+                limit: consumptionIntHost(a.limit, 12, 1, 20),
+                hops: consumptionIntHost(a.hops, 1, 0, MAX_CONSUME_HOPS),
+                maxNodes: consumptionIntHost(a.maxNodes, 60, 12, 100),
+                maxEdges: consumptionIntHost(a.maxEdges, 180, 20, 300),
+                includeSourceText: true,
+              })
+              if (!searched) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可问答的 canonical knowledge graph' } })
+              if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== searched.revision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后提问', currentRevision: searched.revision } })
+              }
+              const context = queryGraphConsumptionHost({ documentId, revision: searched.revision, sourceText: searched.sourceText || '', graph: searched }, {
+                ...a,
+                query: question,
+                nodeIds: searched.matches.map((item) => item.nodeId),
+                limit: consumptionIntHost(a.limit, 12, 1, 20),
+                hops: consumptionIntHost(a.hops, 1, 0, MAX_CONSUME_HOPS),
+                maxNodes: consumptionIntHost(a.maxNodes, 60, 12, 100),
+                maxEdges: consumptionIntHost(a.maxEdges, 180, 20, 300),
+              })
+              context.matches = searched.matches
+              context.metrics = { ...context.metrics, candidateMatches: searched.view.candidateMatches, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges }
+              context.graph.view = { ...context.graph.view, totalNodes: searched.view.totalNodes, totalEdges: searched.view.totalEdges, truncated: searched.view.truncated || context.graph.view.truncated }
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              seq += 1
+              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', question, context, document: { sourceText: searched.sourceText || '' }, model, createdAt: Date.now() }
+              tasks.set(task.id, task)
+              busy = true
+              Promise.resolve().then(() => runConsumptionAnswerTask(task)).catch((error) => {
+                console.error('[dsh-knowledge-graph] answer task crashed', error)
+                failTask(task, 'failed', '知识图证据问答失败：内部错误')
+              }).finally(() => { busy = false })
+              return writeJson(res, 200, { taskId: task.id })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/resume-extract') {
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
@@ -745,6 +829,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
         ? kgConfiguredOrigins
         : ['chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof'])
       const kgAllowLocalOrigin = Boolean(globalThis.process && globalThis.process.env && globalThis.process.env.DSH_KG_ALLOW_LOCAL_ORIGIN === '1')
+      const kgExtensionAllowedEndpoints = new Set(['extract', 'task-status', 'task-cancel', 'list-models'])
       const kgExtHandle = async (req, res) => {
         const origin = String((req.headers && req.headers.origin) || '').trim().replace(/\\/$/, '')
         const localOrigin = /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/i.test(origin)
@@ -765,7 +850,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
         let rewritten = u.pathname
         if (rewritten.startsWith('/dsh-kg')) {
           const rest = rewritten.replace(/^\\/dsh-kg\\/?/, '')
-          rewritten = '/api/dsh-knowledge-graph' + (rest ? '/' + rest : '')
+          const endpoint = rest.split('/')[0]
+           if (!kgExtensionAllowedEndpoints.has(endpoint)) return writeJson(res, 404, { error: { code: 'not_found', message: 'extension endpoint not available' } })
+           rewritten = '/api/dsh-knowledge-graph' + (rest ? '/' + rest : '')
         }
         req.url = rewritten + u.search
         return kgHandle(req, res)

@@ -36,6 +36,7 @@
 - **追加拆分（增量合并）**：已有拆分结果后，输入区主按钮变为「追加拆分」——粘贴下一段/下一份资料，AI 只抽取新增内容，并自动与已有图建立**跨段关系边**（同一概念不重复建节点，直接连线到已有节点）；结果原地合并、全文段落统一编号、历史记录原地更新。聊天划线选中文字时也会自动追加到当前图。
 - **历史记录**：每次成功拆分自动记录（最多 20 条、同文去重、可单删 / 清空）；浏览器只保存 `documentId`、标题、计数等轻量索引，回看时从 Host/SQLite 重新载入正文与 canonical graph，避免把书级正文复制进 `localStorage`。
 - **章节过滤与候选审核**：结果区按章节筛选图节点和原文段落；候选实体 / 声明面板展示 evidence，可一键标记「待审核 / 已接受 / 已驳回」，状态通过 Host 同步到 SQLite（动态插件在 Host 会话中保留，失败时回退浏览器 localStorage），并可点击候选回链原文。
+- **知识图消费层**：正文图与轨迹图共用「使用这张知识图」面板，可按关键词、节点类型、章节、grounding / entailment 状态做有界结构化检索，并区分**直接命中**与关系邻居；「证据问答」只使用服务端加载的 canonical graph 和已认证原文，模型只能引用 Host 预分配的 `evidenceId`，每个被接纳的回答片段都必须有节点、关系或原文段落证据。点击检索结果或 citation 可回链图与原文；节点即使位于当前 800 节点渲染窗口之外，也会先按 node ID 加载 canonical 子图再定位。
 - **知识图导出**：结果工具栏可导出当前渲染图为高清 PNG 图片，也可导出完整 JSON（保留 source、chunk、evidence、验证报告和审计记录）以及节点 CSV、关系 CSV；数据导出的是完整图，不受当前章节筛选影响。轨迹知识图也支持相同导出。
 - **常驻入口**：每个对话的标题右侧常驻「知识图」按钮，一键打开；运行卡片内也有启动条。
 - **轨迹知识图（会话视图标签页）**：对话区新增第三个标签页「轨迹知识图」（位于 对话 / 轨迹 旁），一键把**当前会话的完整执行轨迹**（用户消息、工具调用、工具结果、AI 回复）拆成知识图——可视化这个 Agent **查到了什么事实、做出了什么推论、用了什么方法**，并在图与轨迹事件之间**双向定位**（点击节点滚动到对应事件，点击事件在图中聚焦对应节点）。结果按会话持久化到 Host/SQLite；浏览器仅保存 `documentId/revision` 引用，因此**切换标签页或刷新页面后会从 canonical state 恢复**，拆分进行中切走再切回会自动续接轮询；会话继续产生新事件后，可点 **追加新事件** 只拆解新增部分并在同一 revisioned document 上增量合并（跨事件建立关系边）；轨迹事件列与图列的宽度、结果区高度均可拖拽调整并记忆。
@@ -91,9 +92,9 @@ cd dsh-knowledge-graph
 
 | 文件 | 作用 |
 | --- | --- |
-| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎（本地体检、LLM 审校、二次复核） |
-| [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、验证与质疑面板、修复应用/审计、历史、宽高调节、轨迹知识图标签页 |
-| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite 持久化层：文档、内容块、节点、关系、证据、候选实体/声明与抽取 checkpoint |
+| [`src/index.host.js`](src/index.host.js) | Host 半：异步 AI 拆分任务引擎（段落编号、分批、schema 校验、typed 诊断、模型路由、会话轨迹序列化）+ 知识图验证/质疑引擎 + canonical 结构化检索与 evidence-ID 证据问答 |
+| [`src/index.client.js`](src/index.client.js) | Client 半：浮动工作台 UI、图渲染、双向定位、共享检索/证据问答面板、验证与质疑面板、修复应用/审计、历史、宽高调节、轨迹知识图标签页 |
+| [`src/kg-store.mjs`](src/kg-store.mjs) | SQLite 持久化层：文档、内容块、节点、关系、证据、候选实体/声明、抽取 checkpoint 与大图有界消费查询 |
 
 ### 2. 安装（二选一）
 
@@ -133,7 +134,7 @@ pnpm install
 
 | 文件 | 作用（常驻包） |
 | --- | --- |
-| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（抽取/追加、task status、`document-load`/`document-export`、revisioned `graph-commit`、安全 `resume-extract`、验证/质疑等）+ 自动 SQLite canonical graph / checkpoint 持久化 |
+| [`lib/index.js`](lib/index.js) | Host 半：任务引擎 + `/api/dsh-knowledge-graph` 路由（抽取/追加、task status、`document-load`/`document-export`、revisioned `graph-commit`、`graph-query`、`answer-graph`、安全 `resume-extract`、验证/质疑等）+ 自动 SQLite canonical graph / checkpoint 持久化 |
 | [`lib/client.js`](lib/client.js) | Client 半：`__ModuleLoader__` 浏览器模块（fetch RPC + 手动样式注入） |
 | [`cordis.patch.yml`](cordis.patch.yml) | bundle patch：向组合插入 `dsh-knowledge-graph` 行 |
 
@@ -179,7 +180,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-candidates` 额外验证动态 Host RPC 与常驻 HTTP/SQLite 的候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
+常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
 ### 冻结质量回归门禁
 
@@ -222,11 +223,108 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 1. 点击对话标题右侧的「知识图」按钮，打开浮动工作台；
 2. 在「输入资料」粘贴正文（可选填标题），点 **AI 拆分**（输入区可收起；结果区高度、原文/图宽度比例均可拖拽调整并记忆）；
 3. 摘要 / 图出现后，**点图中节点查看详情卡片（完整内容）并定位原文**，或**点原文段落聚焦图中节点**；
-4. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点 **🔎 外部事实核查** 则用外部证据核查原文本身；点击问题/断言行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
-5. 在「章节与候选审核」面板选择章节，只查看该章节的图和原文；对候选实体 / 声明点「已接受」或「已驳回」，点击候选卡可回链原文证据；
-6. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；此前验证结果会自动标记为过期，可重新验证；
-7. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
-8. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
+4. 在 **「使用这张知识图」** 面板切换「结构化检索 / 证据问答」：按关键词、类型、章节找节点，或直接向 canonical graph 提问；点击结果/citation 可回链节点、关系与原文证据；
+5. 点 **⚡ 快速体检** 立即拿到确定性问题报告，或点 **🤖 AI 深度审校** 让 LLM 以原文为证据逐节点找茬；点 **🔎 外部事实核查** 则用外部证据核查原文本身；点击问题/断言行高亮图中相关节点/边并定位原文，**采纳修复**或**忽略**；在节点详情卡「质疑此节点」、选中边后「质疑此关系」，或在验证面板底部直接向整张图提问/质疑；
+6. 在「章节与候选审核」面板选择章节，只查看该章节的图和原文；对候选实体 / 声明点「已接受」或「已驳回」，点击候选卡可回链原文证据；
+7. 想继续扩展图：在输入区粘贴下一段资料，点 **追加拆分**（或直接选中聊天消息里的文字自动追加）——新增节点与已有节点自动建立跨段关系，全文段落统一编号，历史记录原地更新；此前验证结果会自动标记为过期，可重新验证；
+8. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
+9. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；轨迹图也提供相同的结构化检索与证据问答入口；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
+
+## 知识图消费层
+
+### 前端使用
+
+生成正文知识图或轨迹知识图后，下方会出现共享的 **「使用这张知识图」** 面板：
+
+1. **结构化检索**：输入关键词，并可叠加节点类型与章节筛选；返回列表只表示直接命中，关系邻居保留在响应子图中作为上下文，不会伪装成直接命中。
+2. **证据问答**：输入自然语言问题，Host 先做有界节点召回、最多两跳关系扩展和原文段落 fallback，再调用当前选择的模型；`answered`、`insufficient`、`out_of_scope` 都是成功的语义结果。
+3. 点击检索结果或回答 citation 会同时聚焦节点与原文。若目标节点不在当前 800 节点窗口，Client 会调用 `document-load({ query: nodeId })` 加载该节点及其邻居后再定位，而不是把“当前没渲染”误判为“图中不存在”。
+4. 面板的错误、任务轮询与取消状态独立于抽取/验证面板，不会覆盖父工作台的错误提示。
+
+### `graph-query`：有界结构化检索
+
+动态插件调用 `host.call('graph-query', body)`；常驻包调用 `POST /api/dsh-knowledge-graph/graph-query`。公开请求以 logical document 为边界：
+
+```json
+{
+  "documentId": "document_xxx",
+  "expectedRevision": 4,
+  "query": "断点恢复",
+  "nodeIds": [],
+  "types": ["fact", "rule"],
+  "relations": ["supports", "causes"],
+  "sectionIds": ["section-2"],
+  "groundingStatuses": ["grounded"],
+  "entailmentStatuses": ["verified", "uncertain", "unverified"],
+  "limit": 20,
+  "hops": 1,
+  "direction": "both",
+  "maxNodes": 80,
+  "maxEdges": 240
+}
+```
+
+- `nodeIds / types / sectionIds / groundingStatuses / entailmentStatuses` 是 hard filter；非法枚举返回 typed `invalid_input`，不会静默丢弃后退为全图查询。
+- `relations` 限制返回/扩展的关系类型；`direction` 为 `both | in | out`。
+- `matches` 只包含直接命中；`graph.nodes/edges` 还可包含 0–2 跳邻居。
+- 响应包含 `documentId`、`revision`、`matches`、有界 `graph`、可回链 `sourceUnits` 和 `metrics`，不返回完整 `sourceText`。
+- 当前硬上限：查询 600 字、直接命中 40、节点 160、关系 480、跳数 2、原文单元 80、原文上下文 24000 字。调用者给出更小的 `maxNodes/maxEdges` 时也会严格遵守。
+- `expectedRevision` 与 canonical revision 不一致时返回 `revision_conflict`，避免把旧 UI 状态与新图混用。
+
+### `answer-graph`：canonical graph + 原文证据问答
+
+`answer-graph` 是异步任务，复用既有 `task-status` / `task-cancel`：
+
+```json
+{
+  "documentId": "document_xxx",
+  "expectedRevision": 4,
+  "question": "为什么检查点能够支持断点续跑？",
+  "types": [],
+  "sectionIds": [],
+  "hops": 1,
+  "model": { "provider": "...", "model": "..." }
+}
+```
+
+启动响应：
+
+```json
+{ "taskId": "kg_xxx" }
+```
+
+任务完成后的核心结果：
+
+```json
+{
+  "status": "answered",
+  "answer": "由 Host 拼接的已接纳回答",
+  "parts": [
+    { "id": "part-1", "text": "一个独立回答命题", "evidenceIds": ["ev3"] }
+  ],
+  "citations": [
+    {
+      "id": "ev3",
+      "targetKind": "node",
+      "targetId": "n12",
+      "nodeId": "n12",
+      "paragraph": 8,
+      "quote": "canonical 原文逐字摘录",
+      "groundingStatus": "grounded",
+      "entailmentStatus": "unverified"
+    }
+  ]
+}
+```
+
+安全与可信边界：
+
+- 对带 `documentId` 的请求，Host/SQLite **只从服务端加载 canonical graph 与 source**；客户端提交的 `graph` / `text` 不会成为事实源。
+- Host 在调用模型前，从已认证 node evidence、edge evidence 和 source paragraph fallback 中预分配最多 24 个 `evidenceId`。模型只能返回 `parts[].evidenceIds`，不能自行声明 `nodeId/paragraph/quote`。
+- Host 丢弃未知 evidenceId、真实但与命题词汇无关的 evidenceId，以及没有合法证据的 `answered` part；`candidate/unverified/uncertain` 证据还要求回答显式使用“资料表述/可能/未验证”等限定措辞，`unsupported` 证据不能被包装成已证实结论。若所有 part 都被丢弃，结果自动降级为 `insufficient`。即使 part 通过准入，模型原始 `part.text` 也不会直接展示：Host 会从已认证 node/edge/source evidence 确定性渲染 part，再拼接最终 `answer`；`insufficient/out_of_scope` 也只返回 Host 固定语义文案且不返回 follow-up；`answered` 的 follow-up 由 citation target ID / paragraph 确定性生成，因此模型自由文本无法借回答或可点击追问混入结果。
+- `targetKind=node | edge | source` 分别支持节点命题、关系命题和图覆盖不足时的原文段落证据。关系结论可直接引用 edge evidence，而不是只拿端点节点充当关系证明。
+- `groundingStatus=grounded` 只表示 quote 可回到 canonical 原文，**不等价于外部事实已证实**；外部真实性仍应使用「外部事实核查」。`entailmentStatus` 会原样进入 citation，UI 不会把 `unverified/uncertain/unsupported` 包装成已验证事实。
+- 原文中的 prompt injection 文本在问答提示中明确标记为待分析数据；输出仍经过严格 JSON 解析、evidence-ID admission、长度和数量上限。
 
 ## Chrome 扩展（划线拆图）
 
@@ -244,7 +342,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
   npm run pack:extension
   ```
   首次运行会生成新私钥；扩展 ID 由它派生，换密钥 = 换 ID = 旧安装失效。不要把私钥复制到 `dist/` 或提交到 Git。脚本会把新的 CRX 写入 `dist/dsh-knowledge-graph.crx`。
-- **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web）。端点默认只接受本项目新 CRX 的扩展来源 `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`；若使用「加载已解压」导致扩展 ID 不同，启动 dsh web 前设置 `DSH_KG_EXTENSION_ORIGINS=chrome-extension://你的扩展ID`。只有显式设置 `DSH_KG_ALLOW_LOCAL_ORIGIN=1` 时才额外允许 localhost/127.0.0.1 来源，并返回 PNA 预检头；空 Origin 和任意其他扩展来源都会被拒绝。
+- **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web）。端点默认只接受本项目新 CRX 的扩展来源 `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`；若使用「加载已解压」导致扩展 ID 不同，启动 dsh web 前设置 `DSH_KG_EXTENSION_ORIGINS=chrome-extension://你的扩展ID`。只有显式设置 `DSH_KG_ALLOW_LOCAL_ORIGIN=1` 时才额外允许 localhost/127.0.0.1 来源，并返回 PNA 预检头；空 Origin 和任意其他扩展来源都会被拒绝。扩展路由还使用 endpoint allowlist，只开放 `extract / task-status / task-cancel / list-models`，不会暴露 `document-load / graph-query / answer-graph / graph-commit` 等 canonical 文档接口。
 - **数据流**：内容脚本（任意页面）→ `chrome.runtime.sendMessage` → Service Worker 写入 `chrome.storage.session` 并 `chrome.action.openPopup()`（Chrome 127+）；弹窗读取选中文本后调用 `http://127.0.0.1:3080/dsh-kg/extract`，轮询 `task-status` 渲染知识图。DSH 服务地址可在弹窗底部修改并记忆（`chrome.storage.local` 的 `kgBase`）。
 
 ## 架构
@@ -256,6 +354,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 │   verify-graph (quick/standard)                 │   │    输入区（可收起）                  │
 │   question-graph (node/edge/graph)              │   │    原文 ⇄ 知识图（宽高可拖）         │
 │   fact-check (quick/deep, wikipedia evidence)   │   │    验证与质疑面板 / 修复应用 / 审计   │
+│   graph-query / answer-graph (evidence IDs)    │   │    结构化检索 / 证据问答消费面板       │
 │   split paragraphs (numbered)  ───────────────►│   │    外部事实核查面板                  │
 │   serializeTrace(会话事件) ───────────────────►│   │    历史 / 诊断 / toast(悬浮)         │
 │   append: 已有图节点清单注入提示词 ────────────►│   │  对话头部「知识图」按钮 + run 卡片启动条│
@@ -270,6 +369,8 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
 - **Evidence 自带 provenance，且关系证据必须证明关系本身**：节点与关系的 canonical evidence 统一为 `evidence[{ documentId, sourceId, chunkId, paragraph, quote }]`。Host 在写入门重新验证 quote 确实存在于对应 source unit，并按 paragraph 对应的 source-version/chunk 补齐 provenance；无法认证的 quote 不会被包装成 evidence。相同 Node/Edge 在后续 source-version 再次出现时会合并 evidence，而不是丢掉后来的证据。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等 relation。
+- **消费 API 只读 canonical、输出有界**：带 `documentId` 的检索/问答请求由 Host memory 或 SQLite 加载 canonical state，并用 `expectedRevision` 做 fencing；SQLite 按 type/section/status/text 做 SQL 预过滤，对词汇候选分 600 行分页评分且只保留有界 top set，再按有索引的 from/to relation 扩展邻居，因此不会因为前 600 个常见词候选遮住后文精确命中，也不需要 materialize 全图。响应把直接 matches 与扩展 graph 分开，并严格限制节点、关系和原文上下文。
+- **回答按 evidence ID 逐片段准入**：Host 先认证节点、关系和 source fallback evidence，再分配不可由模型伪造的 `evidenceId`；模型输出 `parts[{ text, evidenceIds }]`，Host 逐 part、逐句过滤未知/空引用，并用确定性词汇支撑、否定极性与 authority-status gate 拒绝「真实 ID + 无关/反向命题」、跨句限定词泄漏及未限定的未验证声明；通过后也不采用模型自由文本，而是从认证证据确定性渲染 part，再自行拼接最终 answer。这样 citation 不是事后给整段自由文本挂一个装饰性链接，而是每个被接纳命题的结构化准入条件。
 - **生成即验收（Generate → Verify → Repair → Accept）**：`validateGraphInvariantsHost()` 是生成与快速体检共用的 deterministic truth gate。每个 batch 在 merge 前都会经过 schema normalize + invariant 检查；blocking invariant 会把 typed 错误回灌给模型做定向重试（最多 3 次），paragraph 等可确定问题由 Host 安全修复，最终仍不合格的边可安全省略，但无法安全修复/锚定的节点会让任务以 `invariant_violation` 显式失败。所有 batch merge 完成后还会再做一次整图 gate，只有 `invariantErrors=0` 才能写入 canonical graph / SQLite。生成审计同时统计 evidence-backed / candidate / unsupported claim；没有可认证 quote 的声明不会被标成 grounded。
 - **Anchor / Evidence / Semantic Entailment 明确分层**：`paragraph` 只是 `anchor`，不能等价于 claim evidence。可在 source 中认证的 quote 才使节点进入 `groundingStatus=grounded`；只有 anchor、没有 evidence 的节点为 `candidate`，伪造/无法认证的 quote 为 `unsupported`。语义蕴含另由 `entailmentStatus=verified|unsupported|uncertain|unverified` 表示；当前 deterministic gate 只认证 provenance，不会因为 quote 存在就声称“节点 text 已被语义证明”。快速体检分别显示锚点覆盖、证据覆盖和语义已验证比例。
 - **typed 失败、不静默**：CLI/进程失败、非 JSON、schema/invariant 不合法、队列忙碌、无模型等情况都有明确原因码与中文文案；无法安全修复的语义状态不会伪装成成功。
@@ -295,6 +396,8 @@ Staging { sourceId, documentId, chunkCount, chunks[] }
 Evidence { documentId, sourceId, chunkId, paragraph, quote }
 Checkpoint { version: 2, taskKind, sourceId, documentId, baseRevision?, baseSource?, baseStaging?, traceEvents?, baseTraceText?, baseTraceEvents?, nextBatchIndex, totalBatches, graph /* 无损 */, staging }
 GraphView { nodes[<=800], edges[], view: { kind: 'window' | 'query', nodeOffset, nodeLimit, totalNodes, totalEdges, truncated, query?, matchedNodes? } }
+GraphQueryResult { documentId, revision, query, matches[{ nodeId, score, reasons[] }], graph /* 有界直接命中 + 邻居 */, sourceUnits[], metrics }
+GraphAnswerResult { status: 'answered'|'insufficient'|'out_of_scope', answer, parts[{ id, text, evidenceIds[] }], citations[{ id, targetKind: 'node'|'edge'|'source', targetId, paragraph, quote, ...provenance }], supportingNodeIds[], retrieval }
 GraphOperation { kind: 'merge_node', fromNodeId, intoNodeId }
 EntityCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', evidence[] }
 ClaimCandidate { id, documentId, nodeId?, text, type, status: 'candidate' | 'accepted' | 'rejected', confidence?, evidence[] }
