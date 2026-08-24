@@ -12,12 +12,12 @@
 ## 它能做什么
 
 - **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；`documentId` 是随机稳定的逻辑文档 UUID，`sourceId` 是全文 SHA-256 的不可变版本身份，`chunkId` 绑定 sourceId + batch + paragraph range，因此不同文档/追加版本不会因局部 `chunk-0001` 重号而覆盖。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
-- **图片直接生成知识图**：工作台可一次上传 1–4 张 PNG / JPEG / WebP / GIF（单张不超过 6 MiB、合计不超过 16 MiB），支持纯文字截图、示意图 / 流程图 / 架构图、统计图、公式和表格，也可同时附带说明文字。Host 先把浏览器提交的有界 base64 图片交给 DSH `attachments.saveImages()` 验证并保存，再用多模态模型生成带图片范围的 canonical 视觉转写；现有文本抽取器只消费这份转写。结果页保留原图预览与 `source.visualSource` 回链，点击图片会定位对应转写段落。视觉转写是模型产物而非像素级确定性 OCR，关键文字、数值、表格单元和连线关系应对照原图复核；当前图片输入用于**新建**知识图，已有图的增量追加仍使用文字。
+- **图片直接生成知识图**：工作台可一次上传 1–4 张 PNG / JPEG / WebP / GIF（单张不超过 6 MiB、合计不超过 16 MiB），支持纯文字截图、示意图 / 流程图 / 架构图、统计图、公式和表格，也可同时附带说明文字。Host 先把浏览器提交的有界 base64 图片交给 DSH `attachments.saveImages()` 验证并保存，再用多模态模型生成带图片范围的 canonical 视觉转写；现有文本抽取器只消费这份转写。结果页保留原图预览与 `source.visualSource` 回链，点击图片会定位对应转写段落。视觉转写会把箭头 / 连线、分组 / 包含、对象对应、顺序和具有图例语义的颜色 / 形状编码拆成独立关系单元，知识抽取后的覆盖复核会补回被首轮遗漏的图示关系；无法准确映射到内置 relation 的关系会保留为原子 fact / claim，而不会强套错误边。视觉转写是模型产物而非像素级确定性 OCR，关键文字、数值、表格单元和连线关系仍应对照原图复核；当前图片输入用于**新建**知识图，已有图的增量追加仍使用文字。
 - **8 类节点 / 12 类关系**：
   - 节点：`fact` 事实 · `claim` 主张 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
   - 关系：`supports` 支持 · `example` 例子 · `counter_example` 反例 · `defines` 定义 · `infers` 推断 · `causes` 因果 · `is_a` 属于 · `contains` 包含 · `driven_by` 受驱动于 · `not_is` 不是 · `analogy` 类比说明 · `aims_at` 旨在。
   - **最小语义契约**：一个节点只表达一个原子命题；作者的理论/经验概括用 `claim` 而不是 `fact`；保留“可能 / 多数 / 通常 / 必须 / 如果”等原文限定；存在更精确关系时不退化成 `supports`。
-  - **解释覆盖复核**：首轮抽取通过后，仅在多步机制疑似欠覆盖，或原文明示纠偏/防误推理限定、留待后文回答的信息却未进入图时，执行一次受限复核；它也可恢复被多个核心命题反复引用的稳定概念锚点。调用可选复核器前，系统会先对原文明示且同句已命名的“某方法在明确条件下行不通/失效”原子结论做确定性、只增节点的补漏；相关关系仍必须由关系编织器依据直接原文证据审定，不会因端点同段出现而自动连边。复核只能补缺失节点及其必要关系，不能重写已有图，也不会为了连通率补知识。
+  - **解释覆盖复核**：首轮抽取通过后，仅在多步机制疑似欠覆盖，或原文明示纠偏/防误推理限定、留待后文回答的信息却未进入图时，执行一次受限复核；它也可恢复被多个核心命题反复引用的稳定概念锚点。调用可选复核器前，系统会先对原文明示且同句已命名的“某方法在明确条件下行不通/失效”原子结论做确定性、只增节点的补漏；相关关系仍必须由关系编织器依据直接原文证据审定，不会因端点同段出现而自动连边。复核通常只能补缺失节点及其必要关系；对于【图示关系】段落，若箭头、连线标签、分组、对应或图例直接证明允许 relation，也可只补两个已有节点之间的遗漏边；该例外仍要求同一条 evidence quote 同时包含 relation 专用显式词、两个端点及兼容方向。复核不能重写已有图，也不会为了连通率补知识。
 - **关系感知分层布局**：分层模式先对每个无向连通分量独立排层、消除重叠，再把组件矩形紧凑打包，避免无关子图共用全局层级而把直接相连节点拉远；层内排序按关系加权，以 `causes/infers` 推理链作为主路径，把例子、类比、反例、定义和概念关系放成邻近分支，并将 `supports/driven_by/aims_at` 作为有界软邻近偏好。多条边共享节点或行间通道时，箭头入口、水平通道和垂直走廊分别分轨，并为密集的水平轨道保留更高的层间通道；相邻关系标签发生碰撞时会在可读距离内确定性错位；极端拥挤且无可用位置时默认隐藏标签芯片，悬停或选中对应关系仍会显示，避免线段、标签及箭头挤在一起。新用户默认使用分层布局，已有本地布局偏好保持不变。
 - **双向定位**：
   - 点击**图中节点** → 弹出**详情卡片**（完整内容 + 原文摘录 + 定位按钮），并平滑滚动高亮到原文对应内容单元；
@@ -181,7 +181,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-image` 覆盖动态 / 常驻图片 admission、多模态 content block、文字 / 表格 / 图示转写、text-only 模型 typed 拒绝、visual provenance、canonical 来源成员校验图片读取、伪造 visual checkpoint 拒绝、转写后即时 checkpoint / runId 恢复及 SQLite 不落原始 base64；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
+常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-image` 覆盖动态 / 常驻图片 admission、多模态 content block、文字 / 表格 / 图示转写、颜色分组与对象对应关系遗漏补漏、text-only 模型 typed 拒绝、visual provenance、canonical 来源成员校验图片读取、伪造 visual checkpoint 拒绝、转写后即时 checkpoint / runId 恢复及 SQLite 不落原始 base64；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
 ### 冻结质量回归门禁
 

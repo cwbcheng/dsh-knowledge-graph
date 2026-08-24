@@ -56,7 +56,7 @@ function streamText(value) {
 
 function visionLlm(expectedInstruction = '') {
   const requests = []
-  const control = { blockGraph: false, metadataCalls: 0 }
+  const control = { blockGraph: false, metadataCalls: 0, relationOnlyScenario: false }
   return {
     requests,
     control,
@@ -67,25 +67,49 @@ function visionLlm(expectedInstruction = '') {
       requests.push(request)
       const content = request && request.messages && request.messages[0] && Array.isArray(request.messages[0].content) ? request.messages[0].content : []
       if (content.some((block) => block && block.type === 'image')) {
+        assert(String(request.system || '').includes('每一条独立关系必须单独形成一个可引用 diagram 单元'), 'visual transcription prompt did not require per-relation diagram units')
         assert(content.filter((block) => block && block.type === 'image').length === 1, 'vision call lost an uploaded image block')
         assert(String(content.find((block) => block && block.type === 'image').attachment.attachmentId).startsWith('attachment-image-smoke-'), 'vision call did not use the durable attachment reference')
         if (expectedInstruction) assert(content.filter((block) => block && block.type === 'text').map((block) => block.text).join('\n').includes(expectedInstruction), 'vision call omitted the optional user instruction text')
         return streamText({
           images: [{
             imageIndex: 1,
-            summary: '图片包含季度销售表和数据处理流程图。',
+            summary: '图片包含季度销售表和现象分类关系图。',
             units: [
               { kind: 'text', text: '季度销售额为 120 万元。' },
               { kind: 'table', text: '表格“季度销售”：列为“季度、销售额”；第一季度为 120 万元。' },
-              { kind: 'diagram', text: '流程图显示：采集数据 → 分析数据 → 生成报告。' },
+              { kind: 'diagram', text: '图2-1的“现象集合”区域包含“已见现象a”“已见现象b”“未见现象m”“未见现象n”；“已见现象a”“已见现象b”及其圆点为紫色，“未见现象m”“未见现象n”及其圆点为蓝色；每个现象标签与其下方圆点一一对应。' },
+              { kind: 'diagram', text: '图例：“类别A”为红色、“类别B”为蓝色。' },
             ],
             warnings: [],
           }],
         })
       }
-      if (String(request.system || '').includes('解释覆盖复核器')) return streamText({ nodes: [], edges: [] })
+      if (String(request.system || '').includes('解释覆盖复核器')) {
+        const coveragePrompt = content.filter((block) => block && block.type === 'text').map((block) => block.text).join('\n')
+        assert(coveragePrompt.includes('视觉关系补漏候选'), 'diagram omission did not trigger visual relation coverage review')
+        const diagramMatch = Array.from(coveragePrompt.matchAll(/\[P(\d+)\]\s*([^\n]*)/g)).find((match) => match[2].includes('每个现象标签与其下方圆点一一对应'))
+        assert(diagramMatch, 'visual relation coverage prompt lost the diagram paragraph')
+        const paragraph = Number(diagramMatch[1])
+        assert(coveragePrompt.includes('包含:现象集合→已见现象b'), 'partial contains coverage suppressed an omitted sibling relationship')
+        assert(!coveragePrompt.includes('颜色编码:类别A→蓝色') && !coveragePrompt.includes('颜色编码:类别B→红色'), 'local legend color assignments produced false cross-pair omissions')
+        const salesMatch = Array.from(coveragePrompt.matchAll(/\[P(\d+)\]\s*([^\n]*)/g)).find((match) => match[2].includes('季度销售额为 120 万元'))
+        assert(salesMatch, 'coverage prompt lost the non-visual control paragraph')
+        const diagramQuote = diagramMatch[2].replace(/^【图示关系】/, '')
+        return streamText({
+          nodes: control.relationOnlyScenario ? [] : [
+            { id: 'm1', type: 'fact', text: '“未见现象m”“未见现象n”及其圆点为蓝色', quote: '“未见现象m”“未见现象n”及其圆点为蓝色', paragraph },
+            { id: 'm2', type: 'fact', text: '每个现象标签与其下方圆点一一对应', quote: '每个现象标签与其下方圆点一一对应', paragraph },
+          ],
+          edges: [
+            { fromNodeId: 'n2', toNodeId: 'n4', relation: 'contains', evidence: [{ paragraph, quote: '图2-1的“现象集合”区域包含“已见现象a”“已见现象b”' }] },
+            { fromNodeId: 'n2', toNodeId: 'n4', relation: 'causes', evidence: [{ paragraph, quote: diagramQuote }] },
+            { fromNodeId: 'n2', toNodeId: 'n4', relation: 'supports', evidence: [{ paragraph: Number(salesMatch[1]), quote: '季度销售额为 120 万元。' }] },
+          ],
+        })
+      }
       if (String(request.system || '').includes('关系编织')) return streamText({ edges: [] })
-      if (String(request.system || '').includes('摘要合并引擎')) return streamText({ summary: '图片展示季度销售数据与处理流程' })
+      if (String(request.system || '').includes('摘要合并引擎')) return streamText({ summary: '图片展示季度销售数据与现象分类关系' })
       if (control.blockGraph) {
         let resolveNext = null
         return {
@@ -98,10 +122,28 @@ function visionLlm(expectedInstruction = '') {
       const paragraphMatch = Array.from(prompt.matchAll(/\[P(\d+)\]\s*([^\n]*)/g)).find((match) => match[2].includes('季度销售额为 120 万元'))
       assert(paragraphMatch, 'graph prompt did not contain the canonical visual transcript')
       const paragraph = Number(paragraphMatch[1])
+      const diagramMatch = Array.from(prompt.matchAll(/\[P(\d+)\]\s*([^\n]*)/g)).find((match) => match[2].includes('“现象集合”区域包含'))
+      assert(diagramMatch, 'graph prompt did not contain the diagram relation paragraph')
+      const diagramParagraph = Number(diagramMatch[1])
+      const legendMatch = Array.from(prompt.matchAll(/\[P(\d+)\]\s*([^\n]*)/g)).find((match) => match[2].includes('“类别A”为红色'))
+      assert(legendMatch, 'graph prompt did not contain the multi-color legend paragraph')
+      const legendParagraph = Number(legendMatch[1])
       return streamText({
-        summary: '图片展示季度销售数据与处理流程',
-        nodes: [{ id: 'n1', type: 'fact', text: '季度销售额为 120 万元', quote: '季度销售额为 120 万元。', paragraph }],
-        edges: [],
+        summary: '图片展示季度销售数据与现象分类关系',
+        nodes: [
+          { id: 'n1', type: 'fact', text: '季度销售额为 120 万元', quote: '季度销售额为 120 万元。', paragraph },
+          { id: 'n2', type: 'concept', text: '现象集合', quote: '“现象集合”', paragraph: diagramParagraph },
+          { id: 'n3', type: 'concept', text: '已见现象a', quote: '“已见现象a”', paragraph: diagramParagraph },
+          { id: 'n4', type: 'concept', text: '已见现象b', quote: '“已见现象b”', paragraph: diagramParagraph },
+          { id: 'n5', type: 'fact', text: '“已见现象a”“已见现象b”及其圆点为紫色', quote: '“已见现象a”“已见现象b”及其圆点为紫色', paragraph: diagramParagraph },
+          { id: 'n6', type: 'fact', text: '“类别A”为红色', quote: '“类别A”为红色', paragraph: legendParagraph },
+          { id: 'n7', type: 'fact', text: '“类别B”为蓝色', quote: '“类别B”为蓝色', paragraph: legendParagraph },
+          ...(control.relationOnlyScenario ? [
+            { id: 'n8', type: 'fact', text: '“未见现象m”“未见现象n”及其圆点为蓝色', quote: '“未见现象m”“未见现象n”及其圆点为蓝色', paragraph: diagramParagraph },
+            { id: 'n9', type: 'fact', text: '每个现象标签与其下方圆点一一对应', quote: '每个现象标签与其下方圆点一一对应', paragraph: diagramParagraph },
+          ] : []),
+        ],
+        edges: [{ fromNodeId: 'n2', toNodeId: 'n3', relation: 'contains', evidence: [{ paragraph: diagramParagraph, quote: '图2-1的“现象集合”区域包含“已见现象a”' }] }],
       })
     },
   }
@@ -132,7 +174,7 @@ function mountHost({ llm, attachments }) {
 }
 
 const attachments = makeAttachments()
-const llm = visionLlm('请关注表格中的数值与流程图连线')
+const llm = visionLlm('请关注表格中的数值与图中颜色、分组和对应关系')
 const handlers = mountHost({ llm, attachments })
 const catalog = await handlers.get('list-models')({})
 assert(catalog.providers[0].models[0].inputModalities.includes('image'), 'dynamic model catalog omitted image capability metadata')
@@ -144,12 +186,17 @@ assert(llm.control.metadataCalls === metadataCallsBeforeInvalid, 'malformed imag
 
 const started = await handlers.get('extract')({
   title: '季度经营图片',
-  text: '请关注表格中的数值与流程图连线。',
+  text: '请关注表格中的数值与图中颜色、分组和对应关系。',
   images: [{ name: 'quarter.png', mediaType: 'image/png', data: pngBase64 }],
 })
 assert(started && started.taskId, 'image extraction with optional text did not start')
 const terminal = await waitTask(handlers, started.taskId)
-assert(terminal.status === 'succeeded' && terminal.result && terminal.result.nodes.length === 1, 'image extraction with optional text did not succeed: ' + JSON.stringify(terminal))
+assert(terminal.status === 'succeeded' && terminal.result && terminal.result.nodes.length === 9, 'image extraction with optional text did not succeed: ' + JSON.stringify(terminal))
+assert(terminal.result.nodes.some((node) => node.text.includes('已见现象a') && node.text.includes('紫色')), 'diagram color/group relationship was omitted from the graph')
+assert(terminal.result.nodes.some((node) => node.text.includes('未见现象m') && node.text.includes('蓝色')), 'second diagram classification relationship was omitted from the graph')
+assert(terminal.result.nodes.some((node) => node.text.includes('一一对应')), 'diagram object-to-marker relationship was omitted from the graph')
+assert(terminal.result.edges.some((edge) => edge.relation === 'contains' && terminal.result.nodes.find((node) => node.id === edge.fromNodeId && node.text === '现象集合') && terminal.result.nodes.find((node) => node.id === edge.toNodeId && node.text === '已见现象b')), 'partially omitted diagram relation between existing nodes was dropped')
+assert(!terminal.result.edges.some((edge) => (edge.relation === 'causes' || edge.relation === 'supports') && terminal.result.nodes.find((node) => node.id === edge.fromNodeId && node.text === '现象集合') && terminal.result.nodes.find((node) => node.id === edge.toNodeId && node.text === '已见现象b')), 'unrelated relation-only edge escaped visual evidence gating')
 assert(attachments.calls.length === 1 && attachments.calls[0][0].bytes > 0, 'image bytes were not admitted through the attachment service')
 assert(llm.requests.length >= 2 && llm.requests[0].messages[0].content.some((block) => block.type === 'image'), 'first model request was not multimodal')
 assert(llm.requests.every((request) => request.provider === 'vision' && request.model === 'vision-model'), 'dynamic preflight-selected image model was not retained by the task')
@@ -157,11 +204,11 @@ assert(!llm.requests.slice(1).some((request) => request.messages[0].content.some
 
 const documentId = terminal.result.source.documentId
 const loaded = await handlers.get('document-load')({ documentId })
-assert(loaded && loaded.sourceText.includes('请关注表格中的数值与流程图连线。') && loaded.sourceText.includes('【表格】') && loaded.sourceText.includes('【图示关系】'), 'canonical source lost optional text, table, or diagram transcription')
+assert(loaded && loaded.sourceText.includes('请关注表格中的数值与图中颜色、分组和对应关系。') && loaded.sourceText.includes('【表格】') && loaded.sourceText.includes('【图示关系】'), 'canonical source lost optional text, table, or diagram transcription')
 const visualSource = loaded.graph && loaded.graph.source && loaded.graph.source.visualSource
 assert(visualSource && visualSource.kind === 'image-derived' && visualSource.images.length === 1, 'canonical source lost visual provenance')
 assert(visualSource.images[0].startParagraph > 0, 'optional user text was not kept outside the image paragraph range')
-assert(visualSource.images[0].startParagraph <= terminal.result.nodes[0].paragraph && visualSource.images[0].endParagraph >= terminal.result.nodes[0].paragraph, 'visual paragraph range does not cover image-derived evidence')
+assert(terminal.result.nodes.every((node) => visualSource.images[0].startParagraph <= node.paragraph && visualSource.images[0].endParagraph >= node.paragraph), 'visual paragraph range does not cover image-derived evidence')
 assert(!JSON.stringify(loaded).includes(pngBase64), 'document-load exposed raw image base64')
 
 const imageLoaded = await handlers.get('image-load')({ documentId, imageId: 'image-1', expectedRevision: loaded.revision })
@@ -177,6 +224,22 @@ const forgedCheckpoint = await handlers.get('extract')({
   },
 })
 assert(forgedCheckpoint && forgedCheckpoint.error && forgedCheckpoint.error.code === 'checkpoint_invalid', 'caller-controlled visual checkpoint was accepted as attachment ownership')
+
+const relationOnlyAttachments = makeAttachments()
+const relationOnlyLlm = visionLlm()
+relationOnlyLlm.control.relationOnlyScenario = true
+const relationOnlyHandlers = mountHost({ llm: relationOnlyLlm, attachments: relationOnlyAttachments })
+const relationOnlyStarted = await relationOnlyHandlers.get('extract')({
+  title: '图示 relation-only 修复',
+  images: [{ name: 'relations.png', mediaType: 'image/png', data: pngBase64 }],
+})
+assert(relationOnlyStarted && relationOnlyStarted.taskId, 'relation-only visual repair task did not start')
+const relationOnlyTerminal = await waitTask(relationOnlyHandlers, relationOnlyStarted.taskId)
+assert(relationOnlyTerminal.status === 'succeeded', 'relation-only visual repair task failed: ' + JSON.stringify(relationOnlyTerminal))
+assert(relationOnlyTerminal.result.generation.coverage.repairedBatches === 1 && relationOnlyTerminal.result.generation.coverage.addedNodes === 0 && relationOnlyTerminal.result.generation.coverage.addedEdges === 1, 'relation-only visual repair was omitted from coverage metrics')
+assert(JSON.stringify(relationOnlyTerminal.result.warnings || []).includes('coverage_repair_added:nodes=0:edges=1'), 'relation-only visual repair warning metadata was omitted')
+assert(relationOnlyTerminal.result.edges.some((edge) => edge.relation === 'contains' && relationOnlyTerminal.result.nodes.find((node) => node.id === edge.fromNodeId && node.text === '现象集合') && relationOnlyTerminal.result.nodes.find((node) => node.id === edge.toNodeId && node.text === '已见现象b')), 'relation-only visual repair did not publish the allowed contains edge')
+assert(!relationOnlyTerminal.result.edges.some((edge) => edge.relation === 'causes' || edge.relation === 'supports'), 'relation-only visual repair admitted an unrelated edge')
 
 const textOnlyAttachments = makeAttachments()
 const textOnlyLlm = {
