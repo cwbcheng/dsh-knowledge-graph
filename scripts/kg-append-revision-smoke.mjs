@@ -153,5 +153,36 @@ assert(replacementTerminal && replacementTerminal.status === 'failed' && replace
 const replacementExport = await post(api, 'document-export', { documentId })
 assert(replacementExport && replacementExport.revision === 3 && replacementExport.graph.summary === 'manual replacement wins', 'stale non-append extraction advanced or overwrote canonical state')
 
+let staleCheckpointResponse = null
+for (let i = 0; i < 50; i++) {
+  staleCheckpointResponse = await post(api, 'extract', {
+    documentId,
+    title: 'revision',
+    text: '旧 checkpoint 正文',
+    checkpoint: { version: 2, taskKind: 'extract', documentId, baseRevision: 2 },
+  })
+  if (!(staleCheckpointResponse && staleCheckpointResponse.error && staleCheckpointResponse.error.code === 'busy')) break
+  await new Promise((resolve) => setTimeout(resolve, 5))
+}
+assert(staleCheckpointResponse && staleCheckpointResponse.error && staleCheckpointResponse.error.code === 'revision_conflict', 'general /extract rebased a stale checkpoint onto the current revision')
+
+const admissionGate = armExtractorGate()
+const concurrentResponses = await Promise.all([
+  post(api, 'extract', { documentId: 'document-admission-a', title: 'admission-a', text: '并发正文 A' }),
+  post(api, 'extract', { documentId: 'document-admission-b', title: 'admission-b', text: '并发正文 B' }),
+])
+const admitted = concurrentResponses.filter((response) => response && response.taskId)
+const rejected = concurrentResponses.filter((response) => response && response.error && response.error.code === 'busy')
+assert(admitted.length === 1 && rejected.length === 1, 'concurrent /extract requests bypassed the single-task admission reservation: ' + JSON.stringify(concurrentResponses))
+await admissionGate.started
+admissionGate.release()
+let admissionTerminal = null
+for (let i = 0; i < 200; i++) {
+  const status = await get(api, 'task-status', { taskId: admitted[0].taskId })
+  if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'succeeded') { admissionTerminal = status; break }
+  await new Promise((resolve) => setTimeout(resolve, 5))
+}
+assert(admissionTerminal && admissionTerminal.status === 'succeeded', 'admitted concurrent extraction did not complete')
+
 rmSync(dir, { recursive: true, force: true })
-console.log(JSON.stringify({ ok: true, baseRevision: 1, appendConcurrentRevision: 2, replacementConcurrentRevision: 3, appendStatus: terminal.error.code, replacementStatus: replacementTerminal.error.code }))
+console.log(JSON.stringify({ ok: true, baseRevision: 1, appendConcurrentRevision: 2, replacementConcurrentRevision: 3, appendStatus: terminal.error.code, replacementStatus: replacementTerminal.error.code, staleCheckpointStatus: staleCheckpointResponse.error.code, concurrentAdmitted: admitted.length, concurrentBusy: rejected.length }))

@@ -6506,9 +6506,14 @@ export default function hostPlugin() {
           ? a.documentId.trim().slice(0, 160)
           : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
         const baseDocument = requestedDocumentId ? loadCanonicalDocumentHost(requestedDocumentId) : null
-        const baseRevision = checkpoint && Number.isInteger(checkpoint.baseRevision)
-          ? checkpoint.baseRevision
-          : (baseDocument && Number.isInteger(baseDocument.revision) ? baseDocument.revision : 0)
+        const currentRevision = baseDocument && Number.isInteger(baseDocument.revision) ? baseDocument.revision : 0
+        let baseRevision = currentRevision
+        if (checkpoint) {
+          if (!Number.isInteger(checkpoint.baseRevision)) return { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } }
+          if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) return { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } }
+          if (checkpoint.baseRevision !== currentRevision) return { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } }
+          baseRevision = checkpoint.baseRevision
+        }
          const task = {
            id: 'kg-' + Date.now().toString(36) + '-' + seq,
            status: 'running',

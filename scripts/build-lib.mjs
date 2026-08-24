@@ -88,7 +88,30 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
                 ? a.documentId.trim().slice(0, 160)
                 : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
-              const baseRevision = requestedDocumentId ? (await getSqliteStore()).getDocumentRevision(requestedDocumentId) : 0
+              busy = true
+              let currentRevision
+              try {
+                currentRevision = requestedDocumentId ? (await getSqliteStore()).getDocumentRevision(requestedDocumentId) : 0
+              } catch (error) {
+                busy = false
+                throw error
+              }
+              let baseRevision = currentRevision
+              if (checkpoint) {
+                if (!Number.isInteger(checkpoint.baseRevision)) {
+                  busy = false
+                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } })
+                }
+                if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) {
+                  busy = false
+                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } })
+                }
+                if (checkpoint.baseRevision !== currentRevision) {
+                  busy = false
+                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } })
+                }
+                baseRevision = checkpoint.baseRevision
+              }
                const task = {
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
@@ -104,7 +127,6 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  createdAt: Date.now(),
                }
               tasks.set(task.id, task)
-              busy = true
               Promise.resolve().then(() => runTask(task)).catch((e) => {
                 console.error('[dsh-knowledge-graph] task crashed', e)
                 failTask(task, 'failed', 'AI 拆分失败：内部错误')

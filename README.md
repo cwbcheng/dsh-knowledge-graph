@@ -180,7 +180,7 @@ npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.js
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
 ```
 
-常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
+常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
 
 ### 冻结质量回归门禁
 
@@ -265,11 +265,12 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 ```
 
 - `nodeIds / types / sectionIds / groundingStatuses / entailmentStatuses` 是 hard filter；非法枚举返回 typed `invalid_input`，不会静默丢弃后退为全图查询。
-- `relations` 限制返回/扩展的关系类型；`direction` 为 `both | in | out`。
-- `matches` 只包含直接命中；`graph.nodes/edges` 还可包含 0–2 跳邻居。
-- 响应包含 `documentId`、`revision`、`matches`、有界 `graph`、可回链 `sourceUnits` 和 `metrics`，不返回完整 `sourceText`。
-- 当前硬上限：查询 600 字、直接命中 40、节点 160、关系 480、跳数 2、原文单元 80、原文上下文 24000 字。调用者给出更小的 `maxNodes/maxEdges` 时也会严格遵守。
-- `expectedRevision` 与 canonical revision 不一致时返回 `revision_conflict`，避免把旧 UI 状态与新图混用。
+- `relations` 限制返回/扩展的关系类型；`direction` 为 `both | in | out`。`relations` 也可单独作为 selector：Host/SQLite 会先从匹配关系的端点播种直接候选，而不是从文档开头任取节点。
+- `matches` 只包含直接命中；`graph.nodes/edges` 还可包含 0–2 跳邻居。直接命中的原文单元优先于邻居证据进入预算，预算截断量通过 `metrics.sourceRefsOmitted` 暴露。
+- 响应包含 `documentId`、`revision`、`matches`、有界 `graph`、可回链 `sourceUnits` 和 `metrics`，不返回完整 `sourceText`。动态与常驻模式都对公开 node/edge/evidence 做字段与长度投影，`sourceUnits` 不再重复携带 quote 数组，并对聚合上下文设置硬 envelope；`metrics.contextChars/contextBudget` 可用于观测。
+- 当前硬上限：查询 600 字、直接命中 40、节点 160、关系 480、跳数 2、原文单元 80、原文文本 24000 字；graph context 另有约 384000 字 envelope。调用者给出更小的 `maxNodes/maxEdges` 时也会严格遵守。
+- 常驻模式在 SQLite 中一次查询就完成候选排名、关系扩展、精确 `document_units` 回填和可选 source fallback，不再先查 SQLite、再把结果交给 Host 做第二次检索/重组。词汇候选和 source fallback 使用 keyset 分页，避免随页码增长的 `OFFSET` 重扫；`queryId` 包含全部规范化 selector 与有效预算。
+- `expectedRevision` 与 canonical revision 不一致时返回 `revision_conflict`，避免把旧 UI 状态与新图混用。抽取、重新抽取、追加与 checkpoint 恢复也会记录启动时 revision，并在发布 canonical replacement 时执行同样 fencing。
 
 ### `answer-graph`：canonical graph + 原文证据问答
 
@@ -325,6 +326,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - `targetKind=node | edge | source` 分别支持节点命题、关系命题和图覆盖不足时的原文段落证据。关系结论可直接引用 edge evidence，而不是只拿端点节点充当关系证明。
 - `groundingStatus=grounded` 只表示 quote 可回到 canonical 原文，**不等价于外部事实已证实**；外部真实性仍应使用「外部事实核查」。`entailmentStatus` 会原样进入 citation，UI 不会把 `unverified/uncertain/unsupported` 包装成已验证事实。
 - 原文中的 prompt injection 文本在问答提示中明确标记为待分析数据；输出仍经过严格 JSON 解析、evidence-ID admission、长度和数量上限。
+- 每次模型调用都执行真实 wall-clock deadline，计时覆盖 `llm.stream()` 建立连接和完整异步迭代；超时以 typed `timeout` 失败，取消以 `cancelled` 结束。即使 provider 忽略 `AbortSignal` 或 `iterator.return()` 不返回，任务也会立即释放前台 busy 状态，晚到 iterator 会在进入 `next()` 前被幂等关闭，部分输出不会发布。运维/回归可用 `DSH_KG_MODEL_TIMEOUT_CAP_MS`（最小 20ms）把各调用点原有 deadline 统一下调；未设置时保留各阶段 60–360 秒的既有预算。
 
 ## Chrome 扩展（划线拆图）
 
@@ -369,7 +371,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
 - **Evidence 自带 provenance，且关系证据必须证明关系本身**：节点与关系的 canonical evidence 统一为 `evidence[{ documentId, sourceId, chunkId, paragraph, quote }]`。Host 在写入门重新验证 quote 确实存在于对应 source unit，并按 paragraph 对应的 source-version/chunk 补齐 provenance；无法认证的 quote 不会被包装成 evidence。相同 Node/Edge 在后续 source-version 再次出现时会合并 evidence，而不是丢掉后来的证据。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等 relation。
-- **消费 API 只读 canonical、输出有界**：带 `documentId` 的检索/问答请求由 Host memory 或 SQLite 加载 canonical state，并用 `expectedRevision` 做 fencing；SQLite 按 type/section/status/text 做 SQL 预过滤，对词汇候选分 600 行分页评分且只保留有界 top set，再按有索引的 from/to relation 扩展邻居，因此不会因为前 600 个常见词候选遮住后文精确命中，也不需要 materialize 全图。响应把直接 matches 与扩展 graph 分开，并严格限制节点、关系和原文上下文。
+- **消费 API 只读 canonical、单次查询、输出有界**：带 `documentId` 的检索/问答请求由 Host memory 或 SQLite 加载 canonical state，并用 `expectedRevision` 做 fencing；SQLite 一次完成 type/section/status/text 预过滤、全候选评分、有索引的 from/to relation 扩展、精确 source-unit 回填与可选 fallback，不再进行 SQLite → Host 双重检索。词汇候选按 `(paragraph,node_id)`、原文单元按 paragraph 做 keyset 分页并只保留 bounded top set，因此不会因为前 600 个常见词候选遮住后文精确命中，也不会因越来越大的 `OFFSET` 反复跳过旧页。响应把直接 matches 与扩展 graph 分开，优先保留直接证据，并限制节点、关系、evidence、原文及聚合 context envelope。
 - **回答按 evidence ID 逐片段准入**：Host 先认证节点、关系和 source fallback evidence，再分配不可由模型伪造的 `evidenceId`；模型输出 `parts[{ text, evidenceIds }]`，Host 逐 part、逐句过滤未知/空引用，并用确定性词汇支撑、否定极性与 authority-status gate 拒绝「真实 ID + 无关/反向命题」、跨句限定词泄漏及未限定的未验证声明；通过后也不采用模型自由文本，而是从认证证据确定性渲染 part，再自行拼接最终 answer。这样 citation 不是事后给整段自由文本挂一个装饰性链接，而是每个被接纳命题的结构化准入条件。
 - **生成即验收（Generate → Verify → Repair → Accept）**：`validateGraphInvariantsHost()` 是生成与快速体检共用的 deterministic truth gate。每个 batch 在 merge 前都会经过 schema normalize + invariant 检查；blocking invariant 会把 typed 错误回灌给模型做定向重试（最多 3 次），paragraph 等可确定问题由 Host 安全修复，最终仍不合格的边可安全省略，但无法安全修复/锚定的节点会让任务以 `invariant_violation` 显式失败。所有 batch merge 完成后还会再做一次整图 gate，只有 `invariantErrors=0` 才能写入 canonical graph / SQLite。生成审计同时统计 evidence-backed / candidate / unsupported claim；没有可认证 quote 的声明不会被标成 grounded。
 - **Anchor / Evidence / Semantic Entailment 明确分层**：`paragraph` 只是 `anchor`，不能等价于 claim evidence。可在 source 中认证的 quote 才使节点进入 `groundingStatus=grounded`；只有 anchor、没有 evidence 的节点为 `candidate`，伪造/无法认证的 quote 为 `unsupported`。语义蕴含另由 `entailmentStatus=verified|unsupported|uncertain|unverified` 表示；当前 deterministic gate 只认证 provenance，不会因为 quote 存在就声称“节点 text 已被语义证明”。快速体检分别显示锚点覆盖、证据覆盖和语义已验证比例。
@@ -379,8 +381,8 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、单元号偏移（对齐全文编号）与语义去重。同一 canonical Node/Edge 再次出现时会合并新的 provenance-rich evidence；append 始终受 base revision fence 保护。
 - **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃；验证/质疑输入限制最多 800 个节点，避免恶意大图拖垮 Host。
 - **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`。窗口化以后浏览器不再分配连续 canonical node id：新增节点使用 `node_<UUID>`，Host/SQLite 仍会拒绝不可见节点 ID 碰撞。`merge_nodes` 通过 semantic operation `merge_node(from→into)` 交给 Host 在完整 canonical graph 上执行，因此窗口外 incident edges 会被重定向而不是静默删除。所有提交都受 `expectedRevision` + invariant gate 保护；blocking 修改返回 `invariant_violation`，并发冲突返回 `revision_conflict`。
-- **任务可观测、可取消，而非超时即失败**：模型任务跑到完成或由用户取消为止；进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮，慢流不会被静默判死。
-- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图，以及 append 的 `baseRevision / baseSource / baseStaging`。trajectory checkpoint 额外保存 `traceEvents` 与追加时的 `baseTraceText/baseTraceEvents`。Host 重启恢复 append 前会核对 canonical revision，并重新挂回旧 chunks/sections/trace metadata；已完成 batch 不重跑。checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
+- **任务可观测、有 deadline、可即时取消**：进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮。模型调用的 wall-clock deadline 同时覆盖 stream acquisition 与完整 iteration；`timeout` 与 `cancelled` 使用独立 typed 状态。取消 hook 在操作完成后移除，各 runner 在 `finally` 清理 `activeTask`；即使 provider 不合作，前台任务也不会被永久占住。
+- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图和任务启动时冻结的 `baseRevision`；append 还保存 `baseSource / baseStaging`。trajectory checkpoint 额外保存 `traceEvents` 与追加时的 `baseTraceText/baseTraceEvents`。无论通过 `/extract` 提交 checkpoint，还是 Host 重启后走 `/resume-extract`，恢复前都必须确认 canonical revision 仍等于该 frozen base；旧 checkpoint 不会被重新绑定到新 revision。常驻 `/extract` 还会在异步 revision lookup 前原子占用 busy slot，两个并发请求不能同时入场。已完成 batch 不重跑；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
 - **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；常驻模式的 `document-load` 直接在 SQLite 执行 `LIMIT/OFFSET`，子图查询只读取直接命中节点、bounded incident edges 与一跳邻居，不再先把整图 materialize 到 Node 内存。浏览器一次最多加载 800 个节点，提供上一页 / 下一页 / 指定页跳转与按节点 ID、文本、类型或章节查询。JSON/CSV 完整导出仍显式读取 canonical graph。
 - **章节 / 候选审核视图**：章节筛选只改变当前浏览器结果视图，不修改原始图；候选状态以 `documentId | kind | nodeId` 稳定键保存，保留原文 evidence 和回链能力。
 - **SQLite 候选层**：`src/kg-store.mjs` 把图结果写入文档 / chunk / node / edge 表，并按节点类型生成带 evidence 的候选实体与候选声明；canonical revision 提交时会删除已经失效的候选，同时用稳定 candidate id 保留仍存在候选的 accepted/rejected 状态。用户也可以通过 CLI 更新审核状态。
