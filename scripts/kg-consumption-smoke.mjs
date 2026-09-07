@@ -461,6 +461,12 @@ assert(apiRoute && typeof apiRoute.handler === 'function', 'persistent HTTP API 
 const api = apiRoute.handler
 
 try {
+  // Rebuilding the persistent host must retain SQLite-backed history discovery.
+  const documentList = await post(api, 'document-list', {})
+  const listedDocument = documentList.documents?.find((item) => item.documentId === fixture.documentId)
+  assert(listedDocument, 'rebuilt persistent host lost the document-list route')
+  assert(listedDocument.nodeCount === fixture.graph.nodes.length && listedDocument.edgeCount === fixture.graph.edges.length, 'document-list counts do not reflect the canonical graph')
+
   const persistentExact = await post(api, 'graph-query', {
     documentId: fixture.documentId,
     expectedRevision: 1,

@@ -353,6 +353,46 @@
         saveHistory(next)
         return next
       }
+      // Merge documents that live in the Host/SQLite store into the history list
+      // so a document that was imported/persisted directly into SQLite (instead
+      // of being extracted through the UI, which is what writes localStorage)
+      // is still clickable and loadable. This closes the "imported document is
+      // invisible in the history panel" gap.
+      async function mergeServerHistory(list) {
+        try {
+          // `host.call('document-list')` is rewritten to `rpc('document-list')`
+          // (fetch to /api/dsh-knowledge-graph/document-list) in the persistent
+          // client build and stays a host.call in the dynamic build, so just
+          // attempt it and bail on any failure. Do NOT gate on `host.call`
+          // existing: the persistent build has no `host` binding.
+          const res = await host.call('document-list')
+          const docs = res && Array.isArray(res.documents) ? res.documents : []
+          if (docs.length === 0) return list
+          const byId = new Map(list.map((e) => [e.documentId, e]))
+          for (const d of docs) {
+            if (!d || typeof d.documentId !== 'string' || !d.documentId) continue
+            byId.set(d.documentId, {
+              id: 'srv-' + d.documentId,
+              documentId: d.documentId,
+              title: d.title || '',
+              summary: '',
+              nodeCount: Number.isInteger(d.nodeCount) ? d.nodeCount : 0,
+              edgeCount: Number.isInteger(d.edgeCount) ? d.edgeCount : 0,
+              ts: Number.isFinite(d.updatedAt) ? d.updatedAt : Date.now(),
+              server: true,
+            })
+          }
+          const next = Array.from(byId.values()).slice(0, HISTORY_MAX)
+          if (next.length > list.length) {
+            // Persist on a best-effort basis only; server docs don't need
+            // localStorage persistence to remain visible.
+            try { saveHistory(next) } catch (e) {}
+          }
+          return next
+        } catch (e) {
+          return list
+        }
+      }
       function formatTime(ts) {
         const d = new Date(ts)
         if (isNaN(d.getTime())) return ''
@@ -2180,6 +2220,110 @@
           if (p) p.x = laneX
         }
 
+        // Wrapping is only an initial placement, not a rank constraint. Minimize
+        // actual two-dimensional edge length on the router's row grid; otherwise
+        // a wide level can strand a direct neighbour dozens of visual rows away.
+        const compactRows = () => {
+          const before = new Map(nodes.map((node) => [node.id, { ...placed.get(node.id) }]))
+          const lower = new Map(nodes.map((node) => [node.id, []]))
+          const upper = new Map(nodes.map((node) => [node.id, []]))
+          for (const edge of edges) {
+            const a = before.get(edge.fromNodeId), b = before.get(edge.toNodeId)
+            if (!a || !b || a.y === b.y) continue
+            const mover = edge.relation === 'contains' ? edge.toNodeId : edge.fromNodeId
+            const anchors = localAnchors.get(mover)
+            const constrained = reasoningRelations.has(edge.relation) ||
+              (strongLocalRelations.has(edge.relation) && anchors && anchors.size === 1)
+            if (!constrained) continue
+            const top = a.y < b.y ? edge.fromNodeId : edge.toNodeId
+            const bottom = a.y < b.y ? edge.toNodeId : edge.fromNodeId
+            lower.get(bottom).push(top)
+            upper.get(top).push(bottom)
+          }
+          const rows = new Map()
+          const rowOf = (id) => Math.round(placed.get(id).y / LAYER_Y_GAP)
+          const addRow = (id) => {
+            const row = rowOf(id)
+            if (!rows.has(row)) rows.set(row, new Set())
+            rows.get(row).add(id)
+          }
+          for (const node of nodes) addRow(node.id)
+          const maxRow = Math.max(...rows.keys())
+          const maxHeight = Math.max(...nodes.map((node) => (sizes.get(node.id) || { h: 120 }).h))
+          for (let pass = 0; pass < 12; pass++) {
+            let moved = false
+            const ordered = pass % 2 === 0 ? nodes : nodes.slice().reverse()
+            for (const node of ordered) {
+              const id = node.id, p = placed.get(id)
+              const links = weightedAdj.get(id)
+              if (!links || links.length === 0) continue
+              const size = sizes.get(id) || { w: 200, h: 120 }
+              let total = 0, meanX = 0, meanY = 0
+              for (const link of links) {
+                const peer = placed.get(link.id)
+                total += link.weight
+                meanX += peer.x * link.weight
+                meanY += peer.y * link.weight
+              }
+              meanX /= total; meanY /= total
+              const min = Math.max(0, ...lower.get(id).map((peer) => rowOf(peer) + 1))
+              const max = Math.min(maxRow, ...upper.get(id).map((peer) => rowOf(peer) - 1))
+              const candidates = Array.from({ length: Math.max(0, max - min + 1) }, (_, index) => min + index)
+                .sort((a, b) => Math.abs(a * LAYER_Y_GAP - meanY) - Math.abs(b * LAYER_Y_GAP - meanY) || a - b)
+              let best = { x: p.x, y: p.y }
+              let bestCost = (p.x - meanX) ** 2 + (p.y - meanY) ** 2
+              for (const row of candidates) {
+                const y = row * LAYER_Y_GAP
+                // Rows are visited nearest first; their vertical cost alone
+                // eventually exceeds the best complete collision-free position.
+                if ((y - meanY) ** 2 >= bestCost - 0.01) break
+                // Preserve inter-row channels: a new same-row edge would need
+                // outer routing space not included in the component rectangle.
+                if (links.some((link) => row === rowOf(link.id) && before.get(id).y !== before.get(link.id).y)) continue
+                const blocked = []
+                const reach = Math.ceil((size.h + maxHeight + 36) / (2 * LAYER_Y_GAP))
+                for (let r = row - reach; r <= row + reach; r++) {
+                  for (const peerId of rows.get(r) || []) {
+                    if (peerId === id) continue
+                    const peer = placed.get(peerId), ps = sizes.get(peerId) || { w: 200, h: 120 }
+                    if (Math.abs(peer.y - y) >= (size.h + ps.h) / 2 + 18) continue
+                    const half = (size.w + ps.w) / 2 + 18
+                    blocked.push({ left: peer.x - half, right: peer.x + half })
+                  }
+                }
+                blocked.sort((a, b) => a.left - b.left)
+                const merged = []
+                for (const interval of blocked) {
+                  const last = merged[merged.length - 1]
+                  if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
+                  else merged.push({ ...interval })
+                }
+                const preferred = backboneLane.has(id) ? backboneLane.get(id) : meanX
+                const occupied = merged.find((interval) => preferred > interval.left && preferred < interval.right)
+                if (occupied && backboneLane.has(id)) continue
+                const xs = occupied ? [occupied.left, occupied.right] : [preferred]
+                for (const x of xs) {
+                  const cost = (x - meanX) ** 2 + (y - meanY) ** 2
+                  if (cost < bestCost - 0.01) { best = { x, y }; bestCost = cost }
+                }
+              }
+              if (best.x !== p.x || best.y !== p.y) {
+                rows.get(rowOf(id)).delete(id)
+                p.x = best.x; p.y = best.y
+                addRow(id)
+                moved = true
+              }
+            }
+            if (!moved) break
+          }
+          // Removing empty rows preserves the reasoning order and orthogonal
+          // channels while eliminating space left behind by relocated branches.
+          const occupiedRows = Array.from(rows.keys()).filter((row) => rows.get(row).size > 0).sort((a, b) => a - b)
+          const compact = new Map(occupiedRows.map((row, index) => [row, index]))
+          for (const node of nodes) placed.get(node.id).y = compact.get(rowOf(node.id)) * LAYER_Y_GAP
+        }
+        compactRows()
+
         // Examples/analogies/definitions/concept branches stay next to the
         // backbone node they explain. They remain ordinary graph nodes; this is
         // only a view projection and the row pack below handles collisions.
@@ -2762,16 +2906,27 @@
         return true
       }
       function findCorridor(fromX, r1, r2, nodes, sizes, pos) {
-        let step = 24
-        let dir = 1
-        let i = 1
-        while (i < 40) {
-          for (const sign of [dir, -dir]) {
-            const x = fromX + sign * i * step
-            if (corridorFree(x, r1, r2, nodes, sizes, pos)) return x
-          }
-          i += 1
+        // Compact rows can be wider than a fixed search radius. The union of
+        // intermediate-node intervals gives the nearest genuinely free column
+        // without falling back to a blocked one when sampled offsets run out.
+        const blocked = []
+        for (const node of nodes) {
+          const p = pos.get(node.id)
+          const row = Math.round(p.y / LAYER_Y_GAP)
+          if (row <= r1 || row >= r2) continue
+          const size = sizes.get(node.id)
+          const half = (size ? size.w : 120) / 2 + 6
+          blocked.push({ left: p.x - half, right: p.x + half })
         }
+        blocked.sort((a, b) => a.left - b.left)
+        const merged = []
+        for (const interval of blocked) {
+          const last = merged[merged.length - 1]
+          if (last && interval.left <= last.right) last.right = Math.max(last.right, interval.right)
+          else merged.push({ ...interval })
+        }
+        const occupied = merged.find((interval) => fromX > interval.left && fromX < interval.right)
+        if (occupied) return fromX - occupied.left < occupied.right - fromX ? occupied.left - 0.01 : occupied.right + 0.01
         return fromX
       }
       // Vertical band (y range) of the channel between row r and r+1 that is
@@ -3349,12 +3504,48 @@
         }, [layoutMode, edges, layout, sizes, edgeLanes, nodes])
 
         const markerId = markerIdRef.current
+        // ---- bundle parallel relations between the same ordered node pair ----
+        // When two nodes are joined by several edges (e.g. supports/aims_at/
+        // example), drawing one line per edge floods the layout with near-
+        // identical curves. We render a single visible path per ordered pair
+        // and stack its relation labels as individually clickable chips, so the
+        // pair stays visually clean while every relation stays selectable.
+        const parallelLeaders = new Map() // edge -> leader edge object
+        const parallelGroup = new Map()   // leader edge -> [memberEdges]
+        {
+          const byOrderedPair = new Map()
+          ;(edges || []).forEach((edge, index) => {
+            const key = String(edge.fromNodeId) + '>' + String(edge.toNodeId)
+            let list = byOrderedPair.get(key)
+            if (!list) { list = []; byOrderedPair.set(key, list) }
+            list.push({ edge, index })
+          })
+          for (const list of byOrderedPair.values()) {
+            if (list.length < 2) continue
+            const leader = list[0]
+            const members = list.map((entry) => entry.edge)
+            parallelGroup.set(leader.edge, members)
+            for (const entry of list) parallelLeaders.set(entry.edge, leader.edge)
+          }
+        }
         const edgeEls = (edges || []).map((edge, i) => {
           const a = layout.pos.get(edge.fromNodeId)
           const b = layout.pos.get(edge.toNodeId)
           const sa = sizes.get(edge.fromNodeId)
           const sb = sizes.get(edge.toNodeId)
           if (!a || !b || !sa || !sb) return null
+          // Duplicate edges in a merged group render only through their leader;
+          // they keep their own hit region absent so the pair shows one line.
+          const leader = parallelLeaders.get(edge)
+          if (leader && leader !== edge) {
+            const leaderIndex = (edges || []).findIndex((e) => e === leader)
+            return h('g', {
+              key: edge.fromNodeId + '>' + edge.toNodeId + ':parallel:' + i,
+              className: 'kg-edge-parallel',
+              style: { display: 'none' },
+              'aria-hidden': 'true',
+            })
+          }
           const sel = selectedEdgeId === i
           const hover = hoverEdge === i
           const inFocus = focus ? related.edgeIdx.has(i) : true
@@ -3474,20 +3665,61 @@
               opacity: dim ? 0.15 : 1,
             }),
             // relation-type label chip at the path's label point (curve
-            // midpoint / outer-arc midpoint), offset so it stays off the line
-            (!labelHidden || sel || hover) ? h('g', {
-              key: 'lbl' + i,
-              className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
-              'aria-hidden': 'true',
-              style: dim ? { opacity: 0.15 } : undefined,
-            },
-              [
-                h('rect', {
-                  x: lblX - labelW / 2, y: lblY - labelH / 2, width: labelW, height: labelH, rx: 4,
+            // midpoint / outer-arc midpoint), offset so it stays off the line.
+            // Parallel relations render one chip per relation, stacked so each
+            // stays individually selectable on the single bundled line.
+            (!labelHidden || sel || hover) ? (() => {
+              const members = parallelGroup.get(edge)
+              if (!members || members.length <= 1) {
+                // singleton edge: keep the original single chip
+                return h('g', {
+                  key: 'lbl' + i,
+                  className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
+                  'aria-hidden': 'true',
+                  style: dim ? { opacity: 0.15 } : undefined,
+                },
+                  [
+                    h('rect', {
+                      x: lblX - labelW / 2, y: lblY - labelH / 2, width: labelW, height: labelH, rx: 4,
+                    }),
+                    h('text', { x: lblX, y: lblY + 3.5, textAnchor: 'middle' }, rel),
+                  ],
+                )
+              }
+              // merged pair: one chip per relation, stacked vertically along the
+              // line's normal so they read as a compact legend on a single path.
+              const chipH = labelH || 15
+              const gap = chipH + 3
+              const totalH = members.length * gap - 3
+              return h('g', {
+                key: 'lblgroup' + i,
+                className: 'kg-edge-label' + (sel ? ' sel' : '') + (hover ? ' hov' : ''),
+                'aria-hidden': 'true',
+                style: dim ? { opacity: 0.15 } : undefined,
+                role: 'group',
+                'aria-label': '并行关系：' + members.map((m) => REL_LABEL[m.relation] || m.relation).join('、'),
+              },
+                members.map((member, mi) => {
+                  const memberIndex = (edges || []).findIndex((e) => e === member)
+                  const memberSel = selectedEdgeId === memberIndex
+                  const memberRel = REL_LABEL[member.relation] || member.relation
+                  const mw = measureLabel(memberRel) + 10
+                  const my = lblY - totalH / 2 + mi * gap
+                  return h('g', {
+                    key: 'lblchip' + mi,
+                    className: 'kg-edge-label' + (memberSel ? ' sel' : ''),
+                    role: 'button', tabIndex: 0,
+                    'aria-label': '关系：' + memberRel,
+                    style: { cursor: 'pointer' },
+                    onClick: (e) => { e.stopPropagation(); onSelectEdge(memberIndex) },
+                    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSelectEdge(memberIndex) } },
+                  },
+                    h('rect', { x: lblX - mw / 2, y: my - chipH / 2, width: mw, height: chipH, rx: 4 }),
+                    h('text', { x: lblX, y: my + 3.5, textAnchor: 'middle' }, memberRel),
+                  )
                 }),
-                h('text', { x: lblX, y: lblY + 3.5, textAnchor: 'middle' }, rel),
-              ],
-            ) : null,
+              )
+            })() : null,
           )
         })
 

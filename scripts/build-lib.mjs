@@ -229,6 +229,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               return writeJson(res, 200, { providers, current })
             }
+            if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/document-list') {
+              const store = await getSqliteStore()
+              const docs = store.listDocuments(100)
+              const enriched = docs.map((d) => {
+                try {
+                  const nodes = store.db.prepare('SELECT COUNT(*) AS n FROM graph_nodes WHERE document_id = ?').get(d.documentId)
+                  const edges = store.db.prepare('SELECT COUNT(*) AS n FROM graph_edges WHERE document_id = ?').get(d.documentId)
+                  return { ...d, nodeCount: nodes ? Number(nodes.n) : 0, edgeCount: edges ? Number(edges.n) : 0 }
+                } catch (e) { return d }
+              })
+              return writeJson(res, 200, { documents: enriched })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/candidate-list') {
               const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}

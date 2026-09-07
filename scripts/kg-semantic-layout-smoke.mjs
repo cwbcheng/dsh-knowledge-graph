@@ -65,7 +65,7 @@ const buildLayeredEdgeLanes = new Function('LAYER_Y_GAP', 'return (' + extractFu
 const placeLayeredEdgeLabel = new Function('return (' + extractFunction(source, 'placeLayeredEdgeLabel') + ')')()
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const corridorFree = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'corridorFree') + ')')(layerYGap)
-const findCorridor = new Function('corridorFree', 'return (' + extractFunction(source, 'findCorridor') + ')')(corridorFree)
+const findCorridor = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'findCorridor') + ')')(layerYGap)
 const channelBand = new Function('LAYER_Y_GAP', 'return (' + extractFunction(source, 'channelBand') + ')')(layerYGap)
 const layeredOrthoPath = new Function(
   'LAYER_Y_GAP',
@@ -532,6 +532,96 @@ const largeElapsedMs = Date.now() - largeStartedAt
 assert(largeLayout.pos.size === largeNodes.length, 'large component-aware layout omitted nodes')
 assert(largeElapsedMs < 5000, '800-node layered layout exceeded regression ceiling: ' + largeElapsedMs + 'ms')
 
+// One connected fan with a reasoning spine and many two-node support branches.
+// Unlike disconnected-component packing, this catches wide-rank wrapping inside
+// a single component. Each branch's direct neighbour must stay local even when
+// dozens of other branches compete for the same logical ranks.
+const compactNodes = ['spine-a', 'spine-b', 'spine-c'].map((id) => ({ id, type: 'claim' }))
+const compactEdges = [
+  { fromNodeId: 'spine-a', toNodeId: 'spine-b', relation: 'causes' },
+  { fromNodeId: 'spine-b', toNodeId: 'spine-c', relation: 'infers' },
+]
+const compactPairs = []
+for (let index = 0; index < 32; index++) {
+  const from = 'branch-' + index, to = 'detail-' + index
+  compactNodes.push({ id: from, type: 'claim' }, { id: to, type: 'claim' })
+  compactEdges.push({ fromNodeId: from, toNodeId: 'spine-b', relation: 'supports' })
+  const edge = { fromNodeId: from, toNodeId: to, relation: 'supports' }
+  compactEdges.push(edge)
+  compactPairs.push(edge)
+}
+const compactSizes = new Map(compactNodes.map((node, index) => [node.id, { w: index % 3 === 0 ? 218 : 194, h: index % 2 === 0 ? 124 : 100 }]))
+const compactSnapshot = JSON.stringify({ nodes: compactNodes, edges: compactEdges, sizes: Array.from(compactSizes) })
+const compactLayout = layoutLayeredComponents(compactNodes, compactEdges, compactSizes)
+const compactPos = compactLayout.pos
+const compactDistances = compactPairs.map((edge) => {
+  const a = compactPos.get(edge.fromNodeId), b = compactPos.get(edge.toNodeId)
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}).sort((a, b) => a - b)
+const compactP90 = compactDistances[Math.floor(compactDistances.length * 0.9)]
+assert(compactP90 < 600, 'direct support branches remain separated by wrapped ranks: ' + compactP90)
+assert(Math.max(...compactDistances) < 900, 'a direct branch was stranded far from its only detail: ' + JSON.stringify(compactDistances))
+assert(compactPos.get('spine-a').y < compactPos.get('spine-b').y && compactPos.get('spine-b').y < compactPos.get('spine-c').y, 'compaction reversed the reasoning spine')
+assert(new Set(['spine-a', 'spine-b', 'spine-c'].map((id) => compactPos.get(id).x)).size === 1, 'compaction unpinned the reasoning lane')
+for (let i = 0; i < compactNodes.length; i++) {
+  const a = compactPos.get(compactNodes[i].id), sa = compactSizes.get(compactNodes[i].id)
+  assert(Number.isFinite(a.x) && Number.isFinite(a.y), 'compaction returned a nonfinite coordinate')
+  for (let j = i + 1; j < compactNodes.length; j++) {
+    const b = compactPos.get(compactNodes[j].id), sb = compactSizes.get(compactNodes[j].id)
+    assert(Math.abs(a.x - b.x) >= (sa.w + sb.w) / 2 + 17.9 || Math.abs(a.y - b.y) >= (sa.h + sb.h) / 2 + 17.9, 'compaction overlapped variable-sized nodes')
+  }
+}
+const compactAgain = layoutLayeredComponents(compactNodes, compactEdges, compactSizes)
+assert(JSON.stringify(Array.from(compactPos)) === JSON.stringify(Array.from(compactAgain.pos)), 'connected compaction is nondeterministic')
+assert(JSON.stringify({ nodes: compactNodes, edges: compactEdges, sizes: Array.from(compactSizes) }) === compactSnapshot, 'layout modified canonical graph or node sizes')
+
+const compactLanes = buildLayeredEdgeLanes(compactEdges, compactPos, compactLayout.componentKeyById, compactLayout.componentNodesById)
+for (const edge of compactEdges) {
+  const points = pathPoints(layeredOrthoPath(edge, compactPos.get(edge.fromNodeId), compactPos.get(edge.toNodeId), compactSizes, compactPos, compactNodes, compactLanes.get(edge)).d)
+  assert(points.length >= 4, 'compacted route omitted bends')
+  for (let index = 1; index < points.length; index++) {
+    const start = points[index - 1], end = points[index]
+    const vertical = Math.abs(start.x - end.x) < 1e-9
+    assert(vertical || Math.abs(start.y - end.y) < 1e-9, 'compacted route is not orthogonal')
+    for (const node of compactNodes) {
+      if (node.id === edge.fromNodeId || node.id === edge.toNodeId) continue
+      const p = compactPos.get(node.id), s = compactSizes.get(node.id)
+      const x0 = p.x - s.w / 2 + 1, x1 = p.x + s.w / 2 - 1
+      const y0 = p.y - s.h / 2 + 1, y1 = p.y + s.h / 2 - 1
+      const hits = vertical
+        ? start.x > x0 && start.x < x1 && Math.max(Math.min(start.y, end.y), y0) < Math.min(Math.max(start.y, end.y), y1)
+        : start.y > y0 && start.y < y1 && Math.max(Math.min(start.x, end.x), x0) < Math.min(Math.max(start.x, end.x), x1)
+      assert(!hits, 'compacted route crosses ' + node.id + ' for ' + edge.fromNodeId + '>' + edge.toNodeId + ': ' + JSON.stringify({ start, end, p, s }))
+    }
+  }
+}
+
+// The disconnected 800-node test above does not exercise the optimizer's worst
+// case. Keep one connected hub, broad ranks, cycles and parallel relations.
+const stressNodes = Array.from({ length: 800 }, (_, index) => ({ id: 'stress-' + index, type: 'claim' }))
+const stressEdges = []
+for (let index = 1; index < stressNodes.length; index++) {
+  stressEdges.push({ fromNodeId: 'stress-' + index, toNodeId: 'stress-' + Math.floor((index - 1) / 40), relation: 'supports' })
+  if (index % 7 === 0) stressEdges.push({ fromNodeId: 'stress-' + (index - 1), toNodeId: 'stress-' + index, relation: 'analogy' })
+  if (index % 11 === 0) stressEdges.push({ fromNodeId: 'stress-' + index, toNodeId: 'stress-' + (index - 2), relation: 'infers' })
+}
+stressEdges.push({ fromNodeId: 'stress-0', toNodeId: 'stress-11', relation: 'causes' })
+stressEdges.push({ fromNodeId: 'stress-1', toNodeId: 'stress-0', relation: 'driven_by' })
+const stressSizes = new Map(stressNodes.map((node, index) => [node.id, { w: index % 3 === 0 ? 218 : 194, h: index % 2 === 0 ? 124 : 100 }]))
+const stressStartedAt = Date.now()
+const stressLayout = layoutLayeredComponents(stressNodes, stressEdges, stressSizes)
+const stressElapsedMs = Date.now() - stressStartedAt
+assert(stressLayout.pos.size === 800, 'connected stress layout omitted nodes')
+assert(stressElapsedMs < 5000, 'connected 800-node layout exceeded regression ceiling: ' + stressElapsedMs + 'ms')
+for (let i = 0; i < stressNodes.length; i++) {
+  const a = stressLayout.pos.get(stressNodes[i].id), sa = stressSizes.get(stressNodes[i].id)
+  assert(Number.isFinite(a.x) && Number.isFinite(a.y), 'connected stress layout returned a nonfinite coordinate')
+  for (let j = i + 1; j < stressNodes.length; j++) {
+    const b = stressLayout.pos.get(stressNodes[j].id), sb = stressSizes.get(stressNodes[j].id)
+    assert(Math.abs(a.x - b.x) >= (sa.w + sb.w) / 2 + 17.9 || Math.abs(a.y - b.y) >= (sa.h + sb.h) / 2 + 17.9, 'connected stress layout overlapped nodes')
+  }
+}
+
 console.log(JSON.stringify({
   ok: true,
   chain: ['a','b','c','d','e'].map((id) => ({ id, ...pos.get(id) })),
@@ -554,4 +644,8 @@ console.log(JSON.stringify({
   routeBranches: 3,
   largeNodes: largeLayout.pos.size,
   largeElapsedMs,
+  compactP90,
+  compactMax: Math.max(...compactDistances),
+  stressNodes: stressLayout.pos.size,
+  stressElapsedMs,
 }))
