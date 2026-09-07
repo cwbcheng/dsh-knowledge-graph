@@ -24,6 +24,8 @@
        const MAX_IMAGE_TOTAL_BYTES = 16 * 1024 * 1024
        const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif'
        const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+       const MAX_PDF_INPUT_BYTES = 15 * 1024 * 1024
+       const PDF_ACCEPT = 'application/pdf,.pdf'
        const MAX_VERIFY_SCOPE_CHARS = 240000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'

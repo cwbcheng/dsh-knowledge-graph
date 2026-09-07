@@ -9,3 +9,15 @@ data/*.db*
 # Extension signing material must never enter the repository.
 *.pem
 *.key
+
+# Generated / session-scoped knowledge-graph artifacts and OCR caches must
+# never enter the repository: they embed session document ids, large source
+# text and OCR/LLM intermediate output.
+knowledge-graph.sqlite
+current-graph.json
+scripts/kg-pipeline/work/
+.dsh/
+.dsh-filess/
+.jspace/
+.research/
+scripts/tmp/

@@ -24,6 +24,13 @@ const extractor = async ({ title, attempt, systemPrompt, prompt }) => {
       edges: [],
     }
   }
+  if (title === 'semantic-modal-stubborn') {
+    return {
+      summary: '持续模态漂移',
+      nodes: [{ id: 's1', type: 'claim', text: '这是世上最普遍的学习方式', quote: '这可能是世上最普遍的学习方式', paragraph: 0 }],
+      edges: [],
+    }
+  }
   if (title === 'semantic-relations') {
     return {
       summary: '精确语义关系',
@@ -73,6 +80,13 @@ assert(calls.filter((call) => call.title === 'semantic-modal').length === 2, 'se
 const retry = calls.find((call) => call.title === 'semantic-modal' && call.attempt === 1)
 assert(retry && retry.prompt.includes('node_semantic_strength_drift'), 'typed modal-drift feedback was not supplied to retry')
 assert(modal.result.nodes[0].type === 'claim' && modal.result.nodes[0].text.includes('可能'), 'author claim was not preserved as a qualified claim')
+
+const stubbornStart = await handlers.get('extract')({ title: 'semantic-modal-stubborn', text: '这可能是世上最普遍的学习方式' })
+const stubborn = await waitTask(stubbornStart.taskId)
+assert(stubborn.status === 'succeeded', 'persistent modal drift did not use the safe final fallback: ' + JSON.stringify(stubborn))
+assert(calls.filter((call) => call.title === 'semantic-modal-stubborn').length === 3, 'persistent modal drift did not exhaust bounded model retries before fallback')
+assert(stubborn.result.nodes[0].text === '这可能是世上最普遍的学习方式', 'safe fallback did not restore node text from the exact grounded quote')
+assert((stubborn.result.warnings || []).some((warning) => String(warning).includes('invariant_auto_repair:restore_text_from_quote:s1')), 'semantic-strength fallback was not auditable')
 const contractPrompt = calls.find((call) => call.title === 'semantic-modal').systemPrompt
 assert(contractPrompt.includes('一节点一命题'), 'atomic proposition contract is missing')
 assert(contractPrompt.includes('claim 主张'), 'claim node type is missing from extraction contract')

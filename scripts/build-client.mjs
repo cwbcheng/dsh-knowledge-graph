@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry" || method === "document-list") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -174,6 +174,7 @@ if (!c.includes("host.call('list-models'")) throw new Error('list-models call no
 if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
 if (!c.includes("host.call('graph-query'")) throw new Error('graph-query call not found')
 if (!c.includes("host.call('answer-graph'")) throw new Error('answer-graph call not found')
+if (!c.includes("host.call('document-list'")) throw new Error('document-list call not found')
 c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('document-load'").join("rpc('document-load'")
@@ -196,6 +197,7 @@ c = c.split("host.call('list-models'").join("rpc('list-models'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")
 c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
+c = c.split("host.call('document-list'").join("rpc('document-list'")
 if (c.includes('host.call(')) throw new Error('unmapped host.call remains in persistent client build')
 if (!c.includes("rpc('image-load'")) throw new Error('image-load RPC rewrite missing from persistent client')
 

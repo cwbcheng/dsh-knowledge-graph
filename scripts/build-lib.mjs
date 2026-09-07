@@ -164,67 +164,38 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { taskId: task.id })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-import') {
-              const raw = await readBody(req, 4 * 1024 * 1024)
+              const raw = await readBody(req, 24 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+              const directUploads = Array.isArray(a.uploads) ? a.uploads : []
               const pendingProvided = Object.prototype.hasOwnProperty.call(a, 'pending')
-              const pendingText = pendingProvided && typeof a.pending === 'string' ? a.pending : ''
-              if (!sessionId) return writeJson(res, 200, { error: { code: 'no_session', message: '缺少会话 id，无法读取附件' } })
-              const sessions = ctx.get('sessions')
-              const session = sessions ? sessions.get(sessionId) : undefined
-              if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话，无法读取当前输入框附件' } })
-              const collected = await collectDocumentAttachmentsHost(sessionId, session, pendingProvided ? pendingText : undefined)
+              let collected
+              if (directUploads.length > 0) {
+                collected = await collectDirectDocumentUploadsHost(directUploads)
+              } else {
+                const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+                const pendingText = pendingProvided && typeof a.pending === 'string' ? a.pending : ''
+                if (!sessionId) return writeJson(res, 200, { error: { code: 'no_session', message: '缺少会话 id，无法读取附件' } })
+                const sessions = ctx.get('sessions')
+                const session = sessions ? sessions.get(sessionId) : undefined
+                if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话，无法读取当前输入框附件' } })
+                collected = await collectDocumentAttachmentsHost(sessionId, session, pendingProvided ? pendingText : undefined)
+              }
               if (collected.found.length === 0) {
                 return writeJson(res, 200, {
-                  error: { code: 'no_attachment', message: pendingProvided ? '当前输入框没有检测到可读取的未发送附件文档，请先添加文档附件。' : '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用。' },
+                  error: {
+                    code: 'no_attachment',
+                    message: directUploads.length > 0
+                      ? '上传的 PDF 没有可用正文。扫描版 PDF 暂不支持 OCR，请先转换为可搜索 PDF。'
+                      : pendingProvided
+                        ? '当前输入框没有检测到可读取的未发送附件文档，请先添加文档附件。'
+                        : '当前会话没有检测到附件文档。支持 dsh-paste-input 附件与 dsh-at-file 的 @文件引用。',
+                  },
                   warnings: collected.warnings,
                 })
               }
-              let text = ''
-              let remaining = MAX_TEXT
-              let truncated = false
-              const files = []
-              for (const f of collected.found) {
-                const prefix = '==== 文件：' + f.name + ' ====' + NL
-                const body = f.text || ''
-                let part = prefix + body
-                if (part.length > remaining) {
-                  part = part.slice(0, remaining)
-                  truncated = true
-                }
-                text += part + NL + NL
-                remaining -= part.length + 2
-                files.push({ name: f.name, path: f.path, format: f.format || 'text', bytes: f.bytes || 0, chars: body.length, warning: f.warning || null })
-                if (remaining <= 0) break
-              }
-              const names = files.map((f) => f.name).join('、')
-              const baseTitle = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, '') : (files.length + ' 份附件')
-              const title = (baseTitle || '附件文档').slice(0, 60)
-              const importManifest = buildSourceManifestHost(title, text, splitParagraphsHost(text))
-              return writeJson(res, 200, {
-                title,
-                text,
-                files,
-                names,
-                truncated,
-                manifest: {
-                  documentId: importManifest.documentId,
-                  sourceId: importManifest.sourceId,
-                  chars: importManifest.chars,
-                  paragraphCount: importManifest.paragraphCount,
-                  chunkCount: importManifest.chunkCount,
-                  sectionCount: importManifest.sectionCount,
-                  sections: importManifest.sections.map((section) => ({
-                    id: section.id,
-                    title: section.title,
-                    startParagraph: section.startParagraph,
-                    endParagraph: section.endParagraph,
-                  })),
-                },
-                warnings: collected.warnings,
-              })
+              return writeJson(res, 200, buildDocumentImportResultHost(collected))
             }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/list-models') {
               const llm = ctx.get('llm')

@@ -12,6 +12,7 @@
 ## 它能做什么
 
 - **AI 异步拆分**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，约 15–40 秒返回一张知识图。支持最长约 100 万字符的书级正文；`documentId` 是随机稳定的逻辑文档 UUID，`sourceId` 是全文 SHA-256 的不可变版本身份，`chunkId` 绑定 sourceId + batch + paragraph range，因此不同文档/追加版本不会因局部 `chunk-0001` 重号而覆盖。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
+- **PDF 直接生成知识图**：工作台可直接上传不超过 15 MiB 的可搜索 PDF，本地有界解析正文后自动填入资料区并开始生成知识图；文件数据只用于本次解析，不写入浏览器草稿。复杂排版、特殊字体编码可能导致文本不完整；扫描版 PDF 当前不做 OCR，需先转换为可搜索 PDF。
 - **图片直接生成知识图**：工作台可一次上传 1–4 张 PNG / JPEG / WebP / GIF（单张不超过 6 MiB、合计不超过 16 MiB），支持纯文字截图、示意图 / 流程图 / 架构图、统计图、公式和表格，也可同时附带说明文字。Host 先把浏览器提交的有界 base64 图片交给 DSH `attachments.saveImages()` 验证并保存，再用多模态模型生成带图片范围的 canonical 视觉转写；现有文本抽取器只消费这份转写。结果页保留原图预览与 `source.visualSource` 回链，点击图片会定位对应转写段落。视觉转写会把箭头 / 连线、分组 / 包含、对象对应、顺序和具有图例语义的颜色 / 形状编码拆成独立关系单元，知识抽取后的覆盖复核会补回被首轮遗漏的图示关系；无法准确映射到内置 relation 的关系会保留为原子 fact / claim，而不会强套错误边。视觉转写是模型产物而非像素级确定性 OCR，关键文字、数值、表格单元和连线关系仍应对照原图复核；当前图片输入用于**新建**知识图，已有图的增量追加仍使用文字。
 - **8 类节点 / 12 类关系**：
   - 节点：`fact` 事实 · `claim` 主张 · `inference` 推论 · `concept` 概念 · `definition` 定义 · `example` 例子 · `counter_example` 反例 · `rule` 规则。
