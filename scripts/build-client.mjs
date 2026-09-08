@@ -50,8 +50,8 @@ window.__ModuleLoader__.load({
         const res = await fetch("/api/dsh-knowledge-graph/list-models", { cache: "no-store" })
         return res.json()
       }
-      if (method === "document-import") {
-        const res = await fetch("/api/dsh-knowledge-graph/document-import", {
+      if (method === "document-import" || method === "markdown-import") {
+        const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -195,6 +195,7 @@ c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
 c = c.split("host.call('list-models'").join("rpc('list-models'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
+c = c.split("host.call('markdown-import'").join("rpc('markdown-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")
 c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
 c = c.split("host.call('document-list'").join("rpc('document-list'")

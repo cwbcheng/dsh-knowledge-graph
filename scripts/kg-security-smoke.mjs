@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { deflateRawSync } from 'node:zlib'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { join } from 'node:path'
 import hostPlugin from '../src/index.host.js'
 import * as persistentHost from '../lib/index.js'
@@ -144,4 +145,38 @@ async function originSmoke() {
 
 const attachments = await attachmentSmoke()
 const origin = await originSmoke()
-console.log(JSON.stringify({ ok: true, attachments, origin }))
+async function bodyEncodingSmoke() {
+  const built = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const start = built.indexOf('function readBody(req, limit) {')
+  const end = built.indexOf('\nfunction writeJson(', start)
+  assert(start >= 0 && end > start, 'built request reader missing')
+  const readBody = runInNewContext(built.slice(start,end) + '\nreadBody', { Buffer, TextDecoder })
+  async function read(chunks, limit) {
+    const req = new EventEmitter()
+    const result = readBody(req,limit)
+    for (const chunk of chunks) req.emit('data',chunk)
+    req.emit('end')
+    try { return await result } finally {
+      assert(req.listenerCount('data') === 0 && req.listenerCount('end') === 0 && req.listenerCount('error') === 0, 'reader leaked listeners')
+    }
+  }
+  const text = JSON.stringify({text:'学习观：前兆 → 后继。\n𠮷与图1-1',files:[]})
+  const bytes = Buffer.from(text)
+  for (let cut = 1; cut < bytes.length; cut++) {
+    assert(await read([bytes.subarray(0,cut),bytes.subarray(cut)],bytes.length) === text, 'UTF-8 corruption at byte ' + cut)
+  }
+  assert(await read([...bytes].map(byte=>Buffer.from([byte])),bytes.length) === text, 'bytewise request corrupted')
+  for (const [chunks,limit] of [[[bytes],bytes.length-1],[[Buffer.from([0xe5,0xad])],10]]) {
+    let rejected = false
+    try { await read(chunks,limit) } catch { rejected = true }
+    assert(rejected,'oversized or invalid UTF-8 body was accepted')
+  }
+  const large = JSON.stringify({text:'中文跨块与补充字符𠮷\n'.repeat(20000)})
+  const largeBytes = Buffer.from(large)
+  const chunks = []
+  for(let i=0;i<largeBytes.length;i+=65536) chunks.push(largeBytes.subarray(i,i+65536))
+  assert(await read(chunks,largeBytes.length) === large,'large UTF-8 request corrupted')
+  return {everyByteBoundary:true,bytewise:true,largeBody:true,exactByteLimit:true,invalidUtf8Rejected:true}
+}
+const bodyEncoding = await bodyEncodingSmoke()
+console.log(JSON.stringify({ ok: true, attachments, origin, bodyEncoding }))

@@ -74,6 +74,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
           try {
             const url = new URL(req.url ?? '/', 'http://dsh.local')
             const pathname = url.pathname
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/markdown-import') {
+              const raw = await readBody(req, 24 * 1024 * 1024)
+              let payload
+              try { payload = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_json', message: 'Invalid JSON' } }) }
+              return writeJson(res, 200, await importMarkdownBundleHost(payload))
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/extract') {
               const raw = await readBody(req, 24 * 1024 * 1024)
               let payload = {}
@@ -104,6 +110,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let baseRevision = currentRevision
               let selectedModel = model
               let imageAttachments = []
+              let markdownSource = null
               try {
                 if (checkpoint) {
                   if (!Number.isInteger(checkpoint.baseRevision)) {
@@ -121,6 +128,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   baseRevision = checkpoint.baseRevision
                 }
                 const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
+                markdownSource = markdownBundleForExtractHost(a, text)
                 if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
                 imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
               } catch (error) {
@@ -147,7 +155,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
                  imageAttachments,
-                 imageSource: null,
+                 imageSource: markdownSource,
                  title,
                  text,
                  documentId: requestedDocumentId,
@@ -942,11 +950,14 @@ host = host.slice(0, rpcStartIdx) + routeBlock + host.slice(rpcEndIdx)
 const helpers = `
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
-    let data = ''
+    const chunks = []
+    let bytes = 0
     let done = false
     const onData = (chunk) => {
-      data += chunk
-      if (Buffer.byteLength(data, 'utf8') > limit) finish(new Error('body too large'))
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8')
+      bytes += buffer.length
+      if (bytes > limit) { finish(new Error('body too large')); return }
+      chunks.push(buffer)
     }
     const onEnd = () => finish()
     const onError = (err) => finish(err)
@@ -957,7 +968,12 @@ function readBody(req, limit) {
       req.off('end', onEnd)
       req.off('error', onError)
       if (err) reject(err)
-      else resolve(data)
+      else {
+        // Decode once: a UTF-8 character may span multiple network chunks.
+        try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))) }
+        catch (error) { reject(error) }
+      }
+      chunks.length = 0
     }
     req.on('data', onData)
     req.on('end', onEnd)
@@ -979,4 +995,5 @@ host = host.replace('      // Periodically purge finished tasks (kept for 2h aft
 
 writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib/kg-markdown.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)

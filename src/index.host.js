@@ -3121,6 +3121,46 @@ function createHostPlugin(graphContractOnly) {
         if (capability === 'unsupported') throw imageInputErrorHost('model_image_unsupported', '所选模型不支持图片输入，请选择带“图像”标记的多模态模型', 'MODEL_DOES_NOT_SUPPORT_IMAGES')
         return capability
       }
+      const markdownBundles = new Map()
+      function markdownBundleForExtractHost(args, text) {
+        if (!args.markdownBundleId) return null
+        const bundle = markdownBundles.get(args.markdownBundleId)
+        if (!bundle || Date.now() - bundle.createdAt > 30 * 60 * 1000) throw new Error('图文资料已过期，请重新导入目录')
+        if (bundle.text !== text || args.checkpoint || (Array.isArray(args.images) && args.images.length)) throw new Error('图文资料正文或来源不一致，请重新导入目录')
+        return JSON.parse(JSON.stringify(bundle.imageSource))
+      }
+      async function importMarkdownBundleHost(args) {
+        try {
+          const { prepareMarkdownBundle } = await import('./kg-markdown.mjs')
+          const text = typeof args?.text === 'string' ? args.text.replace(/\r\n?/g, NL).trim() : ''
+          const plan = prepareMarkdownBundle({ ...args, text }, splitParagraphsOffsetsHost(text))
+          if (plan.assets.reduce((sum, asset) => sum + String(asset.file.data || '').length, 0) > 22 * 1024 * 1024) throw new Error('图文资料图片总量超过 16 MiB')
+          const decoded = []
+          let totalBytes = 0
+          for (const asset of plan.assets) {
+            const image = decodeImageInputsHost([{ name: asset.path, mediaType: asset.file.mediaType, data: asset.file.data }])[0]
+            totalBytes += image.data.length
+            if (totalBytes > 16 * 1024 * 1024) throw new Error('图文资料图片总量超过 16 MiB')
+            decoded.push(image)
+          }
+          const images = []
+          for (let start = 0; start < decoded.length; start += 4) {
+            const admitted = await admitDecodedImageInputsHost(decoded.slice(start, start + 4))
+            for (let i = 0; i < admitted.length; i++) {
+              const asset = plan.assets[start + i]
+              images.push({ ...admitted[i], id: 'figure-' + (start + i + 1), name: asset.path,
+                caption: asset.caption || '插图 ' + (start + i + 1), paragraphs: asset.paragraphs,
+                startParagraph: asset.paragraphs[0], endParagraph: asset.paragraphs[0],
+                interpretationStatus: 'not_requested' })
+            }
+          }
+          for (const [id, bundle] of markdownBundles) if (Date.now() - bundle.createdAt > 30 * 60 * 1000) markdownBundles.delete(id)
+          while (markdownBundles.size >= 4) markdownBundles.delete(markdownBundles.keys().next().value)
+          const bundleId = randomDocumentIdHost()
+          markdownBundles.set(bundleId, { createdAt: Date.now(), text, imageSource: { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown', images, warnings: [] } })
+          return { bundleId, text, imageCount: images.length, referenceCount: plan.references, ignoredFiles: plan.ignoredFiles, paragraphCount: splitParagraphsHost(text).length }
+        } catch (error) { return { error: { code: 'markdown_import_invalid', message: error.message || String(error) } } }
+      }
       async function preflightImageModelHost(model) {
         if (hasKgImageExtractor) return model || null
         const selected = model || await resolveModel(true)
@@ -4890,6 +4930,7 @@ function createHostPlugin(graphContractOnly) {
                ? serializeExistingGraph({ nodes: Array.from(acc.nodes.values()) }, 24, batchQuery, acc.lookupTokens)
                : ''
              let userText = buildUserPrompt(task.title, batch, i, batches.length)
+            if (task.imageSource?.kind === 'markdown-assets') userText += NL + '图片链接、文件名和图号只是原文定位信息，不是知识命题。你没有收到图片像素，禁止猜测图中内容或依据文件名建立节点。仅从可见正文提取知识，保留原文段落编号。'
             if (existingDigest) {
               userText += NL + NL + '已有知识图节点清单（id|类型|文本，引用边时只能用这些 id）：' + NL + existingDigest
             }
@@ -7105,6 +7146,7 @@ function createHostPlugin(graphContractOnly) {
         return { taskId: task.id }
       })
 
+      harness.handle('markdown-import', importMarkdownBundleHost)
       harness.handle('document-import', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const directUploads = Array.isArray(a.uploads) ? a.uploads : []
@@ -7345,6 +7387,7 @@ function createHostPlugin(graphContractOnly) {
         const text = typeof a.text === 'string' ? a.text.trim() : ''
         const imageInputs = Array.isArray(a.images) ? a.images : []
          let imageAttachments = []
+         let markdownSource = null
          if (!text && imageInputs.length === 0) return { error: { code: 'invalid_input', message: '请先粘贴资料正文或上传图片' } }
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
@@ -7368,6 +7411,7 @@ function createHostPlugin(graphContractOnly) {
              if (checkpoint.baseRevision !== currentRevision) { busy = false; return { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } } }
              baseRevision = checkpoint.baseRevision
            }
+           markdownSource = markdownBundleForExtractHost(a, text)
            const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
            if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
            imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
@@ -7386,7 +7430,7 @@ function createHostPlugin(graphContractOnly) {
            status: 'running',
            kind: checkpoint ? 'resume' : undefined,
             imageAttachments,
-            imageSource: null,
+            imageSource: markdownSource,
            title,
            text,
            documentId: requestedDocumentId,
