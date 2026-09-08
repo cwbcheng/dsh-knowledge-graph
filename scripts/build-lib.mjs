@@ -615,7 +615,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const mode = a.mode === 'standard' ? 'standard' : 'quick'
               if (mode === 'quick') {
-                 const report = buildLocalReport(graph, text)
+                 const report = await buildLocalReportBatchedHost(graph, text)
                  report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
                  return writeJson(res, 200, { report: mapVerificationResultHost(report, input.paragraphMap) })
                }

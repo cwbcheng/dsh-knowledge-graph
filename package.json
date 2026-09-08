@@ -74,7 +74,7 @@
     "test:kg-trajectory": "node scripts/kg-trajectory-persistence-smoke.mjs",
     "test:kg-evidence": "node scripts/kg-evidence-provenance-smoke.mjs",
     "test:kg-typographic-evidence": "node scripts/kg-typographic-evidence-smoke.mjs",
-    "test:kg-generation-gate": "node scripts/kg-generation-gate-smoke.mjs",
+    "test:kg-generation-gate": "node scripts/kg-generation-gate-smoke.mjs && node scripts/kg-extraction-reliability-smoke.mjs",
     "test:kg-connectivity": "node scripts/kg-connectivity-smoke.mjs",
     "test:kg-layout": "node scripts/kg-layout-smoke.mjs",
     "test:kg-policy": "node scripts/kg-policy-smoke.mjs",

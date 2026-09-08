@@ -121,13 +121,18 @@ try {
   const edge = canonical.edges.find((item) => item.fromNodeId === 'n1' && item.toNodeId === 'n2' && item.relation === 'supports')
   assert(node, 'semantic duplicate node disappeared')
   assert(edge, 'duplicate canonical edge disappeared')
-  assert(node.evidence.length >= 2, 'semantic node dedupe discarded later evidence')
+  // Equal assertion text across source versions is not proof of equal scope.
+  // Retain both candidates and all evidence rather than auto-merging facts.
+  const assertions = canonical.nodes.filter((item) => item.text === '目标事实')
+  assert(assertions.length === 2, 'cross-version assertions were unsafely merged')
+  const nodeEvidence = assertions.flatMap((item) => item.evidence)
+  assert(nodeEvidence.length >= 2, 'scope-safe dedupe discarded later evidence')
   assert(edge.evidence.length >= 2, 'duplicate edge discarded later relation evidence')
-  const nodeSources = new Set(node.evidence.map((item) => item.sourceId))
+  const nodeSources = new Set(nodeEvidence.map((item) => item.sourceId))
   const edgeSources = new Set(edge.evidence.map((item) => item.sourceId))
   assert(nodeSources.has(oldSourceId) && nodeSources.has(canonical.source.id), 'node evidence does not preserve source-version provenance')
   assert(edgeSources.has(oldSourceId) && edgeSources.has(canonical.source.id), 'edge evidence does not preserve source-version provenance')
-  for (const item of [...node.evidence, ...edge.evidence]) {
+  for (const item of [...nodeEvidence, ...edge.evidence]) {
     assert(item.documentId === documentId && item.sourceId && item.chunkId && Number.isInteger(item.paragraph) && item.quote, 'evidence item lacks complete provenance: ' + JSON.stringify(item))
   }
   assert(node.groundingStatus === 'grounded' && node.entailmentStatus === 'unverified', 'grounding/entailment state did not survive evidence merge')

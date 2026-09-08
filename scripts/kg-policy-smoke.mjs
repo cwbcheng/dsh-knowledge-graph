@@ -29,7 +29,7 @@ assert(client.includes("return sourceUnits.length > 0 ? { text: '', sourceUnits 
 assert(client.includes("host.call('graph-commit'"), 'UI graph edits are not committed to the canonical Host graph')
 assert(client.includes("host.call('document-load'"), 'history/result restore does not hydrate from Host/SQLite')
 assert(host.includes('function validateGraphInvariantsHost'), 'shared deterministic invariant evaluator is missing')
-assert(host.includes('const evaluated = validateGraphInvariantsHost(graph, sourceText, { includeQuality: true })'), 'quick-check does not reuse the invariant evaluator')
+assert(host.includes('const evaluated = validateGraphInvariantsHost(graph, sourceText, { includeQuality: true, skipPairChecks: true })') && host.includes('await buildLocalReportBatchedHost(graph, text)'), 'batched quick-check does not reuse the invariant evaluator')
 assert(host.includes('上一次候选图未通过确定性验收'), 'generation does not feed typed invariant failures back into retry')
 assert(host.includes("failTask(task, 'invariant_violation'"), 'final generation gate cannot fail explicitly with invariant_violation')
 assert(host.includes("code: 'invariant_violation'"), 'graph-commit invariant rejection path is missing')

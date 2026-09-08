@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict'
+import hostPlugin, { createGraphContract } from '../src/index.host.js'
+
+const handlers = new Map()
+let response, finish = 'stop'
+const requests = []
+globalThis.harness = { handle(name, fn) { handlers.set(name, fn) } }
+hostPlugin().apply({
+  get(name) { return name === 'llm' ? { async *stream(request) {
+    requests.push(request)
+    yield { type: 'text-delta', index: 0, text: response }
+    yield { type: 'finish', reason: { kind: finish } }
+  } } : null },
+  interval() { return () => {} },
+})
+const model = { provider: 'offline', model: 'reliability-fixture' }
+async function completed(started) {
+  assert(started.taskId, JSON.stringify(started))
+  for (let i = 0; i < 2000; i++) {
+    const status = await handlers.get('task-status')({ taskId: started.taskId })
+    if (status.status !== 'running') { await new Promise(r => setTimeout(r, 0)); return status }
+    await new Promise(r => setTimeout(r, 5))
+  }
+  throw new Error('Fixture did not finish')
+}
+const text = '甲设备：其功率为10瓦。\n\n乙设备：其功率为10瓦。\n\n值为1.5；值为1，5。\n\n目标对象。'
+const graph = { summary: 'Independent assertions', nodes: [
+  { id: 'a', type: 'claim', text: '其功率为10瓦', quote: '其功率为10瓦', paragraph: 0 },
+  { id: 'b', type: 'claim', text: '其功率为10瓦', quote: '其功率为10瓦', paragraph: 1 },
+  { id: 'c', type: 'fact', text: '值为1.5', quote: '值为1.5', paragraph: 2 },
+  { id: 'd', type: 'fact', text: '值为1，5', quote: '值为1，5', paragraph: 2 },
+  { id: 'e', type: 'concept', text: '目标对象', quote: '目标对象', paragraph: 3 },
+  { id: 'f', type: 'definition', text: '目标对象', quote: '目标对象', paragraph: 3 },
+], edges: [] }
+for (const mode of ['max-tokens', 'malformed', 'aborted']) {
+  finish = mode === 'malformed' ? 'stop' : mode
+  response = mode === 'malformed' ? JSON.stringify(graph).slice(0, -2) : JSON.stringify(graph)
+  const result = await completed(await handlers.get('extract')({ title: mode, text, model }))
+  assert.notEqual(result.status, 'succeeded', mode + ' must not publish incomplete knowledge')
+  if (mode === 'max-tokens') assert.equal(result.error.code, 'output_truncated')
+}
+finish = 'stop'
+response = JSON.stringify(graph)
+const success = await completed(await handlers.get('extract')({ title: 'dedupe safety', text, model }))
+assert.equal(success.status, 'succeeded', JSON.stringify(success.error))
+assert.equal(success.result.nodes.length, 6, 'Context, numeric punctuation and different node roles must not merge')
+
+const large = { summary: 'Dense report', nodes: Array.from({ length: 2000 }, (_, i) => ({ id: 'n' + i, type: 'fact', text: '相同记录', quote: '相同记录', paragraph: 0 })), edges: [] }
+let ticks = 0
+const interval = setInterval(() => { ticks++ }, 1)
+const startedAt = performance.now()
+let quick
+try { quick = await handlers.get('verify-graph')({ text: '相同记录', graph: large, mode: 'quick' }) }
+finally { clearInterval(interval) }
+assert(quick.report, JSON.stringify(quick))
+assert.equal(quick.report.metrics.checkedNodes, 2000)
+assert.equal(quick.report.metrics.checkedPairs, 1999000, 'Cross-batch pairs must not be skipped')
+assert.equal(quick.report.metrics.omittedPairIssues, 1998000, 'Bound report memory without concealing omitted findings')
+assert(ticks > 1, 'Pair review must yield to timers/HTTP between batches')
+
+response = JSON.stringify({ issues: [] })
+requests.length = 0
+const reviewGraph = {summary:'Cross-batch relation',nodes:Array.from({length:24},(_,i)=>({id:'v'+i,type:'claim',text:'记录'+i,quote:'相同记录',paragraph:0})),edges:[{fromNodeId:'v0',toNodeId:'v23',relation:'supports',evidence:[{paragraph:0,quote:'相同记录'}]}]}
+const review = await completed(await handlers.get('verify-graph')({ text:'相同记录',graph:reviewGraph,mode:'standard',model }))
+assert.equal(review.status, 'succeeded', JSON.stringify(review.error))
+assert.equal(requests.length, 3, 'Two node batches and one cross-batch relation review are required')
+for (const request of requests) assert(request.messages[0].content[0].text.includes('[P0] 相同记录'), 'Every batch must retain source evidence')
+const relationPrompt = requests.at(-1).messages[0].content[0].text
+assert(relationPrompt.includes('v23') && relationPrompt.includes('"evidence"'), 'Cross-batch review needs both endpoints and relation evidence')
+const contract = createGraphContract()
+const denseUnits = Array.from({length:100},(_,i)=>'独立记录 '+i+'。')
+const denseText = denseUnits.join('\n\n')
+const structured = contract.buildSourceManifest('density',denseText,denseUnits,'density-doc','density-source')
+const legacy = contract.buildSourceManifest('density',denseText,denseUnits,'density-doc','density-source','legacy')
+assert.equal(structured.batches.length,4)
+assert.equal(legacy.batches.length,1,'Old checkpoints must keep their original partition')
+assert.deepEqual(structured.batches.flatMap(batch=>batch.units.map(unit=>unit.num)),denseUnits.map((_,i)=>i),'Density partition must neither drop nor duplicate source units')
+assert(structured.batches.every(batch=>batch.units.length<=32))
+const headingUnits=['# 第一章','第一章正文。','# 第二章','第二章正文。']
+const chapters=contract.buildSourceManifest('chapters',headingUnits.join('\n\n'),headingUnits)
+assert.equal(chapters.batches.length,2,'Explicit chapters should not be merged into one prompt')
+const absentSource = '本资料没有说明温度和颜色存在因果关系。'
+const absentGate = contract.validateGraphInvariants({nodes:[{id:'a',type:'claim',text:'温度和颜色不存在因果关系。',quote:absentSource,paragraph:0}],edges:[]},absentSource)
+assert(absentGate.blockingIssues.some(issue=>issue.code==='node_semantic_strength_drift'), 'Lack of evidence must not become evidence of absence')
+
+let reviewMode = 'withhold'
+const relationSource = '温度升高。门是蓝色的。窗户关闭。'
+hostPlugin().apply({
+  get(name) { return name === 'kgExtractor' ? {
+    weaveRelations: async () => ({edges:[{fromNodeId:'a',toNodeId:'b',relation:'causes',evidence:[{paragraph:0,quote:relationSource}]}]}),
+    extractChunk: async () => ({summary:'relation review',nodes:[{id:'a',type:'fact',text:'温度升高',quote:'温度升高',paragraph:0},{id:'b',type:'fact',text:'门是蓝色的',quote:'门是蓝色的',paragraph:0},{id:'c',type:'fact',text:'窗户关闭',quote:'窗户关闭',paragraph:0}],edges:[{fromNodeId:'a',toNodeId:'b',relation:'causes',evidence:[{paragraph:0,quote:relationSource}]}]}),
+    reviewRelations: async ({candidates}) => ({verdicts:candidates.map(item=>({id:reviewMode==='unknown-id'?'injected-id':item.id,verdict:'insufficient',reason:'Co-occurrence does not prove causality',evidence:[]}))}),
+  } : null }, interval() { return () => {} },
+})
+const withheld = await completed(await handlers.get('extract')({title:'review rejects false cause',text:relationSource}))
+assert.equal(withheld.status,'succeeded',JSON.stringify(withheld.error))
+assert.equal(withheld.result.edges.length,0)
+assert.equal(withheld.result.generation.semanticReview.withheld.length,1)
+assert.equal(withheld.result.generation.semanticReview.withheld[0].edge.relation,'causes','Rejected evidence/candidate must remain inspectable')
+assert.equal(withheld.result.generation.coverage.semanticCoverage,'unverified','Anchors cannot certify proposition recall')
+reviewMode='unknown-id'
+const invalidReview = await completed(await handlers.get('extract')({title:'invalid reviewer response',text:relationSource}))
+assert.equal(invalidReview.status,'succeeded',JSON.stringify(invalidReview.error))
+assert.equal(invalidReview.result.generation.semanticReview.reviewed,0)
+assert.equal(invalidReview.result.generation.semanticReview.pending,1)
+assert.equal(invalidReview.result.generation.semanticReview.withheld.length,1,'Failed review must quarantine the complete candidate batch')
+assert.equal(invalidReview.result.edges.length,0,'Invalid model response must not admit high-risk edges')
+assert.equal(invalidReview.result.generation.semanticReview.withheld[0].verdict,'pending')
+const retryReview = await completed(await handlers.get('relation-retry')({
+  documentId: invalidReview.result.source.documentId,
+  expectedRevision: invalidReview.result.revision,
+}))
+assert.equal(retryReview.status,'succeeded',JSON.stringify(retryReview.error))
+assert.equal(retryReview.result.edges.length,0,'Relation retry must not bypass the high-risk review gate')
+assert.equal(retryReview.result.generation.relationRetrySemanticReview.pending,1)
+assert.equal(retryReview.result.generation.connectivity.addedEdges,0,'Withheld candidates are not accepted additions')
+reviewMode='withhold'
+const pendingOnly = await completed(await handlers.get('relation-retry')({
+  documentId: retryReview.result.source.documentId,
+  expectedRevision: retryReview.result.revision,
+  reviewPendingOnly: true,
+}))
+assert.equal(pendingOnly.status,'succeeded',JSON.stringify(pendingOnly.error))
+assert.equal(pendingOnly.result.edges.length,0)
+assert.equal(pendingOnly.result.generation.relationRetrySemanticReview.reviewed,1,'Retry must recheck the persisted candidate without regenerating it')
+assert.equal(pendingOnly.result.generation.relationRetrySemanticReview.pending,0)
+assert.equal(pendingOnly.result.generation.relationReviewDecisions.length,1,'Keep the resolved rejection for inspection')
+const resolvedAgain = await completed(await handlers.get('relation-retry')({
+  documentId: pendingOnly.result.source.documentId,
+  expectedRevision: pendingOnly.result.revision,
+  reviewPendingOnly: true,
+}))
+assert.equal(resolvedAgain.status,'succeeded',JSON.stringify(resolvedAgain.error))
+assert.equal(resolvedAgain.result.generation.relationRetrySemanticReview.eligible,0,'Resolved rejected candidates must not re-enter the pending queue')
+assert.equal(resolvedAgain.result.generation.relationReviewDecisions.length,1,'Later retries must not erase past decisions')
+const invalidMode = await handlers.get('relation-retry')({reviewPendingOnly:'false'})
+assert.equal(invalidMode.error.code,'invalid_input')
+console.log(JSON.stringify({ok:true,truncationRejected:true,dedupeScopeAndNumbers:true,reviewedNodes:2000,checkedPairs:1999000,timerTicks:ticks,reviewMs:Math.round(performance.now()-startedAt),crossBatchEvidence:true}))
