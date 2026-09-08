@@ -2,6 +2,22 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+// Exercise the real pointer-down handler with both enclosing and graph-local dialogs.
+const downSource = source.slice(source.indexOf('const onBgPointerDown = (e) => {'), source.indexOf('const onBgPointerMove = (e) => {'))
+for (const location of ['ancestor-dialog', 'background', 'local-dialog', 'node', 'edge', 'control']) {
+  let captured = false
+  const local = !['ancestor-dialog', 'background'].includes(location)
+  const match = location === 'background' ? null : {}
+  const el = { contains: candidate => candidate === match && local, setPointerCapture: () => { captured = true } }
+  const pan = { current: null }
+  const noop = () => {}
+  const down = new Function('containerRef', 'panRef', 'cancelPress', 'setTooltip', 'setDetail', 'viewScheduler', 'setDragging', downSource + '; return onBgPointerDown')(
+    { current: el }, pan, noop, noop, noop, { current: { get: () => ({ tx: 0, ty: 0 }) } }, noop,
+  )
+  down({ button: 0, pointerId: 1, clientX: 10, clientY: 20, target: { closest: () => match } })
+  assert.equal(captured, !local, location + ' must respect the graph interaction boundary')
+  assert.equal(Boolean(pan.current), !local)
+}
 function extractFunction(source, name) {
   const start = source.indexOf('function ' + name + '(')
   assert(start >= 0, name + ' not found')

@@ -3813,15 +3813,17 @@ export default function clientPlugin() {
 
         const onBgPointerDown = (e) => {
           if (e.button !== 0 || panRef.current) return
+          const el = containerRef.current
+          if (!el) return
           const t = e.target
           if (t && typeof t.closest === 'function') {
-            if (t.closest('button, select, input, textarea, a, [role="dialog"], .kg-node, .kg-edge')) return
+            const interactive = t.closest('button, select, input, textarea, a, [role="dialog"], .kg-node, .kg-edge')
+            // The workbench itself is a dialog; only graph-local controls block panning.
+            if (interactive && el.contains(interactive)) return
           }
           cancelPress()
           setTooltip(null)
           setDetail(null)
-          const el = containerRef.current
-          if (!el) return
           el.setPointerCapture(e.pointerId)
           const current = viewScheduler.current.get()
           panRef.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, tx: current.tx, ty: current.ty, moved: false }
