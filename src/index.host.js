@@ -4497,11 +4497,11 @@ function createHostPlugin(graphContractOnly) {
         return result
       }
 
-      async function reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys = new Set()) {
+      async function reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys = new Set(), requiredKeys = new Set()) {
         const risk = new Set(['causes', 'infers', 'counter_example', 'not_is'])
         const byId = new Map(graph.nodes.map((node) => [node.id, node]))
-        const candidates = graph.edges.filter((edge) => !protectedKeys.has(edgeKeyHost(edge)) && (risk.has(edge.relation) || byId.get(edge.fromNodeId)?.paragraph !== byId.get(edge.toNodeId)?.paragraph))
-        const review = { eligible: candidates.length, reviewed: 0, pending: candidates.length, withheld: [], errors: [] }
+        const candidates = graph.edges.filter((edge) => !protectedKeys.has(edgeKeyHost(edge)) && (requiredKeys.has(edgeKeyHost(edge)) || risk.has(edge.relation) || byId.get(edge.fromNodeId)?.paragraph !== byId.get(edge.toNodeId)?.paragraph))
+        const review = { eligible: candidates.length, reviewed: 0, pending: candidates.length, accepted: [], withheld: [], errors: [] }
         const reviewer = kgExtractor && typeof kgExtractor.reviewRelations === 'function' ? kgExtractor.reviewRelations.bind(kgExtractor) : null
         if (!model && !reviewer) { review.skippedReason = 'reviewer_unavailable'; return review }
         const rejected = new Set()
@@ -4543,6 +4543,8 @@ function createHostPlugin(graphContractOnly) {
                 rejected.add(item.edge)
                 review.withheld.push({ edge: cloneGraphEdgeHost(item.edge), ...verdict })
                 graph.warnings.push('relation_withheld:' + edgeKeyHost(item.edge) + ':' + verdict.verdict + ':' + verdict.reason)
+              } else {
+                review.accepted.push({ edge: cloneGraphEdgeHost(item.edge), ...verdict })
               }
             }
           } catch (error) {
@@ -5412,9 +5414,9 @@ function createHostPlugin(graphContractOnly) {
             : acc.warnings
           authenticateGraphEvidenceHost(graph, sourceText)
           const protectedKeys = new Set((current.edges || []).map(edgeKeyHost))
-          const relationRetrySemanticReview = await reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys)
+          const relationRetrySemanticReview = await reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys, pendingKeys)
           const decisions = new Map((current.generation?.relationReviewDecisions || []).map((item) => [edgeKeyHost(item.edge), item]))
-          for (const item of [...(priorReview?.withheld || []), ...relationRetrySemanticReview.withheld]) {
+          for (const item of [...(priorReview?.accepted || []), ...(priorReview?.withheld || []), ...relationRetrySemanticReview.accepted, ...relationRetrySemanticReview.withheld]) {
             if (item?.edge && item.verdict !== 'pending') decisions.set(edgeKeyHost(item.edge), item)
           }
           if (relationRetrySemanticReview.withheld.length || relationRetrySemanticReview.pending || relationRetrySemanticReview.errors.length) {

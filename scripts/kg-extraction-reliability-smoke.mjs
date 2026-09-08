@@ -135,4 +135,26 @@ assert.equal(resolvedAgain.result.generation.relationRetrySemanticReview.eligibl
 assert.equal(resolvedAgain.result.generation.relationReviewDecisions.length,1,'Later retries must not erase past decisions')
 const invalidMode = await handlers.get('relation-retry')({reviewPendingOnly:'false'})
 assert.equal(invalidMode.error.code,'invalid_input')
+const movedCandidate = structuredClone(resolvedAgain.result)
+movedCandidate.generation.relationRetrySemanticReview = {
+  withheld:[{verdict:'pending',edge:{fromNodeId:'a',toNodeId:'b',relation:'supports',evidence:[{paragraph:0,quote:relationSource}]}}],
+}
+const movedCommit = await handlers.get('graph-commit')({
+  documentId: movedCandidate.source.documentId,
+  expectedRevision: movedCandidate.revision,
+  graph: movedCandidate,
+  baseNodeIds: movedCandidate.nodes.map(node=>node.id),
+  baseEdgeKeys: [],
+})
+assert(movedCommit.graph,JSON.stringify(movedCommit))
+reviewMode='unknown-id'
+const movedReview = await completed(await handlers.get('relation-retry')({
+  documentId: movedCandidate.source.documentId,
+  expectedRevision: movedCommit.revision,
+  reviewPendingOnly: true,
+}))
+assert.equal(movedReview.status,'succeeded',JSON.stringify(movedReview.error))
+assert.equal(movedReview.result.edges.length,0,'Pending status must require review even if current endpoints share a paragraph and relation is low-risk')
+assert.equal(movedReview.result.generation.relationRetrySemanticReview.eligible,1)
+assert.equal(movedReview.result.generation.relationRetrySemanticReview.pending,1)
 console.log(JSON.stringify({ok:true,truncationRejected:true,dedupeScopeAndNumbers:true,reviewedNodes:2000,checkedPairs:1999000,timerTicks:ticks,reviewMs:Math.round(performance.now()-startedAt),crossBatchEvidence:true}))
