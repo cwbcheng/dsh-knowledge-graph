@@ -252,6 +252,10 @@ export default function clientPlugin() {
 @keyframes kg-para-glow { 0%, 100% { background: transparent; } 30% { background: rgba(59,130,246,0.22); } }
 .kg-graph { position: relative; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); touch-action: none; user-select: none; }
 .kg-graph.kg-panning { cursor: grabbing; }
+.kg-graph-loading { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--kg-muted); cursor: default; }
+.kg-graph-spinner { width: 20px; height: 20px; border: 2px solid #d4dae3; border-top-color: #3b82f6; border-radius: 50%; animation: kg-graph-spin .8s linear infinite; }
+@keyframes kg-graph-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .kg-graph-spinner { animation: none; } }
 .kg-panning .kg-node, .kg-panning .kg-edge { pointer-events: none; }
 .kg-graph-toolbar { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; gap: 6px; }
 .kg-graph-toolbar button { min-width: 30px; height: 28px; padding: 0 8px; border: 1px solid var(--kg-border); border-radius: 7px; background: var(--kg-panel); color: var(--kg-text); font-size: 12px; cursor: pointer; }
@@ -3595,7 +3599,33 @@ export default function clientPlugin() {
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
+      function GraphViewer(props) {
+        const { nodes, edges, layoutMode, height } = props
+        const [prepared, setPrepared] = useState(null)
+        const ready = prepared && prepared.nodes === nodes && prepared.edges === edges && prepared.layoutMode === layoutMode
+        useEffect(() => {
+          let cancelled = false
+          let secondFrame = null
+          // Leave a paint opportunity before mounting the synchronous layout/SVG scene.
+          const firstFrame = requestAnimationFrame(() => {
+            secondFrame = requestAnimationFrame(() => {
+              if (!cancelled) setPrepared({ nodes, edges, layoutMode })
+            })
+          })
+          return () => {
+            cancelled = true
+            cancelAnimationFrame(firstFrame)
+            if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+          }
+        }, [nodes, edges, layoutMode])
+        if (!ready) return h('div', {
+          className: 'kg-graph kg-graph-loading', role: 'status', 'aria-live': 'polite', 'aria-busy': true,
+          style: height ? { height: height + 'px' } : undefined,
+        }, h('span', { className: 'kg-graph-spinner', 'aria-hidden': true }), '正在绘制知识图…')
+        return h(GraphScene, props)
+      }
+
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
         const containerRef = useRef(null)
         const [view, commitView] = useState({ k: 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)

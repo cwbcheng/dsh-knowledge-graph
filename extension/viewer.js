@@ -3251,7 +3251,33 @@
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
+      function GraphViewer(props) {
+        const { nodes, edges, layoutMode, height } = props
+        const [prepared, setPrepared] = useState(null)
+        const ready = prepared && prepared.nodes === nodes && prepared.edges === edges && prepared.layoutMode === layoutMode
+        useEffect(() => {
+          let cancelled = false
+          let secondFrame = null
+          // Leave a paint opportunity before mounting the synchronous layout/SVG scene.
+          const firstFrame = requestAnimationFrame(() => {
+            secondFrame = requestAnimationFrame(() => {
+              if (!cancelled) setPrepared({ nodes, edges, layoutMode })
+            })
+          })
+          return () => {
+            cancelled = true
+            cancelAnimationFrame(firstFrame)
+            if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+          }
+        }, [nodes, edges, layoutMode])
+        if (!ready) return h('div', {
+          className: 'kg-graph kg-graph-loading', role: 'status', 'aria-live': 'polite', 'aria-busy': true,
+          style: height ? { height: height + 'px' } : undefined,
+        }, h('span', { className: 'kg-graph-spinner', 'aria-hidden': true }), '正在绘制知识图…')
+        return h(GraphScene, props)
+      }
+
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
         const containerRef = useRef(null)
         const [view, commitView] = useState({ k: 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)

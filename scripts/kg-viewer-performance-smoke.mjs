@@ -29,6 +29,35 @@ function extractFunction(source, name) {
   throw new Error('Unbalanced function: ' + name)
 }
 const compile = name => new Function('return (' + extractFunction(source, name) + ')')()
+{
+  let state = null, effect, cleanup
+  let id = 0
+  const pending = new Map()
+  const scene = () => {}
+  const render = new Function('useState', 'useEffect', 'requestAnimationFrame', 'cancelAnimationFrame', 'h', 'GraphScene', 'return (' + extractFunction(source, 'GraphViewer') + ')')(
+    () => [state, next => { state = next }], fn => { effect = fn },
+    fn => { pending.set(++id, fn); return id }, key => pending.delete(key),
+    (type, props, ...children) => ({ type, props, children }), scene,
+  )
+  const tick = () => { const callbacks = [...pending.values()]; pending.clear(); callbacks.forEach(fn => fn()) }
+  const props = { nodes: [], edges: [], layoutMode: 'layered', height: 760 }
+  assert.equal(render(props).props.role, 'status', 'Loading must render before expensive scene work')
+  cleanup = effect()
+  tick()
+  assert.equal(state, null, 'First frame must leave a paint opportunity for the indicator')
+  tick()
+  assert.equal(render(props).type, scene)
+  assert.equal(render({ ...props, selectedNodeId: 'a' }).type, scene, 'Selection must not restart loading')
+  const changed = { ...props, layoutMode: 'force' }
+  assert.equal(render(changed).props['aria-busy'], true)
+  cleanup()
+  cleanup = effect()
+  tick()
+  cleanup()
+  tick()
+  assert.equal(state.layoutMode, 'layered', 'Cancelled layout/unmount must not commit a stale scene')
+  assert.equal(pending.size, 0)
+}
 const schedulerFactory = compile('createGraphViewScheduler')
 const zoomAround = new Function('clamp', 'return (' + extractFunction(source, 'zoomAround') + ')')((v, lo, hi) => Math.max(lo, Math.min(hi, v)))
 const frames = new Map()
