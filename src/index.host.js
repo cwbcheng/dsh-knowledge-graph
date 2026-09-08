@@ -154,7 +154,11 @@ function createHostPlugin(graphContractOnly) {
        function cloneGraphEdgeHost(edge) {
          return edge && typeof edge === 'object' ? { ...edge, evidence: cloneEvidenceHost(edge.evidence) } : edge
        }
-       function buildGraphViewHost(graph, nodeOffset, queryText) {
+       function graphViewNodeLimitHost(value) {
+         return Number.isInteger(value) && value > 0 ? Math.min(2000, value) : MAX_GRAPH_VIEW_NODES
+       }
+       function buildGraphViewHost(graph, nodeOffset, queryText, requestedLimit) {
+         const nodeLimit = graphViewNodeLimitHost(requestedLimit)
          if (!graph || typeof graph !== 'object') return graph
          const allNodes = Array.isArray(graph.nodes) ? graph.nodes : []
          const allEdges = Array.isArray(graph.edges) ? graph.edges : []
@@ -168,12 +172,12 @@ function createHostPlugin(graphContractOnly) {
            const nodes = []
            const ids = new Set()
            const addNode = (node) => {
-             if (!node || !node.id || ids.has(node.id) || nodes.length >= MAX_GRAPH_VIEW_NODES) return
+             if (!node || !node.id || ids.has(node.id) || nodes.length >= nodeLimit) return
              ids.add(node.id)
              nodes.push(cloneGraphNodeHost(node))
            }
            for (const node of directMatches) addNode(node)
-           if (nodes.length < MAX_GRAPH_VIEW_NODES && ids.size > 0) {
+           if (nodes.length < nodeLimit && ids.size > 0) {
              const neighborIds = new Set()
              for (const edge of allEdges) {
                if (!edge) continue
@@ -182,12 +186,12 @@ function createHostPlugin(graphContractOnly) {
              }
              for (const node of allNodes) {
                if (neighborIds.has(node && node.id)) addNode(node)
-               if (nodes.length >= MAX_GRAPH_VIEW_NODES) break
+               if (nodes.length >= nodeLimit) break
              }
            }
            const edges = allEdges
              .filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
-             .slice(0, MAX_GRAPH_VIEW_EDGES)
+             .slice(0, nodeLimit * 6)
              .map(cloneGraphEdgeHost)
            return {
              ...graph,
@@ -197,7 +201,7 @@ function createHostPlugin(graphContractOnly) {
                kind: 'query',
                query: queryText.trim().slice(0, 200),
                nodeOffset: 0,
-               nodeLimit: MAX_GRAPH_VIEW_NODES,
+               nodeLimit,
                matchedNodes: directMatches.length,
                totalNodes: allNodes.length,
                totalEdges: allEdges.length,
@@ -207,11 +211,11 @@ function createHostPlugin(graphContractOnly) {
          }
          const requestedOffset = Number.isInteger(nodeOffset) && nodeOffset > 0 ? nodeOffset : 0
          const offset = Math.min(requestedOffset, Math.max(0, allNodes.length - 1))
-         const nodes = allNodes.slice(offset, offset + MAX_GRAPH_VIEW_NODES).map(cloneGraphNodeHost)
+         const nodes = allNodes.slice(offset, offset + nodeLimit).map(cloneGraphNodeHost)
          const ids = new Set(nodes.map((node) => node && node.id).filter(Boolean))
          const edges = allEdges
            .filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
-           .slice(0, MAX_GRAPH_VIEW_EDGES)
+           .slice(0, nodeLimit * 6)
            .map(cloneGraphEdgeHost)
          return {
            ...graph,
@@ -220,7 +224,7 @@ function createHostPlugin(graphContractOnly) {
            view: {
              kind: 'window',
              nodeOffset: offset,
-             nodeLimit: MAX_GRAPH_VIEW_NODES,
+             nodeLimit,
              totalNodes: allNodes.length,
              totalEdges: allEdges.length,
              truncated: allNodes.length > nodes.length || allEdges.length > edges.length,
@@ -6981,6 +6985,7 @@ function createHostPlugin(graphContractOnly) {
            { ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } },
            Number.isInteger(a.nodeOffset) ? a.nodeOffset : 0,
            typeof a.query === 'string' ? a.query : '',
+           a.nodeLimit,
          )
          return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
        })

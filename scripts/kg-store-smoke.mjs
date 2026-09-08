@@ -3,6 +3,22 @@ import { SqliteKnowledgeStore, openSqliteStore } from '../src/kg-store.mjs'
 
 const store = await openSqliteStore(':memory:')
 try {
+  const largeGraph = {
+    source: { documentId: 'window-2001', id: 'window-source' },
+    nodes: Array.from({ length: 2001 }, (_, i) => ({ id: 'w' + i, text: 'window node ' + i, type: 'fact', paragraph: i })),
+    edges: [{ fromNodeId: 'w0', toNodeId: 'w1999', relation: 'supports' }],
+  }
+  store.saveGraph(largeGraph, { sourceText: 'window source' })
+  for (const [limit, expected] of [[undefined, 800], [200, 200], [2000, 2000], [999999, 2000], [0, 800], [-1, 800], [1.5, 800], ['2000', 800]]) {
+    for (const query of ['', 'window node']) {
+      const window = store.getDocumentWindow('window-2001', { limit, query, includeSourceText: false })
+      if (window.nodes.length !== expected || window.view.nodeLimit !== expected || window.view.totalNodes !== 2001) throw new Error('SQLite window limit mismatch: ' + limit)
+    }
+  }
+  const expanded = store.getDocumentWindow('window-2001', { limit: 2000 })
+  if (expanded.edges.length !== 1) throw new Error('Expanded window lost its newly visible relationship')
+  const last = store.getDocumentWindow('window-2001', { limit: 2000, offset: 2000 })
+  if (last.nodes.length !== 1 || last.nodes[0].id !== 'w2000') throw new Error('2000-node tail window failed')
   const graph = {
     summary: '书级 fixture',
     traceText: 'trace persistence smoke',

@@ -54,6 +54,12 @@ assert(result.view.totalNodes === 801, 'canonical node count was lost behind the
 
 const documentId = result.source && result.source.documentId
 const loaded = await handlers.get('document-load')({ documentId })
+for (const [nodeLimit, expected] of [[200, 200], [500, 500], [1200, 1200], [2000, 2000], [999999, 2000], [0, 800], [-1, 800], [1.5, 800], ['2000', 800]]) {
+  const resized = await handlers.get('document-load')({ documentId, nodeLimit })
+  assert(resized.graph.view.nodeLimit === expected && resized.graph.nodes.length === Math.min(expected, 801), 'dynamic window budget mismatch: ' + nodeLimit)
+  const queryWindow = await handlers.get('document-load')({ documentId, nodeLimit, query: '知识节点' })
+  assert(queryWindow.graph.view.nodeLimit === expected && queryWindow.graph.nodes.length === Math.min(expected, 801), 'query window budget mismatch: ' + nodeLimit)
+}
 assert(loaded && !loaded.error && loaded.graph, 'canonical document could not be loaded from Host')
 assert(loaded.graph.view.totalNodes === 801 && loaded.graph.nodes.length === 800, 'Host canonical graph was truncated instead of only the view')
 const tail = await handlers.get('document-load')({ documentId, nodeOffset: 800 })

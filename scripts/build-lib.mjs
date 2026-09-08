@@ -291,8 +291,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const query = typeof payload.query === 'string' ? payload.query : ''
               const saved = store.getDocumentWindow(documentId, {
                 offset: nodeOffset,
-                limit: MAX_GRAPH_VIEW_NODES,
-                edgeLimit: MAX_GRAPH_VIEW_EDGES,
+                limit: graphViewNodeLimitHost(payload.nodeLimit),
+                edgeLimit: graphViewNodeLimitHost(payload.nodeLimit) * 6,
                 query,
                 includeSourceText: payload.includeSourceText !== false,
               })
