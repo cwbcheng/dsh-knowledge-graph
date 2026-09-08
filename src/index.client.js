@@ -251,6 +251,8 @@ export default function clientPlugin() {
 .kg-para.kg-flash { animation: kg-para-glow 1.4s ease; }
 @keyframes kg-para-glow { 0%, 100% { background: transparent; } 30% { background: rgba(59,130,246,0.22); } }
 .kg-graph { position: relative; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); touch-action: none; user-select: none; }
+.kg-graph.kg-panning { cursor: grabbing; }
+.kg-panning .kg-node, .kg-panning .kg-edge { pointer-events: none; }
 .kg-graph-toolbar { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; gap: 6px; }
 .kg-graph-toolbar button { min-width: 30px; height: 28px; padding: 0 8px; border: 1px solid var(--kg-border); border-radius: 7px; background: var(--kg-panel); color: var(--kg-text); font-size: 12px; cursor: pointer; }
 .kg-graph-toolbar button:hover { border-color: rgba(59,130,246,0.6); color: #3b82f6; }
@@ -1781,14 +1783,23 @@ export default function clientPlugin() {
         if (!trimmed) return ['']
         const words = tokenize(trimmed)
         const lines = []
+        const clipped = () => lines.slice(0, 3).concat(lines[3].slice(0, 36) + '…')
         let line = ''
         for (const word of words) {
           if (g.measureText(word).width > maxWidth) {
-            if (line) { lines.push(line); line = '' }
+            if (line) {
+              lines.push(line); line = ''
+              if (lines.length === 4) return clipped()
+            }
             let cur = ''
             for (const ch of word) {
               const test = cur + ch
-              if (cur && g.measureText(test).width > maxWidth) { lines.push(cur); cur = ch }
+              if (cur && g.measureText(test).width > maxWidth) {
+                lines.push(cur); cur = ch
+                // A fifth line is now certain. Do not measure the invisible
+                // remainder of long node text; the detail card still owns it.
+                if (lines.length === 4) return clipped()
+              }
               else cur = test
             }
             if (cur) line = cur
@@ -1796,7 +1807,10 @@ export default function clientPlugin() {
           }
           const test = line ? line + ' ' + word : word
           if (g.measureText(test).width <= maxWidth || !line) line = test
-          else { lines.push(line); line = word }
+          else {
+            lines.push(line); line = word
+            if (lines.length === 4) return clipped()
+          }
         }
         if (line) lines.push(line)
         if (lines.length > 4) { lines.length = 4; lines[3] = lines[3].slice(0, 36) + '…' }
@@ -1840,6 +1854,23 @@ export default function clientPlugin() {
       // pass; this function appends only successfully placed visible rectangles.
       function placeLayeredEdgeLabel(x, y, width, height, occupied, nodeRects, edgeIndex, axis) {
         const labelMargin = 2
+        const rectAt = (cx, cy) => ({
+          x0: cx - width / 2 - labelMargin,
+          x1: cx + width / 2 + labelMargin,
+          y0: cy - height / 2 - labelMargin,
+          y1: cy + height / 2 + labelMargin,
+        })
+        const intersects = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+        const occupiedRects = Array.isArray(occupied) ? occupied : []
+        const blockedRects = Array.isArray(nodeRects) ? nodeRects : []
+        const available = (rect) => !blockedRects.some((other) => intersects(rect, other)) && !occupiedRects.some((other) => intersects(rect, other))
+        // The origin is always the first-ranked candidate. Most labels need no
+        // displacement, so avoid building and sorting the entire search grid.
+        const origin = rectAt(x, y)
+        if (available(origin)) {
+          occupiedRects.push(origin)
+          return { x, y, hidden: false, distance: 0 }
+        }
         const maxDistance = 180
         const stepX = Math.max(width + 8, 30)
         const stepY = height + 6
@@ -1860,21 +1891,11 @@ export default function clientPlugin() {
           }
         }
         candidates.sort((a, b) => a.score - b.score || a.distance - b.distance || a.dy - b.dy || a.dx - b.dx)
-        const rectAt = (cx, cy) => ({
-          x0: cx - width / 2 - labelMargin,
-          x1: cx + width / 2 + labelMargin,
-          y0: cy - height / 2 - labelMargin,
-          y1: cy + height / 2 + labelMargin,
-        })
-        const intersects = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
-        const occupiedRects = Array.isArray(occupied) ? occupied : []
-        const blockedRects = Array.isArray(nodeRects) ? nodeRects : []
         for (const candidate of candidates) {
           const cx = x + candidate.dx
           const cy = y + candidate.dy
           const rect = rectAt(cx, cy)
-          if (blockedRects.some((other) => intersects(rect, other))) continue
-          if (occupiedRects.some((other) => intersects(rect, other))) continue
+          if (!available(rect)) continue
           occupiedRects.push(rect)
           return { x: cx, y: cy, hidden: false, distance: candidate.distance }
         }
@@ -3549,10 +3570,42 @@ export default function clientPlugin() {
         return { k: k2, tx: px - wx * k2, ty: py - wy * k2 }
       }
 
+      function createGraphViewScheduler(initialView, commit, requestFrame, cancelFrame) {
+        let current = initialView
+        let frame = null
+        let disposed = false
+        const flush = () => {
+          if (frame === null || disposed) return
+          cancelFrame(frame)
+          frame = null
+          commit(current)
+        }
+        return {
+          get: () => current,
+          set(next) {
+            if (disposed) return
+            const value = typeof next === 'function' ? next(current) : next
+            if (value.k === current.k && value.tx === current.tx && value.ty === current.ty) return
+            current = value
+            if (frame === null) frame = requestFrame(() => { frame = null; if (!disposed) commit(current) })
+          },
+          flush,
+          dispose() { disposed = true; if (frame !== null) cancelFrame(frame); frame = null },
+        }
+      }
+
       // --------------------------- GraphViewer ---------------------------
       function GraphViewer({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
         const containerRef = useRef(null)
-        const [view, setView] = useState({ k: 1, tx: 0, ty: 0 })
+        const [view, commitView] = useState({ k: 1, tx: 0, ty: 0 })
+        const viewScheduler = useRef(null)
+        if (!viewScheduler.current) viewScheduler.current = createGraphViewScheduler(view, commitView, requestAnimationFrame, cancelAnimationFrame)
+        const setView = useCallback((next) => { if (viewScheduler.current) viewScheduler.current.set(next) }, [])
+        useEffect(() => {
+          // React Strict Mode can set up effects again after cleanup.
+          if (!viewScheduler.current) viewScheduler.current = createGraphViewScheduler(view, commitView, requestAnimationFrame, cancelAnimationFrame)
+          return () => { viewScheduler.current.dispose(); viewScheduler.current = null }
+        }, [])
         const [dragging, setDragging] = useState(false)
         const [tooltip, setTooltip] = useState(null)
         const [detail, setDetail] = useState(null) // node whose full text is shown in the detail card
@@ -3700,7 +3753,7 @@ export default function clientPlugin() {
           setView({ k, tx: cw / 2 - bbox.cx * k, ty: ch / 2 - bbox.cy * k })
         }, [bbox])
 
-        useEffect(() => { fitView() }, [bbox.key])
+        useEffect(() => { fitView() }, [fitView])
 
         // Refit (debounced) when the container resizes (window resize / split drag / height drag).
         useEffect(() => {
@@ -3745,7 +3798,7 @@ export default function clientPlugin() {
           if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
         }, [])
 
-        const startPress = (e, node) => {
+        const startPress = useCallback((e, node) => {
           const el = containerRef.current
           if (!el) return
           const rect = el.getBoundingClientRect()
@@ -3753,15 +3806,16 @@ export default function clientPlugin() {
           const y0 = e.clientY - rect.top
           if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
           pressTimer.current = ctx.timeout(() => setTooltip({ node, x: x0, y: y0 }), 600)
-        }
-        const cancelPress = () => {
+        }, [ctx])
+        const cancelPress = useCallback(() => {
           if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
-        }
+        }, [])
 
         const onBgPointerDown = (e) => {
+          if (e.button !== 0 || panRef.current) return
           const t = e.target
           if (t && typeof t.closest === 'function') {
-            if (t.closest('button, .kg-node, .kg-edge')) return
+            if (t.closest('button, select, input, textarea, a, [role="dialog"], .kg-node, .kg-edge')) return
           }
           cancelPress()
           setTooltip(null)
@@ -3769,7 +3823,8 @@ export default function clientPlugin() {
           const el = containerRef.current
           if (!el) return
           el.setPointerCapture(e.pointerId)
-          panRef.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty, moved: false }
+          const current = viewScheduler.current.get()
+          panRef.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, tx: current.tx, ty: current.ty, moved: false }
           setDragging(true)
         }
         const onBgPointerMove = (e) => {
@@ -3780,12 +3835,21 @@ export default function clientPlugin() {
           if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true
           setView((v) => ({ ...v, tx: pan.tx + dx, ty: pan.ty + dy }))
         }
-        const onBgPointerUp = (e) => {
+        const endPan = (e, cancelled) => {
           const pan = panRef.current
           if (!pan || pan.id !== e.pointerId) return
           panRef.current = null
+          if (!cancelled) {
+            const dx = e.clientX - pan.sx
+            const dy = e.clientY - pan.sy
+            if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true
+            setView((v) => ({ ...v, tx: pan.tx + dx, ty: pan.ty + dy }))
+          }
+          viewScheduler.current.flush()
           setDragging(false)
-          if (!pan.moved) {
+          const el = containerRef.current
+          if (el && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+          if (!cancelled && !pan.moved) {
             onSelectEdge(null)
             onSelectNode(null)
           }
@@ -3882,11 +3946,13 @@ export default function clientPlugin() {
         // identical curves. We render a single visible path per ordered pair
         // and stack its relation labels as individually clickable chips, so the
         // pair stays visually clean while every relation stays selectable.
-        const parallelLeaders = new Map() // edge -> leader edge object
-        const parallelGroup = new Map()   // leader edge -> [memberEdges]
-        {
+        const { parallelLeaders, parallelGroup, edgeIndexes } = useMemo(() => {
+          const parallelLeaders = new Map()
+          const parallelGroup = new Map()
+          const edgeIndexes = new Map()
           const byOrderedPair = new Map()
           ;(edges || []).forEach((edge, index) => {
+            edgeIndexes.set(edge, index)
             const key = String(edge.fromNodeId) + '>' + String(edge.toNodeId)
             let list = byOrderedPair.get(key)
             if (!list) { list = []; byOrderedPair.set(key, list) }
@@ -3899,8 +3965,9 @@ export default function clientPlugin() {
             parallelGroup.set(leader.edge, members)
             for (const entry of list) parallelLeaders.set(entry.edge, leader.edge)
           }
-        }
-        const edgeEls = (edges || []).map((edge, i) => {
+          return { parallelLeaders, parallelGroup, edgeIndexes }
+        }, [edges])
+        const edgeEls = useMemo(() => (edges || []).map((edge, i) => {
           const a = layout.pos.get(edge.fromNodeId)
           const b = layout.pos.get(edge.toNodeId)
           const sa = sizes.get(edge.fromNodeId)
@@ -3910,7 +3977,6 @@ export default function clientPlugin() {
           // they keep their own hit region absent so the pair shows one line.
           const leader = parallelLeaders.get(edge)
           if (leader && leader !== edge) {
-            const leaderIndex = (edges || []).findIndex((e) => e === leader)
             return h('g', {
               key: edge.fromNodeId + '>' + edge.toNodeId + ':parallel:' + i,
               className: 'kg-edge-parallel',
@@ -4072,7 +4138,7 @@ export default function clientPlugin() {
                 'aria-label': '并行关系：' + members.map((m) => REL_LABEL[m.relation] || m.relation).join('、'),
               },
                 members.map((member, mi) => {
-                  const memberIndex = (edges || []).findIndex((e) => e === member)
+                  const memberIndex = edgeIndexes.get(member)
                   const memberSel = selectedEdgeId === memberIndex
                   const memberRel = REL_LABEL[member.relation] || member.relation
                   const mw = measureLabel(memberRel) + 10
@@ -4093,9 +4159,9 @@ export default function clientPlugin() {
               )
             })() : null,
           )
-        })
+        }), [edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, hoverEdge, focus, related, issueMaps, layoutMode, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
 
-        const nodeEls = (nodes || []).map((node) => {
+        const nodeEls = useMemo(() => (nodes || []).map((node) => {
           const p = layout.pos.get(node.id)
           const s = sizes.get(node.id)
           if (!p || !s) return null
@@ -4150,7 +4216,7 @@ export default function clientPlugin() {
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
           )
-        })
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, anchors, startPress, cancelPress, onSelectNode, onOpenNodeIssues])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -4232,14 +4298,15 @@ export default function clientPlugin() {
           : null
 
         return h('div', {
-          className: 'kg-graph', ref: containerRef,
+          className: 'kg-graph' + (dragging ? ' kg-panning' : ''), ref: containerRef,
           role: 'img',
           style: height ? { height: height + 'px' } : undefined,
           'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
           onPointerDown: onBgPointerDown,
           onPointerMove: onBgPointerMove,
-          onPointerUp: onBgPointerUp,
-          onPointerLeave: () => { if (panRef.current) panRef.current = null },
+          onPointerUp: (e) => endPan(e, false),
+          onPointerCancel: (e) => endPan(e, true),
+          onLostPointerCapture: (e) => endPan(e, true),
         },
           h('svg', { width: '100%', height: '100%', style: { display: 'block' } },
             h('defs', null,
@@ -4249,7 +4316,8 @@ export default function clientPlugin() {
               style: {
                 transform: 'translate(' + view.tx + 'px, ' + view.ty + 'px) scale(' + view.k + ')',
                 transformOrigin: '0px 0px',
-                transition: dragging ? 'none' : 'transform 0.35s ease',
+                // Camera updates are frame-batched; tweening each update makes
+                // wheel zoom lag and repaints large SVGs long after input ends.
               },
             }, edgeEls, nodeEls),
           ),
@@ -7180,7 +7248,7 @@ export default function clientPlugin() {
         const chapterSections = resultView ? chapterSectionsOf(resultView.graph) : []
         const activeChapter = chapterFilter !== 'all' ? chapterSections.find((section) => section.id === chapterFilter) : null
         const activeChapterId = activeChapter ? activeChapter.id : 'all'
-        const visibleGraph = resultView ? filterGraphByChapter(resultView.graph, activeChapterId) : null
+        const visibleGraph = useMemo(() => resultView ? filterGraphByChapter(resultView.graph, activeChapterId) : null, [resultView && resultView.graph, activeChapterId])
         const visibleParagraphs = resultView
           ? resultView.paragraphs.map((paragraph, index) => ({ paragraph, index })).filter(({ index }) => {
               if (!activeChapter) return true
