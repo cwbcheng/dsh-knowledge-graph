@@ -157,7 +157,7 @@ After defining, the run enters **awaiting approval**:
 
 ### 5. SQLite persistence and CLI
 
-The CLI uses Node `node:sqlite` and currently requires Node 22.5+; it has no extra npm dependency. It persists a `KnowledgeGraphDto`, then exposes evidence-bearing entity and claim candidates for human review.
+The CLI uses Node `node:sqlite` and requires Node 22.13+ without an experimental-sqlite flag. Imports require an explicit `--db` or `DSH_KG_DB`, the full sourceText, and the same deterministic admission gate as the Host. Imported files cannot grant themselves verified entailment. Imports are create-only unless `--expected-revision N` explicitly fences a replacement.
 
 ```bash
 npm run kg -- init --db ./data/knowledge.sqlite
@@ -170,9 +170,15 @@ npm run kg -- list-documents --db ./data/knowledge.sqlite
 npm run kg -- show-document --db ./data/knowledge.sqlite --id document_xxx
 npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.json --run-id run_xxx
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
+npm run kg -- list-revisions --db ./data/knowledge.sqlite --id document_xxx
+npm run kg -- restore-revision --db ./data/knowledge.sqlite --id document_xxx --revision 2 --expected-revision 5
 ```
 
 The persistent `lib/index.js` writes each successful chunk and completed graph to SQLite automatically. Set `DSH_KG_DB` to choose the database path; otherwise it uses `.dsh-knowledge-graph.sqlite` in the current working directory. `npm run test:kg` verifies graph/chunk/evidence persistence, candidate state changes, checkpoint storage, and document restoration in an in-memory SQLite database; `npm run test:kg-consumption` covers dynamic RPC, persistent HTTP and SQLite query parity, retrieval beyond the 800-node view and beyond 600 common early candidates, relation-only selection, aggregate context budgets, revision fencing, invalid filters, node/edge/source citation admission, unknown and valid-but-unrelated evidence IDs, authority qualification, clause-smuggling rejection, and both frontend mounts; `npm run test:kg-timeout` uses non-cooperative providers to cover real wall-clock deadlines, late-iterator cleanup, and immediate cancellation; `npm run test:kg-image` covers dynamic/persistent image admission, multimodal content blocks, text/table/diagram transcription, recovery of omitted color-grouping and object-correspondence relationships, typed text-only-model rejection, visual provenance, canonical-membership-checked image reads, forged visual-checkpoint rejection, immediate post-transcription checkpoint/run-ID recovery, and the no-raw-base64 SQLite boundary; `npm run test:kg-performance` exercises keyset paging and bounded responses on a graph with more than 10,000 nodes and edges; `npm run test:kg-candidates` covers candidate list/update flows. The persistent build also copies [`lib/kg-store.mjs`](lib/kg-store.mjs).
+
+Graph replacements snapshot the previous graph and source units in the same transaction. Restoration creates a new CAS-fenced revision. Old count-only revisions are explicitly non-restorable; unavailable historical contents cannot be reconstructed. Include the growing snapshots in database backups. Removing or clearing browser history hides indexes, not SQLite documents; Restore history makes those documents visible again.
+
+`npm test` also covers the independent pipeline, missing-revision rejection, asynchronous history races, simulated OCR interruptions, and CRX payload parity. See the [OCR pipeline guide](scripts/kg-pipeline/README.md) for commands and safety boundaries.
 
 ## Updating
 
@@ -310,7 +316,7 @@ Select text on **any web page**, click the floating 「拆成知识图」button,
   export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
   npm run pack:extension
   ```
-  The first run creates a new private key; the extension ID is derived from it, so rotating the key changes the ID and invalidates existing installs. Never copy the key into `dist/` or commit it. The script writes the replacement CRX to `dist/dsh-knowledge-graph.crx`.
+  The key must already exist; the script refuses to generate a replacement when it is missing. Rotating the key changes the extension ID and invalidates existing installs. Never copy the key into `dist/` or commit it. The script writes `dist/dsh-knowledge-graph.crx` and `dist/extension-release.json`, checking every payload file against `extension/`. CI uses Python 3 to verify the payload, versions, and SHA-256 release record without a signing key.
 - **Dependency**: `dsh web` must be running locally with a plugin version that serves the `/dsh-kg` extension endpoint (for persistent installs, update the plugin and restart dsh web first). By default the endpoint accepts only this project's new CRX origin, `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`; if you use **Load unpacked** and get a different extension ID, set `DSH_KG_EXTENSION_ORIGINS=chrome-extension://your-extension-id` before starting dsh web. `DSH_KG_ALLOW_LOCAL_ORIGIN=1` is required to additionally allow localhost/127.0.0.1 origins; empty Origin and other extension IDs are rejected. An endpoint allowlist exposes only `extract / task-status / task-cancel / list-models`; canonical document APIs such as `document-load / graph-query / answer-graph / graph-commit` are unavailable through `/dsh-kg`. The endpoint answers with the PNA preflight header.
 - **Data flow**: content script (any page) → `chrome.runtime.sendMessage` → service worker writes `chrome.storage.session` and calls `chrome.action.openPopup()` (Chrome 127+); the popup reads the selected text and POSTs to `http://127.0.0.1:3080/dsh-kg/extract`, then polls `task-status` to render the graph. The DSH base URL is editable at the bottom of the popup and remembered (`kgBase` in `chrome.storage.local`).
 

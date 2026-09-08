@@ -2,15 +2,18 @@
 
 import { readFileSync } from 'node:fs'
 import { defaultStorePath, openSqliteStore } from '../src/kg-store.mjs'
+import { importGraph } from '../src/kg-import.mjs'
 
 function usage() {
   console.error(`Knowledge graph SQLite CLI
 
 Commands:
   init              --db FILE
-  import-graph      --db FILE --input GRAPH.json [--title TITLE]
+  import-graph      --db FILE --input GRAPH.json [--title TITLE] [--expected-revision N] [--dry-run]
   list-documents    --db FILE [--limit N]
   show-document     --db FILE --id DOCUMENT_ID
+  list-revisions    --db FILE --id DOCUMENT_ID [--limit N]
+  restore-revision  --db FILE --id DOCUMENT_ID --revision N --expected-revision N
   list-candidates   --db FILE [--document ID] [--kind entity|claim|all] [--status candidate|accepted|rejected|all] [--limit N]
   set-candidate     --db FILE --kind entity|claim --id ID --status candidate|accepted|rejected
   save-checkpoint   --db FILE --input CHECKPOINT.json [--run-id ID] [--status STATUS]
@@ -62,6 +65,7 @@ if (!args._ || args._ === '--help' || args._ === '-h' || args.help || args.h) {
 
 let store
 try {
+  if (args._ === 'import-graph' && !args.db && !process.env.DSH_KG_DB) throw new Error('Import requires an explicit --db or DSH_KG_DB')
   const dbPath = typeof args.db === 'string' && args.db.trim() ? args.db.trim() : defaultStorePath()
   store = await openSqliteStore(dbPath)
   switch (args._) {
@@ -70,7 +74,11 @@ try {
       break
     case 'import-graph': {
       const graph = readJson(required(args, 'input'))
-      print({ ok: true, ...store.saveGraph(graph, { title: args.title }) })
+      print({ ok: true, ...importGraph(store, graph, {
+        title: args.title,
+        expectedRevision: args['expected-revision'] === undefined ? undefined : Number(args['expected-revision']),
+        dryRun: args['dry-run'] === true,
+      }) })
       break
     }
     case 'list-documents':
@@ -78,6 +86,12 @@ try {
       break
     case 'show-document':
       print(store.getDocument(required(args, 'id')) || { error: 'document_not_found' })
+      break
+    case 'list-revisions':
+      print(store.listRevisions(required(args, 'id'), numberArg(args, 'limit', 50)))
+      break
+    case 'restore-revision':
+      print(store.restoreRevision(required(args, 'id'), Number(required(args, 'revision')), Number(required(args, 'expected-revision'))))
       break
     case 'list-candidates':
       print(store.listCandidates({

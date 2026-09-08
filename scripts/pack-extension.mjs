@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,8 +16,8 @@ if (keyRelative === '' || (!keyRelative.startsWith('..' + sep) && keyRelative !=
   throw new Error('DSH_KG_EXTENSION_KEY must point outside the repository; private keys must not be checked in')
 }
 
-mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 })
-if (existsSync(keyPath)) chmodSync(keyPath, 0o600)
+if (!existsSync(keyPath)) throw new Error('Signing key is missing; provide an existing external key instead of silently changing the extension identity')
+chmodSync(keyPath, 0o600)
 
 // Signing is an offline trust boundary: never download a packer while the
 // long-lived private key is in scope. Require the exact audited package from
@@ -48,6 +48,10 @@ const result = spawnSync(process.execPath, [
 
 if (result.error) throw result.error
 if (result.status !== 0) throw new Error('CRX3 packer exited with status ' + result.status)
+
+const checked = spawnSync(process.execPath, [resolve(ROOT, 'scripts/run-python.mjs'), resolve(ROOT, 'scripts/check-extension.py'), '--write-release'], { cwd: ROOT, stdio: 'inherit' })
+if (checked.error) throw checked.error
+if (checked.status !== 0) throw new Error('CRX payload validation failed')
 
 if (existsSync(keyPath)) chmodSync(keyPath, 0o600)
 console.log('CRX written:', outputPath)

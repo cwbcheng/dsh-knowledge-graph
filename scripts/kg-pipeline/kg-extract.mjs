@@ -1,326 +1,222 @@
 #!/usr/bin/env node
-/**
- * kg-extract.mjs — standalone "scanned PDF -> knowledge graph" pipeline.
- *
- * This closes the gap that the host plugin leaves open: the host only imports
- * a document that already has a searchable text layer, and it needs a live DSH
- * `kgExtractor` (LLM) to produce a graph. For a scanned PDF — and for running
- * the extraction without a DSH session — neither stage exists. This pipeline
- * provides both:
- *
- *   OCR (python ocr_pdf.py) -> pages JSON
- *     -> assemble source text (scripts/kg-pipeline/assemble_text.mjs)
- *     -> paragraph segmentation (paragraphs.mjs, host-identical)
- *     -> chunked LLM extraction (llm-client.mjs + repo SYSTEM_PROMPT)
- *     -> normalization (normalize.mjs, host-identical)
- *     -> graph assembly (source/sourceText/sections/staging/nodes/edges/revision)
- *     -> SQLite import (repo src/kg-store.mjs saveGraph)
- *
- * Usage:
- *   node kg-extract.mjs --pages <pages.json> --out <graph.json> [--db FILE] [--title TITLE]
- * Options:
- *   --pages       OCR pages JSON produced by ocr_pdf.py ({ "1": "text", ... })
- *   --out         output graph JSON path
- *   --import      if set, import into SQLite via kg-store (requires --db or defaultStorePath)
- *   --db          SQLite db path
- *   --title       document title
- *   --max-batches upper bound on LLM chunks (default all)
- *   --resume      resume from a partially-complete extraction JSON
- */
-
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
-import { splitParagraphs, buildSourceManifest } from './paragraphs.mjs'
-import { normalizeGraph, mergeBatch } from './normalize.mjs'
-import { callLLM } from './llm-client.mjs'
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { basename, dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { splitParagraphs, splitParagraphsOffsets, buildSourceManifest } from './paragraphs.mjs'
+import { normalizeGraph, mergeBatch, graphContract } from './normalize.mjs'
+import { callLLM, modelIdentity } from './llm-client.mjs'
 import { openSqliteStore } from '../../src/kg-store.mjs'
+import { importGraph } from '../../src/kg-import.mjs'
 
-const NL = String.fromCharCode(10)
+const CHECKPOINT_VERSION = 2
+const hash = value => createHash('sha256').update(value).digest('hex')
+const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 
-// The host's SYSTEM_PROMPT — reused verbatim so the semantic contract (8 node
-// types, 12 relations, "one node one proposition", grounding, etc.) is exactly
-// what the repo enforces.
-const SYSTEM_PROMPT = [
-  '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记等），正文已按内容切分为编号单元（一个编号单元可能含多个句子），[P数字] 为该单元编号。目标不是摘要，而是生成可复用、可继续推理的原子知识图。',
-  '',
-  '节点必须从以下 8 类中选择：',
-  '1. fact 事实 —— 可直接观察、记录或核对的具体信息/元信息。作者的理论判断、经验概括、价值判断不得标 fact。',
-  '2. claim 主张 —— 作者/资料直接提出但未在当前文本中作为客观事实核实的观点、经验概括、理论判断。必须保留“可能、多数、通常、必须、如果”等限定强度。',
-  '3. inference 推论 —— 由已有事实/主张结合原文逻辑推出的可复用结论；不能只是换句话复述原句。',
-  '4. concept 概念 —— 稳定、可复用的术语或明确命名对象。作者临时标签、修辞表达不得仅因显眼就升级为 concept，除非文本明确把它当作持续讨论的理论对象。被两个以上独立核心命题反复引用、可跨段/跨章节继续承载知识的明确命名对象，应保留独立 concept anchor；concept 名称优先使用稳定对象本身，不把“重建/优化/提高/建立 + 对象”整体实体化，除非该过程本身被正式命名。',
-  '5. definition 定义 —— 对概念的精确界定。',
-  '6. example 例子 —— 用于说明某个事实、主张、规则或概念的具体实例。',
-  '7. counter_example 反例 —— 只有当一个具体案例明确削弱、限制或否定某个一般命题时使用，并应通过 counter_example 关系指向被挑战命题。负向结果、失败情形或对照情形如果仍在帮助说明/支持原命题，仍用 example，并通过 supports/analogy 表达作用。',
-  '8. rule 规则 —— 方法、步骤、操作流程或明确规范。',
-  '',
-  '关系必须从以下 12 类中选择：',
-  'supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
-  '其中 is_a：下位/具体项→上位类别；contains：整体→组成；driven_by：手段/行为→目标或驱动因素；not_is：A→B 表示“A不是/不等同于B”；analogy：类比案例→被说明的原则；aims_at：主体/方案/作品→目标。能用这些精确关系时，不要退化成 supports。',
-  '',
-  '硬性要求：',
-  '1. 每个节点必须给出 paragraph 字段：主要出处所在 [P数字] 的整数编号，必须准确。',
-  '2. 每个节点必须尽量给出 quote：使用能完整支撑该节点的最小原文片段。quote 必须保留会改变断言强度的否定、数量范围、可能性、频率、必要性和条件词，例如“可能、多数、部分、通常、必须、如果”。禁止用删掉这些词的片段来支撑更强的表述。',
-  '3. 一节点一命题：除 concept 外，一个节点只表达一个可独立判断的主要断言/结果。遇到“A 导致 B，并进一步导致 C/同时产生 D”时拆成多个节点，再用关系连接；禁止把多个并列后果、机制步骤或判断压缩进一个长节点。',
-  '4. fact 与 claim 必须严格区分：来源中“作者认为/可能/多数/通常/症结在于/本书认为”等理论或经验判断优先使用 claim；只有可直接观察、记录、核对的具体信息才使用 fact。',
-  '5. 宁缺毋滥：环境描写、铺垫、出版服务信息或与主题无关的句子不要进入核心图。',
-  '6. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
-  '7. JSON 结构固定为：{"summary":"一句话总结全文","nodes":[{"id":"n1","type":"claim","text":"节点的原子表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的原文逐字摘录"}]}]}',
-  '8. type 只能取 fact/claim/inference/concept/definition/example/counter_example/rule；relation 只能取 supports/example/counter_example/defines/infers/causes/is_a/contains/driven_by/not_is/analogy/aims_at；paragraph 必须是真实编号。',
-  '9. 节点 id 用 n1、n2、n3... 全局唯一；edges 的 fromNodeId/toNodeId 必须引用存在节点。',
-  '10. 单批节点数最多 48 个；这是安全上限，不是压缩目标。不要为了少建节点而合并本应独立的命题。',
-  '11. 每个 fact/claim/inference 节点的 text 必须由 quote 支撑，且不得删除或强化原文的可能性、数量范围、条件、否定和必要性。',
-  '12. 同一稳定概念或同一原子命题只建一个节点；优先保留能跨段复用的概念和机制链，但不要把多个原子命题合成“主结论大节点”。若一个稳定对象被多个核心命题共同引用，应保留其 concept anchor，而不是只让该术语散落在命题文本里。',
-  '13. 关系方向必须符合语义；每条边必须有直接证明该 relation 的原文 evidence。端点分别出现、主题相似或同段出现都不能单独证明关系。',
-  '14. 与主题有关的节点可保持孤立；原文未定义的核心概念允许作为待后文展开的节点存在，禁止为了连通率强行补关系。原文明示“并非X/不是X/不意味着X/问题不在X而在Y”等纠偏时，应保留防止错误推理所必需的限定主张；原文明示某问题留待后文回答时，可用普通 claim 记录“当前范围尚未给出具体答案”，不要虚构答案。',
-  '15. 高知识密度 worked example 不得只因是例子而整体省略：若例子明确命名一个可复用对象或定义，并在同段或紧邻段落用于引出具体行为、误区、机制或验证区分，至少保留能把该例子连接到后续机制的最小 example/definition/concept 锚点。纯修辞且不承载这种连接作用的例子仍可省略。',
-  '16. 对以【图示关系】【表格】【统计图】标记的视觉转写，图中明确编码的节点、类别、分组、对应、包含、箭头/连线、先后顺序以及具有图例语义的颜色/形状都是候选知识，不能仅因它们表现为版面或颜色而当作装饰省略。能准确映射到允许 relation 时建立有直接 evidence 的边；若图中关系真实明确但不适合 12 种 relation，至少创建一个原子 fact/claim 节点忠实记录“谁与谁通过何种可见方式关联”，禁止整段丢弃或强行套用错误关系。纯粹位置且无图例/标签语义的 layout 仍可省略。',
-  '17. 输出前自查：节点是否原子？fact/claim 是否分对？counter_example 是否真的在反驳一个命题而不是仅描述负向/对照结果？核心稳定对象是否有 concept anchor？显式纠偏或留待后文的信息是否被遗漏？高知识密度 worked example 是否被整段丢失？是否保留“可能/多数/必须/如果”等强度？是否存在比 supports 更精确的关系？证据是否真的证明节点和关系？',
-].join(NL)
-
-function buildUserPrompt(title, batch, index, total, existingDigest) {
-  const units = Array.isArray(batch) ? batch : (batch && Array.isArray(batch.units) ? batch.units : [])
-  let s = ''
-  if (title) s += '资料标题：' + title + NL
-  if (total > 1) s += '（这是资料的 ' + (index + 1) + '/' + total + ' 部分，请只基于本部分内容拆解，不要臆测其他部分）' + NL
-  if (batch && !Array.isArray(batch)) {
-    if (batch.chunkId) s += '当前稳定块 ID：' + batch.chunkId + NL
-    if (batch.sectionTitles && batch.sectionTitles.length > 0) s += '当前章节上下文：' + batch.sectionTitles.join(' / ') + NL
+export function writeJsonAtomic(path, value) {
+  mkdirSync(dirname(path), { recursive: true })
+  const temporary = path + '.' + randomUUID() + '.tmp'
+  let descriptor
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600)
+    writeFileSync(descriptor, JSON.stringify(value, null, 2), 'utf8')
+    fsyncSync(descriptor)
+    closeSync(descriptor)
+    descriptor = undefined
+    renameSync(temporary, path)
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+    if (existsSync(temporary)) unlinkSync(temporary)
   }
-  s += '资料正文（已按内容切分并编号，[P数字] 为该内容单元编号）：' + NL
-  for (const u of units) s += '[P' + u.num + '] ' + u.text + NL
-  if (existingDigest) s += NL + NL + '已有知识图节点清单（id|类型|文本，引用边时只能用这些 id）：' + NL + existingDigest
-  return s
 }
 
-function serializeExistingGraph(nodes, limit, batchQuery) {
-  const terms = String(batchQuery || '').toLowerCase()
-  // Rank nodes by overlap with the incoming batch query to keep the digest bounded.
-  const ranked = (Array.isArray(nodes) ? nodes : []).slice().map((node, idx) => {
-    const text = String(node.text || '').toLowerCase()
-    const overlap = terms ? text.split('').reduce((n, ch, i) => n + (text.slice(i, i + 2) && terms.includes(text.slice(i, i + 2)) ? 1 : 0), 0) : 0
-    return { node, overlap: clamp(overlap, 0, 100), idx }
-  })
-  ranked.sort((a, b) => b.overlap - a.overlap)
-  const maxLines = Number.isInteger(limit) && limit > 0 ? limit : 24
-  const lines = []
-  for (const r of ranked) {
-    if (lines.length >= maxLines) break
-    const n = r.node
-    lines.push(String(n.id || '') + '|' + String(n.type || '') + '|' + String(n.text || '').slice(0, 160))
-  }
-  return lines.join(NL)
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+function saveCheckpoint(path, state) {
+  const payload = JSON.stringify(state)
+  writeJsonAtomic(path, { ...state, checksum: hash(payload) })
 }
 
-function loadJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'))
+function loadCheckpoint(path, fingerprint, manifest) {
+  const { checksum, ...state } = readJson(path)
+  if (checksum !== hash(JSON.stringify(state))) throw new Error('Checkpoint is corrupt or from an unsupported legacy format')
+  if (state.version !== CHECKPOINT_VERSION || state.fingerprint !== fingerprint) throw new Error('Checkpoint source, model or extraction contract changed; use a new output path')
+  if (!Number.isSafeInteger(state.nextBatch) || state.nextBatch < 0 || state.nextBatch > manifest.batches.length) throw new Error('Invalid checkpoint batch cursor')
+  if (!Array.isArray(state.chunks) || state.chunks.length !== manifest.batches.length) throw new Error('Invalid checkpoint chunk manifest')
+  for (const [index, chunk] of state.chunks.entries()) {
+    if (chunk.chunkId !== manifest.batches[index].chunkId || (index < state.nextBatch ? chunk.status !== 'completed' : !['pending', 'running', 'failed'].includes(chunk.status))) throw new Error('Checkpoint chunk state does not match its cursor')
+  }
+  if (!Array.isArray(state.nodes) || !Array.isArray(state.edges) || !Array.isArray(state.warnings) || new Set(state.nodes.map(node => node.id)).size !== state.nodes.length) throw new Error('Invalid checkpoint graph')
+  if (state.nextBatch > 0 && state.nodes.length === 0) throw new Error('Checkpoint has completed chunks but no retained nodes')
+  return state
 }
 
-function assembleFinalGraph({ title, sourceText, paras, manifest, nodes, edges, warnings, summaries }) {
-  const docId = manifest.documentId
-  const srcId = manifest.sourceId
-  const now = Date.now()
-  // section paragraphs -> endParagraph currently computed by buildSourceManifest
-  const sections = manifest.sections
-  // Gather per-section summaries from batch summaries.
-  const sectionSummaryParts = new Map()
-  for (const s of sections) sectionSummaryParts.set(s.id, [])
-  for (const b of manifest.batches) {
-    const chunkSummary = summaries[b.chunkId] || ''
-    for (const sid of b.sectionIds || []) {
-      const arr = sectionSummaryParts.get(sid)
-      if (arr && chunkSummary) arr.push(chunkSummary)
-    }
+function readSource(pagesPath) {
+  const pages = readJson(pagesPath)
+  if (!pages || typeof pages !== 'object' || Array.isArray(pages)) throw new Error('pages must be an object keyed by PDF page number')
+  const keys = Object.keys(pages).sort((a, b) => Number(a) - Number(b))
+  if (!keys.length || keys.some(key => !/^[1-9]\d*$/.test(key) || typeof pages[key] !== 'string')) throw new Error('Invalid OCR pages')
+  if (keys.some((key, index) => Number(key) !== index + 1)) throw new Error('OCR pages are missing; finish OCR before extraction')
+  const metadataPath = pagesPath + '.source.json'
+  const metadata = existsSync(metadataPath) ? readJson(metadataPath) : null
+  if (metadata?.pagesSha256 && metadata.pagesSha256 !== hash(readFileSync(pagesPath))) throw new Error('OCR pages do not match their provenance manifest')
+  if (metadata && (!['completed', 'unverified'].includes(metadata.status) || metadata.pageCount !== keys.length)) throw new Error('OCR source is incomplete')
+  let sourceText = ''
+  const pageMap = []
+  for (const key of keys) {
+    if (sourceText) sourceText += '\n\n'
+    const start = sourceText.length
+    sourceText += pages[key]
+    pageMap.push({ page: Number(key), start, end: sourceText.length })
   }
-  for (const s of sections) {
-    const parts = (sectionSummaryParts.get(s.id) || []).filter(Boolean)
-    s.summary = parts.length > 0 ? parts.join(' ') : ''
-  }
-
-  const nodesWithSortedParagraphs = nodes
-  const stagingChunks = manifest.batches.map((b) => ({
-    chunkId: b.chunkId,
-    sourceId: b.sourceId,
-    startParagraph: b.startParagraph,
-    endParagraph: b.endParagraph,
-    sectionIds: b.sectionIds,
-    sectionTitles: b.sectionTitles,
-    summary: summaries[b.chunkId] || '',
-    status: 'completed',
-    nodeIds: nodesWithSortedParagraphs.filter((n) => n.paragraph >= b.startParagraph && n.paragraph <= b.endParagraph).map((n) => n.id),
-    edgeCount: 0,
-    warnings: [],
-  }))
-  const edgeCount = edges.length
-
-  const source = {
-    id: srcId,
-    documentId: docId,
-    title,
-    chars: sourceText.length,
-    paragraphCount: manifest.paragraphCount,
-    chunkCount: manifest.chunkCount,
-    sectionCount: manifest.sectionCount,
-    sections,
-  }
-
+  if (!sourceText.trim()) throw new Error('OCR source is empty')
+  const offsets = splitParagraphsOffsets(sourceText)
   return {
-    summary: summaries._overall_summary || '',
-    warnings,
-    generation: {
-      invariantVersion: 2,
-      status: warnings.length > 0 ? 'succeeded_with_warnings' : 'succeeded',
-      sourceAudit: 'ocr+llm',
-      chunkCount: manifest.chunkCount,
-      nodeCount: nodes.length,
-      edgeCount: edges.length,
-    },
-    source,
     sourceText,
-    revision: 1,
-    nodes,
-    edges,
-    staging: { chunks: stagingChunks },
+    provenance: {
+      pageMap,
+      paragraphPages: offsets.map(unit => pageMap.filter(page => page.start < unit.end && page.end > unit.start).map(page => page.page)),
+      ...(metadata ? { ocr: metadata } : { ocr: { status: 'unverified', pageCount: keys.length } }),
+    },
   }
 }
 
-async function main() {
+function userPrompt(title, batch, index, count, acc) {
+  const digest = Array.from(acc.nodes.values()).slice(-24).map(node => node.id + '|' + node.type + '|' + node.text.slice(0, 160)).join('\n')
+  return '资料标题：' + title + '\n当前批次：' + (index + 1) + '/' + count + '\n'
+    + batch.units.map(unit => '[P' + unit.num + '] ' + unit.text).join('\n')
+    + (digest ? '\n\n已有节点（引用已有节点时只在边中使用其 ID；nodes 仅声明本批新节点）：\n' + digest : '')
+}
+
+function assembleGraph(title, sourceText, manifest, provenance, state) {
+  const completed = state.chunks.filter(chunk => chunk.status === 'completed').length
+  const failed = state.chunks.filter(chunk => chunk.status === 'failed')
+  const warnings = [...state.warnings, ...failed.map(chunk => chunk.chunkId + ':failed:' + chunk.error)]
+  const status = completed === state.chunks.length ? (warnings.length ? 'succeeded_with_warnings' : 'succeeded') : (failed.length ? 'failed' : 'partial')
+  return {
+    summary: state.summary || '',
+    warnings,
+    generation: { invariantVersion: 2, status, sourceAudit: 'ocr-text', completedChunks: completed, chunkCount: state.chunks.length, nodeCount: state.nodes.length, edgeCount: state.edges.length },
+    source: {
+      id: manifest.sourceId, documentId: manifest.documentId, title,
+      chars: sourceText.length, paragraphCount: manifest.paragraphCount,
+      chunkCount: manifest.chunkCount, sectionCount: manifest.sectionCount,
+      sections: manifest.sections.map(section => ({ ...section, summary: state.chunks.filter(chunk => chunk.sectionIds.includes(section.id)).map(chunk => chunk.summary || '').filter(Boolean).join(' ') })),
+      ...provenance,
+    },
+    sourceText,
+    nodes: state.nodes,
+    edges: state.edges,
+    staging: { chunks: state.chunks },
+  }
+}
+
+export async function main(argv = process.argv.slice(2)) {
   const args = {}
-  for (let i = 2; i < process.argv.length; i++) {
-    const tok = process.argv[i]
-    if (!tok.startsWith('--')) continue
-    const key = tok.slice(2)
-    const next = process.argv[i + 1]
-    if (next && !next.startsWith('--')) { args[key] = next; i += 1 } else args[key] = true
-  }
-  const pagesPath = args.pages
-  const outPath = args.out
-  if (!pagesPath || !outPath) {
-    console.error('usage: node kg-extract.mjs --pages <pages.json> --out <graph.json> [--db FILE] [--title T] [--max-batches N] [--resume]')
-    process.exit(1)
-  }
-  const pages = loadJson(pagesPath)
-  const sourceText = Object.keys(pages).sort((a, b) => Number(a) - Number(b)).map((k) => pages[k]).join(NL + NL)
-  const paras = splitParagraphs(sourceText)
-  const manifest = buildSourceManifest(args.title || '学习观：从感觉懂了到真正学会', sourceText, paras)
-  console.log(`[kg-extract] chars=${sourceText.length} paragraphs=${paras.length} chunks=${manifest.chunkCount} sections=${manifest.sectionCount}`)
-
-  const batches = manifest.batches
-  const maxBatches = args['max-batches'] ? Number(args['max-batches']) : batches.length
-  const skip = args.resume ? maybeLoadPartial(outPath) : null
-  const acc = { nodes: new Map(), edges: [], ids: [], edgeKeys: new Set(), warnings: [] }
-  const summaries = {}
-  let summaryAccum = ''
-  const resumeFrom = skip ? skip.nextBatch : 0
-
-  for (let i = resumeFrom; i < Math.min(batches.length, maxBatches); i++) {
-    const batch = batches[i]
-    const batchContext = {
-      documentId: manifest.documentId,
-      sourceId: manifest.sourceId,
-      chunkId: batch.chunkId,
-      paragraphTexts: paras,
-      totalParagraphs: paras.length,
-      paragraphMeta: manifest.paragraphMeta,
+  const flags = new Set(['resume', 'restart', 'import'])
+  const values = new Set(['pages', 'out', 'title', 'db', 'max-batches', 'expected-revision'])
+  for (let i = 0; i < argv.length; i++) {
+    const key = argv[i].slice(2)
+    if (!argv[i].startsWith('--') || (!flags.has(key) && !values.has(key))) throw new Error('Unknown argument: ' + argv[i])
+    if (flags.has(key)) args[key] = true
+    else {
+      if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Missing value for --' + key)
+      args[key] = argv[++i]
     }
-    const existingDigest = acc.nodes.size > 0
-      ? serializeExistingGraph(Array.from(acc.nodes.values()), 24, (batch.units || []).map((u) => u.text).join(' '))
-      : ''
-    const userText = buildUserPrompt(args.title || '', batch, i, batches.length, existingDigest)
-    console.log(`[kg-extract] batch ${i + 1}/${batches.length} (${batch.chunkId}) P${batch.startParagraph}-${batch.endParagraph} ...`)
+  }
+  if (!args.pages || !args.out) throw new Error('usage: kg-extract.mjs --pages FILE --out FILE [--resume] [--import --db FILE --expected-revision N]')
+  if (args.resume && args.restart) throw new Error('--resume and --restart are mutually exclusive')
+  if (args.import && !args.db && !process.env.DSH_KG_DB) throw new Error('Import requires an explicit --db or DSH_KG_DB')
+  const outPath = resolve(args.out), checkpointPath = outPath + '.partial.json'
+  const title = args.title || basename(args.pages).replace(/\.json$/i, '')
+  const { sourceText, provenance } = readSource(resolve(args.pages))
+  const paras = splitParagraphs(sourceText)
+  const manifest = buildSourceManifest(title, sourceText, paras)
+  const maxBatches = args['max-batches'] === undefined ? manifest.batches.length : Number(args['max-batches'])
+  if (!Number.isSafeInteger(maxBatches) || maxBatches < 1) throw new Error('--max-batches must be a positive integer')
+  const expectedRevision = args['expected-revision'] === undefined ? undefined : Number(args['expected-revision'])
+  if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new Error('--expected-revision must be a non-negative integer')
+  const contractHash = hash(readFileSync(new URL('../../src/index.host.js', import.meta.url)))
+  const fingerprint = hash(JSON.stringify({ version: CHECKPOINT_VERSION, contractHash, title, sourceText, provenance, model: modelIdentity(), maxTokens: 8000, temperature: 0.2, prompt: graphContract.systemPrompt, chunks: manifest.batches }))
+  if (!args.resume && !args.restart && (existsSync(checkpointPath) || existsSync(outPath))) throw new Error('Output already exists; use --resume or an explicit --restart')
+  const state = args.resume ? loadCheckpoint(checkpointPath, fingerprint, manifest) : {
+    version: CHECKPOINT_VERSION, fingerprint, nextBatch: 0, nodes: [], edges: [], warnings: [], summary: '',
+    chunks: manifest.batches.map(batch => ({ ...batch, units: undefined, status: 'pending', nodeIds: [], edgeCount: 0, warnings: [], summary: '' })),
+  }
+  const acc = { nodes: new Map(state.nodes.map(node => [node.id, node])), edges: state.edges, warnings: state.warnings, edgeKeys: new Set(state.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation)), nodeKeys: new Map() }
+  const restoredGate = graphContract.validateGraphInvariants({ nodes: state.nodes, edges: state.edges }, sourceText)
+  if (restoredGate.blockingIssues.length) throw new Error('Checkpoint graph failed canonical validation')
+  saveCheckpoint(checkpointPath, state)
 
-    let lastErr = ''
-    let lastFailure = 'schema_invalid'
-    let ok = false
-    // Attempt up to 3 model calls per batch, retrying on both LLM transport
-    // failures and schema-invalid / empty outputs.
-    const MAX_ATTEMPTS = 3
-    for (let attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
+  for (let index = state.nextBatch; index < Math.min(manifest.batches.length, maxBatches); index++) {
+    const batch = manifest.batches[index]
+    const context = { ...manifest, chunkId: batch.chunkId, paragraphTexts: paras }
+    const chunk = state.chunks[index]
+    chunk.status = 'running'
+    delete chunk.error
+    saveCheckpoint(checkpointPath, state)
+    let accepted = null, lastError = ''
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const retrySuffix = attempt > 0 ? NL + NL + '【修复反馈】上一轮输出不合格（' + lastErr + '）。请严格按 JSON 结构与 8 类节点/12 类关系提取，至少产出若干个原子节点；每条边必须有直接证明关系的原文 evidence。' : ''
-        const raw = await callLLM({ system: SYSTEM_PROMPT, user: userText + retrySuffix, maxTokens: 8000, temperature: 0.2 })
-        const norm = normalizeGraph(raw, paras.length, new Set(acc.ids), batchContext)
-        if (norm.error) { lastErr = norm.error; lastFailure = 'schema_invalid'; continue }
-        if (norm.nodes.length === 0) { lastErr = '本批未产出任何节点'; lastFailure = 'empty_or_invalid'; continue }
-        mergeBatch(norm, acc, i)
-        if (norm.summary) summaries[batch.chunkId] = norm.summary
-        summaryAccum = norm.summary || summaryAccum
-        writePartial(outPath, { nextBatch: i + 1, acc: serializeAcc(acc), summaries, summaryAccum, batches: batches.length })
-        ok = true
-      } catch (e) {
-        lastErr = e && e.message ? e.message : String(e)
-        lastFailure = 'llm_error'
-        console.error(`[kg-extract] batch ${i + 1} attempt ${attempt + 1}/${MAX_ATTEMPTS} failed: ${lastErr}`)
+        const raw = await callLLM({ system: graphContract.systemPrompt, user: userPrompt(title, batch, index, manifest.batches.length, acc) + (lastError ? '\n修复反馈：' + lastError : ''), maxTokens: 8000, temperature: 0.2 })
+        const norm = normalizeGraph(raw, paras.length, new Set(acc.nodes.keys()), context)
+        if (norm.error || !norm.nodes.length) throw new Error(norm.error || 'Batch produced no nodes')
+        const gate = graphContract.validateGraphInvariants(norm, sourceText, { extraNodes: acc.nodes, normalizationWarnings: norm.warnings })
+        if (gate.blockingIssues.length) throw new Error(gate.blockingIssues.map(issue => issue.code).join(', '))
+        accepted = norm
+        break
+      } catch (error) {
+        lastError = String(error.message || error).slice(0, 1200)
       }
     }
-    if (!ok) {
-      acc.warnings.push('batch' + (i + 1) + ':failed:' + lastFailure + ':' + lastErr.slice(0, 120))
-      // Persist whatever we have so far; continue to the next batch.
-      writePartial(outPath, { nextBatch: i + 1, acc: serializeAcc(acc), summaries, summaryAccum, batches: batches.length })
+    if (!accepted) {
+      chunk.status = 'failed'
+      chunk.error = lastError
+      saveCheckpoint(checkpointPath, state)
+      break
     }
+    mergeBatch(accepted, acc, index)
+    state.nodes = Array.from(acc.nodes.values())
+    state.edges = acc.edges
+    state.warnings = acc.warnings
+    state.summary = accepted.summary || state.summary
+    Object.assign(chunk, { status: 'completed', summary: accepted.summary, nodeIds: accepted.nodes.map(node => node.id), edgeCount: accepted.edges.length, warnings: accepted.warnings })
+    state.nextBatch = index + 1
+    saveCheckpoint(checkpointPath, state)
+    console.log('[kg-extract] completed ' + state.nextBatch + '/' + manifest.batches.length)
   }
 
-  const nodes = Array.from(acc.nodes.values())
-  const edges = acc.edges
-  summaries._overall_summary = summaryAccum
-  const finalGraph = assembleFinalGraph({
-    title: args.title || '学习观：从感觉懂了到真正学会',
-    sourceText,
-    paras,
-    manifest,
-    nodes,
-    edges,
-    warnings: acc.warnings,
-    summaries,
-  })
-
-  writeFileSync(outPath, JSON.stringify(finalGraph, null, 2), 'utf8')
-  console.log(`[kg-extract] wrote ${outPath}: nodes=${nodes.length} edges=${edges.length} warnings=${acc.warnings.length}`)
-
+  const graph = assembleGraph(title, sourceText, manifest, provenance, state)
+  const finalGate = graphContract.validateGraphInvariants(graph, sourceText)
+  graph.generation.invariantErrors = finalGate.blockingIssues.length
+  if (finalGate.blockingIssues.length) {
+    graph.generation.status = 'failed'
+    graph.warnings.push(...finalGate.blockingIssues.map(issue => 'final_invariant:' + issue.code))
+  }
+  writeJsonAtomic(outPath, graph)
+  console.log('[kg-extract] ' + graph.generation.status + ': ' + graph.nodes.length + ' nodes, ' + graph.edges.length + ' edges')
+  if (!['succeeded', 'succeeded_with_warnings'].includes(graph.generation.status)) {
+    process.exitCode = graph.generation.status === 'failed' ? 1 : 2
+    return graph
+  }
   if (args.import) {
-    const db = args.db
-    const store = await openSqliteStore(typeof db === 'string' && db ? db : undefined)
+    const dbPath = resolve(args.db || process.env.DSH_KG_DB)
+    const store = await openSqliteStore(dbPath)
     try {
-      const result = store.saveGraph(finalGraph, {
-        title: args.title || '学习观：从感觉懂了到真正学会',
-        sourceText,
-        sourceUnits: paras.map((text, ix) => ({ paragraph: ix, text })),
-      })
-      console.log('[kg-extract] imported →', JSON.stringify(result))
-    } finally {
-      store.close()
-    }
+      const receipt = state.importReceipt
+      const current = store.getDocument(manifest.documentId)
+      const graphHash = hash(JSON.stringify(graph))
+      if (receipt && receipt.dbPath === dbPath && receipt.graphHash === graphHash && current && receipt.revision === store.getDocumentRevision(manifest.documentId) && receipt.canonicalHash === hash(JSON.stringify(current))) {
+        console.log('[kg-extract] already imported revision ' + receipt.revision)
+        return graph
+      }
+      const result = importGraph(store, graph, { title, expectedRevision })
+      state.importReceipt = { dbPath, graphHash, revision: result.revision, canonicalHash: hash(JSON.stringify(store.getDocument(manifest.documentId))) }
+      saveCheckpoint(checkpointPath, state)
+      console.log('[kg-extract] imported revision ' + result.revision)
+    } finally { store.close() }
   }
+  return graph
 }
 
-function serializeAcc(acc) {
-  return {
-    nodes: Array.from(acc.nodes.values()),
-    edges: acc.edges,
-    ids: acc.ids,
-    edgeKeys: Array.from(acc.edgeKeys),
-    warnings: acc.warnings,
-  }
-}
-
-function writePartial(outPath, data) {
-  try {
-    mkdirSync(dirname(outPath), { recursive: true })
-    writeFileSync(outPath + '.partial.json', JSON.stringify(data, null, 2), 'utf8')
-  } catch (e) { /* best effort */ }
-}
-
-function maybeLoadPartial(outPath) {
-  const p = outPath + '.partial.json'
-  if (!existsSync(p)) return null
-  try {
-    const d = JSON.parse(readFileSync(p, 'utf8'))
-    return { nextBatch: d.nextBatch || 0 }
-  } catch (e) { return null }
-}
-
-// Entry point when run directly.
-const isDirect = process.argv[1] && import.meta.url === new URL(process.argv[1], 'file://' + process.cwd() + '/').href
-if (isDirect) {
-  main().catch((e) => { console.error('[kg-extract] fatal:', e && e.stack ? e.stack : e); process.exit(1) })
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(error => { console.error('[kg-extract] ' + error.message); process.exitCode = 1 })
 }

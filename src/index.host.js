@@ -21,6 +21,10 @@
  */
 
 export default function hostPlugin() {
+  return createHostPlugin(false)
+}
+
+function createHostPlugin(graphContractOnly) {
   return {
     inject: ['timer'],
     apply(ctx) {
@@ -6831,6 +6835,20 @@ export default function hostPlugin() {
         }
       }
 
+      // Headless consumers share these contracts without RPCs or timers.
+      if (graphContractOnly === true) return Object.freeze({
+        normalizeGraph, renumberNewIds, mergeBatch,
+        splitParagraphs: splitParagraphsHost,
+        splitParagraphsOffsets: splitParagraphsOffsetsHost,
+        buildSourceManifest: buildSourceManifestHost,
+        authenticateGraphEvidence: authenticateGraphEvidenceHost,
+        validateGraphInvariants: validateGraphInvariantsHost,
+        exactOrUniqueTypographicQuote: exactOrUniqueTypographicQuoteHost,
+        systemPrompt: SYSTEM_PROMPT,
+        nodeTypes: Object.values(TYPE_ALIASES),
+        relations: Object.values(REL_ALIASES),
+      })
+
       harness.handle('fact-check', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const input = prepareVerificationInputHost(a)
@@ -7004,7 +7022,8 @@ export default function hostPlugin() {
          const current = loadCanonicalDocumentHost(documentId)
          if (!documentId || !incoming) return { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } }
          if (!current) return { error: { code: 'not_found', message: '当前 Host 中找不到要提交的 canonical graph' } }
-         const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : current.revision
+         if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } }
+         const expectedRevision = a.expectedRevision
          if (expectedRevision !== current.revision) {
            return { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } }
          }
@@ -7337,7 +7356,8 @@ export default function hostPlugin() {
         if (!canonical || !canonical.graph || !Array.isArray(canonical.graph.nodes) || canonical.graph.nodes.length === 0) {
           return { error: { code: 'not_found', message: 'Host 中找不到该轨迹 canonical graph；请重新拆解当前轨迹' } }
         }
-        const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : canonical.revision
+        if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } }
+        const expectedRevision = a.expectedRevision
         if (expectedRevision !== canonical.revision) {
           return { error: { code: 'revision_conflict', message: '轨迹知识图已被其他修改更新，请重新载入后再追加', currentRevision: canonical.revision } }
         }
@@ -7386,7 +7406,8 @@ export default function hostPlugin() {
         if (!documentId) return { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } }
         const canonical = loadCanonicalDocumentHost(documentId)
         if (!canonical || !canonical.graph || !canonical.sourceText) return { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } }
-        const expectedRevision = Number.isInteger(a.expectedRevision) ? a.expectedRevision : canonical.revision
+        if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } }
+        const expectedRevision = a.expectedRevision
         if (expectedRevision !== canonical.revision) return { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } }
         if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
@@ -7457,4 +7478,8 @@ export default function hostPlugin() {
       }, 3600 * 1000)
     },
   }
+}
+
+export function createGraphContract() {
+  return createHostPlugin(true).apply({ get: () => null })
 }

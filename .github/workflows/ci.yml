@@ -16,6 +16,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install locked runtime dependencies
         run: npx --yes pnpm@11.20.0 install --frozen-lockfile --ignore-scripts
       - name: Install isolated signing toolchain

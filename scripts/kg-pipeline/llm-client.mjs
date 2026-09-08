@@ -56,32 +56,19 @@ function envCredential() {
   return ''
 }
 
-async function modelInfo() {
+export function modelIdentity() {
   // Resolve base URL + model from env; otherwise use sensible defaults matching
   // the DSH profile that has a working local provider.
   const baseURL = process.env.KG_LLM_BASE_URL || 'http://192.168.3.252:8317/v1'
   const model = process.env.KG_LLM_MODEL || 'gpt-5.6-sol'
-  const apiKey = envCredential()
-  return { baseURL, model, apiKey }
+  return { baseURL, model }
 }
 
 function extractJson(raw) {
   let s = String(raw || '').trim()
   // Strip markdown fences on their own lines.
   s = s.split('\n').filter((line) => !line.trim().startsWith('```')).join('\n')
-  const start = s.indexOf('{')
-  const end = s.lastIndexOf('}')
-  if (start < 0 || end <= start) throw new Error('没有找到 JSON 对象（前 180 字：' + s.replace(/\s+/g, ' ').slice(0, 180) + '）')
-  s = s.slice(start, end + 1)
-  try {
-    return JSON.parse(s)
-  } catch (firstErr) {
-    const candidates = [s, s.replace(/,\s*$/, '') + ']}', s + '}', s + ']}']
-    for (const c of candidates) {
-      try { return JSON.parse(c) } catch (e) { /* try next */ }
-    }
-    throw firstErr
-  }
+  return JSON.parse(s)
 }
 
 /**
@@ -89,8 +76,10 @@ function extractJson(raw) {
  * Uses the OpenAI /v1/chat/completions shape which is the most widely
  * compatible; responses are read into a single buffer.
  */
-export async function callLLM({ system, user, maxTokens = 8000, temperature = 0.2, timeoutMs = DEFAULT_TIMEOUT_MS }) {
-  const { baseURL, model, apiKey } = await modelInfo()
+export async function callLLM({ system, user, maxTokens = 8000, temperature = 0.2, timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes = 4 * 1024 * 1024 }) {
+  const { baseURL, model } = modelIdentity()
+  const apiKey = envCredential()
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new Error('Invalid LLM response limits')
   if (!apiKey) throw new Error('缺少 LLM API key；请设置 KG_LLM_API_KEY 或提供 ~/.dsh/.credentials.yaml 中的 provider key')
   const url = baseURL.replace(/\/$/, '') + '/chat/completions'
   const payload = {
@@ -105,26 +94,39 @@ export async function callLLM({ system, user, maxTokens = 8000, temperature = 0.
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-  let response
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
       body: JSON.stringify(payload),
       signal: controller.signal,
     })
+    const reader = response.body.getReader()
+    const chunks = []
+    let bytes = 0
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > maxResponseBytes) {
+          controller.abort()
+          throw new Error('LLM response exceeded byte limit')
+        }
+        chunks.push(Buffer.from(value))
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    const body = Buffer.concat(chunks).toString('utf8')
+    if (!response.ok) throw new Error('LLM HTTP ' + response.status + ': ' + body.slice(0, 300))
+    const data = JSON.parse(body)
+    if (['length', 'content_filter'].includes(data?.choices?.[0]?.finish_reason)) throw new Error('LLM output was truncated or filtered')
+    const content = data?.choices?.[0]?.message?.content
+    return extractJson(typeof content === 'string' ? content : '')
   } catch (err) {
-    clearTimeout(timer)
     throw new Error('LLM 请求失败：' + (err && err.message ? err.message : String(err)))
+  } finally {
+    clearTimeout(timer)
   }
-  clearTimeout(timer)
-  if (!response.ok) {
-    const body = await response.text().catch(() => '')
-    throw new Error('LLM HTTP ' + response.status + ': ' + body.slice(0, 300))
-  }
-  const data = await response.json()
-  const content = data && data.choices && data.choices[0]
-    ? (data.choices[0].message && typeof data.choices[0].message.content === 'string' ? data.choices[0].message.content : '')
-    : ''
-  return extractJson(content)
 }

@@ -33,6 +33,7 @@
       const LEGACY_LARGE_STORAGE_KEYS = ['dsh-kg-pending-v1', 'dsh-kg-checkpoint-v1', 'dsh-kg-result-v1']
       const LS_WIN = 'dsh-kg-win-v1'
       const LS_HISTORY = 'dsh-kg-history-v1'
+      const LS_HISTORY_HIDDEN = 'dsh-kg-history-hidden-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
       const LS_HEIGHT = 'dsh-kg-height-v1'
       const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v2' // + ':' + sessionId; reference-only
@@ -331,7 +332,7 @@
         try {
           const arr = JSON.parse(localStorage.getItem(LS_HISTORY) || 'null')
           if (Array.isArray(arr)) {
-            const metadata = arr.map(historyMetadata).filter(Boolean).slice(0, HISTORY_MAX)
+            const metadata = visibleHistory(arr.map(historyMetadata).filter(Boolean))
             // Upgrade legacy entries in place: old versions embedded full
             // source text and graphs here, which can occupy many MiB forever
             // even after the new reference-only code stops reading them.
@@ -348,10 +349,38 @@
       function appendHistory(list, entry) {
         const meta = historyMetadata(entry)
         if (!meta) return list
+        const hidden = loadHiddenHistory()
+        hidden.ids = hidden.ids.filter(id => id !== meta.documentId)
+        meta.ts = Math.max(meta.ts, hidden.clearedAt + 1)
+        saveHiddenHistory(hidden)
         const next = [meta].concat(list.filter((e) => e && e.documentId !== meta.documentId))
         if (next.length > HISTORY_MAX) next.length = HISTORY_MAX
         saveHistory(next)
         return next
+      }
+      function loadHiddenHistory() {
+        try {
+          const value = JSON.parse(localStorage.getItem(LS_HISTORY_HIDDEN) || '{}')
+          return {
+            ids: Array.isArray(value.ids) ? value.ids.filter(id => typeof id === 'string') : [],
+            clearedAt: Number.isFinite(value.clearedAt) ? value.clearedAt : 0,
+          }
+        } catch (e) { return { ids: [], clearedAt: 0 } }
+      }
+      function saveHiddenHistory(hidden) {
+        localStorage.setItem(LS_HISTORY_HIDDEN, JSON.stringify(hidden))
+      }
+      function visibleHistory(list) {
+        const hidden = loadHiddenHistory()
+        const ids = new Set(hidden.ids)
+        return list.filter(entry => !ids.has(entry.documentId) && (!hidden.clearedAt || entry.ts > hidden.clearedAt))
+          .sort((a, b) => b.ts - a.ts || a.documentId.localeCompare(b.documentId)).slice(0, HISTORY_MAX)
+      }
+      function hideHistoryEntries(entries, clearAll) {
+        const hidden = loadHiddenHistory()
+        hidden.ids = Array.from(new Set([...hidden.ids, ...entries.map(entry => entry.documentId)]))
+        if (clearAll) hidden.clearedAt = Math.max(Date.now(), hidden.clearedAt, ...entries.map(entry => Number.isFinite(entry.ts) ? entry.ts : 0))
+        saveHiddenHistory(hidden)
       }
       // Merge documents that live in the Host/SQLite store into the history list
       // so a document that was imported/persisted directly into SQLite (instead
@@ -367,30 +396,31 @@
           // existing: the persistent build has no `host` binding.
           const res = await host.call('document-list')
           const docs = res && Array.isArray(res.documents) ? res.documents : []
-          if (docs.length === 0) return list
           const byId = new Map(list.map((e) => [e.documentId, e]))
+          for (const entry of loadHistory()) {
+            if (!byId.has(entry.documentId) || entry.ts > byId.get(entry.documentId).ts) byId.set(entry.documentId, entry)
+          }
           for (const d of docs) {
             if (!d || typeof d.documentId !== 'string' || !d.documentId) continue
+            const previous = byId.get(d.documentId)
             byId.set(d.documentId, {
-              id: 'srv-' + d.documentId,
+              id: previous?.id || 'srv-' + d.documentId,
               documentId: d.documentId,
               title: d.title || '',
-              summary: '',
+              summary: previous?.summary || '',
               nodeCount: Number.isInteger(d.nodeCount) ? d.nodeCount : 0,
               edgeCount: Number.isInteger(d.edgeCount) ? d.edgeCount : 0,
-              ts: Number.isFinite(d.updatedAt) ? d.updatedAt : Date.now(),
+              ts: Math.max(previous?.ts || 0, Number.isFinite(d.updatedAt) ? d.updatedAt : 0),
               server: true,
             })
           }
-          const next = Array.from(byId.values()).slice(0, HISTORY_MAX)
-          if (next.length > list.length) {
-            // Persist on a best-effort basis only; server docs don't need
-            // localStorage persistence to remain visible.
-            try { saveHistory(next) } catch (e) {}
-          }
+          // Read tombstones after the request, so an in-flight response cannot
+          // undo a remove/clear action. New documents win before the size cap.
+          const next = visibleHistory(Array.from(byId.values()))
+          saveHistory(next)
           return next
         } catch (e) {
-          return list
+          return visibleHistory(loadHistory())
         }
       }
       function formatTime(ts) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-knowledge-graph",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DSH Cordis plugin: turn arbitrary source text or images with text, diagrams, and tables into an AI-generated knowledge graph (facts / inferences / concepts / definitions / examples / counter-examples / rules) with two-way linking between the graph and the original text, plus evidence-grounded verification, questioning, one-click fixes and an audit log.",
   "keywords": [
     "dsh",
@@ -56,6 +56,7 @@
     "kg:qa-benchmark": "node scripts/kg-qa-benchmark.mjs",
     "kg:quality-regression": "node scripts/kg-quality-regression.mjs",
     "test:kg": "node scripts/kg-store-smoke.mjs",
+    "test:kg-cordis-boot": "node scripts/kg-cordis-boot-smoke.mjs",
     "test:kg-consumption": "node scripts/kg-consumption-smoke.mjs",
     "test:kg-timeout": "node scripts/kg-timeout-cancellation-smoke.mjs",
     "test:kg-image": "node scripts/kg-image-extraction-smoke.mjs",
@@ -77,7 +78,11 @@
     "test:kg-connectivity": "node scripts/kg-connectivity-smoke.mjs",
     "test:kg-layout": "node scripts/kg-layout-smoke.mjs",
     "test:kg-policy": "node scripts/kg-policy-smoke.mjs",
-    "test": "npm run build && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-image && npm run test:kg-pdf && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy",
+    "test:kg-pipeline": "node scripts/kg-pipeline-smoke.mjs",
+    "test:kg-audit": "node scripts/kg-audit-regression-smoke.mjs",
+    "test:kg-ocr": "node scripts/run-python.mjs scripts/kg-ocr-smoke.py",
+    "test:kg-packaging": "node scripts/run-python.mjs scripts/check-extension.py",
+    "test": "npm run build && npm run test:kg-cordis-boot && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-image && npm run test:kg-pdf && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy && npm run test:kg-pipeline && npm run test:kg-audit && npm run test:kg-ocr && npm run test:kg-packaging",
     "test:kg-trust-boundary": "node scripts/kg-trust-boundary-smoke.mjs",
     "test:kg-semantic-contract": "node scripts/kg-semantic-contract-smoke.mjs",
     "test:kg-mechanism-coverage": "node scripts/kg-mechanism-coverage-smoke.mjs",
@@ -89,6 +94,6 @@
     "test:kg-quality-gate": "node scripts/kg-quality-regression-smoke.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   }
 }

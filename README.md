@@ -159,13 +159,13 @@ pnpm install
 
 ### 5. SQLite 持久化与 CLI
 
-CLI 使用 Node `node:sqlite`，当前要求 Node 22.5+；不需要额外 npm 依赖。它适合把浏览器或 Host 导出的 `KnowledgeGraphDto` 落盘，再进行候选实体 / 声明的人工审核。
+CLI 使用 Node `node:sqlite`，要求 Node 22.13+（无需 experimental-sqlite 启动参数）。导入必须用 `DSH_KG_DB` 或 `--db` 显式指定目标数据库，包含完整 sourceText，并通过与 Host 相同的确定性验收；导入文件不能自行授予 entailment verified。默认只允许创建新文档，覆盖已有文档必须传 `--expected-revision N`。
 
 ```bash
 # 初始化数据库
 npm run kg -- init --db ./data/knowledge.sqlite
 
-# 导入抽取结果（JSON 文件可直接来自 task.result）
+# 导入含完整 sourceText 的完整图（不可使用截断的 task/result 窗口）
 npm run kg -- import-graph --db ./data/knowledge.sqlite --input ./graph.json
 
 # 查看候选实体或声明
@@ -181,9 +181,17 @@ npm run kg -- list-documents --db ./data/knowledge.sqlite
 npm run kg -- show-document --db ./data/knowledge.sqlite --id document_xxx
 npm run kg -- save-checkpoint --db ./data/knowledge.sqlite --input checkpoint.json --run-id run_xxx
 npm run kg -- load-checkpoint --db ./data/knowledge.sqlite --run-id run_xxx
+
+# 查看可恢复版本；恢复会用 CAS 产生新版本
+npm run kg -- list-revisions --db ./data/knowledge.sqlite --id document_xxx
+npm run kg -- restore-revision --db ./data/knowledge.sqlite --id document_xxx --revision 2 --expected-revision 5
 ```
 
 常驻包的 `lib/index.js` 会在每个成功 chunk 和任务完成时自动写入 SQLite；数据库路径由 `DSH_KG_DB` 指定，未指定时为当前工作目录的 `.dsh-knowledge-graph.sqlite`。`npm run test:kg` 会在内存 SQLite 中验证文档、chunk、evidence、候选状态变更、checkpoint 保存与恢复；`npm run test:kg-consumption` 覆盖动态 RPC / 常驻 HTTP / SQLite 检索语义、800 节点窗口之外与 600+ 常见候选之后的精确召回、relation-only 查询、上下文预算、revision fence、非法过滤器、node/edge/source citation 认证、未知及「真实但无关」evidenceId 拒绝和共享前端入口；`npm run test:kg-timeout` 使用不合作 provider 回归真实 wall-clock deadline、晚到 iterator 清理与即时取消；`npm run test:kg-image` 覆盖动态 / 常驻图片 admission、多模态 content block、文字 / 表格 / 图示转写、颜色分组与对象对应关系遗漏补漏、text-only 模型 typed 拒绝、visual provenance、canonical 来源成员校验图片读取、伪造 visual checkpoint 拒绝、转写后即时 checkpoint / runId 恢复及 SQLite 不落原始 base64；`npm run test:kg-performance` 在 10000+ 节点 / 关系图上验证 keyset 分页和有界返回；`npm run test:kg-candidates` 额外验证候选列表和状态更新。常驻包构建时会同步生成 [`lib/kg-store.mjs`](lib/kg-store.mjs)。
+
+覆盖图时会在同一事务中保存上一版图和原文单元快照。旧版本中只有计数、没有快照的历史明确不可恢复，不会凭空补回内容。快照随修改次数增长，应随数据库备份。浏览器的“移出历史 / 清空历史”只隐藏索引，不删除 SQLite 文档；“恢复历史”可重新显示这些文档。
+
+`npm test` 还包含独立流水线、CAS 与历史异步竞态、模拟 OCR 中断恢复和 CRX 载荷校验。流水线的使用与安全边界见 [OCR 流水线](scripts/kg-pipeline/README.md)。
 
 ### 冻结质量回归门禁
 
@@ -351,7 +359,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
   export DSH_KG_EXTENSION_KEY="$HOME/.config/dsh-knowledge-graph/extension-signing.pem"
   npm run pack:extension
   ```
-  首次运行会生成新私钥；扩展 ID 由它派生，换密钥 = 换 ID = 旧安装失效。不要把私钥复制到 `dist/` 或提交到 Git。脚本会把新的 CRX 写入 `dist/dsh-knowledge-graph.crx`。
+  私钥必须已经存在；脚本不会在缺失时自动生成新密钥。扩展 ID 由它派生，换密钥会改变 ID 并使旧安装失效。不要把私钥复制到 `dist/` 或提交到 Git。脚本写入 `dist/dsh-knowledge-graph.crx` 和 `dist/extension-release.json`，逐文件校验 CRX 内部载荷与 `extension/` 一致。CI 用 Python 3 复核载荷、版本和 SHA-256 发布记录，不需要私钥。
 - **依赖**：本机需运行 `dsh web` 且插件版本包含 `/dsh-kg` 扩展端点（常驻安装需先更新插件并重启 dsh web）。端点默认只接受本项目新 CRX 的扩展来源 `chrome-extension://kffpcpfkpmfkicdnlckdphiplnhlbkof`；若使用「加载已解压」导致扩展 ID 不同，启动 dsh web 前设置 `DSH_KG_EXTENSION_ORIGINS=chrome-extension://你的扩展ID`。只有显式设置 `DSH_KG_ALLOW_LOCAL_ORIGIN=1` 时才额外允许 localhost/127.0.0.1 来源，并返回 PNA 预检头；空 Origin 和任意其他扩展来源都会被拒绝。扩展路由还使用 endpoint allowlist，只开放 `extract / task-status / task-cancel / list-models`，不会暴露 `document-load / graph-query / answer-graph / graph-commit` 等 canonical 文档接口。
 - **数据流**：内容脚本（任意页面）→ `chrome.runtime.sendMessage` → Service Worker 写入 `chrome.storage.session` 并 `chrome.action.openPopup()`（Chrome 127+）；弹窗读取选中文本后调用 `http://127.0.0.1:3080/dsh-kg/extract`，轮询 `task-status` 渲染知识图。DSH 服务地址可在弹窗底部修改并记忆（`chrome.storage.local` 的 `kgBase`）。
 

@@ -89,8 +89,8 @@ export default function clientPlugin() {
 .kg-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .kg-secondary { background: transparent; color: var(--kg-text-dim); border: 1px solid var(--kg-border); border-radius: 10px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
 .kg-secondary:hover { color: var(--kg-text); border-color: var(--kg-text-dim); }
-.kg-body-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.kg-body-toolbar-text { min-width: 0; }
+.kg-body-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.kg-body-toolbar-text { flex: 1 1 260px; min-width: 0; }
 .kg-body-toolbar .kg-subtitle { margin: 4px 0 0; }
 .kg-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 84px 20px; }
 .kg-spinner { width: 38px; height: 38px; border-radius: 50%; border: 3px solid rgba(59,130,246,0.22); border-top-color: #3b82f6; animation: kg-spin 0.9s linear infinite; }
@@ -297,12 +297,13 @@ export default function clientPlugin() {
 .kg-doc-import-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 8px; font-size: 12px; font-family: inherit; white-space: nowrap; }
 .kg-doc-import-btn:hover:not(:disabled) { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
 .kg-doc-import-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.kg-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.kg-history-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .kg-history-head .kg-section-title { margin: 0; }
 .kg-history-list { display: flex; flex-direction: column; gap: 8px; }
 .kg-history-item { border: 1px solid var(--kg-border); border-radius: 10px; padding: 10px 12px; background: var(--kg-panel); cursor: pointer; }
 .kg-history-item:hover { border-color: rgba(59,130,246,0.6); }
 .kg-history-item-title { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kg-history-item-title > span { min-width: 0; overflow-wrap: anywhere; }
 .kg-history-item-meta { font-size: 11.5px; color: var(--kg-text-dim); margin-top: 3px; }
 .kg-history-item-summary { font-size: 12.5px; color: var(--kg-text-dim); margin-top: 4px; line-height: 1.6; }
 .kg-history-del { flex: none; background: none; border: none; color: var(--kg-text-dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
@@ -374,6 +375,7 @@ export default function clientPlugin() {
       const LEGACY_LARGE_STORAGE_KEYS = ['dsh-kg-pending-v1', 'dsh-kg-checkpoint-v1', 'dsh-kg-result-v1']
       const LS_WIN = 'dsh-kg-win-v1'
       const LS_HISTORY = 'dsh-kg-history-v1'
+      const LS_HISTORY_HIDDEN = 'dsh-kg-history-hidden-v1'
       const LS_SPLIT = 'dsh-kg-split-v1'
       const LS_HEIGHT = 'dsh-kg-height-v1'
       const LS_TRAJ_RESULT = 'dsh-kg-traj-result-v2' // + ':' + sessionId; reference-only
@@ -672,7 +674,7 @@ export default function clientPlugin() {
         try {
           const arr = JSON.parse(localStorage.getItem(LS_HISTORY) || 'null')
           if (Array.isArray(arr)) {
-            const metadata = arr.map(historyMetadata).filter(Boolean).slice(0, HISTORY_MAX)
+            const metadata = visibleHistory(arr.map(historyMetadata).filter(Boolean))
             // Upgrade legacy entries in place: old versions embedded full
             // source text and graphs here, which can occupy many MiB forever
             // even after the new reference-only code stops reading them.
@@ -689,10 +691,38 @@ export default function clientPlugin() {
       function appendHistory(list, entry) {
         const meta = historyMetadata(entry)
         if (!meta) return list
+        const hidden = loadHiddenHistory()
+        hidden.ids = hidden.ids.filter(id => id !== meta.documentId)
+        meta.ts = Math.max(meta.ts, hidden.clearedAt + 1)
+        saveHiddenHistory(hidden)
         const next = [meta].concat(list.filter((e) => e && e.documentId !== meta.documentId))
         if (next.length > HISTORY_MAX) next.length = HISTORY_MAX
         saveHistory(next)
         return next
+      }
+      function loadHiddenHistory() {
+        try {
+          const value = JSON.parse(localStorage.getItem(LS_HISTORY_HIDDEN) || '{}')
+          return {
+            ids: Array.isArray(value.ids) ? value.ids.filter(id => typeof id === 'string') : [],
+            clearedAt: Number.isFinite(value.clearedAt) ? value.clearedAt : 0,
+          }
+        } catch (e) { return { ids: [], clearedAt: 0 } }
+      }
+      function saveHiddenHistory(hidden) {
+        localStorage.setItem(LS_HISTORY_HIDDEN, JSON.stringify(hidden))
+      }
+      function visibleHistory(list) {
+        const hidden = loadHiddenHistory()
+        const ids = new Set(hidden.ids)
+        return list.filter(entry => !ids.has(entry.documentId) && (!hidden.clearedAt || entry.ts > hidden.clearedAt))
+          .sort((a, b) => b.ts - a.ts || a.documentId.localeCompare(b.documentId)).slice(0, HISTORY_MAX)
+      }
+      function hideHistoryEntries(entries, clearAll) {
+        const hidden = loadHiddenHistory()
+        hidden.ids = Array.from(new Set([...hidden.ids, ...entries.map(entry => entry.documentId)]))
+        if (clearAll) hidden.clearedAt = Math.max(Date.now(), hidden.clearedAt, ...entries.map(entry => Number.isFinite(entry.ts) ? entry.ts : 0))
+        saveHiddenHistory(hidden)
       }
       // Merge documents that live in the Host/SQLite store into the history list
       // so a document that was imported/persisted directly into SQLite (instead
@@ -708,30 +738,31 @@ export default function clientPlugin() {
           // existing: the persistent build has no `host` binding.
           const res = await host.call('document-list')
           const docs = res && Array.isArray(res.documents) ? res.documents : []
-          if (docs.length === 0) return list
           const byId = new Map(list.map((e) => [e.documentId, e]))
+          for (const entry of loadHistory()) {
+            if (!byId.has(entry.documentId) || entry.ts > byId.get(entry.documentId).ts) byId.set(entry.documentId, entry)
+          }
           for (const d of docs) {
             if (!d || typeof d.documentId !== 'string' || !d.documentId) continue
+            const previous = byId.get(d.documentId)
             byId.set(d.documentId, {
-              id: 'srv-' + d.documentId,
+              id: previous?.id || 'srv-' + d.documentId,
               documentId: d.documentId,
               title: d.title || '',
-              summary: '',
+              summary: previous?.summary || '',
               nodeCount: Number.isInteger(d.nodeCount) ? d.nodeCount : 0,
               edgeCount: Number.isInteger(d.edgeCount) ? d.edgeCount : 0,
-              ts: Number.isFinite(d.updatedAt) ? d.updatedAt : Date.now(),
+              ts: Math.max(previous?.ts || 0, Number.isFinite(d.updatedAt) ? d.updatedAt : 0),
               server: true,
             })
           }
-          const next = Array.from(byId.values()).slice(0, HISTORY_MAX)
-          if (next.length > list.length) {
-            // Persist on a best-effort basis only; server docs don't need
-            // localStorage persistence to remain visible.
-            try { saveHistory(next) } catch (e) {}
-          }
+          // Read tombstones after the request, so an in-flight response cannot
+          // undo a remove/clear action. New documents win before the size cap.
+          const next = visibleHistory(Array.from(byId.values()))
+          saveHistory(next)
           return next
         } catch (e) {
-          return list
+          return visibleHistory(loadHistory())
         }
       }
       function formatTime(ts) {
@@ -7087,14 +7118,20 @@ export default function clientPlugin() {
         }
         const removeHistory = (id) => {
           setHistory((prev) => {
+            hideHistoryEntries(prev.filter(e => e.id === id), false)
             const next = prev.filter((e) => e.id !== id)
             saveHistory(next)
             return next
           })
         }
         const clearHistory = () => {
+          hideHistoryEntries(history, true)
           setHistory([])
           saveHistory([])
+        }
+        const restoreHistory = () => {
+          localStorage.removeItem(LS_HISTORY_HIDDEN)
+          mergeServerHistory(loadHistory()).then(setHistory)
         }
 
         // ---- column width / row height drag handlers ----
@@ -7403,7 +7440,8 @@ export default function clientPlugin() {
         const historyPanel = h('section', { className: 'kg-card', 'aria-label': '历史记录' },
           h('div', { className: 'kg-history-head' },
             h('h3', { className: 'kg-section-title' }, '历史记录（' + history.length + ' 条）'),
-            h('div', { style: { display: 'flex', gap: 8 } },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
+              h('button', { type: 'button', className: 'kg-secondary', onClick: restoreHistory, title: '重新显示已隐藏的文档' }, '恢复历史'),
               history.length > 0
                 ? h('button', { type: 'button', className: 'kg-secondary', onClick: clearHistory }, '清空历史')
                 : null,
@@ -7416,12 +7454,12 @@ export default function clientPlugin() {
                 history.map((entry) => h('div', {
                   key: entry.id, className: 'kg-history-item', role: 'button', tabIndex: 0,
                   onClick: () => loadHistoryEntry(entry),
-                  onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); loadHistoryEntry(entry) } },
+                  onKeyDown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); loadHistoryEntry(entry) } },
                 },
                   h('div', { className: 'kg-history-item-title' },
                     h('span', null, entry.title || '（无标题）'),
                     h('button', {
-                      type: 'button', className: 'kg-history-del', 'aria-label': '删除该条记录',
+                      type: 'button', className: 'kg-history-del', 'aria-label': '移出历史记录', title: '移出历史，不删除文档',
                       onClick: (e) => { e.stopPropagation(); removeHistory(entry.id) },
                     }, '×'),
                   ),
