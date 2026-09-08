@@ -84,12 +84,21 @@ const absentGate = contract.validateGraphInvariants({nodes:[{id:'a',type:'claim'
 assert(absentGate.blockingIssues.some(issue=>issue.code==='node_semantic_strength_drift'), 'Lack of evidence must not become evidence of absence')
 
 let reviewMode = 'withhold'
+const reviewPrompts = []
 const relationSource = '温度升高。门是蓝色的。窗户关闭。'
 hostPlugin().apply({
   get(name) { return name === 'kgExtractor' ? {
     weaveRelations: async () => ({edges:[{fromNodeId:'a',toNodeId:'b',relation:'causes',evidence:[{paragraph:0,quote:relationSource}]}]}),
     extractChunk: async () => ({summary:'relation review',nodes:[{id:'a',type:'fact',text:'温度升高',quote:'温度升高',paragraph:0},{id:'b',type:'fact',text:'门是蓝色的',quote:'门是蓝色的',paragraph:0},{id:'c',type:'fact',text:'窗户关闭',quote:'窗户关闭',paragraph:0}],edges:[{fromNodeId:'a',toNodeId:'b',relation:'causes',evidence:[{paragraph:0,quote:relationSource}]}]}),
-    reviewRelations: async ({candidates}) => ({verdicts:candidates.map(item=>({id:reviewMode==='unknown-id'?'injected-id':item.id,verdict:'insufficient',reason:'Co-occurrence does not prove causality',evidence:[]}))}),
+    reviewRelations: async ({candidates,prompt,attempt}) => {
+      reviewPrompts.push(prompt)
+      return {verdicts:candidates.map((item,index)=>({
+        id:reviewMode==='unknown-id' || (reviewMode==='recover' && attempt===0 && index===1)?'injected-id':item.id,
+        verdict:reviewMode==='recover' && attempt===0 && index===0?'supported':'insufficient',
+        reason:'Co-occurrence does not prove causality',
+        evidence:reviewMode==='recover' && attempt===0 && index===0?[{paragraph:0,quote:relationSource}]:[],
+      }))}
+    },
   } : null }, interval() { return () => {} },
 })
 const withheld = await completed(await handlers.get('extract')({title:'review rejects false cause',text:relationSource}))
@@ -157,4 +166,23 @@ assert.equal(movedReview.status,'succeeded',JSON.stringify(movedReview.error))
 assert.equal(movedReview.result.edges.length,0,'Pending status must require review even if current endpoints share a paragraph and relation is low-risk')
 assert.equal(movedReview.result.generation.relationRetrySemanticReview.eligible,1)
 assert.equal(movedReview.result.generation.relationRetrySemanticReview.pending,1)
+assert.equal(movedReview.result.generation.relationRetrySemanticReview.retries.length,1,'An invalid response gets at most one corrective attempt')
+const repairFixture = structuredClone(movedReview.result)
+repairFixture.generation.relationRetrySemanticReview.withheld.push({verdict:'pending',edge:{fromNodeId:'a',toNodeId:'c',relation:'supports',evidence:[{paragraph:0,quote:relationSource}]}})
+const repairCommit = await handlers.get('graph-commit')({
+  documentId: repairFixture.source.documentId, expectedRevision: repairFixture.revision,
+  graph: repairFixture, baseNodeIds: repairFixture.nodes.map(node=>node.id), baseEdgeKeys: [],
+})
+assert(repairCommit.graph,JSON.stringify(repairCommit))
+reviewMode='recover'
+reviewPrompts.length=0
+const recovered = await completed(await handlers.get('relation-retry')({documentId:repairFixture.source.documentId,expectedRevision:repairCommit.revision,reviewPendingOnly:true}))
+assert.equal(recovered.status,'succeeded',JSON.stringify(recovered.error))
+assert.equal(reviewPrompts.length,2)
+assert(reviewPrompts[1].includes('review_unknown_candidate_id'))
+assert(!reviewPrompts[1].includes('injected-id'),'Untrusted response content must not become retry instructions')
+assert.equal(recovered.result.generation.relationRetrySemanticReview.reviewed,2,'Only the complete valid response is applied')
+assert.equal(recovered.result.generation.relationRetrySemanticReview.accepted.length,0,'A valid first verdict from an invalid batch must not leak into acceptance')
+assert.equal(recovered.result.generation.relationRetrySemanticReview.errors.length,0)
+assert.equal(recovered.result.edges.length,0)
 console.log(JSON.stringify({ok:true,truncationRejected:true,dedupeScopeAndNumbers:true,reviewedNodes:2000,checkedPairs:1999000,timerTicks:ticks,reviewMs:Math.round(performance.now()-startedAt),crossBatchEvidence:true}))
