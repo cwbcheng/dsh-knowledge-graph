@@ -130,10 +130,10 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "task-status" || method === "trajectory-status") {
-        const ep = method === "trajectory-status" ? "trajectory-status" : "task-status"
+      if (method === "task-status" || method === "trajectory-status" || method === "task-active") {
+        const ep = method
         const checkpoint = body && body.includeCheckpoint ? "&includeCheckpoint=1" : ""
-        const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body.taskId) + checkpoint, { cache: "no-store" })
+        const res = await fetch("/api/dsh-knowledge-graph/" + ep + "?taskId=" + encodeURIComponent(body?.taskId || '') + checkpoint, { cache: "no-store" })
         return res.json()
       }
       throw new Error("unsupported knowledge-graph RPC method: " + method)
@@ -185,6 +185,7 @@ c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
 c = c.split("host.call('relation-retry'").join("rpc('relation-retry'")
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")
+c = c.split("host.call('task-active'").join("rpc('task-active'")
 c = c.split("host.call('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })").join("rpc('trajectory-extract', { sessionId, ...(effectiveModelArg ? { model: effectiveModelArg } : {}) })")
 c = c.split("host.call('trajectory-status'").join("rpc('trajectory-status'")
 c = c.split("host.call('append-extract', payload)").join("rpc('append-extract', payload)")

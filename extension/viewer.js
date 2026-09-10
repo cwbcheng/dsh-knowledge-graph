@@ -1716,7 +1716,7 @@
         }
       }
 
-      function layoutForce(nodes, edges, sizes) {
+      function layoutForce(nodes, edges, sizes, onProgress) {
         const n = nodes.length
         const pos = new Map()
         if (n === 0) return { pos }
@@ -1763,7 +1763,10 @@
           .force('x', F.forceX(0).strength(0.055))
           .force('y', F.forceY(0).strength(0.055))
           .alpha(1)
-        for (let iter = 0; iter < 600 && simulation.alpha() > 0.005; iter++) simulation.tick()
+        for (let iter = 0; iter < 600 && simulation.alpha() > 0.005; iter++) {
+          simulation.tick()
+          if (onProgress && iter % 25 === 0) onProgress({ detail: '力导向迭代 ' + (iter + 1) + ' 轮' })
+        }
         simulation.stop()
         for (const nd of simNodes) pos.set(nd.id, { x: nd.x, y: nd.y })
         posOf.clear()
@@ -1771,7 +1774,9 @@
         // Post-pass order: overlap resolution FIRST, then edge-node repulsion
         // (running repulsion before overlap let the overlap pass push nodes
         // back onto edge lines).
+        if (onProgress) onProgress({ detail: '消除节点重叠' })
         resolveNodeOverlaps(nodes, sizes, pos, 14)
+        if (onProgress) onProgress({ detail: '清理连线遮挡' })
         applyEdgeNodeRepulsion(nodes, edges, sizes, pos, bezierSegmentsOf, true)
         // Post-pass B — resolve any residual node-box overlaps by pushing
         // pairs apart ALONG their center line (axis-only separation can
@@ -1779,6 +1784,7 @@
         if (n > 1) {
           const ids = nodes.map((x) => x.id)
           for (let iter = 0; iter < 120; iter++) {
+            if (onProgress && iter % 10 === 0) onProgress({ detail: '消除残余重叠，第 ' + (iter + 1) + ' 轮' })
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
@@ -1814,6 +1820,7 @@
         // Force simulation has no attractive force between disconnected
         // components. Pack their already-resolved bounding boxes into a compact,
         // deterministic shelf so isolated nodes do not fly to the canvas edge.
+        if (onProgress) onProgress({ detail: '整理连通分量' })
         packDisconnectedComponents(nodes, edges, sizes, pos, 38)
         return { pos }
       }
@@ -1824,8 +1831,8 @@
       function layoutCircular(nodes, edges, sizes) {
         const n = nodes.length
         const pos = new Map()
-        if (n === 0) return { pos }
-        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return { pos } }
+        if (n === 0) return pos
+        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return pos }
         const deg = new Map()
         for (const node of nodes) deg.set(node.id, 0)
         for (const e of edges) {
@@ -1860,8 +1867,8 @@
       function layoutRadial(nodes, edges, sizes) {
         const n = nodes.length
         const pos = new Map()
-        if (n === 0) return { pos }
-        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return { pos } }
+        if (n === 0) return pos
+        if (n === 1) { pos.set(nodes[0].id, { x: 0, y: 0 }); return pos }
         const deg = new Map()
         for (const node of nodes) deg.set(node.id, 0)
         for (const e of edges) {
@@ -2635,7 +2642,7 @@
       // Mixing unrelated components in one global rank used to turn one logical
       // layer into several wrapped visual rows, making even direct neighbours
       // appear hundreds of pixels apart.
-      function layoutLayeredComponents(nodes, edges, sizes) {
+      function layoutLayeredComponents(nodes, edges, sizes, onProgress) {
         const merged = new Map()
         const componentNodesById = new Map()
         const componentKeyById = new Map()
@@ -2689,6 +2696,7 @@
           const local = layoutLayered(componentNodes, componentEdges[index], sizes, pinnedX)
           resolveLayeredOverlaps(componentNodes, sizes, local, 18, pinnedX)
           for (const [id, point] of local) merged.set(id, point)
+          if (onProgress) onProgress({ detail: '已布局 ' + merged.size + '/' + nodes.length + ' 个节点', completed: merged.size, total: nodes.length })
         }
         const pos = packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38)
         return { pos, componentNodesById, componentKeyById }
@@ -3130,7 +3138,7 @@
         return base
       }
 
-      function layoutGraph(nodes, edges, sizes, mode) {
+      function layoutGraph(nodes, edges, sizes, mode, onProgress) {
         if (mode === 'circular') {
           const pos = layoutCircular(nodes, edges, sizes)
           posOf.clear()
@@ -3151,9 +3159,9 @@
           // Each connected component gets its own semantic ranks and overlap
           // resolution before deterministic rectangle packing. Orthogonal row
           // channels remain valid because packing translates whole components.
-          return layoutLayeredComponents(nodes, edges, sizes)
+          return layoutLayeredComponents(nodes, edges, sizes, onProgress)
         }
-        return layoutForce(nodes, edges, sizes)
+        return layoutForce(nodes, edges, sizes, onProgress)
       }      function computeBBox(nodes, layout, sizes) {
         let x0 = Infinity
         let y0 = Infinity
@@ -3251,33 +3259,218 @@
       }
 
       // --------------------------- GraphViewer ---------------------------
-      function GraphViewer(props) {
-        const { nodes, edges, layoutMode, height } = props
-        const [prepared, setPrepared] = useState(null)
-        const ready = prepared && prepared.nodes === nodes && prepared.edges === edges && prepared.layoutMode === layoutMode
-        useEffect(() => {
-          let cancelled = false
-          let secondFrame = null
-          // Leave a paint opportunity before mounting the synchronous layout/SVG scene.
-          const firstFrame = requestAnimationFrame(() => {
-            secondFrame = requestAnimationFrame(() => {
-              if (!cancelled) setPrepared({ nodes, edges, layoutMode })
-            })
-          })
-          return () => {
-            cancelled = true
-            cancelAnimationFrame(firstFrame)
-            if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+      function graphPaint(signal) {
+        return new Promise((resolve, reject) => {
+          let frame = null, timer = null, settled = false
+          const finish = error => {
+            if (settled) return
+            settled = true
+            if (frame !== null) cancelAnimationFrame(frame)
+            if (timer !== null) clearTimeout(timer)
+            if (signal) signal.removeEventListener('abort', abort)
+            if (error) reject(error); else resolve()
           }
-        }, [nodes, edges, layoutMode])
-        if (!ready) return h('div', {
-          className: 'kg-graph kg-graph-loading', role: 'status', 'aria-live': 'polite', 'aria-busy': true,
-          style: height ? { height: height + 'px' } : undefined,
-        }, h('span', { className: 'kg-graph-spinner', 'aria-hidden': true }), '正在绘制知识图…')
-        return h(GraphScene, props)
+          const abort = () => finish(new DOMException('已取消加载', 'AbortError'))
+          if (signal && signal.aborted) { abort(); return }
+          if (signal) signal.addEventListener('abort', abort, { once: true })
+          // Two frames let React commit and the browser paint before the next batch.
+          // Throttled/background tabs must not stall the entire loading pipeline.
+          timer = setTimeout(() => finish(), 100)
+          frame = requestAnimationFrame(() => {
+            if (!settled) frame = requestAnimationFrame(() => finish())
+          })
+        })
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle }) {
+      function graphLayoutWorkerSource() {
+        // Reuse the exact layout engine. Only code enters this Blob; graph data
+        // stays in a structured-clone message, never in executable source.
+        const functions = [clamp, intersectDist, bezierGeometry, fanRankOf, buildFanRanks,
+          layoutForce, layoutCircular, layoutRadial, layoutLayered, resolveLayeredOverlaps,
+          packDisconnectedComponents, layoutLayeredComponents, resolveNodeOverlaps,
+          resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutGraph]
+        return [D3_TIMER_SRC, D3_DISPATCH_SRC, D3_QUADTREE_SRC, D3_FORCE_SRC,
+          'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map(); let outerR = 0;',
+          'const LAYER_Y_GAP=' + LAYER_Y_GAP + ',LAYER_X_GAP=' + LAYER_X_GAP + ',LAYER_COL_GAP=' + LAYER_COL_GAP + ',LAYER_MAX_ROW_WIDTH=' + LAYER_MAX_ROW_WIDTH + ';',
+          ...functions.map(fn => 'const ' + fn.name + '=' + fn.toString() + ';'),
+          'self.onmessage = ({data}) => { try { let last = 0; const layout = layoutGraph(data.nodes, data.edges, data.sizes, data.mode, progress => { const now = Date.now(); if (now - last >= 50 || progress.completed === progress.total) { self.postMessage({progress}); last = now; } }); self.postMessage({layout}); } catch (error) { self.postMessage({error: error.message || String(error)}); } };',
+        ].join('\n')
+      }
+
+      async function computeGraphLayoutAsync(nodes, edges, sizes, mode, signal, onProgress) {
+        try {
+          return await new Promise((resolve, reject) => {
+            let worker = null, url = null, settled = false
+            const finish = (error, layout) => {
+              if (settled) return
+              settled = true
+              signal.removeEventListener('abort', abort)
+              if (worker) worker.terminate()
+              if (url) URL.revokeObjectURL(url)
+              if (error) reject(error); else resolve(layout)
+            }
+            const abort = () => finish(new DOMException('已取消加载', 'AbortError'))
+            if (signal.aborted) { abort(); return }
+            signal.addEventListener('abort', abort, { once: true })
+            const unavailable = () => finish(Object.assign(new Error('后台布局线程不可用'), { code: 'worker_unavailable' }))
+            try {
+              url = URL.createObjectURL(new Blob([graphLayoutWorkerSource()], { type: 'text/javascript' }))
+              worker = new Worker(url)
+            } catch (error) { unavailable(); return }
+            worker.onerror = (event) => { event.preventDefault(); unavailable() }
+            worker.onmessageerror = () => finish(new Error('无法读取后台布局结果'))
+            worker.onmessage = ({ data }) => {
+              if (settled) return
+              if (data.error) finish(new Error(data.error))
+              else if (data.layout) finish(null, data.layout)
+              else if (data.progress) onProgress(data.progress)
+            }
+            try { worker.postMessage({ nodes, edges, sizes, mode }) }
+            catch (error) { finish(error) }
+          })
+        } catch (error) {
+          if (error.code !== 'worker_unavailable') throw error
+          // Extensions or strict CSP can disallow Blob workers. Keep their
+          // existing layout capability, without pretending this is background work.
+          onProgress({ detail: '浏览器未启用后台线程，正在本地计算布局' })
+          await graphPaint(signal)
+          return layoutGraph(nodes, edges, sizes, mode)
+        }
+      }
+
+      async function prepareGraphScene(nodes, edges, mode, signal, report) {
+        const sizes = new Map()
+        report({ stage: 0, title: '测量节点', detail: '0/' + nodes.length + ' 个节点' })
+        await graphPaint(signal)
+        let lastYield = performance.now()
+        for (let index = 0; index < nodes.length; index += 100) {
+          for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges)) sizes.set(id, size)
+          if (performance.now() - lastYield >= 8 || index + 100 >= nodes.length) {
+            report({ stage: 0, title: '测量节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
+            await graphPaint(signal)
+            lastYield = performance.now()
+          }
+        }
+        report({ stage: 1, title: '计算布局', detail: nodes.length + ' 个节点 · ' + edges.length + ' 条关系' })
+        await graphPaint(signal)
+        const layout = await computeGraphLayoutAsync(nodes, edges, sizes, mode, signal,
+          progress => report({ stage: 1, title: '计算布局', ...progress }))
+        report({ stage: 2, title: '整理连线', detail: '0/' + edges.length + ' 条关系' })
+        await graphPaint(signal)
+        const edgeLanes = mode === 'layered'
+          ? buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById) : new Map()
+        const layeredEdgeGeometry = new Map()
+        if (mode === 'layered') {
+          const nodeRects = []
+          for (const node of nodes) {
+            const point = layout.pos.get(node.id), size = sizes.get(node.id)
+            if (point && size) nodeRects.push({ x0: point.x - size.w / 2 - 4, x1: point.x + size.w / 2 + 4, y0: point.y - size.h / 2 - 4, y1: point.y + size.h / 2 + 4 })
+          }
+          const occupied = []
+          lastYield = performance.now()
+          for (let index = 0; index < edges.length; index++) {
+            const edge = edges[index], a = layout.pos.get(edge.fromNodeId), b = layout.pos.get(edge.toNodeId)
+            if (a && b && sizes.has(edge.fromNodeId) && sizes.has(edge.toNodeId)) {
+              const routeNodes = layout.componentNodesById ? (layout.componentNodesById.get(edge.fromNodeId) || nodes) : nodes
+              const route = layeredOrthoPath(edge, a, b, sizes, layout.pos, routeNodes, edgeLanes.get(edge) || 0)
+              const labelW = measureLabel(REL_LABEL[edge.relation] || edge.relation) + 10, labelH = 15
+              const placed = placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')
+              layeredEdgeGeometry.set(edge, { d: route.d, lblX: placed.x, lblY: placed.y, labelW, labelH, labelHidden: placed.hidden })
+            }
+            if (performance.now() - lastYield >= 8 || index === edges.length - 1) {
+              report({ stage: 2, title: '整理连线', detail: (index + 1) + '/' + edges.length + ' 条关系' })
+              await graphPaint(signal)
+              lastYield = performance.now()
+            }
+          }
+        }
+        report({ stage: 3, title: '绘制图形', detail: nodes.length + ' 个节点 · ' + edges.length + ' 条关系' })
+        await graphPaint(signal)
+        return { sizes, layout, bbox: computeBBox(nodes, layout, sizes), edgeLanes, layeredEdgeGeometry }
+      }
+
+      function useGraphDocumentLoading() {
+        const [progress, setProgress] = useState(null)
+        const active = useRef(new Set())
+        const latest = useRef(null)
+        useEffect(() => () => {
+          for (const controller of active.current) controller.abort()
+          active.current.clear()
+        }, [])
+        const load = useCallback(async body => {
+          const controller = new AbortController()
+          active.current.add(controller)
+          latest.current = controller
+          setProgress({ title: '读取知识图', detail: '正在读取已保存的节点、关系与原文' })
+          try {
+            await graphPaint(controller.signal)
+            const loaded = await host.call('document-load', body)
+            if (controller.signal.aborted) throw new DOMException('已取消加载', 'AbortError')
+            if (loaded && !loaded.error && loaded.graph) {
+              if (latest.current === controller) setProgress({ title: '整理原文定位', detail: (loaded.graph.nodes || []).length + ' 个节点 · ' + (loaded.graph.edges || []).length + ' 条关系已读取' })
+              await graphPaint(controller.signal)
+            }
+            return loaded
+          } finally {
+            active.current.delete(controller)
+            if (!controller.signal.aborted && latest.current === controller) setProgress(null)
+          }
+        }, [])
+        return [progress, load]
+      }
+
+      function GraphLoading({ progress, height, overlay, error, onRetry }) {
+        const [started] = useState(() => Date.now())
+        const [elapsed, setElapsed] = useState(0)
+        useEffect(() => {
+          const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
+          return () => clearInterval(timer)
+        }, [started])
+        const stage = progress && Number.isInteger(progress.stage) ? progress.stage : null
+        return h('div', { className: 'kg-graph-loading ' + (overlay ? 'kg-load-overlay' : 'kg-document-loading'),
+          role: error ? 'alert' : 'status', 'aria-live': 'polite', 'aria-busy': !error,
+          style: height ? { height: height + 'px' } : undefined },
+          h('div', { className: 'kg-load-content' },
+            h('div', { className: 'kg-load-heading' }, !error ? h('span', { className: 'kg-graph-spinner', 'aria-hidden': true }) : null,
+              error ? '知识图加载失败' : ((progress && progress.title) || '读取知识图')),
+            h('div', { className: 'kg-load-detail' }, error || (progress && progress.detail) || '正在等待数据'),
+            !error ? h('progress', { className: 'kg-load-progress', max: 4, value: stage === null ? undefined : stage, 'aria-label': '知识图绘制阶段', 'aria-valuetext': stage === null ? '正在读取数据' : '已完成 ' + stage + '/4 个绘制阶段' }) : null,
+            !error ? h('div', { className: 'kg-load-detail' }, (stage === null ? '' : '阶段 ' + (stage + 1) + '/4 · ') + '已用 ' + elapsed + ' 秒') : null,
+            error && onRetry ? h('button', { type: 'button', className: 'kg-secondary', onClick: onRetry }, '重新加载') : null))
+      }
+
+      function GraphViewer(props) {
+        const { nodes, edges, layoutMode, height, loading } = props
+        const [state, setState] = useState(null)
+        const [attempt, setAttempt] = useState(0)
+        const matches = value => value && value.nodes === nodes && value.edges === edges && value.layoutMode === layoutMode && value.attempt === attempt
+        const current = matches(state) ? state : null
+        useEffect(() => {
+          const controller = new AbortController()
+          const identity = { nodes, edges, layoutMode, attempt }
+          const update = patch => { if (!controller.signal.aborted) setState(previous => ({ ...(matches(previous) ? previous : identity), ...patch })) }
+          update({ progress: { stage: 0, title: '测量节点' }, prepared: null, done: false, error: null })
+          prepareGraphScene(nodes, edges, layoutMode || 'layered', controller.signal, progress => update({ progress }))
+            .then(prepared => update({ prepared }))
+            .catch(error => { if (error.name !== 'AbortError') update({ error: error.message || '无法绘制知识图' }) })
+          return () => controller.abort()
+        }, [nodes, edges, layoutMode, attempt])
+        const onReady = useCallback(() => {
+          setState(previous => matches(previous) ? { ...previous, done: true } : previous)
+        }, [nodes, edges, layoutMode, attempt])
+        const busy = loading || !current || !current.done
+        return h('div', { className: 'kg-graph-stage', 'aria-busy': !!busy, style: { height: (height || 560) + 'px' } },
+          current && current.prepared ? h(GraphScene, { ...props, prepared: current.prepared, onReady }) : null,
+          busy ? h(GraphLoading, { overlay: true, progress: loading ? null : current && current.progress, error: current && current.error,
+            onRetry: () => setAttempt(value => value + 1) }) : null)
+      }
+
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady }) {
+        useEffect(() => {
+          const controller = new AbortController()
+          graphPaint(controller.signal).then(onReady).catch(() => {})
+          return () => controller.abort()
+        }, [prepared, onReady])
         const containerRef = useRef(null)
         const [view, commitView] = useState({ k: 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)
@@ -3301,7 +3494,7 @@
         const markerIdRef = useRef(null)
         if (!markerIdRef.current) markerIdRef.current = 'kg-arrow-' + Math.random().toString(36).slice(2, 9)
 
-        const sizes = useMemo(() => computeNodeSizes(nodes, edges), [nodes, edges])
+        const { sizes, layout, bbox, layeredEdgeGeometry } = prepared
         const nodeDegree = useMemo(() => {
           const degree = new Map((nodes || []).map((node) => [node.id, 0]))
           for (const edge of edges || []) {
@@ -3310,22 +3503,6 @@
           }
           return degree
         }, [nodes, edges])
-        const layout = useMemo(() => {
-          try {
-            return layoutGraph(nodes, edges, sizes, layoutMode || 'layered')
-          } catch (e) {
-            // A layout failure must never take down the whole page: fall back
-            // to a degenerate safe layout and keep rendering.
-            console.error('[dsh-knowledge-graph] layout failed:', e)
-            const pos = new Map()
-            for (let i = 0; i < nodes.length; i++) {
-              const ang = (i / Math.max(nodes.length, 1)) * Math.PI * 2
-              pos.set(nodes[i].id, { x: Math.cos(ang) * 320, y: Math.sin(ang) * 320 })
-            }
-            return { pos }
-          }
-        }, [nodes, edges, sizes, layoutMode])
-        const bbox = useMemo(() => computeBBox(nodes, layout, sizes), [nodes, layout, sizes])
 
         // Selection focus: selecting a node highlights it, its neighbours and
         // its incident edges; selecting an edge highlights it and its two
@@ -3393,7 +3570,7 @@
         // radial edges only need one signed arc lane per ring pair.
         const edgeLanes = useMemo(() => {
           if (layoutMode === 'layered') {
-            return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)
+            return prepared.edgeLanes
           }
           const lanes = new Map()
           if (layoutMode !== 'radial') return lanes
@@ -3580,48 +3757,6 @@
           return list[0].severity
         }
         const edgeDetail = selectedEdgeId != null ? (edges || [])[selectedEdgeId] : null
-
-        // Route and place layered labels only when graph geometry changes. Hover,
-        // selection, and focus renders can reuse this immutable view geometry.
-        const layeredEdgeGeometry = useMemo(() => {
-          const out = new Map()
-          if (layoutMode !== 'layered') return out
-          const nodeRects = []
-          for (const node of nodes || []) {
-            const point = layout.pos.get(node.id)
-            const size = sizes.get(node.id)
-            if (!point || !size) continue
-            nodeRects.push({
-              x0: point.x - size.w / 2 - 4,
-              x1: point.x + size.w / 2 + 4,
-              y0: point.y - size.h / 2 - 4,
-              y1: point.y + size.h / 2 + 4,
-            })
-          }
-          const occupied = []
-          ;(edges || []).forEach((edge, index) => {
-            const a = layout.pos.get(edge.fromNodeId)
-            const b = layout.pos.get(edge.toNodeId)
-            const sa = sizes.get(edge.fromNodeId)
-            const sb = sizes.get(edge.toNodeId)
-            if (!a || !b || !sa || !sb) return
-            const routeNodes = layout.componentNodesById ? (layout.componentNodesById.get(edge.fromNodeId) || nodes) : nodes
-            const route = layeredOrthoPath(edge, a, b, sizes, layout.pos, routeNodes, edgeLanes.get(edge) || 0)
-            const rel = REL_LABEL[edge.relation] || edge.relation
-            const labelW = measureLabel(rel) + 10
-            const labelH = 15
-            const placed = placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')
-            out.set(edge, {
-              d: route.d,
-              lblX: placed.x,
-              lblY: placed.y,
-              labelW,
-              labelH,
-              labelHidden: placed.hidden,
-            })
-          })
-          return out
-        }, [layoutMode, edges, layout, sizes, edgeLanes, nodes])
 
         const markerId = markerIdRef.current
         // ---- bundle parallel relations between the same ordered node pair ----

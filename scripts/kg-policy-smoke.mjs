@@ -72,7 +72,7 @@ assert(host.includes('const baseDocument = requestedDocumentId ? loadCanonicalDo
 assert(buildLib.includes("kgExtensionAllowedEndpoints = new Set(['extract', 'task-status', 'task-cancel', 'list-models'])") && buildLib.includes('kgExtensionAllowedEndpoints.has(endpoint)'), 'extension route exposes canonical document/query endpoints')
 assert(buildClient.includes('method === "graph-query"') && buildClient.includes("host.call('answer-graph'"), 'persistent client bridge does not map consumption RPCs')
 assert(client.includes('function KnowledgeConsumePanel') && (client.match(/h\(KnowledgeConsumePanel/g) || []).length === 2, 'shared consumption panel is not mounted in both graph views')
-assert(client.includes("host.call('document-load', { documentId, query: nodeId"), 'consumption locator cannot hydrate an off-window node')
+assert(client.includes("loadGraphDocument({ documentId, query: nodeId") && client.includes("host.call('document-load', body)"), 'consumption locator cannot hydrate an off-window node')
 assert(client.includes("if (askState.phase === 'submitting' || askState.phase === 'running') return") && client.includes("disabled: askState.phase === 'submitting' || askState.phase === 'running'"), 'answer UI can abandon polling by resubmitting a running task')
 assert(packageJson.scripts && packageJson.scripts['test:kg-consumption'] && packageJson.scripts.test.includes('test:kg-consumption'), 'consumption regression is not part of npm test')
 assert(packageJson.scripts['test:kg-timeout'] && packageJson.scripts.test.includes('test:kg-timeout'), 'timeout/cancellation regression is not part of npm test')

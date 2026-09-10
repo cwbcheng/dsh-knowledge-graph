@@ -29,10 +29,11 @@ const mirroredFunctions = [
   'layeredOrthoPath',
 ]
 const mirroredSnippets = [
-  'return layoutLayeredComponents(nodes, edges, sizes)',
-  'return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)',
+  'return layoutLayeredComponents(nodes, edges, sizes, onProgress)',
+  'buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)',
   "placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')",
-  'const layeredEdgeGeometry = useMemo(() => {',
+  'const layeredEdgeGeometry = new Map()',
+  'const { sizes, layout, bbox, layeredEdgeGeometry } = prepared',
   'layout.componentNodesById.get(edge.fromNodeId) || nodes',
 ]
 for (const [file, generated] of generatedSources) {
@@ -130,8 +131,8 @@ assert(layeredSource.includes('supports: 4'), 'supports must remain a bounded so
 assert(layeredSource.includes('not_is: 7'), 'not_is must retain explicit-classification proximity weight')
 assert(source.includes("const reasoningRelations = new Set(['causes', 'infers'])"), 'relation-aware layered backbone is missing')
 assert(source.includes("return 'layered'"), 'new sessions do not default to the semantic layered projection')
-assert(source.includes('return layoutLayeredComponents(nodes, edges, sizes)'), 'layered view does not use component-aware layout')
-assert(source.includes('return buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)'), 'layered view does not use multi-track edge lanes')
+assert(source.includes('return layoutLayeredComponents(nodes, edges, sizes, onProgress)'), 'layered view does not use component-aware layout')
+assert(source.includes('buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)'), 'layered view does not use multi-track edge lanes')
 assert(source.includes('sourcePort: 0, targetPort: 0, sourceChannel: 0, targetChannel: 0, corridor: 0'), 'layered lane dimensions are incomplete')
 assert(source.includes('layout.componentNodesById.get(edge.fromNodeId) || nodes'), 'orthogonal routing is not scoped to the edge component')
 

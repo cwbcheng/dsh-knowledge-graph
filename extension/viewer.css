@@ -213,6 +213,13 @@
 .kg-graph { position: relative; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); touch-action: none; user-select: none; }
 .kg-graph.kg-panning { cursor: grabbing; }
 .kg-graph-loading { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--kg-muted); cursor: default; }
+.kg-graph-stage { position: relative; min-width: 0; }
+.kg-graph-stage > .kg-load-overlay { position: absolute; inset: 0; z-index: 6; background: var(--kg-panel); }
+.kg-load-content { width: min(360px, 100%); padding: 20px; text-align: center; overflow-wrap: anywhere; }
+.kg-load-heading { display: flex; justify-content: center; align-items: center; gap: 10px; color: var(--kg-text); font-size: 14px; }
+.kg-load-detail { margin-top: 10px; font-size: 12px; line-height: 1.6; }
+.kg-load-progress { display: block; width: 100%; height: 8px; margin-top: 14px; accent-color: #3b82f6; }
+.kg-document-loading { min-height: 140px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-spinner { width: 20px; height: 20px; border: 2px solid #d4dae3; border-top-color: #3b82f6; border-radius: 50%; animation: kg-graph-spin .8s linear infinite; }
 @keyframes kg-graph-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .kg-graph-spinner { animation: none; } }

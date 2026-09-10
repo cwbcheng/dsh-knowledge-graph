@@ -90,7 +90,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const imageInputs = Array.isArray(a.images) ? a.images : []
               if (!text && imageInputs.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴资料正文或上传图片' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
@@ -461,7 +461,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问答缺少 documentId' } })
               if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要向知识图提问的问题' } })
               if (question.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const store = await getSqliteStore()
               let context
               try {
@@ -505,7 +505,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
               const liveTask = tasks.get(runId)
               if (liveTask && !(liveTask.status === 'failed' && a.retryFailed === true)) return writeJson(res, 200, { taskId: runId, resumed: false })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const store = await getSqliteStore()
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
@@ -576,6 +576,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: runId, resumed: true })
             }
+            if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/task-active') {
+              return writeJson(res, 200, activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }))
+            }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
                const includeCheckpoint = url.searchParams.get('includeCheckpoint') === '1'
@@ -643,7 +646,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
                  return writeJson(res, 200, { report: mapVerificationResultHost(report, input.paragraphMap) })
                }
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -681,7 +684,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
                 : { kind: 'graph', id: null }
               if (target.kind !== 'graph' && !target.id) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑目标缺少 id' } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -718,7 +721,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (mode === 'deep' && sources.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '深度核查至少需要一个证据来源（wikipedia 或 rules）' } })
               const rules = typeof a.rules === 'string' ? a.rules.slice(0, 10000) : ''
               if (sources.includes('rules') && !rules.trim()) return writeJson(res, 200, { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -770,7 +773,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const trace = serializeTrace(newEvents)
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
               const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -807,7 +810,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
               const expectedRevision = a.expectedRevision
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
@@ -853,7 +856,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const paragraphOffset = existingSourceText
                 ? splitParagraphsHost(existingSourceText).length
                 : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -884,7 +887,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
               const trace = serializeTrace(session.events)
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
-              if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {

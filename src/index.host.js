@@ -5045,6 +5045,48 @@ function createHostPlugin(graphContractOnly) {
       let busy = false
       let activeTask = null
 
+      function taskProgressSnapshotHost(task) {
+        return {
+          parallel: task.progress?.parallel || null,
+          modelUsage: modelUsageSnapshotHost(task),
+          review: task.progress?.review || null,
+          discovery: task.progress?.discovery || null,
+          completedBatches: task.checkpoint?.nextBatchIndex || 0,
+          sampledAt: Date.now(),
+          requests: (task.progress?.requests || []).map(request => ({ ...request })),
+          lastRequest: task.progress?.lastRequest ? { ...task.progress.lastRequest } : null,
+          stage: task.progress?.stage || '准备任务',
+          charsReceived: task.progress?.charsReceived || 0,
+          elapsedMs: task.createdAt ? (task.finishedAt || Date.now()) - task.createdAt : 0,
+          warning: task.progress?.warning || null,
+          model: task.progress?.model || null,
+          batch: task.progress?.batch || null,
+        }
+      }
+      function taskDescriptorHost(task) {
+        if (!task) return null
+        const kind = task.kind || 'extract'
+        const labels = { extract: '资料拆分', resume: '拆分续跑', append: '追加拆分', 'relation-retry': '关系检索', verify: '关系审校', question: '节点答疑', 'fact-check': '外部核查', trajectory: '轨迹拆分', 'trajectory-append': '轨迹追加', answer: '知识图答疑' }
+        return {
+          taskId: task.id, kind, label: labels[kind] || 'AI 任务', status: task.status,
+          documentId: task.documentId || task.graph?.source?.documentId || '',
+          title: task.title || task.graph?.source?.title || '',
+          createdAt: task.createdAt, progress: taskProgressSnapshotHost(task),
+          error: task.errorMessage ? { code: task.errorCode, message: task.errorMessage.slice(0, 2000) } : null,
+        }
+      }
+      function activeTaskStatusHost(args) {
+        // busy may cover admission before a task exists. Never invent an id,
+        // clear the lock, or mistake an old SQLite checkpoint for live work.
+        const current = busy ? (activeTask?.status === 'running' ? activeTask : Array.from(tasks.values()).find(task => task.status === 'running')) : null
+        const tracked = typeof args?.taskId === 'string' ? tasks.get(args.taskId) : null
+        return { busy, task: taskDescriptorHost(current), trackedTask: taskDescriptorHost(tracked) }
+      }
+      function busyTaskResponseHost() {
+        const active = activeTaskStatusHost().task
+        return { error: { code: 'busy', message: active ? active.label + '任务正在进行，请查看后台任务进度' : '后台正在准备 AI 任务，请稍候', activeTask: active } }
+      }
+
       function failTask(task, code, message) {
         task.status = code === 'cancelled' ? 'cancelled' : 'failed'
         task.finishedAt = Date.now()
@@ -7676,7 +7718,7 @@ function createHostPlugin(graphContractOnly) {
         if (mode === 'deep' && sources.length === 0) return { error: { code: 'invalid_input', message: '深度核查至少需要一个证据来源（wikipedia 或 rules）' } }
         const rules = typeof a.rules === 'string' ? a.rules.slice(0, 10000) : ''
         if (sources.includes('rules') && !rules.trim()) return { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } }
-        if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -7899,7 +7941,7 @@ function createHostPlugin(graphContractOnly) {
            return { error: { code: 'not_found', message: '找不到可问答的 canonical knowledge graph' } }
          }
          if (Number.isInteger(a.expectedRevision) && a.expectedRevision !== document.revision) return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后提问', currentRevision: document.revision } }
-         if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
+         if (busy) return busyTaskResponseHost()
          const context = queryGraphConsumptionHost(document, {
            ...a,
            query: question,
@@ -7936,7 +7978,7 @@ function createHostPlugin(graphContractOnly) {
          let markdownSource = null
          if (!text && imageInputs.length === 0) return { error: { code: 'invalid_input', message: '请先粘贴资料正文或上传图片' } }
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } }
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
@@ -8018,6 +8060,7 @@ function createHostPlugin(graphContractOnly) {
 
       // Persistent Web runtime serves saved runs through its SQLite route.
       harness.handle('extraction-run-list', async () => ({ runs: [] }))
+      harness.handle('task-active', async (args) => activeTaskStatusHost(args))
       harness.handle('task-status', async (args) => {
          const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
         const a = args && typeof args === 'object' ? args : {}
@@ -8068,7 +8111,7 @@ function createHostPlugin(graphContractOnly) {
           report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
           return { report: mapVerificationResultHost(report, input.paragraphMap) }
         }
-        if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -8104,7 +8147,7 @@ function createHostPlugin(graphContractOnly) {
           ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
           : { kind: 'graph', id: null }
         if (target.kind !== 'graph' && !target.id) return { error: { code: 'invalid_input', message: '质疑目标缺少 id' } }
-        if (busy) return { error: { code: 'busy', message: '已有 AI 任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -8128,7 +8171,7 @@ function createHostPlugin(graphContractOnly) {
         if (!session) return { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } }
         const trace = serializeTrace(session.events)
         if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -8209,7 +8252,7 @@ function createHostPlugin(graphContractOnly) {
         const trace = serializeTrace(newEvents)
         if (!trace.traceText) return { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } }
         const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -8241,7 +8284,7 @@ function createHostPlugin(graphContractOnly) {
         if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } }
         const expectedRevision = a.expectedRevision
         if (expectedRevision !== canonical.revision) return { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } }
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -8282,7 +8325,7 @@ function createHostPlugin(graphContractOnly) {
         const paragraphOffset = canonical && canonical.sourceText
           ? splitParagraphsHost(canonical.sourceText).length
           : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
-        if (busy) return { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } }
+        if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
