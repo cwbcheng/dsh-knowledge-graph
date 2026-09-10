@@ -267,10 +267,91 @@ async function persistentSmoke() {
 }
 
 const previousCap = process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS
+async function extractionDeadlineSmoke() {
+  delete process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS
+  const originalSetTimeout = globalThis.setTimeout
+  const timers = []
+  // Compress only model deadlines, not provider ticks or test polling.
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    timers.push(ms)
+    return originalSetTimeout(fn, ms === 900000 ? 360 : ms === 180000 ? 120 : ms === 120000 ? 80 : ms, ...args)
+  }
+  const handlers = new Map()
+  let mode = 'slow-success', aborts = 0, calls = 0
+  let auxiliaryCalls = 0
+  const graph = JSON.stringify({summary:'温度记录',nodes:[{id:'n1',type:'fact',text:'温度升高',quote:'温度升高',paragraph:0}],edges:[]})
+  globalThis.harness = { handle(name,fn) { handlers.set(name,fn) } }
+  hostPlugin().apply({get(name) { return name === 'llm' ? {async *stream(request) {
+    calls++
+    assert(!Object.hasOwn(request, 'maxTokens'), 'Extraction must not impose an output token limit')
+    request.signal.addEventListener('abort',()=>{aborts++},{once:true})
+    if (mode.startsWith('aux-')) {
+      const auxiliary = request.system.includes('知识图关系编织引擎')
+      if (auxiliary) {
+        auxiliaryCalls++
+        if (mode === 'aux-idle') {
+          while (!request.signal.aborted) { await sleep(30); yield {type:'text-delta',index:0,text:''} }
+          return
+        }
+        for (let i=0;i<5;i++) { await sleep(40); yield {type:'reasoning-delta',index:0,text:'checking'} }
+      }
+      const text = auxiliary ? JSON.stringify({edges:[]}) : JSON.stringify({summary:'记录',nodes:[
+        {id:'n1',type:'fact',text:'温度升高',quote:'温度升高',paragraph:0},
+        {id:'n2',type:'fact',text:'气压降低',quote:'气压降低',paragraph:1},
+        {id:'n3',type:'fact',text:'湿度增加',quote:'湿度增加',paragraph:2},
+      ],edges:[]})
+      yield {type:'text-delta',index:1,text}
+      yield {type:'finish',reason:{kind:'stop'}}
+    } else if (mode === 'slow-success') {
+      for (let i=0;i<5;i++) { await sleep(40); yield {type:'reasoning-delta',index:0,text:'working'} }
+      yield {type:'text-delta',index:1,text:graph}
+      yield {type:'finish',reason:{kind:'stop'}}
+    } else {
+      while (!request.signal.aborted) {
+        await sleep(30)
+        yield {type:'reasoning-delta',index:0,text:mode === 'empty-heartbeat' ? '' : 'working'}
+      }
+    }
+  }} : null },interval(){return()=>{}}})
+  const start = () => handlers.get('extract')({text:'温度升高。',model:{provider:'fake',model:'fake'}})
+  try {
+    const success = await waitDynamic(handlers,(await start()).taskId,2000)
+    assert(success.status === 'succeeded','Active stream was killed by the old absolute deadline: '+JSON.stringify(success))
+    assert(timers.includes(900000) && timers.includes(180000),'Extraction must request separate bounded total and idle deadlines')
+    await sleep(10)
+    mode='empty-heartbeat'
+    const idle = await waitDynamic(handlers,(await start()).taskId,2000)
+    assert(idle.status === 'failed' && idle.error.code === 'timeout' && idle.error.message.includes('分块拆分（第 1/1 批）：') && idle.error.message.includes('未返回有效内容'),'Empty heartbeat must not renew inactivity deadline or lose stage identity')
+    await sleep(50)
+    mode='endless-reasoning'
+    const endless = await waitDynamic(handlers,(await start()).taskId,2000)
+    assert(endless.status === 'failed' && endless.error.code === 'timeout' && endless.error.message.includes('900000ms'),'Continuous reasoning must not renew the absolute deadline')
+    assert(calls === 3 && aborts === 2,'Timeout must abort without automatic costly retries')
+    await sleep(50)
+    process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS = '40'
+    const capped = await waitDynamic(handlers,(await start()).taskId,2000)
+    assert(capped.status === 'failed' && capped.error.code === 'timeout' && capped.error.message.includes('40ms'),'Explicit environment timeout cap must remain authoritative')
+    await sleep(50)
+    delete process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS
+    const startAuxiliary = () => handlers.get('extract')({text:'温度升高。\n\n气压降低。\n\n湿度增加。',model:{provider:'fake',model:'fake'}})
+    mode = 'aux-success'
+    const auxSuccess = await waitDynamic(handlers,(await startAuxiliary()).taskId,2000)
+    assert(auxSuccess.status === 'succeeded' && auxiliaryCalls > 0,'Active relation weaving must survive the old 120 second deadline: '+JSON.stringify(auxSuccess))
+    await sleep(50)
+    mode = 'aux-idle'
+    const beforeAux = auxiliaryCalls
+    const auxIdle = await waitDynamic(handlers,(await startAuxiliary()).taskId,2000)
+    assert(auxIdle.status === 'failed' && auxIdle.error.code === 'timeout' && /关系补全（第 1\/[1-9][0-9]* 组）：/.test(auxIdle.error.message) && auxIdle.error.message.includes('未返回有效内容'),'Stalled auxiliary stage must fail with its own stage identity: '+JSON.stringify(auxIdle))
+    assert(auxiliaryCalls === beforeAux + 1, 'Auxiliary timeout must not retry or publish a successful partial graph')
+    await sleep(50)
+    return {activeStreamSurvives:true,emptyHeartbeatTimesOut:true,absoluteDeadlineEnforced:true,environmentCapPreserved:true,auxiliaryActiveStreamSurvives:true,auxiliaryTimeoutIdentifiesStage:true}
+  } finally { globalThis.setTimeout = originalSetTimeout }
+}
 try {
   const dynamic = await dynamicSmoke()
   const persistent = await persistentSmoke()
-  console.log(JSON.stringify({ ok: true, dynamic, persistent }))
+  const extraction = await extractionDeadlineSmoke()
+  console.log(JSON.stringify({ ok: true, dynamic, persistent, extraction }))
 } finally {
   if (previousCap === undefined) delete process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS
   else process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS = previousCap

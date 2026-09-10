@@ -94,6 +94,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+              if (checkpoint?.postprocess) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '后处理审校记录只能由 Host 按 runId 从可信存储恢复，不能接纳客户端提供的审校结论' } })
               if (checkpoint && imageInputs.length > 0) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 恢复不能重新附带图片' } })
               if (checkpointHasVisualSourceHost(checkpoint)) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '包含图片来源的 checkpoint 只能由 Host 按 runId 从 SQLite 恢复' } })
               const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
@@ -154,6 +155,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
+                 concurrency: a.concurrency,
                  imageAttachments,
                  imageSource: markdownSource,
                  title,
@@ -490,6 +492,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }).finally(() => { busy = false })
               return writeJson(res, 200, { taskId: task.id })
             }
+            if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/extraction-run-list') {
+              const store = await getSqliteStore()
+              return writeJson(res, 200, { runs: store.listIncompleteRuns(100) })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/resume-extract') {
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
@@ -497,12 +503,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const a = payload && typeof payload === 'object' ? payload : {}
               const runId = typeof a.runId === 'string' ? a.runId.trim().slice(0, 200) : ''
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
-              if (tasks.has(runId)) return writeJson(res, 200, { taskId: runId, resumed: false })
+              const liveTask = tasks.get(runId)
+              if (liveTask && !(liveTask.status === 'failed' && a.retryFailed === true)) return writeJson(res, 200, { taskId: runId, resumed: false })
               if (busy) return writeJson(res, 200, { error: { code: 'busy', message: '已有拆分任务正在进行，请稍候再试' } })
               const store = await getSqliteStore()
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
-              if (savedRun.status !== 'running') {
+              if (savedRun.status !== 'running' && !(savedRun.status === 'failed' && a.retryFailed === true)) {
                 return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该任务状态为 ' + savedRun.status + '，不是 Host 重启遗留的运行中任务，禁止自动续跑' } })
               }
               const checkpoint = savedRun.checkpoint && typeof savedRun.checkpoint === 'object' ? savedRun.checkpoint : null
@@ -537,6 +544,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: runId,
                 status: 'running',
                 kind: 'resume',
+                concurrency: a.concurrency,
                 title: savedRun.title || checkpoint.title || '',
                 text: savedRun.sourceText,
                 documentId: savedRun.documentId || checkpoint.documentId || '',
@@ -573,12 +581,20 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                const includeCheckpoint = url.searchParams.get('includeCheckpoint') === '1'
               const t = tasks.get(taskId)
               if (!t) return writeJson(res, 200, { status: 'not_found' })
-              if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result })
-              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
-              if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
+              if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result, modelUsage: modelUsageSnapshotHost(t) })
+              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
+              if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
               return writeJson(res, 200, {
                 status: 'running',
                 progress: {
+                  parallel: t.progress?.parallel || null,
+                  modelUsage: modelUsageSnapshotHost(t),
+                  review: t.progress?.review || null,
+                  discovery: t.progress?.discovery || null,
+                  completedBatches: t.checkpoint?.nextBatchIndex || 0,
+                  sampledAt: Date.now(),
+                  requests: (t.progress?.requests || []).map(request => ({ ...request })),
+                  lastRequest: t.progress?.lastRequest ? { ...t.progress.lastRequest } : null,
                   stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
                   charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
                   elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
@@ -842,6 +858,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
+                concurrency: a.concurrency,
                 title, text, existing, existingSourceText, documentId, paragraphOffset,
                 baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : null,
                 baseSource: existing && existing.source ? existing.source : null,

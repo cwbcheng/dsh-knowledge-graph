@@ -98,7 +98,7 @@ const host1Extractor = async ({ chunk }) => {
   }
 }
 const api1 = createHost(host1Extractor)
-const append = await post(api1, 'append-extract', { documentId, title: 'recovery', text: appendText })
+const append = await post(api1, 'append-extract', { documentId, title: 'recovery', text: appendText, concurrency: 1 })
 assert(append && append.taskId, 'append recovery task was not created')
 await secondBatchStarted
 
@@ -124,7 +124,15 @@ const host2Extractor = async ({ chunk }) => {
   }
 }
 const api2 = createHost(host2Extractor)
-const resumed = await post(api2, 'resume-extract', { runId: append.taskId })
+const recoveryStore = await openSqliteStore(dbPath)
+recoveryStore.saveCheckpoint(savedRun.checkpoint, {runId:append.taskId, status:'failed', sourceText:appendText, errorCode:'invariant_violation'})
+recoveryStore.close()
+const listed = await get(api2, 'extraction-run-list', {})
+assert(listed.runs.some(run => run.runId === append.taskId && run.nextBatchIndex === savedRun.checkpoint.nextBatchIndex), 'Restart must discover failed work without browser storage')
+assert(!JSON.stringify(listed).includes('checkpoint_json') && !listed.runs.some(run => run.sourceText || run.checkpoint), 'Task listing must not transfer full book/checkpoints')
+const denied = await post(api2, 'resume-extract', {runId:append.taskId})
+assert(denied.error && denied.error.code === 'not_recoverable' && resumedCalls === 0, 'Failed work must never resume implicitly')
+const resumed = await post(api2, 'resume-extract', { runId: append.taskId, retryFailed:true })
 assert(resumed && resumed.taskId === append.taskId && resumed.resumed === true, 'Host restart did not resume append checkpoint')
 let terminal = null
 for (let i = 0; i < 300; i++) {
@@ -145,6 +153,8 @@ assert(restored.staging.chunks.some((chunk) => chunk.chunkId === 'chunk-base-rec
 assert(restored.source.sections.some((section) => section.id === 'section-base'), 'resumed append lost original section metadata')
 assert(restored.nodes.some((node) => node.id === 'old'), 'resumed append lost original semantic nodes')
 assert(finishedRun && finishedRun.status === 'succeeded', 'resumed append checkpoint was not marked succeeded')
+const afterList = await get(api2, 'extraction-run-list', {})
+assert(!afterList.runs.some(run => run.runId === append.taskId), 'Completed work must leave the unfinished list')
 assert(resumedCalls === savedRun.checkpoint.totalBatches - savedRun.checkpoint.nextBatchIndex, 'resume re-ran already completed append batches')
 
 rmSync(dir, { recursive: true, force: true })

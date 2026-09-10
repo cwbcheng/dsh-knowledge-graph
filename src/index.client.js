@@ -359,6 +359,55 @@ export default function clientPlugin() {
 .kg-append-btn { padding: 6px 14px; font-size: 13px; }
 `)
 
+      function GenerationProgress({ progress }) {
+        if (!progress) return null
+        const duration = ms => Math.floor(Math.max(0, ms || 0) / 60000) + ' 分 ' + Math.floor(Math.max(0, ms || 0) / 1000) % 60 + ' 秒'
+        const requests = Array.isArray(progress.requests) ? progress.requests : null
+        const total = progress.batch?.total || 0
+        const completed = Math.min(total, progress.completedBatches || 0)
+        return h('div', { className: 'kg-empty-sub', style: { width: '100%', maxWidth: 760, margin: '0 auto', overflowWrap: 'anywhere' } },
+          h('p', { role: 'status' }, progress.stage || '运行中'),
+          h('p', null, '本次运行累计 ' + duration(progress.elapsedMs)),
+          h(ModelUsageStatus, { usage: progress.modelUsage }),
+          progress.review ? h('p', null, '关系已审校 ' + progress.review.reviewed + '/' + progress.review.eligible + ' · 待审 ' + progress.review.pending + ' · 已复用 ' + (progress.review.reused || 0)) : null,
+          progress.discovery ? h(RelationDiscoveryStatus, { coverage: progress.discovery }) : null,
+          total && requests ? h('div', null,
+            h('p', null, '内容块已合并 ' + completed + '/' + total + (completed === total ? ' · 正在进行全图后处理，尚未完成' : '')),
+            h('progress', { value: completed, max: total, 'aria-label': '内容块合并进度', style: { width: '100%', height: 8, accentColor: '#3b82f6' } })) : null,
+          requests ? requests.map((request, index) => h('div', { key: request.startedAt + ':' + index, style: { borderTop: '1px solid var(--kg-border)', padding: '8px 0', textAlign: 'left' } },
+            h('div', null, request.stage + ' · ' + request.state),
+            h('div', null, '当前请求 ' + duration(progress.sampledAt - request.startedAt) + ' · 正文 ' + request.outputChars + ' 字符 · 思考 ' + request.reasoningChars + ' 字符'),
+            h('div', null, request.lastContentAt ? '距最近内容 ' + duration(progress.sampledAt - request.lastContentAt) : '尚未收到内容'))) : h('p', null, '旧版服务未提供请求级进度' + (total ? ' · 当前内容块 ' + progress.batch.index + '/' + total : '') + ' · 最近显示的接收量 ' + (progress.charsReceived || 0) + ' 字符'),
+          requests && !requests.length && progress.lastRequest ? h('p', null, '最近请求：' + progress.lastRequest.stage + ' · ' + progress.lastRequest.state) : null)
+      }
+      function RelationDiscoveryStatus({ coverage }) {
+        if (!coverage || !coverage.totalTargets) return null
+        const searched = Math.min(coverage.totalTargets, Math.max(0, coverage.searchedTargets || 0))
+        return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%' }, title: '候选检索覆盖，不代表所有可能关系已找到或已通过语义审校' },
+          h('span', null, '关系检索 ' + searched + '/' + coverage.totalTargets + ' 节点 · 第 ' + (coverage.pass || 1) + ' 轮'),
+          h('progress', { value: searched, max: coverage.totalTargets, 'aria-label': '关系候选检索进度', style: { width: 96, height: 8, accentColor: '#059669' } }))
+      }
+      function relationNetChange(connectivity) {
+        if (Number.isFinite(connectivity?.netEdgeChange)) return connectivity.netEdgeChange
+        if (Number.isFinite(connectivity?.after?.edgeCount) && Number.isFinite(connectivity?.before?.edgeCount)) return connectivity.after.edgeCount - connectivity.before.edgeCount
+        return null
+      }
+      function ModelUsageStatus({ usage, label = '本次模型用量' }) {
+        if (!usage || usage.version !== 1) return null
+        const finished = usage.finishedRequests || 0
+        const count = value => value.toLocaleString('zh-CN')
+        const tokens = (key, name) => {
+          const total = usage.totals?.[key]
+          return total ? name + ' ' + count(total.tokens) + ' token' + (total.requests < finished ? '（部分上报 ' + total.requests + '/' + finished + ' 请求）' : '') : name + '未上报'
+        }
+        const cache = usage.cacheHit
+        const cacheText = cache?.requests && cache.inputTokens > 0
+          ? '缓存命中 ' + (cache.readTokens / cache.inputTokens * 100).toFixed(1) + '% · 读取 ' + count(cache.readTokens) + '/' + count(cache.inputTokens) + ' 输入 token' + (cache.requests < finished ? '（仅 ' + cache.requests + '/' + finished + ' 请求可统计）' : '')
+          : '缓存命中率未上报'
+        return h('div', { style: { fontSize: 12, lineHeight: 1.6, overflowWrap: 'anywhere' }, title: '仅统计最近这次运行；包含重试及失败请求的已上报用量。输入含未缓存、缓存读取及缓存写入，命中率按可统计请求的输入 token 加权。未上报不代表零。' },
+          h('div', null, label + ' · 已结束 ' + finished + '/' + (usage.startedRequests || 0) + ' 请求 · 用量已上报 ' + (usage.reportedRequests || 0) + '/' + finished),
+          finished ? h('div', null, tokens('totalInputTokens', '输入') + ' · ' + tokens('outputTokens', '输出') + ' · ' + cacheText) : null)
+      }
       // --------------------------- constants ----------------------------
       const h = React.createElement
       const { useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore } = React
@@ -5571,6 +5620,7 @@ export default function clientPlugin() {
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
         }
         const [modelChoice, setModelChoice] = useState(readModelChoice)
+        const [extractionConcurrency, setExtractionConcurrency] = useState(2)
         const modelCatalog = useModelCatalog()
         const handleModelChange = (key) => {
           setModelChoice(key)
@@ -5600,6 +5650,37 @@ export default function clientPlugin() {
         const hDragRef = useRef(null)
         const submittedRef = useRef(null)
         const resumeAttemptRef = useRef(false)
+        const [incompleteRuns, setIncompleteRuns] = useState([])
+        const [runsError, setRunsError] = useState('')
+        const [recoveringRun, setRecoveringRun] = useState(null)
+        const [runsRefresh, setRunsRefresh] = useState(0)
+        useEffect(() => {
+          let disposed = false
+          host.call('extraction-run-list').then(res => {
+            if (disposed) return
+            if (res && Array.isArray(res.runs)) { setIncompleteRuns(res.runs); setRunsError('') }
+            else if (res && res.error) setRunsError(res.error.message || '读取未完成任务失败')
+          }).catch(() => { if (!disposed) setRunsError('无法读取未完成任务，请检查服务连接') })
+          return () => { disposed = true }
+        }, [taskId, runsRefresh])
+        const recoverSavedRun = async (run) => {
+          if (recoveringRun || taskId) return
+          setRecoveringRun(run.runId)
+          try {
+            const res = await host.call('resume-extract', { runId: run.runId, retryFailed: true, concurrency: extractionConcurrency, ...(effectiveModelArg ? {model: effectiveModelArg} : {}) })
+            if (!res || res.error || !res.taskId) { setError(res && res.error || {message:'无法恢复任务'}); return }
+            const pending = {taskId:res.taskId, documentId:run.documentId, title:run.title || '', text:'', baseText:'', prevEdgeCount:-1}
+            submittedRef.current = pending
+            try { localStorage.setItem(LS_PENDING, JSON.stringify(pending)) } catch (e) {}
+            resumeAttemptRef.current = false
+            setError(null)
+            setExtractProgress(null)
+            setHistoryOpen(false)
+            setTaskId(res.taskId)
+            setPhase('extracting')
+          } catch (e) { setError({message:'恢复请求未确认，请刷新任务列表后再试：' + (e.message || '连接失败')}) }
+          finally { setRecoveringRun(null) }
+        }
         const graphRevisionRef = useRef(0)
         const graphCommitQueueRef = useRef(Promise.resolve())
         // ---- 划线拆分（select-text -> extract）----
@@ -6001,12 +6082,13 @@ export default function clientPlugin() {
               res = await host.call('task-status', { taskId })
             } catch (e) {
               if (disposed) return
-              setPhase('idle')
-              setTaskId(null)
-              setError({ message: '查询任务状态失败：' + (e && e.message ? e.message : '未知错误') })
+              setError({ code: 'status_connection_lost', message: '连接中断，任务状态未知；正在重试查询。请确认 dsh 服务仍在运行。' })
+              delay = Math.min(delay * 1.5, 15000)
+              stop = ctx.timeout(tick, delay)
               return
             }
             if (disposed) return
+            setError((previous) => previous && previous.code === 'status_connection_lost' ? null : previous)
             if (res && res.status === 'running') setExtractProgress(res.progress || null)
             if (res && res.status === 'succeeded') {
               let g = res.result
@@ -6077,7 +6159,8 @@ export default function clientPlugin() {
                 if (sub.relationRetry === true) {
                   const connectivity = g2.generation && g2.generation.connectivity
                   const added = connectivity && Number(connectivity.addedEdges || 0)
-                  toastStore.show('关系补全完成：新增 ' + added + ' 条关系')
+                  const coverage = g2.generation?.relationDiscovery
+                  toastStore.show('本次补全新增 ' + added + ' 条关系' + (coverage ? ' · 本轮检索 ' + coverage.searchedTargets + '/' + coverage.totalTargets + ' 节点' : ''))
                 } else if (sub.append === true) {
                   setAppendCount((c) => c + 1)
                   const added = Array.isArray(g2.addedNodeIds) ? g2.addedNodeIds.length : 0
@@ -6430,6 +6513,7 @@ export default function clientPlugin() {
           setError(null)
           const payload = {
              title: ti,
+             concurrency: extractionConcurrency,
              text: t,
              ...(markdownBundle && overrideText == null ? { markdownBundleId: markdownBundle.bundleId } : {}),
              ...(submittingImages.length > 0 ? { images: submittingImages.map((image) => ({ name: image.name, mediaType: image.mediaType, data: image.data })) } : {}),
@@ -6481,6 +6565,7 @@ export default function clientPlugin() {
           const documentId = resultView.graph.source && resultView.graph.source.documentId ? resultView.graph.source.documentId : ''
           const payload = {
             title,
+            concurrency: extractionConcurrency,
             text: t,
             paragraphOffset: offset,
             documentId,
@@ -7461,6 +7546,8 @@ export default function clientPlugin() {
                const stagingMeta = graph.staging && typeof graph.staging === 'object' ? graph.staging : null
                const generationMeta = graph.generation && typeof graph.generation === 'object' ? graph.generation : null
                const connectivityMeta = generationMeta && generationMeta.connectivity && typeof generationMeta.connectivity === 'object' ? generationMeta.connectivity : null
+              const discoveryMeta = generationMeta?.relationDiscovery || connectivityMeta?.coverage
+              const netEdges = relationNetChange(connectivityMeta)
               const diagLines = []
               for (const w of graph.warnings || []) diagLines.push('warning: ' + w)
               for (const u of resultView.unresolved) {
@@ -7476,14 +7563,15 @@ export default function clientPlugin() {
                   connectivityMeta && connectivityMeta.after
                     ? h('span', {
                         title: '全图连通性：最大连通分量覆盖 ' + Math.round((connectivityMeta.after.largestComponentRatio || 0) * 100) + '%' + (connectivityMeta.attempted ? '；已执行关系编织' : ''),
-                      }, '全图 ' + (connectivityMeta.after.componentCount || 0) + ' 个分量 · ' + (connectivityMeta.after.isolatedNodes || 0) + ' 个孤立' + (connectivityMeta.addedEdges ? ' · 补 ' + connectivityMeta.addedEdges + ' 条关系' : ''))
+                      }, '全图 ' + (connectivityMeta.after.componentCount || 0) + ' 个分量 · ' + (connectivityMeta.after.isolatedNodes || 0) + ' 个孤立' + (netEdges != null ? ' · 本次关系净变化 ' + (netEdges > 0 ? '+' : '') + netEdges : ''))
                     : null,
+                  h(RelationDiscoveryStatus, { coverage: discoveryMeta }),
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
                   connectivityMeta && connectivityMeta.after && ((connectivityMeta.after.componentCount || 0) > 1 || (connectivityMeta.after.isolatedNodes || 0) > 0)
                     ? h('button', {
                         type: 'button', className: 'kg-secondary', onClick: retryRelations,
-                        title: '保留现有节点，只重新调用 AI 补充有原文证据的关系边',
-                      }, '🧵 补全关系')
+                        title: '每次检查最多 4 组重点节点；继续上次覆盖位置，保留节点，新关系仍须依据原文独立审校',
+                      }, discoveryMeta ? (discoveryMeta.remainingTargets > 0 ? '继续检索关系' : '重新检索关系') : '补全关系')
                     : null,
                   sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
                    stagingMeta && stagingMeta.chunkCount > 0 ? h('span', null, '已保留 ' + stagingMeta.chunkCount + ' 个分块结果') : null,
@@ -7505,6 +7593,7 @@ export default function clientPlugin() {
                       }, '已记录 ' + diagCount + ' 条诊断（含无法回链原文的节点）' + (showDiag ? ' ▴' : ' ▾'))
                     : null,
                 ),
+                h(ModelUsageStatus, { usage: generationMeta?.modelUsage, label: '最近一次运行用量' }),
                 windowMeta
                   ? h('div', { className: 'kg-window-nav', 'aria-label': '大图窗口导航与子图查询' },
                       h('label', null, '每窗节点数 ', h('select', {
@@ -7663,11 +7752,24 @@ export default function clientPlugin() {
             ),
             h('div', { style: { display: 'flex', gap: 8, flex: 'none', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } },
               h(ModelPicker, { value: modelChoice, onChange: handleModelChange, requiresImage: imageInputs.length > 0 }),
+              h('label', {style:{display:'flex', alignItems:'center', gap:6}}, '拆分并发',
+                h('select', {value:extractionConcurrency, disabled:phase === 'extracting', onChange:e=>setExtractionConcurrency(Number(e.target.value)), 'aria-label':'拆分并发'},
+                  ...[1,2,4].map(n=>h('option', {key:n,value:n}, n === 1 ? '1 路（串行）' : n + ' 路')))),
               h('button', { type: 'button', className: 'kg-secondary', onClick: () => setHistoryOpen(!historyOpen) },
                 historyOpen ? '返回工作台' : '历史'),
               resultView ? h('button', { type: 'button', className: 'kg-secondary', onClick: resetAll }, '重新开始') : null,
             ),
           ),
+          !taskId && (incompleteRuns.length > 0 || runsError) ? h('details', { open: true, style: {padding:'12px 16px', borderBottom:'1px solid #ddd'} },
+            h('summary', null, '未完成任务（' + incompleteRuns.length + '）'),
+            h('button', {type:'button', className:'kg-secondary', onClick:()=>setRunsRefresh(value=>value+1)}, '刷新列表'),
+            runsError ? h('p', {role:'status'}, runsError) : null,
+            ...incompleteRuns.map(run => h('div', {key:run.runId, style:{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', padding:'8px 0'}},
+              h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + ' · 已合并 ' + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '') + ' · ' + (run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
+              run.totalRelations != null ? h('span', {className:'kg-empty-sub'}, '关系审校已保存 ' + (run.reviewedRelations || 0) + '/' + run.totalRelations) : null,
+              h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : '继续任务'),
+            )),
+          ) : null,
           openFigure && resultView ? h('dialog', {
             ref: element => { if (element && !element.open) element.showModal() },
             onCancel: e => { e.preventDefault(); setOpenFigure(null) },
@@ -7691,10 +7793,8 @@ export default function clientPlugin() {
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, submittedRef.current && submittedRef.current.relationRetry === true ? '正在用 AI 补全知识图关系…' : (submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…')),
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
-                extractProgress
-                  ? h('p', { className: 'kg-empty-sub' },
-                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符' + (extractProgress.batch && extractProgress.batch.total ? ' · 内容块 ' + extractProgress.batch.index + '/' + extractProgress.batch.total : ''))
-                  : null,
+                extractProgress && extractProgress.parallel ? h('p', {role:'status'}, '本轮第 ' + extractProgress.parallel.start + '–' + extractProgress.parallel.end + ' 批 · 执行中 ' + extractProgress.parallel.active + ' · 待合并 ' + extractProgress.parallel.saved + ' · 主拆分已保存、待补全 ' + (extractProgress.parallel.prepared || 0)) : null,
+                h(GenerationProgress, { progress: extractProgress }),
                 extractProgress && extractProgress.warning
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,
@@ -8087,12 +8187,14 @@ export default function clientPlugin() {
             try {
               res = await host.call('trajectory-status', { taskId })
             } catch (e) {
-              if (disposed) return
-              setPhase('idle'); setTaskId(null)
-              setError({ message: '查询任务状态失败：' + (e && e.message ? e.message : '未知错误') })
+              if (disposed || mySeq !== sessionSeq.current) return
+              setError({ code: 'status_connection_lost', message: '连接中断，任务状态未知；正在重试查询。请确认 dsh 服务仍在运行。' })
+              delay = Math.min(delay * 1.5, 15000)
+              stop = ctx.timeout(tick, delay)
               return
             }
             if (disposed || mySeq !== sessionSeq.current) return
+            setError((previous) => previous && previous.code === 'status_connection_lost' ? null : previous)
             if (res && res.status === 'running') setExtractProgress(res.progress || null)
             if (res && res.status === 'succeeded') {
               let g = res.result
@@ -8966,6 +9068,7 @@ export default function clientPlugin() {
                     : null,
                 ),
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
+                h(ModelUsageStatus, { usage: generationMeta?.modelUsage, label: '最近一次运行用量' }),
                 h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。拖拽中间竖条调整两列宽度，拖拽下方横条调整结果区高度。'),
                 h('div', {
                   className: 'kg-traj-cols',
@@ -9027,10 +9130,7 @@ export default function clientPlugin() {
                 h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
                 h('p', null, '正在用 AI 拆解本会话轨迹…'),
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
-                extractProgress
-                  ? h('p', { className: 'kg-empty-sub' },
-                      (extractProgress.stage || '运行中') + ' · 已运行 ' + Math.round((extractProgress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (extractProgress.charsReceived || 0) + ' 字符' + (extractProgress.batch && extractProgress.batch.total ? ' · 内容块 ' + extractProgress.batch.index + '/' + extractProgress.batch.total : ''))
-                  : null,
+                h(GenerationProgress, { progress: extractProgress }),
                 extractProgress && extractProgress.warning
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,

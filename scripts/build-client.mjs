@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry" || method === "document-list") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -199,6 +199,7 @@ c = c.split("host.call('markdown-import'").join("rpc('markdown-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")
 c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
 c = c.split("host.call('document-list'").join("rpc('document-list'")
+c = c.split("host.call('extraction-run-list'").join("rpc('extraction-run-list'")
 if (c.includes('host.call(')) throw new Error('unmapped host.call remains in persistent client build')
 if (!c.includes("rpc('image-load'")) throw new Error('image-load RPC rewrite missing from persistent client')
 

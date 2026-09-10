@@ -3,13 +3,25 @@ import hostPlugin, { createGraphContract } from '../src/index.host.js'
 
 const handlers = new Map()
 let response, finish = 'stop'
+let incompleteResponses = 0
+let reasoningOnly = false
+let supportedEfforts = []
+let respond = null
 const requests = []
 globalThis.harness = { handle(name, fn) { handlers.set(name, fn) } }
 hostPlugin().apply({
-  get(name) { return name === 'llm' ? { async *stream(request) {
+  get(name) { return name === 'llm' ? { async resolveModelInfo() { return {reasoning:{efforts:supportedEfforts.map(id=>({id}))}} }, async *stream(request) {
     requests.push(request)
-    yield { type: 'text-delta', index: 0, text: response }
-    yield { type: 'finish', reason: { kind: finish } }
+    assert(!Object.hasOwn(request,'maxTokens'),'Plugin must leave output limits to the model service on every call')
+    const incomplete = incompleteResponses > 0
+    if (incomplete) incompleteResponses--
+    if (reasoningOnly && incomplete) {
+      yield {type:'reasoning-delta',index:0,text:'Still reasoning'}
+      yield {type:'finish',reason:{kind:'stop'}}
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: respond ? respond(request) : response }
+    yield { type: 'finish', reason: { kind: incomplete ? 'max-tokens' : finish } }
   } } : null },
   interval() { return () => {} },
 })
@@ -44,6 +56,66 @@ response = JSON.stringify(graph)
 const success = await completed(await handlers.get('extract')({ title: 'dedupe safety', text, model }))
 assert.equal(success.status, 'succeeded', JSON.stringify(success.error))
 assert.equal(success.result.nodes.length, 6, 'Context, numeric punctuation and different node roles must not merge')
+for (const [efforts,expected] of [[['max','high'],'high'],[['high','low','medium'],'low'],[['vendor-auto'],undefined]]) {
+  supportedEfforts=efforts
+  requests.length=0
+  const selected=await completed(await handlers.get('extract')({title:'bounded reasoning selection',text,model}))
+  assert.equal(selected.status,'succeeded',JSON.stringify(selected.error))
+  assert.equal(requests[0].reasoningEffort,expected,'Only choose a declared effort, never invent off/low support')
+}
+supportedEfforts=[]
+requests.length = 0
+incompleteResponses = 1
+const recoveredOutput = await completed(await handlers.get('extract')({title:'complete response recovery',text,model}))
+incompleteResponses = 0
+assert.equal(recoveredOutput.status,'succeeded',JSON.stringify(recoveredOutput.error))
+assert.equal(requests.filter(r=>r.system === requests[0].system).length,2,'Extraction retry must use a fresh complete response without imposing a token budget')
+assert.equal(recoveredOutput.result.nodes.length,6,'Truncated candidate must not leak or replace the complete candidate')
+requests.length = 0
+reasoningOnly = true
+incompleteResponses = 2
+const recoveredReasoning = await completed(await handlers.get('extract')({title:'reasoning-only recovery',text,model}))
+reasoningOnly = false
+incompleteResponses = 0
+assert.equal(recoveredReasoning.status,'succeeded',JSON.stringify(recoveredReasoning.error))
+assert.equal(requests.filter(r=>r.system === requests[0].system).length,3)
+assert.equal(recoveredReasoning.result.nodes.length,6)
+requests.length = 0
+reasoningOnly = true
+incompleteResponses = Infinity
+const missingCandidate = await completed(await handlers.get('extract')({title:'reasoning-only bounded failure',text,model}))
+reasoningOnly = false
+incompleteResponses = 0
+assert.equal(missingCandidate.status,'failed')
+assert.equal(missingCandidate.error.code,'reasoning_only')
+assert.equal(requests.length,3,'Permanent failure must not cause unbounded retries')
+
+// Long evidence cannot use the short verbatim fallback: recovery must actually
+// repair the proposition, and persistent drift must remain a blocking failure.
+const strengthSource = '学习者可能遗忘材料。' + '此处记录材料的使用背景。'.repeat(30)
+const strengthCandidate = value => JSON.stringify({summary:'记忆',nodes:[{id:'n6',type:'claim',text:value,quote:strengthSource,paragraph:0}],edges:[]})
+let strengthCalls = 0
+respond = request => {
+  strengthCalls++
+  if (strengthCalls > 1) {
+    const prompt = JSON.stringify(request.messages)
+    assert(prompt.includes('可能'), 'Repair feedback must name the lost qualifier')
+    assert(prompt.includes('semantic') || prompt.includes('node_semantic_strength_drift'))
+    assert(prompt.includes('待修复数据=') && prompt.includes('学习者遗忘材料'), 'Repair must receive the rejected proposition and source context')
+    assert(prompt.includes('不得仅机械添加限定词'), 'Repair must preserve meaning, not merely satisfy keyword checks')
+  }
+  return strengthCandidate(strengthCalls === 1 ? '学习者遗忘材料' : '学习者可能遗忘材料')
+}
+const strengthRecovered = await completed(await handlers.get('extract')({title:'semantic repair feedback',text:strengthSource,model}))
+assert.equal(strengthRecovered.status,'succeeded',JSON.stringify(strengthRecovered.error))
+assert.equal(strengthCalls,2)
+assert.equal(strengthRecovered.result.nodes[0].text,'学习者可能遗忘材料')
+respond = () => strengthCandidate('学习者遗忘材料')
+const strengthRejected = await completed(await handlers.get('extract')({title:'persistent semantic drift',text:strengthSource,model}))
+assert.equal(strengthRejected.status,'failed')
+assert.equal(strengthRejected.error.code,'invariant_violation')
+assert(strengthRejected.error.message.includes('待修复数据=') && strengthRejected.error.message.includes('可能'), 'Final failure must retain enough evidence to diagnose drift')
+respond = null
 
 const large = { summary: 'Dense report', nodes: Array.from({ length: 2000 }, (_, i) => ({ id: 'n' + i, type: 'fact', text: '相同记录', quote: '相同记录', paragraph: 0 })), edges: [] }
 let ticks = 0
@@ -79,6 +151,14 @@ assert(structured.batches.every(batch=>batch.units.length<=32))
 const headingUnits=['# 第一章','第一章正文。','# 第二章','第二章正文。']
 const chapters=contract.buildSourceManifest('chapters',headingUnits.join('\n\n'),headingUnits)
 assert.equal(chapters.batches.length,2,'Explicit chapters should not be merged into one prompt')
+const minorUnits=Array.from({length:100},(_,i)=>['## 小节'+i,'这是小节'+i+'的正文。']).flat()
+const minorText=minorUnits.join('\n\n')
+const minorPacked=contract.buildSourceManifest('minor headings',minorText,minorUnits,'minor-doc','minor-source')
+const minorOld=contract.buildSourceManifest('minor headings',minorText,minorUnits,'minor-doc','minor-source','structure-v1')
+assert.equal(minorOld.batches.length,100,'Old checkpoint policy must retain its partition and chunk identities')
+assert(minorPacked.batches.length < 10,'Short Markdown subheadings must not force a new model call each')
+assert(minorPacked.batches.every(b=>b.units.length<=32),'Packing must retain the density ceiling')
+assert.deepEqual(minorPacked.batches.flatMap(b=>b.units.map(u=>u.num)),minorUnits.map((_,i)=>i),'Packing must preserve every paragraph exactly once')
 const absentSource = '本资料没有说明温度和颜色存在因果关系。'
 const absentGate = contract.validateGraphInvariants({nodes:[{id:'a',type:'claim',text:'温度和颜色不存在因果关系。',quote:absentSource,paragraph:0}],edges:[]},absentSource)
 assert(absentGate.blockingIssues.some(issue=>issue.code==='node_semantic_strength_drift'), 'Lack of evidence must not become evidence of absence')
