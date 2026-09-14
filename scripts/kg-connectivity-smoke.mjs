@@ -353,6 +353,12 @@ const manualText = ['目标决定学习方向', '方法由目标驱动', '复诊
 const manualStarted = await handlers.get('extract')({ title: 'manual-relation-retry', text: manualText })
 const manualCompleted = await waitTask(manualStarted.taskId)
 assert(manualCompleted.status === 'succeeded' && manualCompleted.result.edges.length === 1, 'manual retry fixture did not remain sparse after its first weave')
+let retryReviewed = 0
+extractor.reviewRelations = async ({ candidates }) => {
+  assert(candidates.length === 1 && candidates[0].edge.fromNodeId === 'm2' && candidates[0].edge.toNodeId === 'm3', 'retry must review only the new candidate')
+  retryReviewed++
+  return { verdicts: candidates.map(item => ({ id: item.id, verdict: 'supported', reason: 'Fixture reviewer acceptance', evidence: item.edge.evidence })) }
+}
 const retryStarted = await handlers.get('relation-retry')({
   documentId: manualCompleted.result.source.documentId,
   expectedRevision: manualCompleted.result.revision,
@@ -360,6 +366,7 @@ const retryStarted = await handlers.get('relation-retry')({
 assert(retryStarted && retryStarted.taskId, 'relation-only retry task was not created')
 const retryCompleted = await waitTask(retryStarted.taskId)
 assert(retryCompleted.status === 'succeeded' && retryCompleted.result, 'relation-only retry failed: ' + JSON.stringify(retryCompleted))
+assert(retryReviewed === 1, 'relation-only retry skipped independent review')
 assert(retryCompleted.result.nodes.length === 3 && retryCompleted.result.edges.length === 2, 'relation-only retry regenerated nodes or failed to add the edge')
 const retryConnectivity = retryCompleted.result.generation && retryCompleted.result.generation.connectivity
 assert(retryConnectivity && retryConnectivity.addedEdges === 1 && retryConnectivity.after.componentCount === 1, 'relation-only retry metadata is wrong: ' + JSON.stringify(retryConnectivity))

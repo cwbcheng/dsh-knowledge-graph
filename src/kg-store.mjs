@@ -1006,6 +1006,17 @@ export class SqliteKnowledgeStore {
       ORDER BY updated_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, int(limit, 50))))
   }
 
+  deleteIncompleteRun(runId, expectedUpdatedAt) {
+    if (typeof runId !== 'string' || !runId.trim() || runId.length > 200 || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
+      throw Object.assign(new Error('任务标识或更新时间无效'), { code: 'invalid_input' })
+    }
+    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND status IN ('running', 'failed')").run(runId, expectedUpdatedAt)
+    if (result.changes) return { deleted: true, runId }
+    const row = this.db.prepare('SELECT status FROM extraction_runs WHERE run_id = ?').get(runId)
+    if (!row) return { deleted: false, runId }
+    throw Object.assign(new Error('任务已更新或不再是未完成任务，请刷新列表后重试'), { code: 'run_conflict' })
+  }
+
   listDocuments(limit = 50) {
     const rows = this.db.prepare('SELECT document_id, source_id, title, chars, paragraph_count, chunk_count, section_count, created_at, updated_at FROM documents ORDER BY updated_at DESC LIMIT ?').all(Math.max(1, Math.min(500, int(limit, 50))))
     return rows.map((row) => ({

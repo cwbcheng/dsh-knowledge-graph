@@ -107,6 +107,9 @@ const retryStart = client.indexOf('        const retryRelations = async () => {'
 const retryEnd = client.indexOf('        // Detect a mouse/keyboard text selection', retryStart)
 const script = client.slice(retryStart, retryEnd)
 const values = { resultView: { graph: { source: { documentId: 'doc', revision: 1 } } }, documentIdOfGraph: () => 'doc', cancelVerifyTasks() {}, setError() {}, effectiveModelArg: null, graphRevisionRef: { current: 1 }, submittedRef: { current: null }, submissionBusyRef: { current: false }, resumeAttemptRef: { current: false }, setExtractProgress() {}, setPhase() {}, setSelectedNodeId() {}, setSelectedEdgeId() {}, setActivePara() {}, setTaskId() {}, taskId: null, phase: 'done', title: 'book', fullText: 'source', rememberPendingTask: storage.rememberPendingTask, host: { call(name) { assert.equal(name, 'relation-retry'); calls++; return new Promise(resolve => { release = resolve }) } } }
+values.continuousRelations = true
+const submit = values.host.call
+values.host.call = (name, body) => { assert.equal(body.continuous, true, 'send the chosen execution mode to Host'); return submit(name, body) }
 const retry = new Function(...Object.keys(values), script + '; return retryRelations')(...Object.values(values))
 calls = 0
 const first = retry(), second = retry()

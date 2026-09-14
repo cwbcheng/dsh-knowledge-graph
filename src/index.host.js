@@ -4619,6 +4619,18 @@ function createHostPlugin(graphContractOnly) {
         const message = error && error.message ? error.message : String(error || '')
         return error?.code === 'RATE_LIMIT' || error?.status === 429 || /(?:\b429\b|rate[_ -]?limit|tpm exhausted|429001)/i.test(message)
       }
+      function relationReviewRetryDelayHost(error) {
+        // Retry transport/service failures, not semantic decisions or permanent
+        // authentication/configuration errors. Provider prose is not a policy.
+        const status = error?.status
+        if (Number.isInteger(status)) {
+          if (status === 429) return RELATION_WEAVE_RATE_LIMIT_DELAY_MS
+          return [408, 500, 502, 503, 504].includes(status) ? 3000 : 0
+        }
+        const code = error?.providerCode || error?.code
+        if (code === 'RATE_LIMIT') return RELATION_WEAVE_RATE_LIMIT_DELAY_MS
+        return ['TRANSPORT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET'].includes(code) ? 3000 : 0
+      }
       async function cancellableTaskDelayHost(task, ms) {
         if (!task || task.cancelled) {
           const error = new Error('任务已取消')
@@ -4668,7 +4680,7 @@ function createHostPlugin(graphContractOnly) {
         const working = graphConnectivityHost(nodes, acc.edges)
         result.after = connectivitySnapshotHost(working)
         result.candidateEdgeKeys = acc.edges.filter(edge => !originalKeys.has(edgeKeyHost(edge))).map(edgeKeyHost)
-        if ((!shouldWeaveRelationsHost(working) && !task.concurrentBoundaries?.length) || (!model && !hasKgRelationWeaver)) {
+        if ((!shouldWeaveRelationsHost(working) && task.kind !== 'relation-retry' && !task.concurrentBoundaries?.length) || (!model && !hasKgRelationWeaver)) {
           result.attempted = seededEdges > 0
           return result
         }
@@ -4676,7 +4688,9 @@ function createHostPlugin(graphContractOnly) {
         const plan = buildRelationWeaveGroupsHost(nodes, acc.edges, working, paragraphTexts, previousCoverage, sourceText)
         let groups = plan.groups
         result.coverage = plan.coverage
+        result.searchedBefore = plan.coverage.searchedTargets
         const searched = new Set(plan.coverage.completedTargetIds)
+        if (task.progress?.completion) task.progress.completion = { ...task.progress.completion, savedTargets: searched.size, totalTargets: nodes.length, pass: plan.coverage.pass }
         const updateCoverage = () => {
           result.coverage.completedTargetIds = Array.from(searched)
           result.coverage.searchedTargets = searched.size
@@ -4893,6 +4907,14 @@ function createHostPlugin(graphContractOnly) {
             } catch (error) {
               if (isTerminalTaskOperationErrorHost(error) || error?.code === 'persistence_failed') throw error
               const detail = String(error && error.message || error).slice(0, 500)
+              const retryDelay = !responseReceived && attempt === 0 ? relationReviewRetryDelayHost(error) : 0
+              if (retryDelay) {
+                review.retries.push({ start, count: selected.length, reason: 'review_transport_retry', delayMs: retryDelay })
+                taskStage('关系审校请求中断，' + (retryDelay / 1000) + ' 秒后自动重试（1/1）', '本批 ' + selected.length + ' 条候选仍待审；不会接纳不完整输出')
+                await cancellableTaskDelayHost(task, retryDelay)
+                throwIfTaskCancelledHost(task)
+                continue
+              }
               if (responseReceived && attempt === 0) {
                 // Never replay model output as corrective instructions.
                 feedback = /^review_[a-z_]+$/.test(detail) ? detail : 'review_invalid_json'
@@ -4920,7 +4942,8 @@ function createHostPlugin(graphContractOnly) {
         for (const edge of candidates) {
           if (reviewedEdges.has(edge)) continue
           rejected.add(edge)
-          review.withheld.push({ edge: cloneGraphEdgeHost(edge), verdict: 'pending', reason: '高风险关系尚未完成语义复核', evidence: [] })
+          const failure = review.failures.find(item => item.edges.includes(edgeKeyHost(edge)))
+          review.withheld.push({ edge: cloneGraphEdgeHost(edge), verdict: 'pending', reason: '关系尚未完成语义复核' + (failure ? '：' + failure.reason : ''), evidence: [] })
           graph.warnings.push('relation_withheld:' + edgeKeyHost(edge) + ':pending')
         }
         graph.edges = graph.edges.filter((edge) => !rejected.has(edge))
@@ -5051,6 +5074,7 @@ function createHostPlugin(graphContractOnly) {
           modelUsage: modelUsageSnapshotHost(task),
           review: task.progress?.review || null,
           discovery: task.progress?.discovery || null,
+          completion: task.progress?.completion ? { ...task.progress.completion } : null,
           completedBatches: task.checkpoint?.nextBatchIndex || 0,
           sampledAt: Date.now(),
           requests: (task.progress?.requests || []).map(request => ({ ...request })),
@@ -5979,137 +6003,191 @@ function createHostPlugin(graphContractOnly) {
         }
       }
 
+      async function runRelationRetryBatchHost(task, model) {
+        const canonical = loadCanonicalDocumentHost(task.documentId)
+        if (!canonical || !canonical.graph || !canonical.sourceText) return failTask(task, 'not_found', '找不到可补全关系的 canonical graph 或原文')
+        if (Number.isInteger(task.baseRevision) && canonical.revision !== task.baseRevision) {
+          return failTask(task, 'revision_conflict', '知识图已更新，请重新加载后再补全关系')
+        }
+        const sourceText = canonical.sourceText
+        const paragraphTexts = splitParagraphsHost(sourceText)
+        const current = canonical.graph
+        const graph = {
+          ...current,
+          nodes: (current.nodes || []).map(cloneGraphNodeHost),
+          edges: (current.edges || []).map(cloneGraphEdgeHost),
+          warnings: Array.isArray(current.warnings) ? current.warnings.slice() : [],
+          source: current.source && typeof current.source === 'object'
+            ? { ...current.source, sections: Array.isArray(current.source.sections) ? current.source.sections.map((section) => ({ ...section })) : [] }
+            : {},
+          staging: current.staging && typeof current.staging === 'object'
+            ? { ...current.staging, chunks: Array.isArray(current.staging.chunks) ? current.staging.chunks.map((chunk) => ({ ...chunk })) : [] }
+            : {},
+          generation: current.generation && typeof current.generation === 'object' ? { ...current.generation } : {},
+        }
+        const acc = { nodes: new Map(), edges: graph.edges, edgeKeys: new Set(), warnings: graph.warnings, nodeKeys: new Map() }
+        for (const node of graph.nodes) {
+          acc.nodes.set(node.id, node)
+          const lookup = graphNodeLookupKeyHost(node)
+          if (lookup && !acc.nodeKeys.has(lookup)) acc.nodeKeys.set(lookup, node.id)
+        }
+        for (const edge of acc.edges) acc.edgeKeys.add(edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation)
+        const priorReview = current.generation?.relationRetrySemanticReview || current.generation?.semanticReview
+        if ((priorReview?.withheld || []).some((item) => item?.verdict === 'pending') && !model && typeof kgExtractor?.reviewRelations !== 'function') {
+          return failTask(task, 'no_model', '待复核关系必须有可用的语义复核模型，不能直接接纳')
+        }
+        const pendingKeys = new Set()
+        for (const item of priorReview?.withheld || []) {
+          if (item?.verdict !== 'pending' || !item.edge) continue
+          const edge = cloneGraphEdgeHost(item.edge)
+          const key = edgeKeyHost(edge)
+          if (acc.edgeKeys.has(key)) continue
+          // Re-check the original candidate, not a model's newly generated substitute.
+          acc.edges.push(edge)
+          acc.edgeKeys.add(key)
+          pendingKeys.add(key)
+        }
+        const paragraphMeta = new Array(paragraphTexts.length)
+        for (const section of graph.source.sections || []) {
+          if (!section || !Number.isInteger(section.startParagraph) || !Number.isInteger(section.endParagraph)) continue
+          for (let paragraph = section.startParagraph; paragraph <= section.endParagraph && paragraph < paragraphMeta.length; paragraph++) {
+            paragraphMeta[paragraph] = { sectionId: section.id, sectionTitle: section.title }
+          }
+        }
+        const warningStart = acc.warnings.length
+        const reviewOnly = task.reviewPendingOnly || (task.continuous && pendingKeys.size > 0)
+        task.progress.review = null
+        const connectivity = reviewOnly ? {
+          version: 1, attempted: false, groups: 0, addedEdges: 0,
+          before: graphConnectivityHost(current.nodes, current.edges),
+          coverage: current.generation?.relationDiscovery || current.generation?.connectivity?.coverage || null,
+        } : await weaveRelationsHost(task, model, acc, paragraphTexts, {
+          documentId: task.documentId,
+          paragraphMeta,
+        }, sourceText, current.generation?.relationDiscovery || current.generation?.connectivity?.coverage)
+        throwIfTaskCancelledHost(task)
+        const newWarnings = acc.warnings.slice(warningStart)
+        const relationFailure = newWarnings.find((warning) => /^relation_weave_failed:/.test(String(warning)))
+        if (connectivity.addedEdges === 0 && relationFailure && !pendingKeys.size && (!task.continuous || connectivity.coverage?.searchedTargets <= connectivity.searchedBefore)) {
+          return failTask(task, 'relation_weave_failed', String(relationFailure).replace(/^relation_weave_failed:group\d+:/, '关系模型未能返回可验收的关系：'))
+        }
+        graph.edges = acc.edges
+        graph.warnings = connectivity.addedEdges > 0
+          ? acc.warnings.slice(0, warningStart).filter((warning) => !/^relation_weave_failed:/.test(String(warning))).concat(newWarnings)
+          : acc.warnings
+        authenticateGraphEvidenceHost(graph, sourceText)
+        const protectedKeys = new Set((current.edges || []).map(edgeKeyHost))
+        const relationRetrySemanticReview = await reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys, new Set([...pendingKeys, ...(connectivity.candidateEdgeKeys || [])]))
+        if (relationRetrySemanticReview.skippedReason === 'reviewer_unavailable' && relationRetrySemanticReview.pending > 0) {
+          return failTask(task, 'no_model', '新检索的关系必须经过独立语义审校，当前没有可用的审校模型；本批未接纳')
+        }
+        const decisions = new Map((current.generation?.relationReviewDecisions || []).map((item) => [edgeKeyHost(item.edge), item]))
+        for (const item of [...(priorReview?.accepted || []), ...(priorReview?.withheld || []), ...relationRetrySemanticReview.accepted, ...relationRetrySemanticReview.withheld]) {
+          if (item?.edge && item.verdict !== 'pending') decisions.set(edgeKeyHost(item.edge), item)
+        }
+        if (relationRetrySemanticReview.withheld.length || relationRetrySemanticReview.pending || relationRetrySemanticReview.errors.length) {
+          graph.warnings.push('relation_semantic_review:withheld=' + relationRetrySemanticReview.withheld.length + ':pending=' + relationRetrySemanticReview.pending)
+        }
+        throwIfTaskCancelledHost(task)
+        let gate = validateGraphInvariantsHost(graph, sourceText, { includeQuality: false })
+        const repairs = applySafeInvariantRepairsHost(graph, gate, { allowEdgeDrops: true }).repairs
+        if (repairs.length > 0) gate = validateGraphInvariantsHost(graph, sourceText, { includeQuality: false })
+        if (gate.blockingIssues.length > 0) {
+          return failTask(task, 'invariant_violation', '补全后的关系未通过确定性验收：' + formatInvariantFeedbackHost(gate.blockingIssues).replace(/\n/g, '；'))
+        }
+        connectivity.before = connectivitySnapshotHost(graphConnectivityHost(current.nodes, current.edges))
+        connectivity.candidateEdgeKeys = Array.from(new Set([...(connectivity.candidateEdgeKeys || []), ...pendingKeys]))
+        finalizeRelationConnectivityHost(connectivity, graph)
+        if (connectivity.addedEdges > 0) graph.warnings.push('relation_weave_retry_succeeded:added_edges=' + connectivity.addedEdges)
+        graph.generation = {
+          ...graph.generation,
+          modelUsage: modelUsageSnapshotHost(task),
+          status: connectivity.addedEdges > 0 && !relationRetrySemanticReview.withheld.length && !relationRetrySemanticReview.pending && !relationRetrySemanticReview.errors.length ? 'succeeded' : 'succeeded_with_warnings',
+          invariantErrors: 0,
+          connectivity,
+          relationDiscovery: connectivity.coverage || current.generation?.relationDiscovery || current.generation?.connectivity?.coverage || null,
+          relationRetrySemanticReview,
+          relationReviewDecisions: Array.from(decisions.values()),
+          relationRetryCount: Number(graph.generation && graph.generation.relationRetryCount || 0) + 1,
+          relationRetryAt: Date.now(),
+          relationCompletion: {
+            continuous: task.continuous === true,
+            savedCycles: (task.progress.completion?.savedCycles || 0) + 1,
+            acceptedEdges: (task.progress.completion?.acceptedEdges || 0) + (connectivity.addedEdges || 0),
+            savedTargets: connectivity.coverage?.searchedTargets || 0,
+            totalTargets: graph.nodes.length,
+            pass: connectivity.coverage?.pass || 1,
+            lastSavedAt: Date.now(),
+          },
+        }
+        throwIfTaskCancelledHost(task)
+        if (loadCanonicalDocumentHost(task.documentId)?.revision !== task.baseRevision) return failTask(task, 'revision_conflict', '补全关系期间知识图已被其他修改更新，请重新加载后重试')
+        taskStage('正在保存已审校关系和检索进度…')
+        let persistedRevision = null
+        if (typeof persistGraph === 'function') {
+          try {
+            const persisted = await persistGraph(graph, { ...task, canonicalSourceText: sourceText })
+            if (persisted && Number.isInteger(persisted.revision)) persistedRevision = persisted.revision
+          } catch (error) {
+            if (error && error.code === 'revision_conflict') return failTask(task, 'revision_conflict', '补全关系期间知识图已被其他修改更新，请重新加载后重试')
+            return failTask(task, 'persistence_failed', '关系补全结果持久化失败：' + (error && error.message ? error.message : String(error)))
+          }
+        }
+        const remembered = rememberCanonicalGraphHost(graph, sourceText, persistedRevision)
+        if (remembered) {
+          graph.revision = remembered.revision
+          graph.source = { ...graph.source, revision: remembered.revision }
+        }
+        return { graph, connectivity, relationFailure, review: relationRetrySemanticReview, reviewOnly }
+      }
+
       async function runRelationRetryTask(task) {
         if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
         task.cancelHooks = []
-        task.progress = { stage: '准备关系补全', charsReceived: 0, updatedAt: Date.now() }
+        task.progress = { stage: '准备关系补全', charsReceived: 0, updatedAt: Date.now(),
+          completion: { continuous: task.continuous === true, savedCycles: 0, acceptedEdges: 0, savedTargets: 0 } }
         activeTask = task
         try {
-          const canonical = loadCanonicalDocumentHost(task.documentId)
-          if (!canonical || !canonical.graph || !canonical.sourceText) return failTask(task, 'not_found', '找不到可补全关系的 canonical graph 或原文')
-          if (Number.isInteger(task.baseRevision) && canonical.revision !== task.baseRevision) {
-            return failTask(task, 'revision_conflict', '知识图已更新，请重新加载后再补全关系')
-          }
           const model = task.model || (hasKgRelationWeaver ? null : await resolveModel())
           if (!model && !hasKgRelationWeaver) return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，无法补全关系')
           if (model) announceModel(task, model)
-          const sourceText = canonical.sourceText
-          const paragraphTexts = splitParagraphsHost(sourceText)
-          const current = canonical.graph
-          const graph = {
-            ...current,
-            nodes: (current.nodes || []).map(cloneGraphNodeHost),
-            edges: (current.edges || []).map(cloneGraphEdgeHost),
-            warnings: Array.isArray(current.warnings) ? current.warnings.slice() : [],
-            source: current.source && typeof current.source === 'object'
-              ? { ...current.source, sections: Array.isArray(current.source.sections) ? current.source.sections.map((section) => ({ ...section })) : [] }
-              : {},
-            staging: current.staging && typeof current.staging === 'object'
-              ? { ...current.staging, chunks: Array.isArray(current.staging.chunks) ? current.staging.chunks.map((chunk) => ({ ...chunk })) : [] }
-              : {},
-            generation: current.generation && typeof current.generation === 'object' ? { ...current.generation } : {},
-          }
-          const acc = { nodes: new Map(), edges: graph.edges, edgeKeys: new Set(), warnings: graph.warnings, nodeKeys: new Map() }
-          for (const node of graph.nodes) {
-            acc.nodes.set(node.id, node)
-            const lookup = graphNodeLookupKeyHost(node)
-            if (lookup && !acc.nodeKeys.has(lookup)) acc.nodeKeys.set(lookup, node.id)
-          }
-          for (const edge of acc.edges) acc.edgeKeys.add(edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation)
-          const priorReview = current.generation?.relationRetrySemanticReview || current.generation?.semanticReview
-          if ((priorReview?.withheld || []).some((item) => item?.verdict === 'pending') && !model && typeof kgExtractor?.reviewRelations !== 'function') {
-            return failTask(task, 'no_model', '待复核关系必须有可用的语义复核模型，不能直接接纳')
-          }
-          const pendingKeys = new Set()
-          for (const item of priorReview?.withheld || []) {
-            if (item?.verdict !== 'pending' || !item.edge) continue
-            const edge = cloneGraphEdgeHost(item.edge)
-            const key = edgeKeyHost(edge)
-            if (acc.edgeKeys.has(key)) continue
-            // Re-check the original candidate, not a model's newly generated substitute.
-            acc.edges.push(edge)
-            acc.edgeKeys.add(key)
-            pendingKeys.add(key)
-          }
-          const paragraphMeta = new Array(paragraphTexts.length)
-          for (const section of graph.source.sections || []) {
-            if (!section || !Number.isInteger(section.startParagraph) || !Number.isInteger(section.endParagraph)) continue
-            for (let paragraph = section.startParagraph; paragraph <= section.endParagraph && paragraph < paragraphMeta.length; paragraph++) {
-              paragraphMeta[paragraph] = { sectionId: section.id, sectionTitle: section.title }
+          for (;;) {
+            throwIfTaskCancelledHost(task)
+            const batch = await runRelationRetryBatchHost(task, model)
+            if (!batch) return
+            const { graph, connectivity, relationFailure, review, reviewOnly } = batch
+            // Only a completed canonical commit advances the durable cursor.
+            task.baseRevision = graph.revision
+            task.progress.completion = { ...graph.generation.relationCompletion, revision: graph.revision }
+            throwIfTaskCancelledHost(task)
+            if (task.continuous && (relationFailure || review.pending || review.errors.length)) {
+              return failTask(task, relationFailure ? 'relation_weave_failed' : 'relation_review_pending',
+                relationFailure ? String(relationFailure).replace(/^relation_weave_failed:group\d+:/, '关系检索未完成：') :
+                  '关系审校未完成（待审 ' + review.pending + ' 条），已暂停持续补全；候选已保留，继续时先重试待审关系' +
+                  (review.errors.length ? '。原因：' + review.errors.slice(0, 3).join('；') : ''))
             }
-          }
-          const warningStart = acc.warnings.length
-          const connectivity = task.reviewPendingOnly ? {
-            version: 1, attempted: false, groups: 0, addedEdges: 0,
-            before: graphConnectivityHost(current.nodes, current.edges),
-          } : await weaveRelationsHost(task, model, acc, paragraphTexts, {
-            documentId: task.documentId,
-            paragraphMeta,
-          }, sourceText, current.generation?.relationDiscovery || current.generation?.connectivity?.coverage)
-          const newWarnings = acc.warnings.slice(warningStart)
-          const relationFailure = newWarnings.find((warning) => /^relation_weave_failed:/.test(String(warning)))
-          if (connectivity.addedEdges === 0 && relationFailure && !pendingKeys.size) {
-            return failTask(task, 'relation_weave_failed', String(relationFailure).replace(/^relation_weave_failed:group\d+:/, '关系模型未能返回可验收的关系：'))
-          }
-          graph.edges = acc.edges
-          graph.warnings = connectivity.addedEdges > 0
-            ? acc.warnings.slice(0, warningStart).filter((warning) => !/^relation_weave_failed:/.test(String(warning))).concat(newWarnings)
-            : acc.warnings
-          authenticateGraphEvidenceHost(graph, sourceText)
-          const protectedKeys = new Set((current.edges || []).map(edgeKeyHost))
-          const relationRetrySemanticReview = await reviewHighRiskRelationsHost(task, model, graph, paragraphTexts, protectedKeys, new Set([...pendingKeys, ...(connectivity.candidateEdgeKeys || [])]))
-          const decisions = new Map((current.generation?.relationReviewDecisions || []).map((item) => [edgeKeyHost(item.edge), item]))
-          for (const item of [...(priorReview?.accepted || []), ...(priorReview?.withheld || []), ...relationRetrySemanticReview.accepted, ...relationRetrySemanticReview.withheld]) {
-            if (item?.edge && item.verdict !== 'pending') decisions.set(edgeKeyHost(item.edge), item)
-          }
-          if (relationRetrySemanticReview.withheld.length || relationRetrySemanticReview.pending || relationRetrySemanticReview.errors.length) {
-            graph.warnings.push('relation_semantic_review:withheld=' + relationRetrySemanticReview.withheld.length + ':pending=' + relationRetrySemanticReview.pending)
-          }
-          let gate = validateGraphInvariantsHost(graph, sourceText, { includeQuality: false })
-          const repairs = applySafeInvariantRepairsHost(graph, gate, { allowEdgeDrops: true }).repairs
-          if (repairs.length > 0) gate = validateGraphInvariantsHost(graph, sourceText, { includeQuality: false })
-          if (gate.blockingIssues.length > 0) {
-            return failTask(task, 'invariant_violation', '补全后的关系未通过确定性验收：' + formatInvariantFeedbackHost(gate.blockingIssues).replace(/\n/g, '；'))
-          }
-          connectivity.before = connectivitySnapshotHost(graphConnectivityHost(current.nodes, current.edges))
-          connectivity.candidateEdgeKeys = Array.from(new Set([...(connectivity.candidateEdgeKeys || []), ...pendingKeys]))
-          finalizeRelationConnectivityHost(connectivity, graph)
-          if (connectivity.addedEdges > 0) graph.warnings.push('relation_weave_retry_succeeded:added_edges=' + connectivity.addedEdges)
-          graph.generation = {
-            ...graph.generation,
-            modelUsage: modelUsageSnapshotHost(task),
-            status: connectivity.addedEdges > 0 && !relationRetrySemanticReview.withheld.length && !relationRetrySemanticReview.pending && !relationRetrySemanticReview.errors.length ? 'succeeded' : 'succeeded_with_warnings',
-            invariantErrors: 0,
-            connectivity,
-            relationDiscovery: connectivity.coverage || current.generation?.relationDiscovery || current.generation?.connectivity?.coverage || null,
-            relationRetrySemanticReview,
-            relationReviewDecisions: Array.from(decisions.values()),
-            relationRetryCount: Number(graph.generation && graph.generation.relationRetryCount || 0) + 1,
-          relationRetryAt: Date.now(),
-          }
-          let persistedRevision = null
-          if (typeof persistGraph === 'function') {
-            try {
-              const persisted = await persistGraph(graph, { ...task, canonicalSourceText: sourceText })
-              if (persisted && Number.isInteger(persisted.revision)) persistedRevision = persisted.revision
-            } catch (error) {
-              if (error && error.code === 'revision_conflict') return failTask(task, 'revision_conflict', '补全关系期间知识图已被其他修改更新，请重新加载后重试')
-              return failTask(task, 'persistence_failed', '关系补全结果持久化失败：' + (error && error.message ? error.message : String(error)))
+            const coverage = connectivity.coverage
+            if (!task.continuous || task.reviewPendingOnly || coverage?.remainingTargets === 0) {
+              task.status = 'succeeded'
+              task.finishedAt = Date.now()
+              task.result = buildGraphViewHost(graph)
+              return
             }
+            // Empty but valid results are progress. Failed or unchanged cursors
+            // are not: never spin or silently open another paid search round.
+            if (!reviewOnly && (!coverage || coverage.searchedTargets <= connectivity.searchedBefore)) {
+              return failTask(task, 'relation_progress_stalled', '关系检索覆盖没有推进，已停止持续补全')
+            }
+            await cancellableTaskDelayHost(task, 0)
           }
-          const remembered = rememberCanonicalGraphHost(graph, sourceText, persistedRevision)
-          if (remembered) {
-            graph.revision = remembered.revision
-            graph.source = { ...graph.source, revision: remembered.revision }
-          }
-          task.status = 'succeeded'
-          task.finishedAt = Date.now()
-          task.result = buildGraphViewHost(graph)
         } catch (error) {
-          if (error && error.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
+          if (error && error.code === 'cancelled') failTask(task, 'cancelled', '关系补全已停止')
           else if (error && error.code === 'timeout') failTask(task, 'timeout', '关系补全超时：' + (error && error.message ? error.message : String(error)))
           else failTask(task, 'failed', '关系补全失败：' + (error && error.message ? error.message : String(error)))
         } finally {
+          if (task.status !== 'succeeded' && task.progress.completion.savedCycles) {
+            task.errorMessage += '；已保存 ' + task.progress.completion.savedTargets + '/' + task.progress.completion.totalTargets + ' 个节点的检索进度，可从此继续'
+          }
           finishTaskRuntimeHost(task)
         }
       }
@@ -8060,6 +8138,7 @@ function createHostPlugin(graphContractOnly) {
 
       // Persistent Web runtime serves saved runs through its SQLite route.
       harness.handle('extraction-run-list', async () => ({ runs: [] }))
+      harness.handle('extraction-run-delete', async () => ({ error: { code: 'unsupported', message: '当前动态插件没有持久化任务记录可删除' } }))
       harness.handle('task-active', async (args) => activeTaskStatusHost(args))
       harness.handle('task-status', async (args) => {
          const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
@@ -8077,6 +8156,7 @@ function createHostPlugin(graphContractOnly) {
             modelUsage: modelUsageSnapshotHost(t),
             review: t.progress?.review || null,
             discovery: t.progress?.discovery || null,
+            completion: t.progress?.completion ? { ...t.progress.completion } : null,
             completedBatches: t.checkpoint?.nextBatchIndex || 0,
             sampledAt: Date.now(),
             requests: (t.progress?.requests || []).map(request => ({ ...request })),
@@ -8276,11 +8356,13 @@ function createHostPlugin(graphContractOnly) {
 
       harness.handle('relation-retry', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
+        if (a.continuous != null && typeof a.continuous !== 'boolean') return { error: { code: 'invalid_input', message: 'continuous 必须为布尔值' } }
         if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } }
         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
         if (!documentId) return { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } }
         const canonical = loadCanonicalDocumentHost(documentId)
         if (!canonical || !canonical.graph || !canonical.sourceText) return { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } }
+        if (canonical.graph.nodes.length < 2) return { error: { code: 'invalid_input', message: '至少需要两个节点才能检索关系' } }
         if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } }
         const expectedRevision = a.expectedRevision
         if (expectedRevision !== canonical.revision) return { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } }
@@ -8291,6 +8373,7 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq,
           status: 'running',
           kind: 'relation-retry',
+          continuous: a.continuous === true,
           reviewPendingOnly: a.reviewPendingOnly === true,
           title: canonical.graph.source && canonical.graph.source.title ? canonical.graph.source.title : '',
           text: canonical.sourceText,

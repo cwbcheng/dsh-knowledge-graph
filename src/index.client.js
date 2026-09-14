@@ -378,6 +378,7 @@ export default function clientPlugin() {
           h(ModelUsageStatus, { usage: progress.modelUsage }),
           progress.review ? h('p', null, '关系已审校 ' + progress.review.reviewed + '/' + progress.review.eligible + ' · 待审 ' + progress.review.pending + ' · 已复用 ' + (progress.review.reused || 0)) : null,
           progress.discovery ? h(RelationDiscoveryStatus, { coverage: progress.discovery }) : null,
+          progress.completion ? h(RelationCompletionStatus, { completion: progress.completion }) : null,
           total && requests ? h('div', null,
             h('p', null, '内容块已合并 ' + completed + '/' + total + (completed === total ? ' · 正在进行全图后处理，尚未完成' : '')),
             h('progress', { value: completed, max: total, 'aria-label': '内容块合并进度', style: { width: '100%', height: 8, accentColor: '#3b82f6' } })) : null,
@@ -399,6 +400,19 @@ export default function clientPlugin() {
         if (Number.isFinite(connectivity?.after?.edgeCount) && Number.isFinite(connectivity?.before?.edgeCount)) return connectivity.after.edgeCount - connectivity.before.edgeCount
         return null
       }
+      function RelationCompletionStatus({ completion }) {
+        if (!completion) return null
+        return h('p', { role: 'status', style: { fontSize: 13, margin: '6px 0', overflowWrap: 'anywhere' } },
+          (completion.continuous ? '持续补全' : '单批补全') + ' · 本次已保存 ' + (completion.savedCycles || 0) + ' 批 · 检索进度已保存 ' + (completion.savedTargets || 0) + '/' + (completion.totalTargets || 0) + ' 节点 · 本次已接纳 ' + (completion.acceptedEdges || 0) + ' 条关系')
+      }
+      function RelationCompletionControls({ continuous, onContinuousChange, onStart, coverage, disabled }) {
+        return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', maxWidth: '100%' } },
+          h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+            h('input', { type: 'checkbox', checked: continuous, disabled, onChange: event => onContinuousChange(event.target.checked) }), '持续到本轮完成'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: onStart, disabled,
+            title: '按原文检索并独立审校；每批保存。本轮覆盖完成即停止，不会无限开启新一轮。',
+          }, !continuous ? '检索一批' : coverage?.remainingTargets === 0 ? '再检索一轮' : '持续补全关系'))
+      }
       function ModelUsageStatus({ usage, label = '本次模型用量' }) {
         if (!usage || usage.version !== 1) return null
         const finished = usage.finishedRequests || 0
@@ -415,7 +429,7 @@ export default function clientPlugin() {
           h('div', null, label + ' · 已结束 ' + finished + '/' + (usage.startedRequests || 0) + ' 请求 · 用量已上报 ' + (usage.reportedRequests || 0) + '/' + finished),
           finished ? h('div', null, tokens('totalInputTokens', '输入') + ' · ' + tokens('outputTokens', '输出') + ' · ' + cacheText) : null)
       }
-      function BackgroundTaskProgress({ ctx, knownTaskIds = [], busyError, onOpenDocument }) {
+      function BackgroundTaskProgress({ ctx, knownTaskIds = [], busyError, onOpenDocument, onStopTask }) {
         const [snapshot, setSnapshot] = useState(null)
         const [connectionError, setConnectionError] = useState('')
         const observedId = useRef('')
@@ -453,6 +467,7 @@ export default function clientPlugin() {
           task ? h('p', { style: { margin: '4px 0', fontSize: 13 } }, (task.title || '未命名资料') + ' · ' + task.taskId) : null,
           connectionError ? h('p', { role: 'status' }, connectionError) : null,
           running ? h(GenerationProgress, { progress: task.progress }) : null,
+          running && task.kind === 'relation-retry' && onStopTask ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: () => onStopTask(task.taskId) }, '停止补全') : null,
           task?.error ? h('p', { role: 'status' }, task.error.message) : null,
           !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' ? '查看更新后的知识图' : '查看已保存知识图') : null)
       }
@@ -5803,6 +5818,7 @@ export default function clientPlugin() {
         })
         const [chapterFilter, setChapterFilter] = useState('all')
         const [graphWindowLoading, setGraphWindowLoading] = useState(false)
+        const [continuousRelations, setContinuousRelations] = useState(true)
         const [documentLoading, loadGraphDocument] = useGraphDocumentLoading()
         const [graphPageDraft, setGraphPageDraft] = useState('1')
         const [graphQueryDraft, setGraphQueryDraft] = useState('')
@@ -5847,6 +5863,8 @@ export default function clientPlugin() {
         const [incompleteRuns, setIncompleteRuns] = useState([])
         const [runsError, setRunsError] = useState('')
         const [recoveringRun, setRecoveringRun] = useState(null)
+        const [deletingRun, setDeletingRun] = useState(null)
+        const runActionRef = useRef(false)
         const [runsRefresh, setRunsRefresh] = useState(0)
         useEffect(() => {
           let disposed = false
@@ -5858,7 +5876,8 @@ export default function clientPlugin() {
           return () => { disposed = true }
         }, [taskId, runsRefresh])
         const recoverSavedRun = async (run) => {
-          if (recoveringRun || taskId) return
+          if (runActionRef.current || taskId) return
+          runActionRef.current = true
           setRecoveringRun(run.runId)
           try {
             const res = await host.call('resume-extract', { runId: run.runId, retryFailed: true, concurrency: extractionConcurrency, ...(effectiveModelArg ? {model: effectiveModelArg} : {}) })
@@ -5873,7 +5892,33 @@ export default function clientPlugin() {
             setTaskId(res.taskId)
             setPhase('extracting')
           } catch (e) { setError({message:'恢复请求未确认，请刷新任务列表后再试：' + (e.message || '连接失败')}) }
-          finally { setRecoveringRun(null) }
+          finally { runActionRef.current = false; setRecoveringRun(null) }
+        }
+        const deleteSavedRun = async (run) => {
+          if (runActionRef.current || taskId) return
+          if (!window.confirm('确定删除未完成任务“' + (run.title || '未命名资料') + '”吗？\n该任务的拆分检查点和待合并结果将永久删除，无法继续此任务。已保存的知识图及其他任务不受影响。')) return
+          runActionRef.current = true
+          setDeletingRun(run.runId)
+          setRunsError('')
+          try {
+            const res = await host.call('extraction-run-delete', { runId: run.runId, expectedUpdatedAt: run.updatedAt })
+            if (!res || res.error || res.runId !== run.runId || typeof res.deleted !== 'boolean') {
+              setRunsError(res?.error?.message || '删除请求未确认，请刷新列表后重试')
+              return
+            }
+            setIncompleteRuns(runs => runs.filter(item => item.runId !== run.runId))
+            try {
+              const pending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null')
+              if (pending?.taskId === run.runId) localStorage.removeItem(LS_PENDING)
+            } catch (e) {}
+            toastStore.show(res.deleted ? '未完成任务已删除，已保存的知识图不受影响' : '该任务已经删除')
+            setRunsRefresh(value => value + 1)
+          } catch (e) {
+            setRunsError('删除请求未确认，请刷新列表检查；不要重复恢复该任务：' + (e.message || '连接失败'))
+          } finally {
+            runActionRef.current = false
+            setDeletingRun(null)
+          }
         }
         const graphRevisionRef = useRef(0)
         const graphCommitQueueRef = useRef(Promise.resolve())
@@ -6383,6 +6428,11 @@ export default function clientPlugin() {
               return
             }
             if ((res && res.status === 'failed') || (res && res.status === 'cancelled')) {
+              const submitted = submittedRef.current || {}
+              if (submitted.relationRetry && submitted.documentId) {
+                await loadHistoryEntry({ documentId: submitted.documentId, title: submitted.title || '' })
+                if (disposed) return
+              }
               setPhase('idle')
               setTaskId(null)
               setExtractProgress(null)
@@ -6390,7 +6440,6 @@ export default function clientPlugin() {
               // missing in-memory task may be a Host-restart recovery case.
               forgetPendingTask(taskId)
               const err = res.error || {}
-              const submitted = submittedRef.current || {}
               setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : (submitted.relationRetry ? '关系补全失败，请稍后重试' : 'AI 拆分失败，请稍后重试')) })
               return
             }
@@ -6825,6 +6874,7 @@ export default function clientPlugin() {
           setError(null)
           const payload = {
             documentId,
+            continuous: continuousRelations,
             expectedRevision: graphRevisionRef.current || (graph.source && graph.source.revision) || 0,
             ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
           }
@@ -7121,7 +7171,7 @@ export default function clientPlugin() {
           if (!taskId) return
           try {
             const res = await host.call('task-cancel', { taskId })
-            if (res && res.status === 'cancelling') toastStore.show('正在取消拆分任务…')
+            if (res && res.status === 'cancelling') toastStore.show(submittedRef.current?.relationRetry ? '正在停止关系补全，已保存进度会保留…' : '正在取消拆分任务…')
           } catch (e) {
             toastStore.show('取消失败：' + (e && e.message ? e.message : '未知错误'))
           }
@@ -7773,12 +7823,11 @@ export default function clientPlugin() {
                     : null,
                   h(RelationDiscoveryStatus, { coverage: discoveryMeta }),
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
-                  connectivityMeta && connectivityMeta.after && ((connectivityMeta.after.componentCount || 0) > 1 || (connectivityMeta.after.isolatedNodes || 0) > 0)
-                    ? h('button', {
-                        type: 'button', className: 'kg-secondary', onClick: retryRelations,
-                        title: '每次检查最多 4 组重点节点；继续上次覆盖位置，保留节点，新关系仍须依据原文独立审校',
-                      }, discoveryMeta ? (discoveryMeta.remainingTargets > 0 ? '继续检索关系' : '重新检索关系') : '补全关系')
+                  (graph.view?.totalNodes || graph.nodes.length) >= 2 && documentIdOfGraph(graph)
+                    ? h(RelationCompletionControls, { continuous: continuousRelations, onContinuousChange: setContinuousRelations,
+                        onStart: retryRelations, coverage: discoveryMeta, disabled: !!taskId || graphWindowLoading || verifyPhase === 'running' || factPhase === 'running' || questionPhase === 'running' })
                     : null,
+                  generationMeta?.relationCompletion ? h(RelationCompletionStatus, { completion: generationMeta.relationCompletion }) : null,
                   sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
                    stagingMeta && stagingMeta.chunkCount > 0 ? h('span', null, '已保留 ' + stagingMeta.chunkCount + ' 个分块结果') : null,
                    appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
@@ -7957,7 +8006,7 @@ export default function clientPlugin() {
               h('p', { className: 'kg-subtitle' },
                 '把任意资料用 AI 拆成「事实 / 推论 / 概念 / 定义 / 例子 / 反例 / 规则」组成的知识图，并在图与原文之间双向定位。'),
             ),
-            h('div', { style: { display: 'flex', gap: 8, flex: 'none', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } },
+            h('div', { style: { display: 'flex', gap: 8, flex: 'none', maxWidth: '100%', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } },
               h(ModelPicker, { value: modelChoice, onChange: handleModelChange, requiresImage: imageInputs.length > 0 }),
               h('label', {style:{display:'flex', alignItems:'center', gap:6}}, '拆分并发',
                 h('select', {value:extractionConcurrency, disabled:phase === 'extracting', onChange:e=>setExtractionConcurrency(Number(e.target.value)), 'aria-label':'拆分并发'},
@@ -7968,6 +8017,12 @@ export default function clientPlugin() {
             ),
           ),
           h(BackgroundTaskProgress, { ctx, knownTaskIds: [phase === 'extracting' ? taskId : null, verifyTaskId, questionTaskId, factTaskId], busyError: error?.code === 'busy' ? error : null,
+            onStopTask: async id => {
+              try {
+                const res = await host.call('task-cancel', { taskId: id })
+                toastStore.show(res?.status === 'cancelling' ? '正在停止关系补全，已保存进度会保留…' : '任务状态已更新')
+              } catch (error) { toastStore.show('停止失败：' + (error?.message || error)) }
+            },
             onOpenDocument: task => loadHistoryEntry({ documentId: task.documentId, title: task.title, id: history.find(entry => entry.documentId === task.documentId)?.id }) }),
           !taskId && (incompleteRuns.length > 0 || runsError) ? h('details', { open: true, style: {padding:'12px 16px', borderBottom:'1px solid #ddd'} },
             h('summary', null, '未完成任务（' + incompleteRuns.length + '）'),
@@ -7976,7 +8031,8 @@ export default function clientPlugin() {
             ...incompleteRuns.map(run => h('div', {key:run.runId, style:{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', padding:'8px 0'}},
               h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + ' · 已合并 ' + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '') + ' · ' + (run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
               run.totalRelations != null ? h('span', {className:'kg-empty-sub'}, '关系审校已保存 ' + (run.reviewedRelations || 0) + '/' + run.totalRelations) : null,
-              h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : '继续任务'),
+              h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun || !!deletingRun, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : '继续任务'),
+              h('button', {type:'button', className:'kg-secondary', style:{color:'#c62828', minWidth:64}, title:'删除此任务的恢复记录，不删除已保存的知识图', 'aria-label':'删除未完成任务：' + (run.title || '未命名资料'), disabled:!!recoveringRun || !!deletingRun, onClick:()=>deleteSavedRun(run)}, deletingRun === run.runId ? '删除中…' : '删除'),
             )),
           ) : null,
           openFigure && resultView ? h('dialog', {
@@ -8009,7 +8065,7 @@ export default function clientPlugin() {
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,
                 h('p', { className: 'kg-empty-sub' }, '可以关闭窗口或离开页面；任务会自动保存，重新打开窗口后自动恢复轮询。'),
-                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),
+                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务'),
               )
             : historyOpen
               ? historyPanel

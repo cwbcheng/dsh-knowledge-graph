@@ -496,6 +496,32 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const store = await getSqliteStore()
               return writeJson(res, 200, { runs: store.listIncompleteRuns(100) })
             }
+            if (pathname === '/api/dsh-knowledge-graph/extraction-run-delete') {
+              if (req.method !== 'POST') return writeJson(res, 405, { error: { code: 'method_not_allowed', message: '删除任务必须使用 POST' } })
+              let sameOrigin = false
+              try {
+                const origin = new URL(req.headers?.origin)
+                sameOrigin = ['http:', 'https:'].includes(origin.protocol) && origin.host === req.headers?.host
+              } catch {}
+              if (!sameOrigin) return writeJson(res, 403, { error: { code: 'forbidden', message: '删除任务要求同源请求' } })
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 200, { error: { code: 'invalid_input', message: '删除请求必须是有效 JSON' } }) }
+              if (!a || typeof a.runId !== 'string' || !a.runId.trim() || a.runId.length > 200 || !Number.isSafeInteger(a.expectedUpdatedAt) || a.expectedUpdatedAt < 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少有效的 runId 或 expectedUpdatedAt' } })
+              }
+              const store = await getSqliteStore()
+              // No await between the runtime fence and deletion: a resume or
+              // final checkpoint write must not race a successful delete.
+              if (busy || tasks.get(a.runId)?.status === 'running') return writeJson(res, 200, busyTaskResponseHost())
+              try {
+                const result = store.deleteIncompleteRun(a.runId, a.expectedUpdatedAt)
+                tasks.delete(a.runId)
+                return writeJson(res, 200, result)
+              } catch (error) {
+                return writeJson(res, 200, { error: { code: error.code || 'persistence_failed', message: error.code === 'run_conflict' ? error.message : '删除任务失败，恢复记录仍保留' } })
+              }
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/resume-extract') {
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
@@ -503,10 +529,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const a = payload && typeof payload === 'object' ? payload : {}
               const runId = typeof a.runId === 'string' ? a.runId.trim().slice(0, 200) : ''
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
+              const store = await getSqliteStore()
               const liveTask = tasks.get(runId)
               if (liveTask && !(liveTask.status === 'failed' && a.retryFailed === true)) return writeJson(res, 200, { taskId: runId, resumed: false })
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
-              const store = await getSqliteStore()
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
               if (savedRun.status !== 'running' && !(savedRun.status === 'failed' && a.retryFailed === true)) {
@@ -594,6 +620,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   modelUsage: modelUsageSnapshotHost(t),
                   review: t.progress?.review || null,
                   discovery: t.progress?.discovery || null,
+                  completion: t.progress?.completion ? { ...t.progress.completion } : null,
                   completedBatches: t.checkpoint?.nextBatchIndex || 0,
                   sampledAt: Date.now(),
                   requests: (t.progress?.requests || []).map(request => ({ ...request })),
@@ -799,6 +826,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
+              if (a.continuous != null && typeof a.continuous !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'continuous 必须为布尔值' } })
+              if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } })
               const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } })
               let canonical = null
@@ -807,6 +836,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 canonical = store.getDocument(documentId)
               } catch (error) { canonical = null }
               if (!canonical || !Array.isArray(canonical.nodes) || !canonical.sourceText) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } })
+              if (canonical.nodes.length < 2) return writeJson(res, 200, { error: { code: 'invalid_input', message: '至少需要两个节点才能检索关系' } })
               if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
               const expectedRevision = a.expectedRevision
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
@@ -817,6 +847,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq,
                 status: 'running', kind: 'relation-retry',
+                continuous: a.continuous === true, reviewPendingOnly: a.reviewPendingOnly === true,
                 title: canonical.source && canonical.source.title ? canonical.source.title : '',
                 text: canonical.sourceText, documentId,
                 baseRevision: canonical.revision, model, createdAt: Date.now(),
