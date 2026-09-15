@@ -299,6 +299,20 @@ export default function clientPlugin() {
 .kg-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; font-size: 11px; color: var(--kg-text-dim); }
 .kg-legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .kg-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.kg-diagnostics { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 8px 0; font-size: 12px; }
+.kg-diagnostics-title { color: #94a3b8; }
+.kg-diagnostic { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; border: 1px solid #f0b429; background: rgba(240,180,41,0.12); color: #8a5a00; font: inherit; cursor: pointer; }
+.kg-diagnostic:hover { background: rgba(240,180,41,0.24); }
+.kg-diagnostic:focus-visible { outline: 2px solid #f0b429; outline-offset: 1px; }
+.kg-diagnostic-count { font-variant-numeric: tabular-nums; color: #b45309; }
+.kg-coordinates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 8px 0; font-size: 12px; }
+.kg-coordinates-title { color: #94a3b8; }
+.kg-coordinate { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; border: 1px solid #cbd5e1; background: var(--kg-panel); color: var(--kg-text); font: inherit; cursor: pointer; }
+.kg-coordinate:hover:not(:disabled) { background: rgba(100,116,139,0.12); }
+.kg-coordinate:focus-visible { outline: 2px solid #64748b; outline-offset: 1px; }
+.kg-coordinate:disabled { cursor: default; opacity: 0.55; }
+.kg-coordinate-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.kg-coordinate-count { font-variant-numeric: tabular-nums; color: #64748b; }
 .kg-launcher { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid var(--kg-border); border-radius: 12px; background: var(--kg-panel); }
 .kg-launcher-text { min-width: 0; }
 .kg-launcher-title { font-size: 14px; font-weight: 600; }
@@ -562,7 +576,21 @@ export default function clientPlugin() {
       })()
 
 
-      const TYPE_META = {
+      // ---- ontology tables -------------------------------------------------
+      // The rendering tables are a property of the document's ontology, which the
+      // Host sends with every graph payload as `graphOntology`. The constants
+      // below are the BUILT-IN FALLBACK for proposition-v1: they are what keeps
+      // older cached payloads and payloads with no ontology rendering exactly as
+      // before. `applyGraphOntology` re-binds them when a payload carries a
+      // different profile.
+      //
+      // These are module-level bindings rather than per-component props because
+      // ~20 render sites read TYPE_META[type] directly. That is safe here for a
+      // reason that does not hold in the extraction engine: a document has ONE
+      // ontology, and both the text view and the trajectory view of a document
+      // show that same document, so there is never more than one profile in play
+      // within a rendered tree.
+      const PROPOSITION_TYPE_META = {
         fact: { label: '事实', color: '#3b82f6', fill: 'rgba(59,130,246,0.15)' },
         claim: { label: '主张', color: '#0f766e', fill: 'rgba(15,118,110,0.15)' },
         inference: { label: '推论', color: '#8b5cf6', fill: 'rgba(139,92,246,0.15)' },
@@ -572,11 +600,136 @@ export default function clientPlugin() {
         counter_example: { label: '反例', color: '#ef4444', fill: 'rgba(239,68,68,0.15)' },
         rule: { label: '规则', color: '#7c3aed', fill: 'rgba(124,58,237,0.16)' },
       }
-      const REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果', is_a: '属于', contains: '包含', driven_by: '受驱动于', not_is: '不是', analogy: '类比说明', aims_at: '旨在' }
-      const REL_SOURCE_RULES = { example: 'example', counter_example: 'counter_example', defines: 'definition' }
-      const TYPE_ORDER = ['fact', 'claim', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
-       const CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
-       const CANDIDATE_CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
+      const PROPOSITION_REL_LABEL = { supports: '支持', example: '例子', counter_example: '反例', defines: '定义', infers: '推断', causes: '因果', is_a: '属于', contains: '包含', driven_by: '受驱动于', not_is: '不是', analogy: '类比说明', aims_at: '旨在' }
+      const PROPOSITION_REL_SOURCE_RULES = { example: 'example', counter_example: 'counter_example', defines: 'definition' }
+      const PROPOSITION_TYPE_ORDER = ['fact', 'claim', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule']
+      const PROPOSITION_CANDIDATE_ENTITY_TYPES = new Set(['concept', 'definition'])
+      const PROPOSITION_CANDIDATE_CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
+      let TYPE_META = PROPOSITION_TYPE_META
+      let REL_LABEL = PROPOSITION_REL_LABEL
+      let REL_SOURCE_RULES = PROPOSITION_REL_SOURCE_RULES
+      let TYPE_ORDER = PROPOSITION_TYPE_ORDER
+      let CANDIDATE_ENTITY_TYPES = PROPOSITION_CANDIDATE_ENTITY_TYPES
+      let CANDIDATE_CLAIM_TYPES = PROPOSITION_CANDIDATE_CLAIM_TYPES
+
+      // ---- layout tables, also profile-driven ------------------------------
+      // The layered layout reads relation FAMILY and WEIGHT: backbone relations
+      // form the visual spine, satellite relations become nearby branches,
+      // directional ones orient. These used to be hardcoded proposition id sets,
+      // which silently degraded a learning-view graph to an undifferentiated
+      // force layout — every relation at the fallback weight, no backbone, no
+      // branches — even though the profile declares exactly this for each
+      // relation. Reading it from the payload is what makes the new ontology's
+      // two coordinates (判别/联结 × 上料/下料) visible instead of a hairball.
+      //
+      // The values below are the proposition fallback, identical to what the
+      // hardcoded sets held, so existing documents lay out unchanged.
+      const PROPOSITION_RELATION_LAYOUT = [
+        { id: 'supports', family: 'directional', weight: 4 },
+        { id: 'example', family: 'satellite', weight: 6 },
+        { id: 'counter_example', family: 'satellite', weight: 6 },
+        { id: 'defines', family: 'satellite', weight: 7 },
+        { id: 'infers', family: 'backbone', weight: 9 },
+        { id: 'causes', family: 'backbone', weight: 9 },
+        { id: 'is_a', family: 'satellite', weight: 7 },
+        { id: 'contains', family: 'satellite', weight: 7 },
+        { id: 'driven_by', family: 'directional', weight: 4 },
+        { id: 'not_is', family: 'neutral', weight: 7 },
+        { id: 'analogy', family: 'satellite', weight: 5 },
+        { id: 'aims_at', family: 'directional', weight: 4 },
+      ]
+      let LAYERED_RELATION_WEIGHTS = {}
+      let REASONING_RELATIONS = new Set()
+      let SATELLITE_RELATIONS = new Set()
+      let DIRECTIONAL_RELATIONS = new Set()
+      let STRONG_LOCAL_RELATIONS = new Set()
+      let BRANCH_RELATIONS = new Set()
+
+      /**
+       * Re-derive the layout tables from a payload's relation list.
+       *
+       * A relation with an unrecognised family lands in no set, which is the
+       * safe outcome: it still draws as an edge, it just does not get to steer
+       * the layout.
+       */
+      function applyLayoutProfile(record) {
+        const relations = record && Array.isArray(record.relationTypes) && record.relationTypes.length > 0
+          ? record.relationTypes
+          : PROPOSITION_RELATION_LAYOUT
+        const weights = {}
+        const backbone = new Set()
+        const satellite = new Set()
+        const directional = new Set()
+        for (const relation of relations) {
+          if (!relation || typeof relation.id !== 'string' || !relation.id) continue
+          weights[relation.id] = Number.isFinite(relation.weight) ? relation.weight : 2
+          if (relation.family === 'backbone') backbone.add(relation.id)
+          else if (relation.family === 'satellite') satellite.add(relation.id)
+          else if (relation.family === 'directional') directional.add(relation.id)
+        }
+        LAYERED_RELATION_WEIGHTS = weights
+        REASONING_RELATIONS = backbone
+        SATELLITE_RELATIONS = satellite
+        DIRECTIONAL_RELATIONS = directional
+        // "Strong local" and "branch" are both the satellite family: relations
+        // that pull a node close to the knowledge it belongs to.
+        STRONG_LOCAL_RELATIONS = satellite
+        BRANCH_RELATIONS = satellite
+      }
+      applyLayoutProfile(null)
+
+      /**
+       * Install the ontology a graph payload describes. Called from makeView, the
+       * single point every graph payload passes through, so both the workbench and
+       * the trajectory panel pick it up without touching any render site.
+       *
+       * A payload with no ontology, or one equal to the default, restores the
+       * built-in tables — so nothing changes for the documents that predate
+       * ontologies.
+       */
+      function applyGraphOntology(record) {
+        const usable = record && typeof record === 'object' && Array.isArray(record.nodeTypes) && record.nodeTypes.length > 0
+        if (!usable || record.id === 'proposition-v1') {
+          TYPE_META = PROPOSITION_TYPE_META
+          REL_LABEL = PROPOSITION_REL_LABEL
+          REL_SOURCE_RULES = PROPOSITION_REL_SOURCE_RULES
+          TYPE_ORDER = PROPOSITION_TYPE_ORDER
+          CANDIDATE_ENTITY_TYPES = PROPOSITION_CANDIDATE_ENTITY_TYPES
+          CANDIDATE_CLAIM_TYPES = PROPOSITION_CANDIDATE_CLAIM_TYPES
+          applyLayoutProfile(null)
+          return null
+        }
+        const nextTypeMeta = {}
+        for (const type of record.nodeTypes) {
+          if (!type || typeof type.id !== 'string' || !type.id) continue
+          nextTypeMeta[type.id] = {
+            label: type.label || type.zh || type.id,
+            // A profile that omits presentation still has to render legibly.
+            color: type.color || '#64748b',
+            fill: type.fill || 'rgba(100,116,139,0.15)',
+            layer: type.layer || 'none',
+            modelKind: type.modelKind || 'none',
+          }
+        }
+        const nextRelLabel = {}
+        for (const relation of Array.isArray(record.relationTypes) ? record.relationTypes : []) {
+          if (relation && typeof relation.id === 'string' && relation.id) nextRelLabel[relation.id] = relation.zh || relation.label || relation.id
+        }
+        TYPE_META = nextTypeMeta
+        REL_LABEL = nextRelLabel
+        // The source-rule hints drive targeted repair suggestions; they are a
+        // proposition-specific affordance, so a foreign profile gets none rather
+        // than a suggestion naming types it does not declare.
+        REL_SOURCE_RULES = {}
+        TYPE_ORDER = Object.keys(nextTypeMeta)
+        // Candidate review is a proposition-flavoured triage (entity vs claim).
+        // A foreign profile has no such split, so nothing is offered as a
+        // candidate rather than mislabelling its types.
+        CANDIDATE_ENTITY_TYPES = new Set()
+        CANDIDATE_CLAIM_TYPES = new Set()
+        applyLayoutProfile(record)
+        return record
+      }
        const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
        const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
        function chapterSectionsOf(graph) {
@@ -1453,7 +1606,121 @@ export default function clientPlugin() {
 
       // Build the view model: anchor every node to a paragraph offset and work
       // out each paragraph's node types (for badges) and node ids (for focus).
+      /**
+       * 《学习观》collapse diagnostics for the current graph.
+       *
+       * These are conclusions the host computed from the graph, not labels on it:
+       * 上层丢失, 记言代学, 言存义空, 缺验证 … Rendered as chips with counts so a
+       * graph that "looks complete" can still be seen to have collapsed, and
+       * clicking a chip selects the first node to blame.
+       *
+       * Returns null when there is nothing to report — a clean graph and a graph
+       * from a profile with no diagnostics (every profile before learning-view)
+       * both render nothing rather than an empty box.
+       */
+      function ontologyDiagnosticStrip(view, onSelect) {
+        const findings = view && Array.isArray(view.graphDiagnostics) ? view.graphDiagnostics : []
+        if (findings.length === 0) return null
+        const total = findings.reduce((sum, finding) => sum + (Number(finding.count) || 0), 0)
+        return h('div', { className: 'kg-diagnostics', role: 'status', 'aria-live': 'polite', 'aria-label': '《学习观》知识图诊断' },
+          h('span', { className: 'kg-diagnostics-title', title: '《学习观》本体对当前图跑出的结论，不是节点类型' }, '诊断 ' + total + ' 处'),
+          findings.map((finding) => h('button', {
+            key: finding.id,
+            type: 'button',
+            className: 'kg-diagnostic',
+            title: (finding.detail || finding.zh) + '——共 ' + finding.count + ' 处，点击定位第一处',
+            'aria-label': finding.zh + ' ' + finding.count + ' 处：' + (finding.detail || ''),
+            // Guarded here rather than at every call site: a finding the host
+            // could not attribute to a node is still worth SHOWING, but there is
+            // nothing to select, and a bare callback would clear the selection.
+            onClick: () => {
+              const first = finding.targets && finding.targets[0]
+              if (first) onSelect(first)
+            },
+          },
+          finding.zh,
+          h('span', { className: 'kg-diagnostic-count' }, String(finding.count)))),
+        )
+      }
+
+      // The ontology says every material sits at the crossing of two orthogonal
+      // coordinates — 判别/联结 and 上料/下料 — because that is how 图 34-2 is cut.
+      // The graph claimed that structure but showed none of it: the coordinates
+      // lived in TYPE_META and nothing ever read them, so a 判别下料 problem and a
+      // 联结上料 problem looked identical on screen. This surfaces the cut.
+      //
+      // It renders only for a profile that actually declares coordinates, so a
+      // proposition document is untouched.
+      const COORDINATE_QUADRANTS = [
+        { id: 'discrimination_upper', modelKind: 'discrimination', layer: 'upper', label: '判别上料' },
+        { id: 'discrimination_lower', modelKind: 'discrimination', layer: 'lower', label: '判别下料' },
+        { id: 'connection_upper', modelKind: 'connection', layer: 'upper', label: '联结上料' },
+        { id: 'connection_lower', modelKind: 'connection', layer: 'lower', label: '联结下料' },
+      ]
+
+      function ontologyCoordinateGrid(view, onSelect) {
+        const record = view && view.ontology
+        const nodes = view && view.graph && Array.isArray(view.graph.nodes) ? view.graph.nodes : []
+        if (!record || nodes.length === 0) return null
+        const types = Array.isArray(record.nodeTypes) ? record.nodeTypes : []
+        // `kind` comes from the profile's own evidence requirement, so the split
+        // is declared once and not re-inferred here from the coordinates.
+        const materials = types.filter((type) => type && type.id && type.kind === 'material')
+        const metaOf = (typeId) => TYPE_META[typeId] || { label: typeId, color: '#64748b' }
+        const membersOf = (typeIds) => {
+          const wanted = new Set(typeIds)
+          return nodes.filter((node) => node && wanted.has(node.type))
+        }
+        // A quadrant holds SEVERAL types: 判别上料 is 内涵描述 + 特征描述, and
+        // 联结上料 is 关系材料 + 因素材料 + 性质材料. Taking only the first match
+        // would silently drop most of a quadrant.
+        const quadrants = COORDINATE_QUADRANTS.map((quadrant) => ({
+          ...quadrant,
+          typeIds: materials.filter((candidate) => (candidate.modelKind || 'none') === quadrant.modelKind
+            && (candidate.layer || 'none') === quadrant.layer).map((candidate) => candidate.id),
+        })).filter((quadrant) => quadrant.typeIds.length > 0)
+        // A profile with no coordinates at all renders nothing: there is no
+        // 图 34-2 cut to show, and an empty grid would be noise.
+        if (quadrants.length === 0) return null
+        const quadranted = new Set(quadrants.flatMap((quadrant) => quadrant.typeIds))
+        const otherMaterials = materials.filter((type) => !quadranted.has(type.id))
+        const knowledge = types.filter((type) => type && type.id && type.kind === 'knowledge')
+        const cells = quadrants.map((quadrant) => ({ id: quadrant.id, label: quadrant.label, typeIds: quadrant.typeIds, members: membersOf(quadrant.typeIds) }))
+        const otherMembers = membersOf(otherMaterials.map((type) => type.id))
+        if (otherMaterials.length > 0) cells.push({ id: 'other_material', label: '其他材料', typeIds: [], members: otherMembers })
+        const knowledgeMembers = membersOf(knowledge.map((type) => type.id))
+        if (knowledge.length > 0) cells.push({ id: 'knowledge', label: '知识', typeIds: [], members: knowledgeMembers })
+        const materialTotal = cells.reduce((sum, cell) => sum + (cell.id === 'knowledge' ? 0 : cell.members.length), 0)
+        return h('div', { className: 'kg-coordinates', role: 'status', 'aria-label': '《学习观》材料坐标分布' },
+          h('span', { className: 'kg-coordinates-title', title: '按图 34-2 的两个正交坐标统计材料：判别/联结 × 上料/下料' },
+            '材料坐标 ' + materialTotal),
+          cells.map((cell) => {
+            const byType = new Map()
+            for (const member of cell.members) byType.set(member.type, (byType.get(member.type) || 0) + 1)
+            const breakdown = [...byType.entries()].map(([typeId, count]) => metaOf(typeId).label + ' ' + count).join('、')
+            const first = cell.members[0]
+            const color = cell.typeIds && cell.typeIds.length > 0 ? metaOf(cell.typeIds[0]).color : '#475569'
+            return h('button', {
+              key: cell.id,
+              type: 'button',
+              className: 'kg-coordinate',
+              style: { borderColor: color },
+              title: cell.label + '：' + cell.members.length + ' 个' + (breakdown ? '（' + breakdown + '）' : '') + (first ? '，点击定位第一个' : ''),
+              'aria-label': cell.label + ' ' + cell.members.length + ' 个',
+              disabled: !first,
+              onClick: () => { if (first) onSelect(first.id) },
+            },
+            h('span', { className: 'kg-coordinate-dot', style: { background: color } }),
+            cell.label,
+            h('span', { className: 'kg-coordinate-count' }, String(cell.members.length)))
+          }),
+        )
+      }
+
       function makeView(graph, sourceText) {
+        // Every graph payload passes through here, so this is where the document's
+        // ontology is installed for the render sites that read the tables above.
+        const ontology = applyGraphOntology(graph && graph.graphOntology)
         const paragraphs = splitParagraphs(sourceText)
         const anchors = {}
         const unresolved = []
@@ -1511,7 +1778,7 @@ export default function clientPlugin() {
         for (let i = 0; i < paraTypes.length; i++) {
           paraTypes[i].sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b))
         }
-        return { graph, sourceText, paragraphs, anchors, unresolved, paraTypes, paraNodes }
+        return { graph, sourceText, paragraphs, anchors, unresolved, paraTypes, paraNodes, ontology }
       }
 
       // --------------------- verification helpers ---------------------
@@ -2413,20 +2680,7 @@ export default function clientPlugin() {
         // semantically precise relations without changing canonical graph data.
         // `supports` remains a soft preference rather than the old hard local
         // projection, since one claim may legitimately support several anchors.
-        const layeredRelationWeights = {
-          causes: 9,
-          infers: 9,
-          defines: 7,
-          contains: 7,
-          is_a: 7,
-          not_is: 7,
-          example: 6,
-          counter_example: 6,
-          analogy: 5,
-          supports: 4,
-          driven_by: 4,
-          aims_at: 4,
-        }
+        const layeredRelationWeights = LAYERED_RELATION_WEIGHTS
         for (const e of edges) {
           const fa = adj.get(e.fromNodeId)
           const tb = adj.get(e.toNodeId)
@@ -2442,12 +2696,12 @@ export default function clientPlugin() {
         // Components without such a chain keep the old deterministic BFS
         // behaviour, so this is a projection change rather than a graph-model
         // change.
-        const reasoningRelations = new Set(['causes', 'infers'])
-        const satelliteRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
-        const directionalRelations = new Set(['supports', 'driven_by', 'aims_at'])
+        const reasoningRelations = REASONING_RELATIONS
+        const satelliteRelations = SATELLITE_RELATIONS
+        const directionalRelations = DIRECTIONAL_RELATIONS
         // One shared view-only set drives both local rank adjacency and the
         // later bounded x-attraction pass. It is not graph-schema authority.
-        const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])
+        const strongLocalRelations = STRONG_LOCAL_RELATIONS
         const reasoningRankIds = new Set()
         for (const edge of edges) {
           if (!edge || !reasoningRelations.has(edge.relation)) continue
@@ -2853,7 +3107,7 @@ export default function clientPlugin() {
         // Examples/analogies/definitions/concept branches stay next to the
         // backbone node they explain. They remain ordinary graph nodes; this is
         // only a view projection and the row pack below handles collisions.
-        const branchRelations = new Set(['example', 'counter_example', 'analogy', 'defines', 'is_a', 'contains'])
+        const branchRelations = BRANCH_RELATIONS
         const branchCount = new Map()
         for (const edge of edges) {
           if (!edge || !branchRelations.has(edge.relation)) continue
@@ -3762,6 +4016,16 @@ export default function clientPlugin() {
         return [D3_TIMER_SRC, D3_DISPATCH_SRC, D3_QUADTREE_SRC, D3_FORCE_SRC,
           'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map(); let outerR = 0;',
           'const LAYER_Y_GAP=' + LAYER_Y_GAP + ',LAYER_X_GAP=' + LAYER_X_GAP + ',LAYER_COL_GAP=' + LAYER_COL_GAP + ',LAYER_MAX_ROW_WIDTH=' + LAYER_MAX_ROW_WIDTH + ';',
+          // The layout tables are graph data, not constants, so they are captured
+          // into the worker source at the moment this graph's layout is requested.
+          // A worker is a separate global scope: a module-level binding here is a
+          // ReferenceError in there, which is how this was caught.
+          'const LAYERED_RELATION_WEIGHTS=' + JSON.stringify(LAYERED_RELATION_WEIGHTS) + ';',
+          'const REASONING_RELATIONS=new Set(' + JSON.stringify([...REASONING_RELATIONS]) + ');',
+          'const SATELLITE_RELATIONS=new Set(' + JSON.stringify([...SATELLITE_RELATIONS]) + ');',
+          'const DIRECTIONAL_RELATIONS=new Set(' + JSON.stringify([...DIRECTIONAL_RELATIONS]) + ');',
+          'const STRONG_LOCAL_RELATIONS=new Set(' + JSON.stringify([...STRONG_LOCAL_RELATIONS]) + ');',
+          'const BRANCH_RELATIONS=new Set(' + JSON.stringify([...BRANCH_RELATIONS]) + ');',
           ...functions.map(fn => 'const ' + fn.name + '=' + fn.toString() + ';'),
           'self.onmessage = ({data}) => { try { let last = 0; const layout = layoutGraph(data.nodes, data.edges, data.sizes, data.mode, progress => { const now = Date.now(); if (now - last >= 50 || progress.completed === progress.total) { self.postMessage({progress}); last = now; } }); self.postMessage({layout}); } catch (error) { self.postMessage({error: error.message || String(error)}); } };',
         ].join('\n')
@@ -5737,7 +6001,12 @@ export default function clientPlugin() {
             for (const m of p.models || []) {
               const modalities = Array.isArray(m.inputModalities) ? m.inputModalities : null
               const imageSupport = modalities ? modalities.includes('image') : null
-              flat.push({ key: p.id + MODEL_KEY_SEP + m.id, name: p.name + ' · ' + m.name + (imageSupport === true ? ' · 图像' : imageSupport === false ? ' · 仅文本' : ''), imageSupport })
+              // 「仅文本」不是插件的猜测，而是 provider 配置里声明的结果（缺省即
+              // 只有 text）。把这一点写进 title，否则用户会以为插件认错了模型。
+              const optionTitle = imageSupport === false
+                ? '该 provider 配置声明此模型只接受 text 输入，所以禁用。若模型实际支持图像，请在其 provider 的 models 条目里补 input: [text, image]（缺省等价于只声明 text）'
+                : undefined
+              flat.push({ key: p.id + MODEL_KEY_SEP + m.id, name: p.name + ' · ' + m.name + (imageSupport === true ? ' · 图像' : imageSupport === false ? ' · 仅文本' : ''), imageSupport, optionTitle })
             }
           }
         }
@@ -5757,7 +6026,7 @@ export default function clientPlugin() {
             onChange: (e) => onChange(e.target.value),
           },
             h('option', { value: '' }, catalog ? defaultLabel : (loadError ? '跟随系统默认（目录不可用）' : '正在读取模型目录…')),
-            flat.map((opt) => h('option', { key: opt.key, value: opt.key, disabled: Boolean(requiresImage && opt.imageSupport === false) }, opt.name)),
+            flat.map((opt) => h('option', { key: opt.key, value: opt.key, disabled: Boolean(requiresImage && opt.imageSupport === false), title: opt.optionTitle }, opt.name)),
           ),
           loadError ? h('button', { type: 'button', className: 'kg-model-refresh', 'aria-label': '重新读取模型目录', title: '重新读取模型目录', onClick: () => loadModelCatalog(true) }, '↻') : null,
         )
@@ -6754,7 +7023,19 @@ export default function clientPlugin() {
           const ti = typeof overrideTitle === 'string' && overrideTitle.trim() ? overrideTitle.trim().slice(0, 200) : title
           const submittingImages = overrideText != null ? [] : imageInputs
           if (!t && submittingImages.length === 0) { setError({ message: '请先粘贴资料正文或上传图片' }); return }
-          if (submittingImages.length > 0 && effectiveModelImageSupport === false) { setError({ code: 'model_image_unsupported', message: '当前选择的是仅文本模型，请改选带“图像”标记的多模态模型' }); return }
+          if (submittingImages.length > 0 && effectiveModelImageSupport === false) {
+            const chosen = effectiveModelArg && effectiveModelArg.provider
+              ? effectiveModelArg.provider + ' · ' + effectiveModelArg.model
+              : '当前模型'
+            setError({
+              code: 'model_image_unsupported',
+              message: '模型目录把 ' + chosen + ' 声明为「仅文本」，所以不能接收图片。'
+                + '这个声明来自 provider 配置而不是插件的猜测：models 条目里缺省 input 等价于只声明 text。'
+                + '若该模型实际支持图像，请在其 provider 的 models 条目里补 input: [text, image]，'
+                + '或改选目录里带“图像”标记的模型。',
+            })
+            return
+          }
           if (t.length > MAX_LEN) { setError({ message: '资料正文不能超过 ' + MAX_LEN + ' 字' }); return }
           if (overrideTitle != null) setTitle(ti)
           if (overrideText != null) setText(t)
@@ -7950,6 +8231,16 @@ export default function clientPlugin() {
                       TYPE_ORDER.map((t) => h('span', { key: t, className: 'kg-legend-item' },
                         h('span', { className: 'kg-legend-dot', style: { background: TYPE_META[t].color } }),
                         TYPE_META[t].label))),
+                    ontologyDiagnosticStrip(resultView, (nodeId) => {
+                      if (!nodeId) return
+                      handleSelectNode(nodeId)
+                      setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
+                    }),
+                    ontologyCoordinateGrid(resultView, (nodeId) => {
+                      if (!nodeId) return
+                      handleSelectNode(nodeId)
+                      setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
+                    }),
                   ),
                 ),
                 h('div', {
@@ -9369,6 +9660,16 @@ export default function clientPlugin() {
                       TYPE_ORDER.map((t) => h('span', { key: t, className: 'kg-legend-item' },
                         h('span', { className: 'kg-legend-dot', style: { background: TYPE_META[t].color } }),
                         TYPE_META[t].label))),
+                    ontologyDiagnosticStrip(resultView, (nodeId) => {
+                      if (!nodeId) return
+                      handleSelectNode(nodeId)
+                      setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
+                    }),
+                    ontologyCoordinateGrid(resultView, (nodeId) => {
+                      if (!nodeId) return
+                      handleSelectNode(nodeId)
+                      setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
+                    }),
                   ),
                 ),
                 h('div', {

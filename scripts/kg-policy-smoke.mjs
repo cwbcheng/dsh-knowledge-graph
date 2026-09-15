@@ -80,7 +80,7 @@ assert(packageJson.scripts['test:kg-performance'] && packageJson.scripts.test.in
 assert(host.includes('function effectiveModelTimeoutHost') && host.includes("taskOperationErrorHost('timeout'") && !host.includes('userText, _timeoutMs'), 'model timeout argument is still advisory instead of a real deadline')
 assert(host.includes('function addTaskCancelHookHost') && host.includes('removeCancelHook()') && host.includes('t.cancelHooks.slice()'), 'task cancellation hooks are not removable or safe during iteration')
 assert((host.match(/finishTaskRuntimeHost\(task\)/g) || []).length >= 7, 'task runners do not consistently clear active runtime state')
-assert(host.includes("const EVIDENCE_REQUIRED_NODE_TYPES") && host.includes("claim_evidence_missing") && host.includes("const entailmentStatus = 'unverified'") && host.includes('function preserveEntailmentAuthorityHost'), 'generation/browser paths can still self-certify semantic entailment')
+assert(host.includes("ontEvidenceRequired(graph)") && host.includes("claim_evidence_missing") && host.includes("const entailmentStatus = 'unverified'") && host.includes('function preserveEntailmentAuthorityHost'), 'generation/browser paths can still self-certify semantic entailment')
 assert(ci.includes('extension/viewer.css extension/d3'), 'CI generated-artifact gate does not cover viewer.css/d3')
 
 console.log(JSON.stringify({ ok: true, signing: 'locked-local-crx3', browserPersistence: 'reference-only', wireScope: 'bounded', generationGate: 'shared-invariant-evaluator', identity: 'uuid-sha256-composite-chunks', canonicalOps: true, sqliteWindow: true, appendFence: true, trajectory: 'canonical-revisioned-reference-only', evidence: 'provenance-authenticated-entailment-separated' }))

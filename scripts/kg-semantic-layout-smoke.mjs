@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+
+import { getOntology } from '../src/kg-ontology.mjs'
 function assert(condition, message) { if (!condition) throw new Error(message) }
 function extractFunction(source, name) {
   const start = source.indexOf('function ' + name + '(')
@@ -52,7 +54,36 @@ const num = (name) => {
 }
 const names = ['LAYER_COL_GAP', 'LAYER_MAX_ROW_WIDTH', 'LAYER_X_GAP', 'LAYER_Y_GAP']
 const values = names.map(num)
-const layoutLayered = new Function(...names, 'return (' + extractFunction(source, 'layoutLayered') + ')')(...values)
+// The layered layout now reads its relation tables from the document's ontology
+// rather than from hardcoded id sets. In the client those are module-level
+// bindings; here they are supplied explicitly, and they are derived from the
+// AUTHORED profile rather than copied, so this also checks that the client's
+// built-in fallback still matches src/kg-ontology.mjs.
+const propRelations = getOntology('proposition-v1').relationTypes
+const layoutTables = {
+  weights: Object.fromEntries(propRelations.map((relation) => [relation.id, relation.weight])),
+  backbone: new Set(propRelations.filter((relation) => relation.family === 'backbone').map((relation) => relation.id)),
+  satellite: new Set(propRelations.filter((relation) => relation.family === 'satellite').map((relation) => relation.id)),
+  directional: new Set(propRelations.filter((relation) => relation.family === 'directional').map((relation) => relation.id)),
+}
+layoutTables.strongLocal = layoutTables.satellite
+layoutTables.branch = layoutTables.satellite
+
+// The client's built-in fallback must be the same table the profile declares.
+const fallbackSource = source.slice(source.indexOf('const PROPOSITION_RELATION_LAYOUT = ['))
+const fallbackTable = fallbackSource.slice(0, fallbackSource.indexOf('\n      ]') + 1)
+for (const relation of propRelations) {
+  assert(fallbackTable.includes("id: '" + relation.id + "'"), 'the client fallback is missing relation ' + relation.id)
+  assert(fallbackTable.includes('family: ' + JSON.stringify(relation.family)) || fallbackTable.includes("family: '" + relation.family + "'"),
+    'the client fallback disagrees with the profile on ' + relation.id + ' family')
+  assert(new RegExp("id: '" + relation.id + "'[^}]*weight: " + relation.weight).test(fallbackTable.replace(/\n/g, ' ')),
+    'the client fallback disagrees with the profile on ' + relation.id + ' weight (' + relation.weight + ')')
+}
+
+const layoutLayered = new Function(...names,
+  'LAYERED_RELATION_WEIGHTS', 'REASONING_RELATIONS', 'SATELLITE_RELATIONS', 'DIRECTIONAL_RELATIONS', 'STRONG_LOCAL_RELATIONS', 'BRANCH_RELATIONS',
+  'return (' + extractFunction(source, 'layoutLayered') + ')',
+)(...values, layoutTables.weights, layoutTables.backbone, layoutTables.satellite, layoutTables.directional, layoutTables.strongLocal, layoutTables.branch)
 const resolveLayeredOverlaps = new Function('return (' + extractFunction(source, 'resolveLayeredOverlaps') + ')')()
 const packDisconnectedComponents = new Function('return (' + extractFunction(source, 'packDisconnectedComponents') + ')')()
 const layoutLayeredComponents = new Function(
@@ -102,9 +133,14 @@ const localDistance = Math.abs(pos.get('flow').x - pos.get('system').x)
 assert(localDistance <= 260, 'strong local contains relation was not attracted near its anchor: ' + localDistance)
 const localRankDistance = pos.get('flow').y - pos.get('system').y
 assert(localRankDistance > 0 && localRankDistance <= values[names.indexOf('LAYER_Y_GAP')] + 0.1, 'strong local contains relation was not made rank-adjacent: ' + localRankDistance)
-assert(source.includes("const strongLocalRelations = new Set(['defines', 'contains', 'is_a', 'analogy', 'example', 'counter_example'])"), 'strong local relation set is missing or widened')
+// The set itself now comes from the profile, so assert the DATA rather than a
+// literal: exactly the satellite family, and nothing more.
+const sameSet = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+assert(sameSet(layoutTables.strongLocal, layoutTables.satellite), 'strong local must be exactly the satellite family')
+assert(sameSet(layoutTables.strongLocal, ['analogy', 'contains', 'counter_example', 'defines', 'example', 'is_a']), 'strong local relation set is missing or widened')
 assert(source.includes('const localRadius = 260'), 'local attraction must stay bounded')
-assert((source.match(/const strongLocalRelations = new Set/g) || []).length === 1, 'strong local relation set must have one view authority')
+assert((source.match(/const strongLocalRelations = /g) || []).length === 1, 'strong local relation set must have one view authority')
+assert(source.includes('const strongLocalRelations = STRONG_LOCAL_RELATIONS'), 'strong local must read the ontology-derived table')
 assert(source.includes('if (anchors.size !== 1 || reasoningRankIds.has(moverId)) continue'), 'ambiguous/local-reasoning rank guard is missing')
 assert(source.includes('level.set(moverId, anchorRank + 1)'), 'local rank adjacency projection is missing')
 assert(!source.includes("strongLocalRelations = new Set(['supports'"), 'supports must not become a strong local attraction relation')
@@ -125,11 +161,13 @@ const layeredSource = extractFunction(source, 'layoutLayered')
 assert(!layeredSource.includes('if (backbonePaths.length === 0) return placed'), 'strong local attraction is incorrectly gated on a reasoning backbone')
 assert(!layeredSource.includes('Shift an entire visual row rather than one node'), 'whole-row lane shifting is still present')
 assert(layeredSource.includes('backbone nodes occupy fixed lane slots') || layeredSource.includes('Backbone nodes occupy fixed lane slots'), 'fixed lane-slot projection is missing')
-assert(layeredSource.includes('const layeredRelationWeights = {'), 'relation-weighted layered ordering is missing')
+assert(layeredSource.includes('const layeredRelationWeights = LAYERED_RELATION_WEIGHTS'), 'relation-weighted layered ordering must read the ontology-derived table')
 assert(layeredSource.includes('weightedSum += p.x * link.weight'), 'weighted barycenter projection is missing')
-assert(layeredSource.includes('supports: 4'), 'supports must remain a bounded soft layout preference')
-assert(layeredSource.includes('not_is: 7'), 'not_is must retain explicit-classification proximity weight')
-assert(source.includes("const reasoningRelations = new Set(['causes', 'infers'])"), 'relation-aware layered backbone is missing')
+assert(layoutTables.weights.supports === 4, 'supports must remain a bounded soft layout preference')
+assert(layoutTables.weights.not_is === 7, 'not_is must retain explicit-classification proximity weight')
+assert(Math.max(...Object.values(layoutTables.weights)) === 9, 'the backbone must stay the strongest weight')
+assert(sameSet(layoutTables.backbone, ['causes', 'infers']), 'relation-aware layered backbone is missing')
+assert(source.includes('const reasoningRelations = REASONING_RELATIONS'), 'the backbone must read the ontology-derived table')
 assert(source.includes("return 'layered'"), 'new sessions do not default to the semantic layered projection')
 assert(source.includes('return layoutLayeredComponents(nodes, edges, sizes, onProgress)'), 'layered view does not use component-aware layout')
 assert(source.includes('buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)'), 'layered view does not use multi-track edge lanes')
@@ -623,6 +661,73 @@ for (let i = 0; i < stressNodes.length; i++) {
   }
 }
 
+// ---- a learning-view graph lays out by its own ontology --------------------
+// The tables used to be hardcoded proposition id sets, so EVERY learning-view
+// relation fell to the fallback weight with no family: no backbone lane, no
+// satellite attraction, no branch lanes. The client test asserts the tables are
+// derived correctly; this asserts the layout engine actually consumes them, and
+// stays well-behaved on a graph shaped like the ontology intends.
+//
+// It deliberately does NOT claim "materials land closer than with an inert
+// table": on a small graph plain BFS already puts neighbours adjacent, so that
+// comparison measures nothing. What is checkable is that the engine runs, places
+// every node, stays deterministic, and keeps 上料/下料 rank-adjacent to the
+// knowledge they belong to.
+const lvRelations = getOntology('learning-view-v1').relationTypes
+const lvTables = {
+  weights: Object.fromEntries(lvRelations.map((relation) => [relation.id, relation.weight])),
+  backbone: new Set(lvRelations.filter((relation) => relation.family === 'backbone').map((relation) => relation.id)),
+  satellite: new Set(lvRelations.filter((relation) => relation.family === 'satellite').map((relation) => relation.id)),
+  directional: new Set(lvRelations.filter((relation) => relation.family === 'directional').map((relation) => relation.id)),
+}
+const lvLayered = new Function(...names,
+  'LAYERED_RELATION_WEIGHTS', 'REASONING_RELATIONS', 'SATELLITE_RELATIONS', 'DIRECTIONAL_RELATIONS', 'STRONG_LOCAL_RELATIONS', 'BRANCH_RELATIONS',
+  'return (' + extractFunction(source, 'layoutLayered') + ')',
+)(...values, lvTables.weights, lvTables.backbone, lvTables.satellite, lvTables.directional, lvTables.satellite, lvTables.satellite)
+
+// Three knowledge nodes chained by a backbone relation, each with an upper and a
+// lower material hung off it — the shape 第 34 章 describes.
+const lvNodes = []
+const lvEdges = []
+for (let index = 0; index < 3; index += 1) {
+  lvNodes.push({ id: 'k' + index, type: 'concept' })
+  lvNodes.push({ id: 'u' + index, type: 'intension_description' })
+  lvNodes.push({ id: 'l' + index, type: 'positive_example' })
+  lvEdges.push({ fromNodeId: 'u' + index, toNodeId: 'k' + index, relation: 'states_intension' })
+  lvEdges.push({ fromNodeId: 'l' + index, toNodeId: 'k' + index, relation: 'exemplifies' })
+  if (index > 0) lvEdges.push({ fromNodeId: 'k' + (index - 1), toNodeId: 'k' + index, relation: 'has_rule' })
+}
+const lvSizes = new Map(lvNodes.map((node) => [node.id, { w: 170, h: 72 }]))
+const lvEmpty = new Map()
+const lvPos = lvLayered(lvNodes, lvEdges, lvSizes, lvEmpty)
+for (const node of lvNodes) assert(lvPos.get(node.id), 'the learning-view layout must place ' + node.id)
+assert(lvPos.size === lvNodes.length, 'the learning-view layout must place every node')
+const lvAgain = lvLayered(lvNodes, lvEdges, lvSizes, new Map())
+for (const node of lvNodes) {
+  assert(lvAgain.get(node.id).x === lvPos.get(node.id).x && lvAgain.get(node.id).y === lvPos.get(node.id).y,
+    'the learning-view layout must be deterministic for ' + node.id)
+}
+const layerYGapLv = values[names.indexOf('LAYER_Y_GAP')]
+const rankGaps = []
+for (let index = 0; index < 3; index += 1) {
+  for (const id of ['u' + index, 'l' + index]) {
+    const gap = Math.abs(lvPos.get(id).y - lvPos.get('k' + index).y)
+    rankGaps.push(gap)
+    assert(gap <= layerYGapLv + 0.1, 'a material must stay rank-adjacent to its knowledge: ' + id + ' gap ' + gap)
+  }
+}
+// The backbone chain must be laid out as a chain, not stacked on one rank.
+const backboneSpan = Math.abs(lvPos.get('k2').y - lvPos.get('k0').y)
+assert(backboneSpan > 0, 'the backbone chain must occupy more than one rank')
+const lvReport = {
+  nodes: lvPos.size,
+  deterministic: true,
+  maxMaterialRankGap: Math.round(Math.max(...rankGaps)),
+  backboneRanks: Math.round(backboneSpan / layerYGapLv),
+  backbone: [...lvTables.backbone].length,
+  satellite: [...lvTables.satellite].length,
+}
+
 console.log(JSON.stringify({
   ok: true,
   chain: ['a','b','c','d','e'].map((id) => ({ id, ...pos.get(id) })),
@@ -649,4 +754,5 @@ console.log(JSON.stringify({
   compactMax: Math.max(...compactDistances),
   stressNodes: stressLayout.pos.size,
   stressElapsedMs,
+  learningViewLayout: lvReport,
 }))

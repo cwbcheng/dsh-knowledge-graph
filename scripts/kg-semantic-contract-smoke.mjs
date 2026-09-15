@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import hostPlugin from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
+import { getOntology } from '../src/kg-ontology.mjs'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -95,7 +96,14 @@ assert(contractPrompt.includes('临时标签、修辞表达不得仅因显眼就
 assert(contractPrompt.includes('driven_by') && contractPrompt.includes('analogy') && contractPrompt.includes('aims_at'), 'precise semantic relations are missing from prompt')
 assert(contractPrompt.includes('这是安全上限，不是压缩目标'), 'node cap still incentivizes proposition compression')
 const hostSource = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
-assert(hostSource.includes("const FACT_KINDS = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])"), 'claim nodes are excluded from external fact checking')
+// Which types are worth checking against outside sources is an ontology
+// property, so it lives in the profile rather than a host constant. Two things
+// must hold: `claim` stays eligible — a claim is exactly what needs adjudicating
+// against outside sources — and the host actually reads the profile instead of
+// re-hardcoding a list.
+assert(getOntology('proposition-v1').factCheckTypes.includes('claim'), 'claim nodes are excluded from external fact checking')
+assert(hostSource.includes('ontFactCheckTypes(graph)'), 'external fact checking must read its kinds from the ontology profile')
+assert(!/const FACT_KINDS = /.test(hostSource), 'external fact-check kinds must not be re-hardcoded in the host')
 
 const relationText = [
   '学习方法属于实现学习目的的手段',

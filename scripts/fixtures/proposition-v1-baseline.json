@@ -1,0 +1,263 @@
+{
+  "_comment": "Frozen baseline of the constants that were hardcoded in src/index.host.js and src/index.client.js before the ontology profile refactor. proposition-v1 must never drift from this file: it is what guarantees existing graphs keep extracting and rendering identically. Regenerate only with a deliberate, reviewed ontology change.",
+  "typeAliases": {
+    "fact": "fact",
+    "事实": "fact",
+    "claim": "claim",
+    "主张": "claim",
+    "观点": "claim",
+    "inference": "inference",
+    "推论": "inference",
+    "concept": "concept",
+    "概念": "concept",
+    "definition": "definition",
+    "定义": "definition",
+    "example": "example",
+    "例子": "example",
+    "counter_example": "counter_example",
+    "counterexample": "counter_example",
+    "counter-example": "counter_example",
+    "反例": "counter_example",
+    "rule": "rule",
+    "规则": "rule"
+  },
+  "relationAliases": {
+    "supports": "supports",
+    "support": "supports",
+    "支持": "supports",
+    "example": "example",
+    "example_of": "example",
+    "例子": "example",
+    "counter_example": "counter_example",
+    "counterexample": "counter_example",
+    "反例": "counter_example",
+    "defines": "defines",
+    "define": "defines",
+    "定义": "defines",
+    "infers": "infers",
+    "infer": "infers",
+    "implies": "infers",
+    "推断": "infers",
+    "causes": "causes",
+    "cause": "causes",
+    "因果": "causes",
+    "导致": "causes",
+    "drives": "causes",
+    "drive": "causes",
+    "驱动": "causes",
+    "is_a": "is_a",
+    "isa": "is_a",
+    "属于": "is_a",
+    "contains": "contains",
+    "contain": "contains",
+    "包含": "contains",
+    "driven_by": "driven_by",
+    "drivenby": "driven_by",
+    "受驱动于": "driven_by",
+    "not_is": "not_is",
+    "notis": "not_is",
+    "不是": "not_is",
+    "不等于": "not_is",
+    "analogy": "analogy",
+    "analogizes": "analogy",
+    "类比": "analogy",
+    "类比说明": "analogy",
+    "aims_at": "aims_at",
+    "aim_at": "aims_at",
+    "旨在": "aims_at"
+  },
+  "evidenceRequiredTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "rule",
+    "definition",
+    "counter_example"
+  ],
+  "semanticGuardTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "rule",
+    "definition"
+  ],
+  "consumptionTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "concept",
+    "definition",
+    "example",
+    "counter_example",
+    "rule"
+  ],
+  "consumptionRelations": [
+    "supports",
+    "example",
+    "counter_example",
+    "defines",
+    "infers",
+    "causes",
+    "is_a",
+    "contains",
+    "driven_by",
+    "not_is",
+    "analogy",
+    "aims_at"
+  ],
+  "entityCandidateTypes": [
+    "concept",
+    "definition"
+  ],
+  "claimCandidateTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "rule",
+    "definition",
+    "counter_example"
+  ],
+  "sourceRules": {
+    "example": "example",
+    "counter_example": "counter_example",
+    "defines": "definition"
+  },
+  "renderOrder": [
+    "fact",
+    "claim",
+    "inference",
+    "concept",
+    "definition",
+    "example",
+    "counter_example",
+    "rule"
+  ],
+  "typeMeta": {
+    "fact": {
+      "label": "事实",
+      "color": "#3b82f6",
+      "fill": "rgba(59,130,246,0.15)"
+    },
+    "claim": {
+      "label": "主张",
+      "color": "#0f766e",
+      "fill": "rgba(15,118,110,0.15)"
+    },
+    "inference": {
+      "label": "推论",
+      "color": "#8b5cf6",
+      "fill": "rgba(139,92,246,0.15)"
+    },
+    "concept": {
+      "label": "概念",
+      "color": "#10b981",
+      "fill": "rgba(16,185,129,0.15)"
+    },
+    "definition": {
+      "label": "定义",
+      "color": "#f59e0b",
+      "fill": "rgba(245,158,11,0.16)"
+    },
+    "example": {
+      "label": "例子",
+      "color": "#06b6d4",
+      "fill": "rgba(6,182,212,0.15)"
+    },
+    "counter_example": {
+      "label": "反例",
+      "color": "#ef4444",
+      "fill": "rgba(239,68,68,0.15)"
+    },
+    "rule": {
+      "label": "规则",
+      "color": "#7c3aed",
+      "fill": "rgba(124,58,237,0.16)"
+    }
+  },
+  "relationLabels": {
+    "supports": "支持",
+    "example": "例子",
+    "counter_example": "反例",
+    "defines": "定义",
+    "infers": "推断",
+    "causes": "因果",
+    "is_a": "属于",
+    "contains": "包含",
+    "driven_by": "受驱动于",
+    "not_is": "不是",
+    "analogy": "类比说明",
+    "aims_at": "旨在"
+  },
+  "layoutFamilies": {
+    "backbone": [
+      "causes",
+      "infers"
+    ],
+    "satellite": [
+      "example",
+      "counter_example",
+      "analogy",
+      "defines",
+      "is_a",
+      "contains"
+    ],
+    "directional": [
+      "supports",
+      "driven_by",
+      "aims_at"
+    ]
+  },
+  "layoutWeights": {
+    "causes": 9,
+    "infers": 9,
+    "defines": 7,
+    "contains": 7,
+    "is_a": 7,
+    "not_is": 7,
+    "example": 6,
+    "counter_example": 6,
+    "analogy": 5,
+    "supports": 4,
+    "driven_by": 4,
+    "aims_at": 4
+  },
+  "assertionTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "rule"
+  ],
+  "factCheckTypes": [
+    "fact",
+    "claim",
+    "inference",
+    "rule",
+    "definition",
+    "counter_example"
+  ],
+  "factCheckWeights": {
+    "fact": 0.9,
+    "counter_example": 0.9,
+    "rule": 0.85,
+    "definition": 0.75,
+    "claim": 0.7,
+    "inference": 0.6
+  },
+  "relationWeave": {
+    "relations": [
+      "example",
+      "analogy"
+    ],
+    "sources": [
+      "example"
+    ],
+    "targets": [
+      "fact",
+      "claim",
+      "inference",
+      "concept",
+      "definition",
+      "rule"
+    ]
+  }
+}

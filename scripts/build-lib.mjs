@@ -165,6 +165,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  checkpoint,
                  existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
                  paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
+                 // A resumed run continues the ontology its checkpoint recorded, so
+                 // an interrupted learning-view extraction cannot come back as a
+                 // proposition one on the next boot. Extracting again into an
+                 // existing document must likewise continue that document's
+                 // ontology rather than quietly re-typing its nodes.
+                 ontology: requestedDocumentId && !checkpoint
+                   ? continueOntologyHost((await getSqliteStore()).getDocument(requestedDocumentId), a.ontology).ontology
+                   : resolveTaskOntologyHost(a.ontology || (checkpoint && checkpoint.graph) || DEFAULT_ONTOLOGY),
                  model: selectedModel,
                  createdAt: Date.now(),
                }
@@ -311,6 +319,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const sourceText = saved.sourceText || ''
               const graph = { ...saved, source: { ...(saved.source || {}), revision } }
               delete graph.sourceText
+              // Reopening a document must restore the ontology it was extracted
+              // with, or the client would label learning-view nodes with the
+              // proposition fallback.
+              graph.graphOntology = ontDescribe(graph)
               return writeJson(res, 200, { documentId, sourceText, revision, graph })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-load') {
@@ -371,9 +383,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (expectedRevision !== current.revision) {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
                 }
+                // An edit may not switch the document's ontology; the merge below
+                // builds a fresh object, so re-stamp rather than trust the payload.
+                const commitContinuity = continueOntologyHost(current, a.ontology)
+                if (commitContinuity.error) return writeJson(res, 200, { error: commitContinuity.error })
                 const operated = applyGraphOperationsHost(current, a.operations)
                 const incomingGraph = {
                   ...a.graph,
+                  ontology: commitContinuity.ontology,
                   source: current.source,
                   staging: current.staging,
                   nodes: Array.isArray(a.graph.nodes) ? a.graph.nodes.map((node) => ({ ...node, evidence: Array.isArray(node && node.evidence) ? node.evidence.map((item) => ({ ...item })) : [] })) : [],
@@ -577,6 +594,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 checkpoint,
                 existing,
                 existingSourceText: appendRecovery && previous ? (previous.sourceText || '') : '',
+                // The checkpoint carries the ontology the run started under.
+                ontology: resolveTaskOntologyHost(checkpoint.graph || checkpoint),
                 baseRevision: checkpoint.baseRevision,
                  imageAttachments: [],
                  imageSource: checkpoint.imageSource && typeof checkpoint.imageSource === 'object' ? checkpoint.imageSource : null,
@@ -807,6 +826,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
                 documentId, existingSourceText: canonical.sourceText || baseTraceText,
+                ontology: continueOntologyHost(existing, a.ontology).ontology,
                 baseTraceText, baseTraceEvents, existing, paragraphOffset,
                 baseRevision: canonical.revision,
                 baseSource: existing && existing.source ? existing.source : null,
@@ -850,6 +870,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 continuous: a.continuous === true, reviewPendingOnly: a.reviewPendingOnly === true,
                 title: canonical.source && canonical.source.title ? canonical.source.title : '',
                 text: canonical.sourceText, documentId,
+                ontology: continueOntologyHost(canonical, a.ontology).ontology,
                 baseRevision: canonical.revision, model, createdAt: Date.now(),
               }
               tasks.set(task.id, task)
@@ -890,10 +911,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
+              const appendContinuity = continueOntologyHost(existing, a.ontology)
+              if (appendContinuity.error) return writeJson(res, 200, { error: appendContinuity.error })
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
                 concurrency: a.concurrency,
                 title, text, existing, existingSourceText, documentId, paragraphOffset,
+                ontology: appendContinuity.ontology,
                 baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : null,
                 baseSource: existing && existing.source ? existing.source : null,
                 baseStaging: existing && existing.staging ? existing.staging : null,
@@ -923,7 +947,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
-                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents, model,
+                title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+                ontology: resolveTaskOntologyHost(a.ontology),
+                model,
                 createdAt: Date.now(),
               }
               tasks.set(task.id, task)
@@ -991,9 +1017,17 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
 // Replace the whole harness-RPC region (extract .. append-extract) with the
 // HTTP router. Range replacement by markers keeps this script robust when new
 // RPC methods (e.g. verify-graph / question-graph) are inserted in the source.
-const rpcStartMarker = `      harness.handle('fact-check', async (args) => {`
+//
+// The start marker is searched by preference: the shim comment is the stable
+// anchor, the registration lines are fallbacks so a rename still builds loudly
+// rather than silently emitting a host with no RPC router.
+const rpcStartMarkers = [
+  '      // Every RPC handler awaits the ontology module first',
+  "      kgRpc('fact-check', async (args) => {",
+  "      harness.handle('fact-check', async (args) => {",
+]
 const rpcEndMarker = `      // Periodically purge finished tasks`
-const rpcStartIdx = host.indexOf(rpcStartMarker)
+const rpcStartIdx = rpcStartMarkers.map((marker) => host.indexOf(marker)).find((index) => index >= 0) ?? -1
 const rpcEndIdx = host.indexOf(rpcEndMarker)
 if (rpcStartIdx < 0 || rpcEndIdx <= rpcStartIdx) throw new Error('host RPC region not found')
 host = host.slice(0, rpcStartIdx) + routeBlock + host.slice(rpcEndIdx)
@@ -1047,4 +1081,5 @@ host = host.replace('      // Periodically purge finished tasks (kept for 2h aft
 writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib/kg-markdown.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-ontology.mjs', import.meta.url), new URL('../lib/kg-ontology.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)
