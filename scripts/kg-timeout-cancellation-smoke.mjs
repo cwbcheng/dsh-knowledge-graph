@@ -274,7 +274,9 @@ async function extractionDeadlineSmoke() {
   // Compress only model deadlines, not provider ticks or test polling.
   globalThis.setTimeout = (fn, ms, ...args) => {
     timers.push(ms)
-    return originalSetTimeout(fn, ms === 900000 ? 360 : ms === 180000 ? 120 : ms === 120000 ? 80 : ms, ...args)
+    // 3000 is the idle-stall retry backoff; compressed here so the retry below
+    // still settles inside this test's polls.
+    return originalSetTimeout(fn, ms === 900000 ? 360 : ms === 180000 ? 120 : ms === 120000 ? 80 : ms === 3000 ? 30 : ms, ...args)
   }
   const handlers = new Map()
   let mode = 'slow-success', aborts = 0, calls = 0
@@ -326,7 +328,11 @@ async function extractionDeadlineSmoke() {
     mode='endless-reasoning'
     const endless = await waitDynamic(handlers,(await start()).taskId,2000)
     assert(endless.status === 'failed' && endless.error.code === 'timeout' && endless.error.message.includes('900000ms'),'Continuous reasoning must not renew the absolute deadline')
-    assert(calls === 3 && aborts === 2,'Timeout must abort without automatic costly retries')
+    // An idle stall (the provider produced nothing at all for the whole idle
+    // window) is retried exactly once — a transient hiccup must not discard a
+    // multi-hour run. The absolute deadline is the costly case: the model did
+    // stream for 15 minutes without finishing, so it must never be replayed.
+    assert(calls === 4 && aborts === 3,'A single idle stall must retry exactly once; only the absolute deadline aborts without retrying')
     await sleep(50)
     process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS = '40'
     const capped = await waitDynamic(handlers,(await start()).taskId,2000)
@@ -342,7 +348,7 @@ async function extractionDeadlineSmoke() {
     const beforeAux = auxiliaryCalls
     const auxIdle = await waitDynamic(handlers,(await startAuxiliary()).taskId,2000)
     assert(auxIdle.status === 'failed' && auxIdle.error.code === 'timeout' && /关系补全（第 1\/[1-9][0-9]* 组）：/.test(auxIdle.error.message) && auxIdle.error.message.includes('未返回有效内容'),'Stalled auxiliary stage must fail with its own stage identity: '+JSON.stringify(auxIdle))
-    assert(auxiliaryCalls === beforeAux + 1, 'Auxiliary timeout must not retry or publish a successful partial graph')
+    assert(auxiliaryCalls === beforeAux + 2, 'A stalled auxiliary stage must retry exactly once, then fail without publishing a successful partial graph')
     await sleep(50)
     return {activeStreamSurvives:true,emptyHeartbeatTimesOut:true,absoluteDeadlineEnforced:true,environmentCapPreserved:true,auxiliaryActiveStreamSurvives:true,auxiliaryTimeoutIdentifiesStage:true}
   } finally { globalThis.setTimeout = originalSetTimeout }
