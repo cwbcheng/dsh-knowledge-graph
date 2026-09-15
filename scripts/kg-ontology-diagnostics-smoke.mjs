@@ -183,6 +183,60 @@ const discriminationOnly = judge(
 )
 assert(!has(discriminationOnly, 'model_mismatch'), 'a 判别-only cluster is legitimate and must stay silent')
 
+// ---- 联结空载: a 联结模型 that never says what it maps between --------------
+// Measured on the source book: this is what the extractor actually produces —
+// the mapping ends up inside the model's own text and no material ever states
+// the input or the output.
+const bareModel = judge(
+  [
+    { id: 'cm', type: 'connection_model', text: '讲者表达结构到听者理解难度的映射' },
+    { id: 'r1', type: 'rule', text: '规律' },
+  ],
+  [{ fromNodeId: 'r1', toNodeId: 'cm', relation: 'has_rule' }]
+)
+assert(has(bareModel, 'mapping_missing'), 'a 联结模型 carrying only its rules must report 联结空载')
+assert(targetsOf(bareModel, 'mapping_missing').includes('cm'), 'the bare model must be blamed')
+
+// Stating the mapping either way must silence it: explicit edges, or 因素材料.
+const mappedModel = judge(
+  [
+    { id: 'cm', type: 'connection_model', text: '映射' },
+    { id: 'in', type: 'concept', text: '输入概念' },
+    { id: 'out', type: 'concept', text: '输出概念' },
+    { id: 'r1', type: 'rule', text: '规律' },
+  ],
+  [
+    { fromNodeId: 'r1', toNodeId: 'cm', relation: 'has_rule' },
+    { fromNodeId: 'cm', toNodeId: 'in', relation: 'maps_between' },
+    { fromNodeId: 'cm', toNodeId: 'out', relation: 'maps_between' },
+  ]
+)
+assert(!has(mappedModel, 'mapping_missing'), 'a 联结模型 with maps_between edges must stay silent')
+
+const factoredModel = judge(
+  [
+    { id: 'cm', type: 'connection_model', text: '映射' },
+    { id: 'f1', type: 'factor_material', text: '输入变量' },
+    { id: 'r1', type: 'rule', text: '规律' },
+  ],
+  [
+    { fromNodeId: 'r1', toNodeId: 'cm', relation: 'has_rule' },
+    { fromNodeId: 'f1', toNodeId: 'cm', relation: 'states_variable' },
+  ]
+)
+assert(!has(factoredModel, 'mapping_missing'), 'a 联结模型 with 因素材料 must stay silent')
+
+// 联结空载 is about 联结模型: a 判别模型 maps nothing between.
+const discriminatingOnly = judge(
+  [
+    { id: 'dm', type: 'discrimination_model', text: '判别模型' },
+    { id: 'p1', type: 'positive_example', text: '例子' },
+  ],
+  [{ fromNodeId: 'p1', toNodeId: 'dm', relation: 'exemplifies' }]
+)
+assert(!has(discriminatingOnly, 'mapping_missing'), '联结空载 must not fire on a 判别模型')
+
+
 // ---- 学习材料当记忆材料 --------------------------------------------------
 const asMemory = judge(
   [

@@ -395,6 +395,7 @@ const LEARNING_VIEW = {
     { id: 'upper_missing', zh: '上层丢失', definition: '只有例子，没有从中提炼的规律。' },
     { id: 'layer_mismatch', zh: '下上错配', definition: '上层材料与下层材料不对应同一知识。' },
     { id: 'model_mismatch', zh: '判联错配', definition: '有判别模型无联结模型，或反之。' },
+    { id: 'mapping_missing', zh: '联结空载', definition: '联结模型没有交代它在什么与什么之间映射，映射只写在文字里。' },
     { id: 'memorize_words', zh: '记言代学', definition: '只记住名称或描述，未建模型。' },
     { id: 'words_without_meaning', zh: '言存义空', definition: '记住了表述，未获得其指涉的义。' },
     { id: 'meaning_without_words', zh: '义存言空', definition: '有义但无法用语言表述。' },
@@ -824,6 +825,20 @@ export function diagnoseLearningView(graph, profile) {
     }
   }
   fire('model_mismatch', wrongModel, '模型与其材料的判别/联结归属不一致')
+
+  // 联结空载 — a 联结模型 that never says what it maps between. The book builds one
+  // from 因素材料 (输入/输出/表征); a model carrying only its rules has the mapping
+  // written inside its own text, where nothing can be checked against it. Verified
+  // against the source book: this fires on real 联结模型 whose text states the
+  // input and output but whose graph has no material for either.
+  const mappedModels = new Set()
+  for (const edge of edges) {
+    if (edge && edge.relation === 'maps_between' && edge.fromNodeId) mappedModels.add(edge.fromNodeId)
+  }
+  fire('mapping_missing', knowledge.filter((node) => node.type === 'connection_model' &&
+    !mappedModels.has(node.id) &&
+    !hasAround(node, (other) => other.type === 'factor_material')).map((node) => node.id),
+    '联结模型既无输入输出因素材料，也无映射关系')
 
   // 记言代学 — a description was stored but no feature/model was derived from it.
   const descriptions = upperMaterials.filter((node) => kind(node) === 'discrimination')

@@ -370,7 +370,7 @@ const learning = getOntology(ONTOLOGY_LEARNING_VIEW)
 check('learning-view declares exactly 18 node types and 21 relations', () => {
   assert.equal(learning.nodeTypes.length, 18)
   assert.equal(learning.relationTypes.length, 21)
-  assert.equal(learning.diagnostics.length, 10)
+  assert.equal(learning.diagnostics.length, 11)
 })
 
 check('learning-view marks both coordinates on material nodes', () => {
