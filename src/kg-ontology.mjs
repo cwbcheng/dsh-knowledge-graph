@@ -116,6 +116,14 @@ const LEARNING_VIEW = {
   id: ONTOLOGY_LEARNING_VIEW,
   label: '《学习观》知识图',
   summary: '按《学习观》的靶图本体抽取：知识（概念/特征/规律/判别模型/联结模型）与学习材料（判别材料/联结材料 × 上料/下料）。',
+  // Attributes this ontology defines relations THROUGH. Normalization copies
+  // exactly these onto extracted elements and drops everything else, so without
+  // this list the meanings they carry are lost at the parse boundary: which end
+  // of maps_between is the input, which side of a contrast is positive, whether
+  // compares_* means contrast or analogy. The proposition ontology declares none,
+  // so its graphs are byte-for-byte unchanged. See docs §3.
+  edgeAttributes: ['role', 'mode'],
+  nodeAttributes: ['stage', 'relKind'],
   nodeTypes: [
     // ---- 知识结构（5）----
     {

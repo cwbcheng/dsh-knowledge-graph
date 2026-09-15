@@ -31,11 +31,11 @@ const extractor = async ({ title, systemPrompt }) => {
     return {
       summary: '学习观材料',
       nodes: [
-        { id: 'n1', type: 'positive_example', text: '背单词表能通过考试', quote: '背单词表能通过考试', paragraph: 0 },
-        { id: 'n2', type: 'intension_description', text: '掌握指能推测未见情况', quote: '掌握指能推测未见情况', paragraph: 1 },
+        { id: 'n1', type: 'positive_example', text: '背单词表能通过考试', quote: '背单词表能通过考试', paragraph: 0, stage: 'data' },
+        { id: 'n2', type: 'intension_description', text: '掌握指能推测未见情况', quote: '掌握指能推测未见情况', paragraph: 1, relKind: 'basic' },
       ],
       edges: [
-        { fromNodeId: 'n1', toNodeId: 'n2', relation: 'exemplifies', evidence: [{ paragraph: 0, quote: '背单词表能通过考试' }] },
+        { fromNodeId: 'n1', toNodeId: 'n2', relation: 'exemplifies', role: 'input', mode: 'contrast', hidden: 'must-not-survive', evidence: [{ paragraph: 0, quote: '背单词表能通过考试' }] },
       ],
     }
   }
@@ -94,6 +94,20 @@ for (const typeId of lvProfile.nodeTypes.map((type) => type.id)) {
 const lvTypes = lv.result.nodes.map((node) => node.type).sort()
 assert.deepEqual(lvTypes, ['intension_description', 'positive_example'], 'learning-view node types did not survive normalization: ' + JSON.stringify(lvTypes))
 assert(lv.result.edges.some((edge) => edge.relation === 'exemplifies'), 'the learning-view relation did not survive normalization')
+
+// The ontology defines several relations THROUGH an attribute (`maps_between`
+// role input/output, `contrasts` role positive/negative, `compares_*` mode
+// contrast/analogy). Those attributes must survive normalization, or the model's
+// compliance is invisible and the relations lose the half of their meaning that
+// is not in the type name — while anything the ontology did NOT declare is still
+// refused rather than copied through.
+const attrEdge = lv.result.edges.find((edge) => edge.relation === 'exemplifies')
+assert.equal(attrEdge.role, 'input', 'a declared edge attribute must survive normalization')
+assert.equal(attrEdge.mode, 'contrast', 'every declared edge attribute must survive, not just the first')
+assert(!Object.hasOwn(attrEdge, 'hidden'), 'an undeclared edge attribute must not be copied into the graph')
+assert.equal(lv.result.nodes.find((node) => node.id === 'n1').stage, 'data', 'a declared node attribute must survive normalization')
+assert.equal(lv.result.nodes.find((node) => node.id === 'n2').relKind, 'basic', 'every declared node attribute must survive')
+assert(!Object.hasOwn(lv.result.nodes.find((node) => node.id === 'n1'), 'hidden'), 'undeclared node attributes must not be copied')
 assert.equal(lv.result.ontology, 'learning-view-v1', 'the result graph must record its ontology')
 
 // The rendered graph payload must carry the ontology's presentation face, so

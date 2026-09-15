@@ -431,6 +431,14 @@ function createHostPlugin(graphContractOnly) {
         "id": "learning-view-v1",
         "label": "《学习观》知识图",
         "summary": "按《学习观》的靶图本体抽取：知识（概念/特征/规律/判别模型/联结模型）与学习材料（判别材料/联结材料 × 上料/下料）。",
+        "edgeAttributes": [
+          "role",
+          "mode"
+        ],
+        "nodeAttributes": [
+          "stage",
+          "relKind"
+        ],
         "nodeTypes": [
           {
             "id": "concept",
@@ -1556,6 +1564,21 @@ function createHostPlugin(graphContractOnly) {
        function ontTypeAliases(carrier) { return ontAliasMap(carrier, 'nodeTypes', 'typeAliases') }
        function ontRelationAliases(carrier) { return ontAliasMap(carrier, 'relationTypes', 'relationAliases') }
        function ontEvidenceRequired(carrier) { return ontSet(carrier, 'evidenceRequiredTypes', 'evidenceRequired') }
+       // Attribute vocabulary the ontology defines relations through. An absent
+       // list means "carry none", which is what keeps the proposition ontology
+       // exactly as it was.
+       function ontEdgeAttributes(carrier) { return ontSet(carrier, 'edgeAttributes', 'edgeAttributes') }
+       function ontNodeAttributes(carrier) { return ontSet(carrier, 'nodeAttributes', 'nodeAttributes') }
+       function pickDeclaredAttributes(source, allowed) {
+         if (!allowed || allowed.size === 0 || !source || typeof source !== 'object') return null
+         const out = {}
+         for (const key of allowed) {
+           const value = source[key]
+           if (typeof value === 'string' && value.trim()) out[key] = value.trim().slice(0, 64)
+           else if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
+         }
+         return Object.keys(out).length > 0 ? out : null
+       }
        function ontSemanticGuard(carrier) { return ontSet(carrier, 'semanticGuardTypes', 'semanticGuard') }
        function ontSourceRules(carrier) { return ontCached(carrier, 'sourceRules', (profile) => ({ ...profile.sourceRules })) }
        function ontConsumptionTypes(carrier) { return ontSet(carrier, 'consumptionTypes', 'consumptionTypes') }
@@ -4358,6 +4381,11 @@ function createHostPlugin(graphContractOnly) {
         const ontologyId = ontIdOf(ontology || sourceContext || obj)
         const typeLookup = ontTypeAliases(ontologyId)
         const relationLookup = ontRelationAliases(ontologyId)
+        // Attributes survive only if THIS ontology declares them: an ontology that
+        // defines a relation through an attribute must say so, or the meaning is
+        // silently dropped here and the model's compliance becomes invisible.
+        const edgeAttributes = ontEdgeAttributes(ontologyId)
+        const nodeAttributes = ontNodeAttributes(ontologyId)
         const summary = typeof obj.summary === 'string' ? obj.summary.trim() : ''
         if (!Array.isArray(obj.nodes)) return { error: '缺少 nodes 数组' }
         if (!Array.isArray(obj.edges)) return { error: '缺少 edges 数组' }
@@ -4411,7 +4439,11 @@ function createHostPlugin(graphContractOnly) {
           // that its normalized claim text is semantically entailed.
           const entailmentStatus = 'unverified'
           seen.add(id)
-          nodes.push({ id, type, text, quote, paragraph: pNum, evidence, groundingStatus, entailmentStatus, ...sourceFields })
+          nodes.push({
+            id, type, text, quote, paragraph: pNum, evidence, groundingStatus, entailmentStatus,
+            ...(pickDeclaredAttributes(n, nodeAttributes) || {}),
+            ...sourceFields,
+          })
         }
 
         const edges = []
@@ -4433,6 +4465,7 @@ function createHostPlugin(graphContractOnly) {
             fromNodeId: from,
             toNodeId: to,
             relation,
+            ...(pickDeclaredAttributes(e, edgeAttributes) || {}),
             evidence: edgeEvidence,
             ...(sourceContext && sourceContext.sourceId ? {
               documentId: sourceContext.documentId || null,
