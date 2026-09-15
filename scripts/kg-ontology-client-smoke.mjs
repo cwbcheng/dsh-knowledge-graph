@@ -52,11 +52,27 @@ for (let i = clientSource.indexOf('{', fnStart); i < clientSource.length; i += 1
   }
 }
 assert(fnEnd > fnStart, 'applyGraphOntology must be balanced')
-const block = clientSource.slice(blockStart, fnEnd)
+// The edge-label helpers sit immediately after applyGraphOntology and read the
+// same profile-driven tables, so the slice has to reach through them too.
+const relLabelStart = clientSource.indexOf('      function edgeRelationLabel(edge) {')
+assert(relLabelStart > fnEnd, 'edgeRelationLabel must follow applyGraphOntology')
+let relDepth = 0
+let blockEnd = -1
+for (let i = clientSource.indexOf('{', relLabelStart); i < clientSource.length; i += 1) {
+  if (clientSource[i] === '{') relDepth += 1
+  else if (clientSource[i] === '}') {
+    relDepth -= 1
+    if (relDepth === 0) { blockEnd = i + 1; break }
+  }
+}
+assert(blockEnd > relLabelStart, 'edgeRelationLabel must be balanced')
+const block = clientSource.slice(blockStart, blockEnd)
 
 const harness = new Function(block + `
   return {
     applyGraphOntology,
+    edgeRelationLabel,
+    attributeDetailSuffix,
     snapshot: () => ({ TYPE_META, REL_LABEL, TYPE_ORDER, REL_SOURCE_RULES, CANDIDATE_ENTITY_TYPES, CANDIDATE_CLAIM_TYPES }),
     layout: () => ({
       weights: LAYERED_RELATION_WEIGHTS,
@@ -69,7 +85,7 @@ const harness = new Function(block + `
     fallback: { TYPE_META: PROPOSITION_TYPE_META, REL_LABEL: PROPOSITION_REL_LABEL, TYPE_ORDER: PROPOSITION_TYPE_ORDER },
   }
 `)()
-const { applyGraphOntology, snapshot, fallback, layout } = harness
+const { applyGraphOntology, edgeRelationLabel, attributeDetailSuffix, snapshot, fallback, layout } = harness
 
 // ---- a payload with no ontology keeps the built-in tables ------------------
 const before = snapshot()
@@ -98,6 +114,15 @@ assert.equal(propLayout.weights.supports, 4)
 assert.deepEqual(propLayout.strongLocal, propLayout.satellite, 'strong-local is the satellite family')
 assert.deepEqual(propLayout.branch, propLayout.satellite, 'branch is the satellite family')
 
+// ---- edge attributes are labelled from the payload -------------------------
+// Several relations carry half their meaning in an attribute, so the drawn label
+// has to include it or two opposite edges look identical.
+assert(!('edgeAttributeLabels' in records.get('proposition-v1')), 'the proposition payload must not carry attribute labels')
+const lvAttr = records.get('learning-view-v1').edgeAttributeLabels
+assert(lvAttr && lvAttr.role && lvAttr.role.input && lvAttr.role.output, 'the learning-view payload must label role values')
+assert(lvAttr && lvAttr.mode && lvAttr.mode.contrast && lvAttr.mode.analogy, 'the learning-view payload must label mode values')
+assert.equal(edgeRelationLabel({ relation: 'causes', role: 'input' }), '因果', 'the proposition ontology must ignore an attribute it never declared')
+
 applyGraphOntology(records.get('learning-view-v1'))
 const lvLayout = layout()
 const familyOf = (want) => getOntology('learning-view-v1').relationTypes.filter((r) => r.family === want).map((r) => r.id).sort()
@@ -123,6 +148,18 @@ applyGraphOntology(records.get('proposition-v1'))
 const lvProfile = getOntology('learning-view-v1')
 const installed = applyGraphOntology(records.get('learning-view-v1'))
 assert(installed, 'a learning-view payload must be installed')
+assert.equal(edgeRelationLabel({ relation: 'maps_between', role: 'input' }), '联结映射·入', 'an attribute must appear in the edge label')
+assert.equal(edgeRelationLabel({ relation: 'maps_between', role: 'output' }), '联结映射·出', 'the opposite attribute value must read differently')
+assert.equal(edgeRelationLabel({ relation: 'compares_feature', mode: 'analogy' }), '特征对比/类比·类比', 'mode must disambiguate a label that names both')
+assert.equal(edgeRelationLabel({ relation: 'maps_between' }), '联结映射', 'an edge without the attribute must not gain a suffix')
+assert.equal(edgeRelationLabel({ relation: 'maps_between', role: 'unheard-of' }), '联结映射', 'an unknown attribute value must not be invented into the label')
+assert.equal(attributeDetailSuffix({ relation: 'maps_between', role: 'input' }), '（role=input）', 'the detail card must spell the attribute out')
+
+// A renderer that still reads REL_LABEL directly would draw a 输入 edge and an
+// 输出 edge identically, which is the bug this replaces.
+assert.equal(clientSource.split('const rel = REL_LABEL[edge.relation] || edge.relation').length - 1, 0, 'no edge renderer may bypass edgeRelationLabel')
+assert.equal(clientSource.split('const rel = edgeRelationLabel(edge)').length - 1, 3, 'all three edge renderers must label through the helper')
+assert.equal(clientSource.split('measureLabel(edgeRelationLabel(edge))').length - 1, 1, 'layout label sizing must reserve room for the attribute')
 const after = snapshot()
 
 assert.deepEqual(after.TYPE_ORDER, lvProfile.nodeTypes.map((type) => type.id), 'the type order must follow the profile order')

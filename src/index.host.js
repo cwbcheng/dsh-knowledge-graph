@@ -439,6 +439,18 @@ function createHostPlugin(graphContractOnly) {
           "stage",
           "relKind"
         ],
+        "edgeAttributeLabels": {
+          "role": {
+            "input": "入",
+            "output": "出",
+            "positive": "正",
+            "negative": "负"
+          },
+          "mode": {
+            "contrast": "对比",
+            "analogy": "类比"
+          }
+        },
         "nodeTypes": [
           {
             "id": "concept",
@@ -1634,6 +1646,13 @@ function createHostPlugin(graphContractOnly) {
              id: relation.id, zh: relation.zh, family: relation.family, weight: relation.weight, hint: relation.hint || '',
            })),
            diagnostics: profile.diagnostics.map((diag) => ({ id: diag.id, zh: diag.zh, definition: diag.definition })),
+           // Which edge attributes carry meaning, and how to read their values.
+           // Absent for an ontology that declares none, so the client draws no
+           // attribute suffix for proposition graphs.
+           ...(ontEdgeAttributes(profile.id).size > 0 ? {
+             edgeAttributes: [...ontEdgeAttributes(profile.id)],
+             edgeAttributeLabels: profile.edgeAttributeLabels || {},
+           } : {}),
          }
        }
 

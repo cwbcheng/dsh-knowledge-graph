@@ -127,6 +127,11 @@
       let TYPE_ORDER = PROPOSITION_TYPE_ORDER
       let CANDIDATE_ENTITY_TYPES = PROPOSITION_CANDIDATE_ENTITY_TYPES
       let CANDIDATE_CLAIM_TYPES = PROPOSITION_CANDIDATE_CLAIM_TYPES
+      // Which edge attributes carry meaning, and how to read their values. The
+      // ontology defines several relations THROUGH an attribute, so a label that
+      // shows only the relation name hides half of what the edge says. Empty for
+      // the proposition ontology, which declares no attributes.
+      let EDGE_ATTRIBUTE_LABELS = {}
 
       // ---- layout tables, also profile-driven ------------------------------
       // The layered layout reads relation FAMILY and WEIGHT: backbone relations
@@ -212,6 +217,7 @@
           TYPE_ORDER = PROPOSITION_TYPE_ORDER
           CANDIDATE_ENTITY_TYPES = PROPOSITION_CANDIDATE_ENTITY_TYPES
           CANDIDATE_CLAIM_TYPES = PROPOSITION_CANDIDATE_CLAIM_TYPES
+          EDGE_ATTRIBUTE_LABELS = {}
           applyLayoutProfile(null)
           return null
         }
@@ -243,8 +249,38 @@
         // candidate rather than mislabelling its types.
         CANDIDATE_ENTITY_TYPES = new Set()
         CANDIDATE_CLAIM_TYPES = new Set()
+        EDGE_ATTRIBUTE_LABELS = record.edgeAttributeLabels && typeof record.edgeAttributeLabels === 'object' ? record.edgeAttributeLabels : {}
         applyLayoutProfile(record)
         return record
+      }
+
+      // A relation whose meaning partly lives in an attribute (输入/输出, 正/负,
+      // 对比/类比) must say so on the edge, or the drawing shows the same label
+      // for two opposite edges. An ontology that declares no attributes returns
+      // the bare relation label, so proposition graphs render exactly as before.
+      // The detail card has room to name the attribute in full ("输入"), while the
+      // on-canvas label has to stay compact.
+      function attributeDetailSuffix(edge) {
+        const parts = []
+        for (const key of Object.keys(EDGE_ATTRIBUTE_LABELS)) {
+          const labels = EDGE_ATTRIBUTE_LABELS[key]
+          const value = edge ? edge[key] : null
+          if (!labels || typeof value !== 'string' || !labels[value]) continue
+          parts.push(key + '=' + value)
+        }
+        return parts.length > 0 ? '（' + parts.join('，') + '）' : ''
+      }
+
+      function edgeRelationLabel(edge) {
+        const base = REL_LABEL[edge && edge.relation] || (edge && edge.relation) || ''
+        const parts = []
+        for (const key of Object.keys(EDGE_ATTRIBUTE_LABELS)) {
+          const labels = EDGE_ATTRIBUTE_LABELS[key]
+          const value = edge ? edge[key] : null
+          const text = labels && value && typeof value === 'string' ? labels[value] : null
+          if (text) parts.push(text)
+        }
+        return parts.length > 0 ? base + '·' + parts.join('·') : base
       }
        const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
        const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
@@ -3623,7 +3659,7 @@
             if (a && b && sizes.has(edge.fromNodeId) && sizes.has(edge.toNodeId)) {
               const routeNodes = layout.componentNodesById ? (layout.componentNodesById.get(edge.fromNodeId) || nodes) : nodes
               const route = layeredOrthoPath(edge, a, b, sizes, layout.pos, routeNodes, edgeLanes.get(edge) || 0)
-              const labelW = measureLabel(REL_LABEL[edge.relation] || edge.relation) + 10, labelH = 15
+              const labelW = measureLabel(edgeRelationLabel(edge)) + 10, labelH = 15
               const placed = placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')
               layeredEdgeGeometry.set(edge, { d: route.d, lblX: placed.x, lblY: placed.y, labelW, labelH, labelHidden: placed.hidden })
             }
@@ -4057,7 +4093,7 @@
           const hover = hoverEdge === i
           const inFocus = focus ? related.edgeIdx.has(i) : true
           const dim = focus ? !inFocus : false
-          const rel = REL_LABEL[edge.relation] || edge.relation
+          const rel = edgeRelationLabel(edge)
           const issueSev = issueSeverityForEdge(edge)
           // Radial mode: polylines — each edge leaves its source radially,
           // sweeps along an arc just OUTSIDE the outer ring of its two
@@ -4342,14 +4378,15 @@
         const edgeDetailEl = edgeDetail
           ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '关系详情' },
               h('div', { className: 'kg-node-detail-head' },
-                h('span', { className: 'kg-node-detail-type', style: { background: '#6366f1' } }, REL_LABEL[edgeDetail.relation] || edgeDetail.relation),
+                h('span', { className: 'kg-node-detail-type', style: { background: '#6366f1' } }, edgeRelationLabel(edgeDetail)),
                 h('button', {
                   type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
                   onClick: () => { onSelectEdge(null) },
                 }, '×'),
               ),
               h('div', { className: 'kg-node-detail-text' }, edgeDetail.fromNodeId + ' → ' + edgeDetail.toNodeId),
-              h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)),
+              h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)
+                + attributeDetailSuffix(edgeDetail)),
               h('div', { className: 'kg-node-detail-actions' },
                 typeof onQuestionEdge === 'function'
                   ? h('button', {
