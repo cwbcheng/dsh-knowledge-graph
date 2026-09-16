@@ -234,6 +234,26 @@ const strip = new Function('h', 'return (' + extractFunction(clientSource, 'onto
 assert.equal(strip({}, () => {}), null, 'a view with no findings must render nothing')
 assert.equal(strip({ graphDiagnostics: [] }, () => {}), null, 'an empty finding list must render nothing')
 assert.equal(strip(null, () => {}), null, 'a null view must render nothing')
+
+// ---- the mode badge names the ontology the document was built with --------
+// A document keeps the ontology it was extracted with, so without a name on
+// screen the only way to tell an old proposition graph from a 《学习观》 one is
+// to read the node types.
+const modeBadge = new Function('h', 'return (' + extractFunction(clientSource, 'ontologyModeBadge') + ')')(h)
+assert.equal(modeBadge({}), null, 'a view with no ontology must render no badge')
+assert.equal(modeBadge(null), null, 'a null view must render no badge')
+const lvBadge = modeBadge({ ontology: records.get('learning-view-v1') })
+assert.equal(lvBadge.props.className, 'kg-ontology-badge')
+assert.equal(lvBadge.children[0].children[0], '《学习观》知识图', 'the badge must name the ontology')
+assert.equal(lvBadge.children[1].children[0], '18 类节点 · 21 类关系 · 11 项诊断', 'the badge must report the ontology shape')
+const propBadge = modeBadge({ ontology: records.get('proposition-v1') })
+assert.equal(propBadge.children[1].children[0], '8 类节点 · 12 类关系', 'an ontology with no diagnostics must not claim any')
+
+// The extraction form has to be able to choose one, so the catalogue call and
+// the payload field must both exist.
+assert(clientSource.includes("host.call('ontology-list'"), 'the client must fetch the ontology catalogue')
+assert(clientSource.includes("...(ontologyArg ? { ontology: ontologyArg } : {})"), 'a non-default mode must be sent with the extraction')
+
 // A proposition graph declares no diagnostics, so it renders nothing either.
 assert.equal(strip({ graphDiagnostics: applyGraphOntology(records.get('proposition-v1')) || [] }, () => {}), null, 'a proposition graph must render no strip')
 

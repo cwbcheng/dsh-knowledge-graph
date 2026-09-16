@@ -1625,6 +1625,26 @@ function createHostPlugin(graphContractOnly) {
          })
        }
        /** The presentation face sent to the client with a graph payload. */
+       /**
+        * The ontology catalogue the UI needs so a person can CHOOSE one. Built
+        * from the same ontDescribe payload the renderer consumes, so a new
+        * ontology appears in the picker with no second list to keep in step.
+        */
+       function ontCatalogueHost() {
+         return Object.keys(ONTOLOGY_PROFILES).map((id) => {
+           const described = ontDescribe(id)
+           return {
+             id: described.id,
+             label: described.label,
+             summary: described.summary,
+             isDefault: described.id === DEFAULT_ONTOLOGY,
+             nodeTypes: described.nodeTypes.length,
+             relationTypes: described.relationTypes.length,
+             diagnostics: described.diagnostics.length,
+           }
+         })
+       }
+
        function ontDescribe(carrier) {
          const profile = ontProfile(carrier)
          return {
@@ -9757,6 +9777,8 @@ function createHostPlugin(graphContractOnly) {
         }
         return buildDocumentImportResultHost(collected)
       })
+
+      harness.handle('ontology-list', async () => ({ ontologies: ontCatalogueHost() }))
 
       harness.handle('list-models', async () => {
         const llm = ctx.get('llm')

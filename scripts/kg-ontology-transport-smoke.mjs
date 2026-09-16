@@ -125,6 +125,20 @@ try {
   const persistent = ctx.plugin(persistentPlugin)
   await persistent.await()
 
+  // ---- 0. the ontology catalogue crosses the persistent transport ----------
+  // The UI can only offer a mode it can name, so the picker's data has to come
+  // over the wire — including the counts it shows and the default flag that
+  // keeps an unchanged install sending the payload it always did.
+  const catalogue = await call('GET', '/api/dsh-knowledge-graph/ontology-list')
+  assert(Array.isArray(catalogue.ontologies) && catalogue.ontologies.length >= 2, 'the ontology catalogue must list every ontology: ' + JSON.stringify(catalogue))
+  const lvEntry = catalogue.ontologies.find((item) => item.id === 'learning-view-v1')
+  assert(lvEntry && typeof lvEntry.label === 'string' && lvEntry.label, 'a catalogue entry needs a display label')
+  assert.equal(lvEntry.nodeTypes, 18, 'the catalogue must report the real node-type count')
+  assert.equal(lvEntry.relationTypes, 21, 'the catalogue must report the real relation-type count')
+  assert.equal(lvEntry.diagnostics, 11, 'the catalogue must report the real diagnostics count')
+  assert.equal(lvEntry.isDefault, false, 'learning-view must not be marked as the default')
+  assert(catalogue.ontologies.some((item) => item.id === 'proposition-v1' && item.isDefault === true), 'proposition-v1 must be the marked default')
+
   // ---- 1. the web route honours the requested ontology ---------------------
   const lv = await extract({ title: 'transport-lv', text: '掌握一个概念需要判别材料。', ontology: 'learning-view-v1' })
   assert.equal(lv.status, 'succeeded', 'the extraction must succeed: ' + JSON.stringify(lv.error))

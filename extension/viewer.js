@@ -1170,6 +1170,22 @@
        * from a profile with no diagnostics (every profile before learning-view)
        * both render nothing rather than an empty box.
        */
+      // Which ontology THIS document was extracted with. A document keeps the
+      // ontology it was built with, so without a name on screen the only way to
+      // tell an old proposition graph from a 《学习观》 one is to read the types.
+      function ontologyModeBadge(view) {
+        const record = view && view.ontology
+        if (!record || typeof record.label !== 'string' || !record.label) return null
+        const nodeTypes = Array.isArray(record.nodeTypes) ? record.nodeTypes.length : 0
+        const relationTypes = Array.isArray(record.relationTypes) ? record.relationTypes.length : 0
+        const diagnostics = Array.isArray(record.diagnostics) ? record.diagnostics.length : 0
+        return h('div', { className: 'kg-ontology-badge', role: 'status', 'aria-label': '当前知识图模式：' + record.label },
+          h('span', { className: 'kg-ontology-badge-label' }, record.label),
+          h('span', { className: 'kg-ontology-badge-counts' },
+            nodeTypes + ' 类节点 · ' + relationTypes + ' 类关系' + (diagnostics > 0 ? ' · ' + diagnostics + ' 项诊断' : '')),
+        )
+      }
+
       function ontologyDiagnosticStrip(view, onSelect) {
         const findings = view && Array.isArray(view.graphDiagnostics) ? view.graphDiagnostics : []
         if (findings.length === 0) return null

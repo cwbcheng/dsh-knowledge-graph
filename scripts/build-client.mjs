@@ -46,8 +46,8 @@ window.__ModuleLoader__.load({
 
     // ---------- RPC to the host half (webServer route, replaces host.call) ----------
     async function rpc(method, body) {
-      if (method === "list-models") {
-        const res = await fetch("/api/dsh-knowledge-graph/list-models", { cache: "no-store" })
+      if (method === "list-models" || method === "ontology-list") {
+        const res = await fetch("/api/dsh-knowledge-graph/" + method, { cache: "no-store" })
         return res.json()
       }
       if (method === "document-import" || method === "markdown-import") {
@@ -195,6 +195,7 @@ c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
 c = c.split("host.call('list-models'").join("rpc('list-models'")
+c = c.split("host.call('ontology-list'").join("rpc('ontology-list'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
 c = c.split("host.call('markdown-import'").join("rpc('markdown-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")

@@ -217,6 +217,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               return writeJson(res, 200, buildDocumentImportResultHost(collected))
             }
+            // Shares ontCatalogueHost with the dynamic handler: the picker must
+            // list exactly the ontologies the engine can actually extract with.
+            if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/ontology-list') {
+              return writeJson(res, 200, { ontologies: ontCatalogueHost() })
+            }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/list-models') {
               const llm = ctx.get('llm')
               const providers = []
