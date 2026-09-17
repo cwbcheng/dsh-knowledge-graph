@@ -93,6 +93,29 @@ try {
   const storedTypes = new Set(saved.checkpoint.graph.nodes.map((node) => node.type))
   assert(storedTypes.has('intension_description') || storedTypes.has('positive_example'), 'the merged prefix must hold learning-view types: ' + [...storedTypes].join(','))
 
+  // ---- a rejected resume must not consume the checkpoint it rejected --------
+  // The old order rebuilt and persisted the accumulator first and only then
+  // checked the wave, so a failed resume overwrote the original with the rebuild
+  // and the run stopped being recoverable. Dropping `nodeIds` from a staged chunk
+  // makes the rebuild observably different from what is stored, and corrupting the
+  // wave hash makes the resume fail: the stored bytes must survive untouched.
+  const original = structuredClone(saved.checkpoint)
+  const tampered = structuredClone(saved.checkpoint)
+  tampered.pendingWave.contextHash = 'corrupted'
+  delete tampered.staging.chunks[0].nodeIds
+  store.saveCheckpoint(tampered, { runId: started.taskId, status: 'failed', sourceText: source })
+  const apiReject = createHost(extractor)
+  const rejected = await wait(apiReject, await request(apiReject, 'resume-extract', { runId: started.taskId, retryFailed: true }))
+  assert.equal(rejected.error && rejected.error.code, 'checkpoint_invalid', 'a wave that no longer matches must be refused: ' + JSON.stringify(rejected.error || rejected.status))
+  const afterRejection = store.loadCheckpoint(started.taskId).checkpoint
+  assert.equal(afterRejection.pendingWave.contextHash, 'corrupted', 'a rejected resume must not rewrite the wave it rejected')
+  // The tampered chunk had its `nodeIds` removed. A rebuild would have written
+  // an empty array back; leaving it absent is what proves nothing was rewritten.
+  assert(!Object.hasOwn(afterRejection.staging.chunks[0], 'nodeIds'), 'a rejected resume must not rebuild the staged chunks it rejected')
+  assert.equal(afterRejection.graph.nodes.length, original.graph.nodes.length, 'a rejected resume must not replace the stored graph')
+  assert(/原检查点已保留/.test(rejected.error.message), 'the refusal must say the original was kept: ' + rejected.error.message)
+  store.saveCheckpoint(original, { runId: started.taskId, status: 'failed', sourceText: source })
+
   // A fresh host is a restart: everything it knows comes from the checkpoint.
   failOn = -1
   prompts.length = 0
@@ -115,6 +138,7 @@ try {
     resumedNodes: resumed.result.nodes.length,
     foreignTypes: foreign.length,
     resumedPromptsAllLearningView: prompts.every((item) => item.learningView),
+    rejectedResumeKeptCheckpoint: true,
   }))
 } finally {
   for (const cleanup of cleanups.reverse()) { try { cleanup() } catch (error) {} }
