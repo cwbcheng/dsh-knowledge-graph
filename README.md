@@ -194,6 +194,21 @@ npm run kg -- restore-revision --db ./data/knowledge.sqlite --id document_xxx --
 
 `npm test` 还包含独立流水线、CAS 与历史异步竞态、模拟 OCR 中断恢复和 CRX 载荷校验。流水线的使用与安全边界见 [OCR 流水线](scripts/kg-pipeline/README.md)。
 
+### 对着 dsh 源码跑
+
+想让它跑在 `/mnt/d/github` 里那份 dsh **源码构建**上（而不是 npx 装的那份），用 `scripts/dev-web.sh`：
+
+```bash
+npm run dev:web                 # 前台启动，Ctrl-C 结束
+npm run dev:web -- --detach     # 后台启动并打印带 token 的地址
+npm run dev:web:stop            # 停掉后台实例
+npm run dev:web -- --rebuild    # 先 pnpm install + build（含本插件）
+```
+
+它会自己搞定：快进 `DSH_REPO`、装依赖、构建、从随包 `web` 模板建 profile、把本插件作为 bundle 层装进去，最后**用独立端口和独立 profile 启动**——不会碰你平时在跑的那个实例。启动后会请求一次 `ontology-list` 确认插件真的回答了，因为**插件加载失败时外壳照样能起来**，「起来了」不等于「能用」。它还会在 `src` 比 `lib` 新时警告：profile 是软链到本目录的，客户端包过期是这里最容易踩的坑。端口被占用时直接报错退出，不抢端口。
+
+可用 `DSH_REPO` / `DSH_DEV_PORT` / `DSH_DEV_PROFILE` / `DSH_DEV_LOG` 覆盖默认值（默认 `/mnt/d/github/deepseek-harness`、3099、`kgsrc`）。
+
 ### 冻结质量回归门禁
 
 `kg:quality-regression` 固定使用 2844 字的 world-recognition 原文与 calibrated-v2 的 25 个 QA case。修复后观察基线为 24/25；默认门禁要求 trusted QA 至少 23/25（最多退化 1 case）、score 至少 92、节点至少 20。节点下限只是 catastrophic-collapse sentinel，不能替代 QA 分数。`--graph` 模式也会先校验 `graph.sourceText` 的字符数和 SHA-256；缺少原文或换了文章时返回 `frozen_source_missing` / `frozen_source_mismatch`，不会输出误导性分数。
