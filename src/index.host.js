@@ -7074,6 +7074,12 @@ function createHostPlugin(graphContractOnly) {
            ...(task.postprocess ? { postprocess: JSON.parse(JSON.stringify(task.postprocess)) } : {}),
            paragraphOffset: Number.isInteger(task.paragraphOffset) ? task.paragraphOffset : 0,
            taskKind: effectiveTaskKind,
+           // A run must finish in the ontology it started with. Without this the
+           // resume path fell back to the default, and re-seeding the stored
+           // graph then rewrote every type the default does not declare — an
+           // entire 《学习观》 run's material types became `fact`, which changed
+           // the accumulator and tripped the concurrent-wave guard.
+           ontology: ontIdOf(task),
            baseRevision: Number.isInteger(task.baseRevision) ? task.baseRevision : null,
             ...(task.imageSource && typeof task.imageSource === 'object' ? { imageSource: JSON.parse(JSON.stringify(task.imageSource)) } : {}),
            baseSource,
@@ -7230,11 +7236,28 @@ function createHostPlugin(graphContractOnly) {
           const existingIds = new Set()
           const addedIds = []
           if (existing) {
+            // A stored node whose type the run's ontology does not declare means
+            // the checkpoint and the ontology disagree. Refuse rather than
+            // substitute a fallback type: a silent rewrite produces a graph that
+            // looks fine and is wrong, and that is how a mixed-ontology run is
+            // created in the first place.
+            const storedTypeAliases = ontTypeAliases(task)
+            const undeclaredStoredTypes = new Set()
+            for (const node of existing.nodes || []) {
+              if (!node || typeof node !== 'object') continue
+              const raw = typeof node.type === 'string' ? node.type.trim().toLowerCase() : ''
+              if (raw && !storedTypeAliases[raw]) undeclaredStoredTypes.add(raw || '(空)')
+            }
+            if (undeclaredStoredTypes.size > 0) {
+              return failTask(task, 'checkpoint_invalid',
+                '检查点里的节点类型不属于本次运行的本体（' + [...undeclaredStoredTypes].slice(0, 6).join('、') + '），拒绝把类型改写后续跑')
+            }
             for (const n of existing.nodes || []) {
               if (!n || typeof n !== 'object') continue
               const id = typeof n.id === 'string' ? n.id.trim() : ''
               const text = typeof n.text === 'string' ? n.text.trim() : ''
               if (!id || !text) continue
+              const resolvedStoredType = storedTypeAliases[typeof n.type === 'string' ? n.type.trim().toLowerCase() : '']
               const nodeProvenance = { documentId: n.documentId, sourceId: n.sourceId, chunkId: n.chunkId }
               const evidence = mergeEvidenceRecordsHost([], (Array.isArray(n.evidence) ? n.evidence : []).map((item) => (
                 item && Number.isInteger(item.paragraph) && typeof item.quote === 'string' && item.quote.trim()
@@ -7243,7 +7266,7 @@ function createHostPlugin(graphContractOnly) {
               )), 8)
               const seededNode = {
                 id,
-                type: ontTypeAliases(task)[typeof n.type === 'string' ? n.type.trim().toLowerCase() : ''] || ontFallbackType(task),
+                type: resolvedStoredType,
                 text,
                 quote: typeof n.quote === 'string' ? n.quote : '',
                 paragraph: typeof n.paragraph === 'number' ? n.paragraph : null,

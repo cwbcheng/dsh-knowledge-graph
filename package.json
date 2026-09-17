@@ -90,7 +90,7 @@
     "test:kg-audit": "node scripts/kg-audit-regression-smoke.mjs",
     "test:kg-ocr": "node scripts/run-python.mjs scripts/kg-ocr-smoke.py",
     "test:kg-packaging": "node scripts/run-python.mjs scripts/check-extension.py",
-    "test": "npm run build && npm run test:kg-cordis-boot && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-image && npm run test:kg-pdf && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy && npm run test:kg-pipeline && npm run gen:ontology -- --check && npm run test:kg-ontology && npm run test:kg-ontology-prompt && npm run test:kg-ontology-extraction && npm run test:kg-ontology-client && npm run test:kg-ontology-transport && npm run test:kg-ontology-diagnostics && npm run test:kg-audit && npm run test:kg-ocr && npm run test:kg-packaging",
+    "test": "npm run build && npm run test:kg-cordis-boot && npm run test:kg && npm run test:kg-consumption && npm run test:kg-timeout && npm run test:kg-image && npm run test:kg-pdf && npm run test:kg-performance && npm run test:kg-candidates && npm run test:kg-incremental && npm run test:kg-security && npm run test:kg-verification && npm run test:kg-export && npm run test:kg-large && npm run test:kg-identity && npm run test:kg-append-revision && npm run test:kg-append-recovery && npm run test:kg-trajectory && npm run test:kg-evidence && npm run test:kg-typographic-evidence && npm run test:kg-generation-gate && npm run test:kg-connectivity && npm run test:kg-layout && npm run test:kg-semantic-contract && npm run test:kg-mechanism-coverage && npm run test:kg-semantic-closure && npm run test:kg-semantic-role && npm run test:kg-worked-example && npm run test:kg-semantic-layout && npm run test:kg-trust-boundary && npm run test:kg-qa-benchmark && npm run test:kg-quality-gate && npm run test:kg-policy && npm run test:kg-pipeline && npm run gen:ontology -- --check && npm run test:kg-ontology && npm run test:kg-ontology-prompt && npm run test:kg-ontology-extraction && npm run test:kg-ontology-client && npm run test:kg-ontology-transport && npm run test:kg-ontology-checkpoint && npm run test:kg-ontology-diagnostics && npm run test:kg-audit && npm run test:kg-ocr && npm run test:kg-packaging",
     "test:kg-trust-boundary": "node scripts/kg-trust-boundary-smoke.mjs",
     "test:kg-semantic-contract": "node scripts/kg-semantic-contract-smoke.mjs",
     "test:kg-mechanism-coverage": "node scripts/kg-mechanism-coverage-smoke.mjs",
@@ -100,7 +100,8 @@
     "test:kg-semantic-layout": "node scripts/kg-semantic-layout-smoke.mjs",
     "test:kg-qa-benchmark": "node scripts/kg-qa-benchmark-smoke.mjs",
     "test:kg-quality-gate": "node scripts/kg-quality-regression-smoke.mjs",
-    "kg:validate-lv-book": "node scripts/kg-ontology-book-validate.mjs"
+    "kg:validate-lv-book": "node scripts/kg-ontology-book-validate.mjs",
+    "test:kg-ontology-checkpoint": "node scripts/kg-ontology-checkpoint-smoke.mjs"
   },
   "engines": {
     "node": ">=22.13"

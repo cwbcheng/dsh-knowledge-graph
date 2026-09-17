@@ -599,8 +599,11 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 checkpoint,
                 existing,
                 existingSourceText: appendRecovery && previous ? (previous.sourceText || '') : '',
-                // The checkpoint carries the ontology the run started under.
-                ontology: resolveTaskOntologyHost(checkpoint.graph || checkpoint),
+                // The checkpoint carries the ontology the run started under. A
+                // run MUST finish in the ontology it began with: resolving from
+                // the graph alone always fell back to the default, and re-seeding
+                // then rewrote every type the default does not declare.
+                ontology: resolveTaskOntologyHost(checkpoint.ontology || checkpoint.graph || checkpoint),
                 baseRevision: checkpoint.baseRevision,
                  imageAttachments: [],
                  imageSource: checkpoint.imageSource && typeof checkpoint.imageSource === 'object' ? checkpoint.imageSource : null,
