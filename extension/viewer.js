@@ -254,6 +254,21 @@
         return record
       }
 
+      function badgeStyle(color) {
+        // Opaque ontology colours keep badges legible on both page themes.
+        // Missing or invalid presentation must not become white on transparent.
+        let background = typeof color === 'string' && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(color) ? color : '#64748b'
+        if (background.length === 4) background = '#' + [...background.slice(1)].map(c => c + c).join('')
+        const channels = [1, 3, 5].map(offset => {
+          const value = parseInt(background.slice(offset, offset + 2), 16) / 255
+          return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+        })
+        const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        const blackContrast = (luminance + 0.05) / 0.05
+        const whiteContrast = 1.05 / (luminance + 0.05)
+        return { background, color: blackContrast >= whiteContrast ? '#000000' : '#ffffff' }
+      }
+
       // A relation whose meaning partly lives in an attribute (输入/输出, 正/负,
       // 对比/类比) must say so on the edge, or the drawing shows the same label
       // for two opposite edges. An ontology that declares no attributes returns
@@ -4299,7 +4314,7 @@
         const detailEl = detail
           ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '节点详情' },
               h('div', { className: 'kg-node-detail-head' },
-                h('span', { className: 'kg-node-detail-type', style: { background: (TYPE_META[detail.type] || {}).color || '#6b7280' } },
+                h('span', { className: 'kg-node-detail-type', style: badgeStyle(TYPE_META[detail.type]?.color) },
                   (TYPE_META[detail.type] || { label: '未知' }).label),
                 h('button', {
                   type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
@@ -4338,7 +4353,7 @@
         const edgeDetailEl = edgeDetail
           ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '关系详情' },
               h('div', { className: 'kg-node-detail-head' },
-                h('span', { className: 'kg-node-detail-type', style: { background: '#6366f1' } }, edgeRelationLabel(edgeDetail)),
+                h('span', { className: 'kg-node-detail-type', style: badgeStyle('#6366f1') }, edgeRelationLabel(edgeDetail)),
                 h('button', {
                   type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
                   onClick: () => { onSelectEdge(null) },
@@ -4467,7 +4482,7 @@
                   onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onLocate(node) } },
                 },
                   h('div', { className: 'kg-candidate-top' },
-                    h('span', { className: 'knowledge-type-badge', style: { background: meta.color } }, meta.label),
+                    h('span', { className: 'knowledge-type-badge', style: badgeStyle(meta.color) }, meta.label),
                     h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选实体' : '候选声明'),
                     Number.isInteger(Number(node.paragraph)) ? h('span', { className: 'kg-candidate-kind' }, 'P' + (Number(node.paragraph) + 1)) : null,
                   ),
@@ -4810,6 +4825,7 @@
     tokenize,
     TYPE_META,
     TYPE_ORDER,
+    badgeStyle,
     REL_LABEL,
     LAYOUT_MODES,
     LAYER_Y_GAP,

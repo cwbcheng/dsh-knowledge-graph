@@ -1,0 +1,28 @@
+# User service for this source checkout. Adjust paths before installing elsewhere.
+# Install under ~/.config/systemd/user/, then daemon-reload and start explicitly.
+# Deliberately not enabled at login: starting DSH may resume saved AI tasks.
+[Unit]
+Description=DSH knowledge graph source web (kgsrc)
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/d/github/dsh-knowledge-graph
+Environment=DSH_REPO=/mnt/d/github/deepseek-harness
+Environment=DSH_DEV_NODE=/opt/node-v24.14.0/bin/node
+Environment=DSH_DEV_PROFILE=kgsrc
+Environment=DSH_DEV_PORT=3099
+Environment=DSH_HOME=%h/.dsh
+Environment=PATH=/opt/node-v24.14.0/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash /mnt/d/github/dsh-knowledge-graph/scripts/dev-web.sh --safe-runtime
+Restart=on-failure
+RestartSec=10
+# dev:web:stop and intentional terminal termination must not start it again.
+RestartPreventExitStatus=130 143
+SuccessExitStatus=130 143
+KillMode=control-group
+TimeoutStopSec=20
+UMask=0077
+StandardOutput=journal
+StandardError=journal

@@ -247,8 +247,7 @@ export default function clientPlugin() {
 .kg-para-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .kg-para-num { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(59,130,246,0.22); background: rgba(59,130,246,0.08); color: #2563eb; font-size: 11px; line-height: 18px; font-weight: 600; }
 @media (prefers-color-scheme: dark) { .kg-para-num { color: #93c5fd; background: rgba(59,130,246,0.12); border-color: rgba(96,165,250,0.25); } }
-.knowledge-type-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 18px; color: #fff; font-weight: 500; }
-.kg-badge-fact { background: #3b82f6; } .kg-badge-claim { background: #0f766e; } .kg-badge-inference { background: #8b5cf6; } .kg-badge-concept { background: #10b981; } .kg-badge-definition { background: #f59e0b; } .kg-badge-example { background: #06b6d4; } .kg-badge-counter_example { background: #ef4444; } .kg-badge-rule { background: #7c3aed; }
+.knowledge-type-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 18px; background: #64748b; color: #fff; font-weight: 500; }
 .kg-para.kg-flash { animation: kg-para-glow 1.4s ease; }
 @keyframes kg-para-glow { 0%, 100% { background: transparent; } 30% { background: rgba(59,130,246,0.22); } }
 .kg-graph { position: relative; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); touch-action: none; user-select: none; }
@@ -289,7 +288,7 @@ export default function clientPlugin() {
 .kg-node-detail { position: absolute; left: 12px; right: 12px; top: 46px; z-index: 6; background: #ffffff; color: #1f2937; border: 1px solid var(--kg-border); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.28); font-size: 12.5px; line-height: 1.6; max-height: 55%; overflow: auto; user-select: text; }
 @media (prefers-color-scheme: dark) { .kg-node-detail { background: #111827; color: #e5e7eb; } }
 .kg-node-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.kg-node-detail-type { display: inline-flex; padding: 1px 8px; border-radius: 999px; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; }
+.kg-node-detail-type { display: inline-flex; padding: 1px 8px; border-radius: 999px; background: #64748b; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; }
 .kg-node-detail-close { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; color: inherit; opacity: 0.65; padding: 2px 4px; }
 .kg-node-detail-close:hover { opacity: 1; }
 .kg-node-detail-text { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
@@ -772,6 +771,21 @@ export default function clientPlugin() {
         EDGE_ATTRIBUTE_LABELS = record.edgeAttributeLabels && typeof record.edgeAttributeLabels === 'object' ? record.edgeAttributeLabels : {}
         applyLayoutProfile(record)
         return record
+      }
+
+      function badgeStyle(color) {
+        // Opaque ontology colours keep badges legible on both page themes.
+        // Missing or invalid presentation must not become white on transparent.
+        let background = typeof color === 'string' && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(color) ? color : '#64748b'
+        if (background.length === 4) background = '#' + [...background.slice(1)].map(c => c + c).join('')
+        const channels = [1, 3, 5].map(offset => {
+          const value = parseInt(background.slice(offset, offset + 2), 16) / 255
+          return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+        })
+        const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        const blackContrast = (luminance + 0.05) / 0.05
+        const whiteContrast = 1.05 / (luminance + 0.05)
+        return { background, color: blackContrast >= whiteContrast ? '#000000' : '#ffffff' }
       }
 
       // A relation whose meaning partly lives in an attribute (输入/输出, 正/负,
@@ -4819,7 +4833,7 @@ export default function clientPlugin() {
         const detailEl = detail
           ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '节点详情' },
               h('div', { className: 'kg-node-detail-head' },
-                h('span', { className: 'kg-node-detail-type', style: { background: (TYPE_META[detail.type] || {}).color || '#6b7280' } },
+                h('span', { className: 'kg-node-detail-type', style: badgeStyle(TYPE_META[detail.type]?.color) },
                   (TYPE_META[detail.type] || { label: '未知' }).label),
                 h('button', {
                   type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
@@ -4858,7 +4872,7 @@ export default function clientPlugin() {
         const edgeDetailEl = edgeDetail
           ? h('div', { className: 'kg-node-detail', role: 'dialog', 'aria-label': '关系详情' },
               h('div', { className: 'kg-node-detail-head' },
-                h('span', { className: 'kg-node-detail-type', style: { background: '#6366f1' } }, edgeRelationLabel(edgeDetail)),
+                h('span', { className: 'kg-node-detail-type', style: badgeStyle('#6366f1') }, edgeRelationLabel(edgeDetail)),
                 h('button', {
                   type: 'button', className: 'kg-node-detail-close', 'aria-label': '关闭详情',
                   onClick: () => { onSelectEdge(null) },
@@ -4987,7 +5001,7 @@ export default function clientPlugin() {
                   onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onLocate(node) } },
                 },
                   h('div', { className: 'kg-candidate-top' },
-                    h('span', { className: 'knowledge-type-badge', style: { background: meta.color } }, meta.label),
+                    h('span', { className: 'knowledge-type-badge', style: badgeStyle(meta.color) }, meta.label),
                     h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选实体' : '候选声明'),
                     Number.isInteger(Number(node.paragraph)) ? h('span', { className: 'kg-candidate-kind' }, 'P' + (Number(node.paragraph) + 1)) : null,
                   ),
@@ -6657,6 +6671,11 @@ export default function clientPlugin() {
                baseText: '',
                prevEdgeCount: -1,
              }
+             // A successful recovery can itself be interrupted by a later Host
+             // restart. Keep the current durable identity and re-arm recovery.
+             rememberPendingTask(resumed.taskId, submittedRef.current)
+             resumeAttemptRef.current = false
+             setError(null)
              setTaskId(resumed.taskId)
              setPhase('extracting')
              setExtractProgress(null)
@@ -6811,7 +6830,7 @@ export default function clientPlugin() {
               setExtractProgress(null)
               if (await resumeLostTask()) return
               forgetPendingTask(taskId)
-              setError((previous) => previous || { message: '拆分任务已过期，且没有可安全恢复的 SQLite checkpoint，请重新提交' })
+              setError((previous) => previous || { message: '当前任务未能自动恢复。请先刷新“未完成任务”列表，确认是否有可继续的检查点。' })
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -8053,7 +8072,7 @@ export default function clientPlugin() {
           },
             h('div', { className: 'kg-para-badges' },
               h('span', { className: 'kg-para-num', title: '段落编号 P' + (i + 1) }, 'P' + (i + 1)),
-              badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge kg-badge-' + t }, TYPE_META[t].label))),
+              badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label))),
             h('p', null, p.text),
             ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).includes(i)).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
           )
@@ -9660,7 +9679,7 @@ export default function clientPlugin() {
               h('span', { className: 'kg-para-num', title: '段落编号 P' + (i + 1) }, 'P' + (i + 1)),
               badges.length > 0
                 ? h('span', { className: 'kg-para-badges' },
-                    badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge kg-badge-' + t }, TYPE_META[t].label)))
+                    badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label)))
                 : null,
             ),
             h('p', null, p.text),

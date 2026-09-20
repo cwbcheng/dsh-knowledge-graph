@@ -209,6 +209,33 @@ npm run dev:web -- --rebuild    # 先 pnpm install + build（含本插件）
 
 可用 `DSH_REPO` / `DSH_DEV_PORT` / `DSH_DEV_PROFILE` / `DSH_DEV_LOG` 覆盖默认值（默认 `/mnt/d/github/deepseek-harness`、3099、`kgsrc`）。
 
+启动器会打印实际 Node 路径和版本，优先使用 PATH 中的 Node 24+，也可用 `DSH_DEV_NODE=/opt/node-v24.14.0/bin/node npm run dev:web` 显式指定。只在此启动器内拒绝已观察到原生崩溃的 22.20.0，不修改 NVM 默认版本；这是运行时规避，不代表已经证明或修复了 V8/系统层崩溃根因。源码和构建脚本更新后自动重建插件。
+
+每次启动先归档旧日志，再读取本次进程的 token，并用 token 换取 cookie 验证本体目录接口的 HTTP 状态和 JSON 内容。只输出 URL 不算就绪；检查失败或进程退出会返回非零状态并清理此次启动的进程。`DSH_DEV_STARTUP_SECONDS` 可调整就绪等待时间（默认 60 秒）。前后台均记录真实 Node PID 和启动时间；`--stop` 只停止匹配的进程，绝不按端口杀其他服务。旧格式 PID 文件不能用于停止进程。
+
+#### 原生崩溃与后台恢复
+
+`--detach` 只负责脱离终端，不会在 Node 崩溃后重启。此机器的 Node 24.14.0 也曾在 `Builtins_RegExpPrototypeTestFast` 路径发生 SIGSEGV，升级版本不能视为根治。`npm run dev:web -- --safe-runtime` 可作为诊断性规避：只对 DSH 服务使用 `--no-opt --no-maglev --no-sparkplug --regexp-interpret-all`，禁用 JavaScript 优化/基线编译和正则 JIT，保留 WebAssembly，不改变全局 Node 配置或构建进程。代价是 JavaScript 更慢；它不能排除原生扩展、WSL 或硬件故障。不要替换为 `--jitless`：此版本 Node 的原生 `fetch` 依赖 WebAssembly，完全禁用会导致模型请求立即失败，即使服务入站健康检查仍能通过。
+
+长任务可以使用 `scripts/dsh-kgsrc-web.service` 提供的 systemd **用户服务**，安装前检查里面的仓库与 Node 路径。不要与同端口的前台/脱离终端实例同时启动：
+
+2026-09-18 实测：解释执行模式下仍发生过原生崩溃，但守护服务与页面检查点恢复成功。这个模式不是“防崩溃保证”，也不能代替底层故障排查。证据与验证边界见 [运行时故障记录](docs/runtime-incident-2026-09-18.md)。
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/dsh-kgsrc-web.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user start dsh-kgsrc-web
+systemctl --user status dsh-kgsrc-web
+journalctl --user -u dsh-kgsrc-web -n 50
+# 停止必须是有意操作，正在执行的模型请求会中断：
+systemctl --user stop dsh-kgsrc-web
+```
+
+服务每次异常退出后等待 10 秒重启，5 分钟内最多启动 3 次，超过后保持失败状态，不无限重试。故障日志保留在 journal 和轮转后的 `/tmp/dsh-kgsrc-web.log.previous.*`；就绪通过前 systemd 的 `active` 仅表示启动器存活。需要看到日志中的认证健康检查成功才算插件可用。服务使用原 profile、DSH_HOME 和数据库，不重建任务；已保存的检查点仍由插件自己的恢复规则处理。不设置登录/开机自启，避免未经确认恢复付费模型请求。修复反复崩溃的原因后，才使用 `systemctl --user reset-failed dsh-kgsrc-web` 和 `start`。
+
+隔离的服务恢复对抗测试：`KG_TEST_SYSTEMD=1 npm run test:dev-web`。它对临时假服务注入不可捕获的 SIGKILL，验证进程重建、接口重新就绪、重启限流及主动停止；不杀真实 DSH，也不调用模型或读写知识图数据库。
+
 ### 冻结质量回归门禁
 
 `kg:quality-regression` 固定使用 2844 字的 world-recognition 原文与 calibrated-v2 的 25 个 QA case。修复后观察基线为 24/25；默认门禁要求 trusted QA 至少 23/25（最多退化 1 case）、score 至少 92、节点至少 20。节点下限只是 catastrophic-collapse sentinel，不能替代 QA 分数。`--graph` 模式也会先校验 `graph.sourceText` 的字符数和 SHA-256；缺少原文或换了文章时返回 `frozen_source_missing` / `frozen_source_mismatch`，不会输出误导性分数。
@@ -257,6 +284,14 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 8. 用「历史」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
 9. 对话区切换到「轨迹知识图」标签页，点 **拆解本会话轨迹** 生成会话轨迹知识图；轨迹图也提供相同的结构化检索与证据问答入口；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
 
+### 暂停与继续任务
+
+常驻 Web 插件中，有持久化检查点的资料拆分、追加拆分和轨迹拆分任务提供 **暂停任务**，包括拆分后的关系补全与审校阶段。暂停会中断当前模型请求，保留已经落盘的内容块、并发待合并结果与关系候选；未完成的请求在继续时重试。
+
+- 收尾期间显示「暂停中」，检查点保存并释放运行锁后才显示「已暂停」。保存失败会明确报错，不把未保存的结果当作成功暂停。
+- 刷新页面或重启 DSH 后仍保持暂停，可在「未完成任务」列表点击 **继续任务**；后台自动恢复逻辑不会唤醒主动暂停的任务。继续仍校验原文、本体与知识图版本，不覆盖已被其他操作修改的图。
+- 暂停与取消、删除相互独立。无持久化检查点的任务，以及最终结果正在提交的短暂阶段，不显示暂停按钮。已有图上的独立「持续补全关系」任务仍使用下节的「停止补全」和已保存游标恢复机制。
+
 ### 持续补全关系
 
 未完成任务列表支持逐条删除：确认后清除该任务的拆分检查点和待合并结果，不删除已保存的知识图、原文或其他任务。删除不可撤销；后台任务运行或收尾时不允许删除，列表版本过期时需刷新后再次确认。
@@ -284,14 +319,6 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 4. 面板的错误、任务轮询与取消状态独立于抽取/验证面板，不会覆盖父工作台的错误提示。
 
 ### `graph-query`：有界结构化检索
-### 暂停与继续任务
-
-常驻 Web 插件中，有持久化检查点的资料拆分、追加拆分和轨迹拆分任务提供 **暂停任务**，包括拆分后的关系补全与审校阶段。暂停会中断当前模型请求，保留已经落盘的内容块、并发待合并结果与关系候选；未完成的请求在继续时重试。
-
-- 收尾期间显示「暂停中」，检查点保存并释放运行锁后才显示「已暂停」。保存失败会明确报错，不把未保存的结果当作成功暂停。
-- 刷新页面或重启 DSH 后仍保持暂停，可在「未完成任务」列表点击 **继续任务**；后台自动恢复逻辑不会唤醒主动暂停的任务。继续仍校验原文、本体与知识图版本，不覆盖已被其他操作修改的图。
-- 暂停与取消、删除相互独立。无持久化检查点的任务，以及最终结果正在提交的短暂阶段，不显示暂停按钮。已有图上的独立「持续补全关系」任务仍使用下节的「停止补全」和已保存游标恢复机制。
-
 
 动态插件调用 `host.call('graph-query', body)`；常驻包调用 `POST /api/dsh-knowledge-graph/graph-query`。公开请求以 logical document 为边界：
 

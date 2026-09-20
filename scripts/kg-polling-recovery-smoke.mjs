@@ -57,4 +57,43 @@ for (const section of sections) {
     }
   }
 }
-console.log(JSON.stringify({ok:true, originalTaskPreserved:true, boundedBackoff:true, recovery:true, unmountAndLateRejection:true}))
+// Execute the production restart-recovery function, not a duplicate model.
+const resumeCode = source.slice(source.indexOf('const resumeLostTask = async () => {'), source.indexOf('// ---- adaptive-backoff polling while a task runs ----'))
+let pending = { taskId: 'original', title: 'saved source', documentId: 'document', append: true }
+let recoveredId, error, calls = 0, release
+const resumeAttemptRef = { current: false }
+const submittedRef = { current: null }
+const resume = new Function('resumeAttemptRef', 'localStorage', 'LS_PENDING', 'effectiveModelArg', 'host',
+  'submittedRef', 'rememberPendingTask', 'setTaskId', 'setPhase', 'setExtractProgress', 'setError', 'toastStore', 'loadHistoryEntry',
+  resumeCode + '\nreturn resumeLostTask;')(
+  resumeAttemptRef, { getItem: () => JSON.stringify(pending) }, 'pending', null,
+  { async call(endpoint, args) {
+    assert.equal(endpoint, 'resume-extract')
+    assert.equal(args.runId, pending.taskId)
+    calls++
+    return new Promise(resolve => { release = resolve })
+  } }, submittedRef,
+  (taskId, sub) => { pending = { taskId, ...sub } }, value => { recoveredId = value }, () => {}, () => {},
+  value => { error = value }, { show() {} }, async () => {},
+)
+for (const id of ['after-first-restart', 'after-second-restart']) {
+  const recovery = resume()
+  assert.equal(await resume(), false, 'an in-flight resume must not be submitted twice')
+  release({ taskId: id })
+  assert.equal(await recovery, true)
+  assert.equal(recoveredId, id)
+  assert.equal(pending.taskId, id, 'later crashes must use the recovered task identity')
+  assert.equal(pending.documentId, 'document')
+  assert.equal(pending.append, true)
+  assert.equal(resumeAttemptRef.current, false, 'successful recovery must re-arm future recovery')
+  assert.equal(error, null)
+}
+assert.equal(calls, 2)
+const failed = resume()
+release({ error: { code: 'revision_conflict', message: 'changed' } })
+assert.equal(await failed, false)
+assert.equal(await resume(), false, 'rejected recovery must not loop or bypass the revision fence')
+assert.equal(calls, 3)
+assert.equal(error.code, 'revision_conflict')
+console.log(JSON.stringify({ok:true, originalTaskPreserved:true, boundedBackoff:true, recovery:true, unmountAndLateRejection:true,
+  successiveRestarts:true, duplicateResumePrevented:true, rejectedRecoveryDoesNotLoop:true}))

@@ -71,6 +71,7 @@ const block = clientSource.slice(blockStart, blockEnd)
 const harness = new Function(block + `
   return {
     applyGraphOntology,
+    badgeStyle,
     edgeRelationLabel,
     attributeDetailSuffix,
     snapshot: () => ({ TYPE_META, REL_LABEL, TYPE_ORDER, REL_SOURCE_RULES, CANDIDATE_ENTITY_TYPES, CANDIDATE_CLAIM_TYPES }),
@@ -85,7 +86,7 @@ const harness = new Function(block + `
     fallback: { TYPE_META: PROPOSITION_TYPE_META, REL_LABEL: PROPOSITION_REL_LABEL, TYPE_ORDER: PROPOSITION_TYPE_ORDER },
   }
 `)()
-const { applyGraphOntology, edgeRelationLabel, attributeDetailSuffix, snapshot, fallback, layout } = harness
+const { applyGraphOntology, badgeStyle, edgeRelationLabel, attributeDetailSuffix, snapshot, fallback, layout } = harness
 
 // ---- a payload with no ontology keeps the built-in tables ------------------
 const before = snapshot()
@@ -209,6 +210,48 @@ assert.deepEqual(sparse.TYPE_ORDER, ['thing', 'other'], 'the order must follow t
 // ---- a payload can always return to the default ---------------------------
 applyGraphOntology(records.get('proposition-v1'))
 assert.deepEqual(snapshot().TYPE_ORDER, fallback.TYPE_ORDER, 'returning to proposition must restore the built-in order')
+
+// Badges use the active ontology, not a CSS list of proposition-only ids.
+const luminance = hex => {
+  const rgb = parseInt(hex.slice(1), 16)
+  const linear = [rgb >> 16, (rgb >> 8) & 255, rgb & 255].map(channel => {
+    const c = channel / 255
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+  })
+  return linear.reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0)
+}
+const assertReadableBadge = style => {
+  assert.match(style.background, /^#[0-9a-f]{6}$/i, 'badges need a valid opaque background in either theme')
+  const levels = [luminance(style.color), luminance(style.background)].sort((a, b) => b - a)
+  const contrast = (levels[0] + 0.05) / (levels[1] + 0.05)
+  assert(contrast >= 4.5, 'insufficient badge contrast: ' + JSON.stringify({ ...style, contrast }))
+}
+let checkedBadges = 0
+for (const record of records.values()) {
+  applyGraphOntology(record)
+  for (const meta of Object.values(snapshot().TYPE_META)) {
+    const style = badgeStyle(meta.color)
+    assert.equal(style.background, meta.color, 'badge colour must follow the current ontology')
+    assertReadableBadge(style)
+    checkedBadges++
+  }
+}
+assert.deepEqual(badgeStyle('#0ea5e9'), { background: '#0ea5e9', color: '#000000' }, '内涵描述 needs a painted badge with readable dark text')
+assert.equal(badgeStyle('#fff').color, '#000000')
+assert.equal(badgeStyle('#000').color, '#ffffff')
+assert.equal(badgeStyle('#aBc').background, '#aaBBcc')
+for (const invalid of [undefined, null, '', 'transparent', '#12345', '#0000', '#ffffff00', 'rgba(0,0,0,0)', 'url(test)', {}, 0]) {
+  const style = badgeStyle(invalid)
+  assert.equal(style.background, '#64748b', 'missing, transparent or invalid colours must fail visibly, not disappear')
+  assertReadableBadge(style)
+}
+for (let shade = 0; shade <= 255; shade++) assertReadableBadge(badgeStyle('#' + shade.toString(16).padStart(2, '0').repeat(3)))
+const popupSource = readFileSync(new URL('../extension/popup.js', import.meta.url), 'utf8')
+const badgeSites = (clientSource + '\n' + popupSource).split('\n').filter(line => /className: '(knowledge-type-badge|kg-node-detail-type)'/.test(line))
+assert.equal(badgeSites.length, 6, 'cover workbench, trajectory, candidate, both detail badges and extension source')
+for (const site of badgeSites) assert(site.includes('style: badgeStyle('), 'all badge renderers must provide both colours: ' + site)
+assert(!clientSource.includes('.kg-badge-fact'), 'static proposition-only badge CSS must not override ontology colours')
+applyGraphOntology(records.get('proposition-v1'))
 
 // ---- the diagnostics strip renders what the host concluded ---------------
 // The host computes the findings and the client draws them; a strip that
@@ -377,4 +420,6 @@ console.log(JSON.stringify({
   propositionLayoutPreserved: true,
   propositionRestoresFallback: true,
   partialPresentationTolerated: true,
+  readableOntologyBadges: checkedBadges,
+  invalidBadgeColorsVisible: true,
 }))

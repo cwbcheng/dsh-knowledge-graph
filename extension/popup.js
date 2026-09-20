@@ -22,7 +22,7 @@ if (IS_WINDOW) {
 const { useState, useEffect, useRef, useMemo } = React
 const h = React.createElement
 const KG = window.KGViewer
-const { GraphViewer, makeView, splitParagraphs, TYPE_META, TYPE_ORDER, LAYOUT_MODES, NL } = KG
+const { GraphViewer, makeView, splitParagraphs, TYPE_META, TYPE_ORDER, badgeStyle, LAYOUT_MODES, NL } = KG
 
 const DEFAULT_BASE = 'http://127.0.0.1:3080'
 let BASE = DEFAULT_BASE
@@ -243,7 +243,7 @@ function App() {
     },
       badges.length > 0
         ? h('div', { className: 'kg-para-badges' },
-            badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge kg-badge-' + t }, TYPE_META[t].label)))
+            badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label)))
         : null,
       h('p', null, p.text),
     )

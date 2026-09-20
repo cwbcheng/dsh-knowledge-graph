@@ -40,6 +40,7 @@ ${body}
     tokenize,
     TYPE_META,
     TYPE_ORDER,
+    badgeStyle,
     REL_LABEL,
     LAYOUT_MODES,
     LAYER_Y_GAP,
