@@ -49,14 +49,16 @@ export function apply(ctx) {
   }
   const persistCheckpoint = async (checkpoint, task, status) => {
     const store = await getSqliteStore()
-    return store.saveCheckpoint(checkpoint, {
+    const saved = store.saveCheckpoint(checkpoint, {
       runId: task && task.id ? task.id : undefined,
-      status,
+      status: task?.pauseRequested && status === 'running' ? 'paused' : status,
       title: task && typeof task.title === 'string' ? task.title : '',
       sourceText: task && typeof task.text === 'string' ? task.text : '',
-      errorCode: task && task.errorCode ? task.errorCode : null,
-      errorMessage: task && task.errorMessage ? task.errorMessage : null,
+      errorCode: task?.pauseRequested ? null : (task && task.errorCode ? task.errorCode : null),
+      errorMessage: task?.pauseRequested ? null : (task && task.errorMessage ? task.errorMessage : null),
     })
+    if (task) task.checkpointPersisted = true
+    return saved
   }`
 
 // strip the dynamic wrapper: `return { inject, apply(ctx) {` -> header,
@@ -553,11 +555,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
               const store = await getSqliteStore()
               const liveTask = tasks.get(runId)
-              if (liveTask && !(liveTask.status === 'failed' && a.retryFailed === true)) return writeJson(res, 200, { taskId: runId, resumed: false })
+              if (liveTask && taskStateHost(liveTask) === 'pausing') return writeJson(res, 200, busyTaskResponseHost())
+              if (liveTask?.status === 'paused' && a.resumePaused !== true) return writeJson(res, 200, { error: { code: 'task_paused', message: '任务已暂停，请点击继续任务，不会自动续跑' } })
+              if (liveTask && !((liveTask.status === 'failed' && a.retryFailed === true) || (liveTask.status === 'paused' && a.resumePaused === true))) return writeJson(res, 200, { taskId: runId, resumed: false })
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
-              if (savedRun.status !== 'running' && !(savedRun.status === 'failed' && a.retryFailed === true)) {
+              if (savedRun.status === 'paused' && a.resumePaused !== true) return writeJson(res, 200, { error: { code: 'task_paused', message: '任务已暂停，请点击继续任务，不会自动续跑' } })
+              if (savedRun.status !== 'running' && !(savedRun.status === 'failed' && a.retryFailed === true) && !(savedRun.status === 'paused' && a.resumePaused === true)) {
                 return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该任务状态为 ' + savedRun.status + '，不是 Host 重启遗留的运行中任务，禁止自动续跑' } })
               }
               const checkpoint = savedRun.checkpoint && typeof savedRun.checkpoint === 'object' ? savedRun.checkpoint : null
@@ -587,7 +592,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 ...(baseSource ? { source: baseSource } : {}),
                 ...(baseStaging ? { staging: baseStaging } : {}),
               }
-              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : checkpoint.model || null
               const task = {
                 id: runId,
                 status: 'running',
@@ -636,6 +641,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const taskId = url.searchParams.get('taskId') ?? ''
               return writeJson(res, 200, taskStatusHost(taskId, url.searchParams.get('includeCheckpoint') === '1'))
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-pause') {
+              const raw = await readBody(req, 4096)
+              let payload
+              try { payload = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_json', message: 'Invalid JSON' } }) }
+              return writeJson(res, 200, await pauseTaskHost(payload?.taskId))
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-cancel') {
               const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
@@ -644,7 +655,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const taskId = typeof a.taskId === 'string' ? a.taskId : ''
               const t = tasks.get(taskId)
               if (!t) return writeJson(res, 200, { status: 'not_found' })
-              if (t.status !== 'running') return writeJson(res, 200, { status: t.status })
+              if (taskStateHost(t) !== 'running') return writeJson(res, 200, { status: taskStateHost(t) })
               t.cancelled = true
               if (Array.isArray(t.cancelHooks)) {
                 for (const hook of t.cancelHooks.slice()) { try { hook() } catch (e) {} }

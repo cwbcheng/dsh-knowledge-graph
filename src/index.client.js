@@ -397,7 +397,7 @@ export default function clientPlugin() {
           progress.discovery ? h(RelationDiscoveryStatus, { coverage: progress.discovery }) : null,
           progress.completion ? h(RelationCompletionStatus, { completion: progress.completion }) : null,
           total && requests ? h('div', null,
-            h('p', null, '内容块已合并 ' + completed + '/' + total + (completed === total ? ' · 正在进行全图后处理，尚未完成' : '')),
+            h('p', null, '内容块已合并 ' + completed + '/' + total + (progress.paused ? ' · 已暂停' : completed === total ? ' · 正在进行全图后处理，尚未完成' : '')),
             h('progress', { value: completed, max: total, 'aria-label': '内容块合并进度', style: { width: '100%', height: 8, accentColor: '#3b82f6' } })) : null,
           requests ? requests.map((request, index) => h('div', { key: request.startedAt + ':' + index, style: { borderTop: '1px solid var(--kg-border)', padding: '8px 0', textAlign: 'left' } },
             h('div', null, request.stage + ' · ' + request.state),
@@ -447,9 +447,40 @@ export default function clientPlugin() {
           h('div', null, label + ' · 已结束 ' + finished + '/' + (usage.startedRequests || 0) + ' 请求 · 用量已上报 ' + (usage.reportedRequests || 0) + '/' + finished),
           finished ? h('div', null, tokens('totalInputTokens', '输入') + ' · ' + tokens('outputTokens', '输出') + ' · ' + cacheText) : null)
       }
+      function TaskPauseControls({ taskId, status, progress, onResumed, onChanged }) {
+        const [action, setAction] = useState('')
+        const [error, setError] = useState('')
+        const busyRef = useRef(false)
+        useEffect(() => { if (status === 'paused') setAction('') }, [status])
+        const paused = status === 'paused'
+        const pausing = status === 'pausing' || (status === 'running' && (progress?.pauseRequested || action === 'pause'))
+        if (!taskId || (!paused && !pausing && !progress?.canPause)) return null
+        const act = async () => {
+          if (busyRef.current || pausing) return
+          busyRef.current = true
+          setAction(paused ? 'resume' : 'pause')
+          setError('')
+          try {
+            const res = paused
+              ? await host.call('resume-extract', { runId: taskId, resumePaused: true })
+              : await host.call('task-pause', { taskId })
+            if (!res || res.error || (paused ? res.taskId !== taskId : !['pausing', 'paused'].includes(res.status))) throw new Error(res?.error?.message || '任务状态已改变，请刷新后重试')
+            if (paused && onResumed) onResumed(taskId)
+            if (onChanged) onChanged()
+            if (paused) setAction('')
+          } catch (err) { setAction(''); setError(err?.message || '任务操作未确认，请检查连接') }
+          finally { busyRef.current = false }
+        }
+        return h('div', { 'aria-label': '任务暂停控制', style: { display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '8px 8px 8px 0' } },
+          h('button', { type: 'button', className: 'kg-secondary', onClick: act, disabled: pausing || !!action,
+            title: paused ? '继续任务' : '暂停任务', 'aria-label': paused ? '继续任务' : '暂停任务' },
+          h('span', { 'aria-hidden': 'true' }, paused ? '\u25b6 ' : '\u23f8 '), pausing ? '暂停中…' : action === 'resume' ? '恢复中…' : paused ? '继续任务' : '暂停任务'),
+          error ? h('span', { role: 'alert' }, error) : null)
+      }
       function BackgroundTaskProgress({ ctx, knownTaskIds = [], busyError, onOpenDocument, onStopTask }) {
         const [snapshot, setSnapshot] = useState(null)
         const [connectionError, setConnectionError] = useState('')
+        const [refresh, setRefresh] = useState(0)
         const observedId = useRef('')
         const knownKey = knownTaskIds.filter(Boolean).join('|')
         useEffect(() => {
@@ -474,17 +505,18 @@ export default function clientPlugin() {
           }
           tick()
           return () => { disposed = true; if (stop) stop() }
-        }, [knownKey, busyError?.activeTask?.taskId, busyError?.code])
+        }, [knownKey, busyError?.activeTask?.taskId, busyError?.code, refresh])
         const task = snapshot ? snapshot.task : busyError?.activeTask
         if (task && knownTaskIds.includes(task.taskId)) return null
         if (!task && !snapshot?.busy && !busyError) return null
-        const running = task?.status === 'running'
-        const state = { running: '进行中', succeeded: '已完成', failed: '失败', cancelled: '已取消', not_found: '已断开' }[task?.status] || '状态未知'
+        const running = task?.status === 'running' || task?.status === 'pausing'
+        const state = { running: '进行中', pausing: '暂停中', paused: '已暂停', succeeded: '已完成', failed: '失败', cancelled: '已取消', not_found: '已断开' }[task?.status] || '状态未知'
         return h('section', { 'aria-label': '后台 AI 任务', style: { borderTop: '2px solid #2563eb', borderBottom: '1px solid var(--kg-border)', padding: '12px 0', marginBottom: 16, overflowWrap: 'anywhere' } },
           h('h3', { style: { fontSize: 16, margin: '0 0 8px' } }, task ? (task.label || 'AI 任务') + ' · ' + state : (snapshot && !snapshot.busy ? '后台当前没有运行中的 AI 任务' : '后台正在准备 AI 任务')),
           task ? h('p', { style: { margin: '4px 0', fontSize: 13 } }, (task.title || '未命名资料') + ' · ' + task.taskId) : null,
           connectionError ? h('p', { role: 'status' }, connectionError) : null,
-          running ? h(GenerationProgress, { progress: task.progress }) : null,
+          running || task?.status === 'paused' ? h(GenerationProgress, { progress: task.progress }) : null,
+          task ? h(TaskPauseControls, { taskId: task.taskId, status: task.status, progress: task.progress, onChanged: () => setRefresh(value => value + 1) }) : null,
           running && task.kind === 'relation-retry' && onStopTask ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: () => onStopTask(task.taskId) }, '停止补全') : null,
           task?.error ? h('p', { role: 'status' }, task.error.message) : null,
           !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' ? '查看更新后的知识图' : '查看已保存知识图') : null)
@@ -6208,7 +6240,7 @@ export default function clientPlugin() {
           runActionRef.current = true
           setRecoveringRun(run.runId)
           try {
-            const res = await host.call('resume-extract', { runId: run.runId, retryFailed: true, concurrency: extractionConcurrency, ...(effectiveModelArg ? {model: effectiveModelArg} : {}) })
+            const res = await host.call('resume-extract', { runId: run.runId, retryFailed: true, resumePaused: true, concurrency: extractionConcurrency, ...(effectiveModelArg ? {model: effectiveModelArg} : {}) })
             if (!res || res.error || !res.taskId) { setError(res && res.error || {message:'无法恢复任务'}); return }
             const pending = {taskId:res.taskId, documentId:run.documentId, title:run.title || '', text:'', baseText:'', prevEdgeCount:-1}
             submittedRef.current = pending
@@ -6638,7 +6670,7 @@ export default function clientPlugin() {
 
         // ---- adaptive-backoff polling while a task runs ----
         useEffect(() => {
-          if (!taskId) return
+          if (!taskId || phase === 'paused') return
           let disposed = false
           let stop = null
           let delay = 3000
@@ -6657,7 +6689,14 @@ export default function clientPlugin() {
             }
             if (disposed) return
             setError((previous) => previous && previous.code === 'status_connection_lost' ? null : previous)
-            if (res && res.status === 'running') setExtractProgress(res.progress || null)
+            if (res && (res.status === 'running' || res.status === 'pausing')) setExtractProgress(res.progress || null)
+            if (res?.status === 'paused') {
+              setPhase('paused')
+              setExtractProgress(res.progress || null)
+              setError(null)
+              forgetPendingTask(taskId)
+              return
+            }
             if (res && res.status === 'succeeded') {
               let g = res.result
               if (g && Array.isArray(g.nodes)) {
@@ -6780,7 +6819,7 @@ export default function clientPlugin() {
           }
           tick()
           return () => { disposed = true; if (stop) stop() }
-        }, [taskId])
+        }, [taskId, phase])
 
         // ---- verification task polling ----
         useEffect(() => {
@@ -8336,7 +8375,7 @@ export default function clientPlugin() {
               resultView ? h('button', { type: 'button', className: 'kg-secondary', onClick: resetAll }, '重新开始') : null,
             ),
           ),
-          h(BackgroundTaskProgress, { ctx, knownTaskIds: [phase === 'extracting' ? taskId : null, verifyTaskId, questionTaskId, factTaskId], busyError: error?.code === 'busy' ? error : null,
+          h(BackgroundTaskProgress, { ctx, knownTaskIds: [taskId, verifyTaskId, questionTaskId, factTaskId], busyError: error?.code === 'busy' ? error : null,
             onStopTask: async id => {
               try {
                 const res = await host.call('task-cancel', { taskId: id })
@@ -8349,7 +8388,7 @@ export default function clientPlugin() {
             h('button', {type:'button', className:'kg-secondary', onClick:()=>setRunsRefresh(value=>value+1)}, '刷新列表'),
             runsError ? h('p', {role:'status'}, runsError) : null,
             ...incompleteRuns.map(run => h('div', {key:run.runId, style:{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', padding:'8px 0'}},
-              h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + ' · 已合并 ' + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '') + ' · ' + (run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
+              h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + ' · 已合并 ' + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '') + ' · ' + (run.status === 'paused' ? '已暂停' : run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
               run.totalRelations != null ? h('span', {className:'kg-empty-sub'}, '关系审校已保存 ' + (run.reviewedRelations || 0) + '/' + run.totalRelations) : null,
               run.totalRelationGroups != null ? h('span', {className:'kg-empty-sub'}, '关系候选已落盘 ' + (run.savedRelationGroups || 0) + '/' + run.totalRelationGroups + ' 组') : null,
               h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun || !!deletingRun, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : '继续任务'),
@@ -8375,10 +8414,10 @@ export default function clientPlugin() {
               )
             : null,
           documentLoading && !graphWindowLoading ? h(GraphLoading, { progress: documentLoading }) : null,
-          phase === 'extracting'
+          phase === 'extracting' || phase === 'paused'
             ? h('div', { className: 'kg-empty' },
-                h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-                h('p', null, submittedRef.current && submittedRef.current.relationRetry === true ? '正在用 AI 补全知识图关系…' : (submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…')),
+                phase !== 'paused' ? h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }) : null,
+                h('p', null, phase === 'paused' ? '任务已暂停' : submittedRef.current && submittedRef.current.relationRetry === true ? '正在用 AI 补全知识图关系…' : (submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…')),
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 extractProgress && extractProgress.parallel ? h('p', {role:'status'}, '本轮第 ' + extractProgress.parallel.start + '–' + extractProgress.parallel.end + ' 批 · 执行中 ' + extractProgress.parallel.active + ' · 待合并 ' + extractProgress.parallel.saved + ' · 主拆分已保存、待补全 ' + (extractProgress.parallel.prepared || 0)) : null,
                 h(GenerationProgress, { progress: extractProgress }),
@@ -8386,7 +8425,13 @@ export default function clientPlugin() {
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,
                 h('p', { className: 'kg-empty-sub' }, '可以关闭窗口或离开页面；任务会自动保存，重新打开窗口后自动恢复轮询。'),
-                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务'),
+                h(TaskPauseControls, { taskId, status: phase === 'paused' ? 'paused' : 'running', progress: extractProgress, onResumed: () => {
+                  rememberPendingTask(taskId, submittedRef.current || {})
+                  resumeAttemptRef.current = false
+                  setExtractProgress(null)
+                  setPhase('extracting')
+                } }),
+                phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务') : null,
               )
             : historyOpen
               ? historyPanel
@@ -8763,7 +8808,7 @@ export default function clientPlugin() {
 
         // ---- adaptive-backoff polling while a task runs ----
         useEffect(() => {
-          if (!taskId) return
+          if (!taskId || phase === 'paused') return
           let disposed = false
           let stop = null
           let delay = 3000
@@ -8783,7 +8828,14 @@ export default function clientPlugin() {
             }
             if (disposed || mySeq !== sessionSeq.current) return
             setError((previous) => previous && previous.code === 'status_connection_lost' ? null : previous)
-            if (res && res.status === 'running') setExtractProgress(res.progress || null)
+            if (res && (res.status === 'running' || res.status === 'pausing')) setExtractProgress(res.progress || null)
+            if (res?.status === 'paused') {
+              setPhase('paused')
+              setExtractProgress(res.progress || null)
+              setError(null)
+              clearTrajPending(sessionId)
+              return
+            }
             if (res && res.status === 'succeeded') {
               let g = res.result
               const resultAddedNodeIds = g && Array.isArray(g.addedNodeIds) ? g.addedNodeIds.slice() : []
@@ -8874,7 +8926,7 @@ export default function clientPlugin() {
           }
           tick()
           return () => { disposed = true; if (stop) stop() }
-        }, [taskId])
+        }, [taskId, phase])
 
         // ---- verification / question task polling (trajectory tab) ----
         useEffect(() => {
@@ -9725,17 +9777,22 @@ export default function clientPlugin() {
               )
             : null,
           documentLoading ? h(GraphLoading, { progress: documentLoading }) : null,
-          phase === 'extracting'
+          phase === 'extracting' || phase === 'paused'
             ? h('div', { className: 'kg-empty' },
-                h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-                h('p', null, '正在用 AI 拆解本会话轨迹…'),
+                phase !== 'paused' ? h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }) : null,
+                h('p', null, phase === 'paused' ? '任务已暂停' : '正在用 AI 拆解本会话轨迹…'),
                 h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                 h(GenerationProgress, { progress: extractProgress }),
                 extractProgress && extractProgress.warning
                   ? h('p', { className: 'kg-empty-sub', style: { color: '#b45309' } }, '⚠ ' + extractProgress.warning)
                   : null,
                 h('p', { className: 'kg-empty-sub' }, '拆解内容：查到了什么事实、做出了什么推论、使用了哪些工具与方法。'),
-                h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: handleCancelExtract }, '取消任务'),
+                h(TaskPauseControls, { taskId, status: phase === 'paused' ? 'paused' : 'running', progress: extractProgress, onResumed: () => {
+                  writeTrajPending(sessionId, { taskId, append: appendModeRef.current, ts: Date.now() })
+                  setExtractProgress(null)
+                  setPhase('extracting')
+                } }),
+                phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, '取消任务') : null,
               )
             : view
               ? h('section', { className: 'kg-card kg-result', 'aria-label': '轨迹 ⇄ 知识图结果' },

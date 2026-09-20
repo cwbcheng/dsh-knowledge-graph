@@ -7007,8 +7007,40 @@ function createHostPlugin(graphContractOnly) {
       let busy = false
       let activeTask = null
 
+      function taskStateHost(task) {
+        return task.pauseRequested && !task.pauseSettled ? 'pausing' : task.status
+      }
+      function canPauseTaskHost(task) {
+        return typeof persistCheckpoint === 'function' && task.status === 'running' &&
+          task.checkpointPersisted === true && !!task.checkpoint && !task.cancelled && !task.finalizing
+      }
+      async function pauseTaskHost(taskId) {
+        const task = tasks.get(taskId)
+        if (!task) return { status: 'not_found' }
+        const state = taskStateHost(task)
+        if (state !== 'running' && state !== 'pausing') return { status: state }
+        if (state === 'running') {
+          if (!canPauseTaskHost(task)) return { error: { code: 'pause_unavailable', message: '当前阶段没有可安全恢复的检查点，或正在提交最终结果，暂不能暂停' } }
+          task.pauseRequested = true
+          task.cancelled = true
+          // Persist the pause intent before acknowledging it, including duplicate
+          // requests. Later writes retain this intent while the runtime drains.
+          task.pauseWrite = persistCheckpoint(task.checkpoint, task, 'paused')
+          for (const hook of (task.cancelHooks || []).slice()) { try { hook() } catch (error) {} }
+          if (typeof task.abortStream === 'function') { try { task.abortStream() } catch (error) {} }
+        }
+        try {
+          await task.pauseWrite
+          return { status: taskStateHost(task) }
+        } catch (error) {
+          return { error: { code: 'persistence_failed', message: '未能保存暂停状态：' + (error?.message || error) } }
+        }
+      }
       function taskProgressSnapshotHost(task) {
         return {
+          canPause: canPauseTaskHost(task),
+          pauseRequested: task.pauseRequested === true,
+          paused: task.status === 'paused',
           parallel: task.progress?.parallel || null,
           modelUsage: modelUsageSnapshotHost(task),
           review: task.progress?.review || null,
@@ -7029,6 +7061,9 @@ function createHostPlugin(graphContractOnly) {
       function taskStatusHost(taskId, includeCheckpoint = false) {
         const task = tasks.get(taskId)
         if (!task) return { status: 'not_found' }
+        const state = taskStateHost(task)
+        if (state === 'paused' || state === 'pausing') return { status: state, progress: taskProgressSnapshotHost(task),
+          ...(includeCheckpoint && task.checkpoint ? { checkpoint: task.checkpoint } : {}) }
         if (task.status === 'succeeded') return { status: 'succeeded', result: task.result, modelUsage: modelUsageSnapshotHost(task) }
         if (task.status === 'failed' || task.status === 'cancelled') return {
           status: task.status, modelUsage: modelUsageSnapshotHost(task),
@@ -7045,7 +7080,7 @@ function createHostPlugin(graphContractOnly) {
         const kind = task.kind || 'extract'
         const labels = { extract: '资料拆分', resume: '拆分续跑', append: '追加拆分', 'relation-retry': '关系检索', verify: '关系审校', question: '节点答疑', 'fact-check': '外部核查', trajectory: '轨迹拆分', 'trajectory-append': '轨迹追加', answer: '知识图答疑' }
         return {
-          taskId: task.id, kind, label: labels[kind] || 'AI 任务', status: task.status,
+          taskId: task.id, kind, label: labels[kind] || 'AI 任务', status: taskStateHost(task),
           documentId: task.documentId || task.graph?.source?.documentId || '',
           title: task.title || task.graph?.source?.title || '',
           createdAt: task.createdAt, progress: taskProgressSnapshotHost(task),
@@ -7055,7 +7090,8 @@ function createHostPlugin(graphContractOnly) {
       function activeTaskStatusHost(args) {
         // busy may cover admission before a task exists. Never invent an id,
         // clear the lock, or mistake an old SQLite checkpoint for live work.
-        const current = busy ? (activeTask?.status === 'running' ? activeTask : Array.from(tasks.values()).find(task => task.status === 'running')) : null
+        const isRunning = task => task && ['running', 'pausing'].includes(taskStateHost(task))
+        const current = busy ? (isRunning(activeTask) ? activeTask : Array.from(tasks.values()).find(isRunning)) : null
         const tracked = typeof args?.taskId === 'string' ? tasks.get(args.taskId) : null
         return { busy, task: taskDescriptorHost(current), trackedTask: taskDescriptorHost(tracked) }
       }
@@ -7096,6 +7132,7 @@ function createHostPlugin(graphContractOnly) {
         task.abortStream = null
         task.persistPostprocess = null
         task.persistRelationWeave = null
+        task.pauseWrite = null
         if (Array.isArray(task.cancelHooks)) task.cancelHooks.length = 0
       }
       // Checkpoints contain only owned JSON data. They are returned on demand
@@ -7133,6 +7170,7 @@ function createHostPlugin(graphContractOnly) {
            nextBatchIndex,
            executionPolicy: 'wave-v1',
            concurrency: task.concurrency || 1,
+           model: task.model || task.progress?.model || null,
            concurrentBoundaries: task.concurrentBoundaries || [],
            ...(task.pendingWave ? { pendingWave: JSON.parse(JSON.stringify(task.pendingWave)) } : {}),
            ...(task.postprocess ? { postprocess: JSON.parse(JSON.stringify(task.postprocess)) } : {}),
@@ -7959,6 +7997,8 @@ function createHostPlugin(graphContractOnly) {
                entailmentStatus: groundingCounts.entailmentVerified === fullResult.nodes.length && fullResult.nodes.length > 0 ? 'verified' : 'unverified',
              },
            }
+           throwIfTaskCancelledHost(task)
+           task.finalizing = true
            // The durable completed checkpoint must describe the accepted graph,
            // not the pre-gate accumulator state.
            task.checkpoint = {
@@ -8023,7 +8063,20 @@ function createHostPlugin(graphContractOnly) {
           // makes deterministic failures durable instead of leaving the last
           // SQLite checkpoint marked as "running" and therefore resumable.
           try {
-            if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
+            if (task.pauseRequested) {
+              try {
+                await task.pauseWrite
+                if (task.errorCode && task.errorCode !== 'cancelled') throw new Error(task.errorMessage)
+                await persistCheckpoint(task.checkpoint, task, 'paused')
+                task.status = 'paused'
+                task.finishedAt = Date.now()
+                task.errorCode = null
+                task.errorMessage = null
+                task.progress.stage = '已暂停，检查点已保存'
+              } catch (error) {
+                failTask(task, 'persistence_failed', '暂停未能安全完成：' + (error?.message || error))
+              } finally { task.pauseSettled = true }
+            } else if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
           } finally {
             finishTaskRuntimeHost(task)
           }
@@ -10182,7 +10235,7 @@ function createHostPlugin(graphContractOnly) {
         const taskId = typeof a.taskId === 'string' ? a.taskId : ''
         const t = tasks.get(taskId)
         if (!t) return { status: 'not_found' }
-        if (t.status !== 'running') return { status: t.status }
+        if (taskStateHost(t) !== 'running') return { status: taskStateHost(t) }
         t.cancelled = true
         if (Array.isArray(t.cancelHooks)) {
           for (const hook of t.cancelHooks.slice()) {
@@ -10199,6 +10252,7 @@ function createHostPlugin(graphContractOnly) {
       harness.handle('extraction-run-list', async () => ({ runs: [] }))
       harness.handle('extraction-run-delete', async () => ({ error: { code: 'unsupported', message: '当前动态插件没有持久化任务记录可删除' } }))
       harness.handle('task-active', async (args) => activeTaskStatusHost(args))
+      harness.handle('task-pause', async (args) => pauseTaskHost(args?.taskId))
       harness.handle('task-status', async (args) => taskStatusHost(args?.taskId, args?.includeCheckpoint === true))
 
       harness.handle('verify-graph', async (args) => {

@@ -122,8 +122,8 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "task-cancel") {
-        const res = await fetch("/api/dsh-knowledge-graph/task-cancel", {
+      if (method === "task-cancel" || method === "task-pause") {
+        const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -194,6 +194,7 @@ c = c.split("host.call('verify-graph'").join("rpc('verify-graph'")
 c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")
+c = c.split("host.call('task-pause'").join("rpc('task-pause'")
 c = c.split("host.call('list-models'").join("rpc('list-models'")
 c = c.split("host.call('ontology-list'").join("rpc('ontology-list'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")

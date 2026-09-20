@@ -25,10 +25,10 @@ for (const section of sections) {
       queue.add(fn)
       return () => queue.delete(fn)
     } }
-    new Function('useEffect', 'taskId', 'host', 'ctx', 'setError', 'setExtractProgress', 'sessionSeq', code)(
+    new Function('useEffect', 'taskId', 'host', 'ctx', 'setError', 'setExtractProgress', 'sessionSeq', 'phase', code)(
       fn => { cleanup = fn() }, 'original-task', host, ctx,
       value => { error = typeof value === 'function' ? value(error) : value },
-      value => { progress = value }, sequence,
+      value => { progress = value }, sequence, 'extracting',
     )
     const flush = () => new Promise(resolve => setImmediate(resolve))
     await flush()

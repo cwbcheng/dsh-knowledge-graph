@@ -1004,7 +1004,7 @@ export class SqliteKnowledgeStore {
       json_extract(checkpoint_json, '$.postprocess.reviewSummary.eligible') AS totalRelations,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.relationWeave.results')) AS savedRelationGroups,
       json_extract(checkpoint_json, '$.relationWeave.totalGroups') AS totalRelationGroups
-      FROM extraction_runs WHERE status IN ('running', 'failed')
+      FROM extraction_runs WHERE status IN ('running', 'failed', 'paused')
       ORDER BY updated_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, int(limit, 50))))
   }
 
@@ -1012,7 +1012,7 @@ export class SqliteKnowledgeStore {
     if (typeof runId !== 'string' || !runId.trim() || runId.length > 200 || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
       throw Object.assign(new Error('任务标识或更新时间无效'), { code: 'invalid_input' })
     }
-    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND status IN ('running', 'failed')").run(runId, expectedUpdatedAt)
+    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND status IN ('running', 'failed', 'paused')").run(runId, expectedUpdatedAt)
     if (result.changes) return { deleted: true, runId }
     const row = this.db.prepare('SELECT status FROM extraction_runs WHERE run_id = ?').get(runId)
     if (!row) return { deleted: false, runId }
