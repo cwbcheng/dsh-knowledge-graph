@@ -6558,6 +6558,55 @@ function createHostPlugin(graphContractOnly) {
           task.cancelHooks.push(cancel)
         })
       }
+      function relationConcurrencyHost(task) {
+        return Math.min([1, 2, 4].includes(task.concurrency) ? task.concurrency : 1, task.relationConcurrencyLimit || 4)
+      }
+      async function runRelationQueueHost(task, queue, stage, run) {
+        const state = { stage, limit: relationConcurrencyHost(task), active: 0 }
+        task.progress = task.progress || {}
+        task.progress.relationParallel = state
+        let failure = null
+        let writes = Promise.resolve()
+        const fail = error => {
+          if (failure) return
+          failure = error
+          // Abort sibling streams, but preserve the original failure and task
+          // identity. A persistence failure is not a user cancellation.
+          for (const hook of (task.cancelHooks || []).slice()) {
+            try { hook() } catch { /* Keep the root failure if a provider's abort hook fails. */ }
+          }
+        }
+        const check = () => { if (failure) throw failure; throwIfTaskCancelledHost(task) }
+        const save = async fn => {
+          const previous = writes
+          let release
+          writes = new Promise(resolve => { release = resolve })
+          await previous
+          try { check(); return await fn() }
+          catch (error) { fail(error); throw error }
+          finally { release() }
+        }
+        const worker = async () => {
+          while (queue.length && !failure) {
+            // A provider rate limit lowers the remaining work to one lane.
+            state.limit = relationConcurrencyHost(task)
+            if (state.active >= state.limit) return
+            try { check() } catch (error) { fail(error); return }
+            const item = queue.shift()
+            state.active++
+            try { await run(item, save, check); check() }
+            catch (error) { fail(error) }
+            finally { state.active-- }
+          }
+        }
+        try {
+          check()
+          await Promise.all(Array.from({ length: state.limit }, () => worker()))
+          check()
+        } finally {
+          if (task.progress.relationParallel === state) task.progress.relationParallel = null
+        }
+      }
       async function weaveRelationsHost(task, model, acc, paragraphTexts, sourceInfo, sourceText, previousCoverage = null) {
         const nodes = Array.from(acc.nodes.values())
         const originalKeys = new Set(acc.edges.map(edgeKeyHost))
@@ -6644,96 +6693,110 @@ function createHostPlugin(graphContractOnly) {
           paragraphMeta: sourceInfo.paragraphMeta,
           paragraphTexts,
         }
-        for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
-          if (task.cancelled) {
-            const error = new Error('任务已取消')
-            error.code = 'cancelled'
-            throw error
-          }
-          const group = groups[groupIndex].nodes
-          const groupIds = new Set(group.map((node) => node.id))
-          const cached = journal.results[groupIndex]
-          if (cached) {
-            result.addedEdges += mergeRelationEdgesHost(JSON.parse(JSON.stringify(cached.norm)), acc, 'relation_weave_group' + (groupIndex + 1))
-            for (const id of groups[groupIndex].targetIds) searched.add(id)
-            updateCoverage()
-            showSavedGroups()
-            continue
-          }
-          const payload = buildRelationWeaveUserTextHost(task.title, group, acc.edges, paragraphTexts, working, groupIndex, groups.length, groups[groupIndex].targetIds, groups[groupIndex], task)
-          taskStage('正在编织全图关系 ' + (groupIndex + 1) + '/' + groups.length + '…')
-          let accepted = null
-          let feedback = ''
-          let lastError = ''
-          for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-              const prompt = feedback
-                ? payload.text + NL + NL + '上一次关系候选未通过确定性验收，只修复以下问题，不要新增无关关系：' + NL + feedback
-                : payload.text
-              const raw = hasKgRelationWeaver
-                ? await kgExtractor.weaveRelations({
-                  title: task.title,
-                  nodes: group.map(cloneGraphNodeHost),
-                  edges: acc.edges.filter((edge) => groupIds.has(edge.fromNodeId) && groupIds.has(edge.toNodeId)).map(cloneGraphEdgeHost),
-                  units: payload.units.map((unit) => ({ ...unit })),
-                  targetIds: groups[groupIndex].targetIds.slice(),
-                  systemPrompt: weavePromptFor(task),
-                  prompt,
-                  attempt,
+        for (let waveStart = 0; waveStart < groups.length;) {
+          const indices = Array.from({ length: Math.min(relationConcurrencyHost(task), groups.length - waveStart) }, (_, i) => waveStart + i)
+          const acceptedGroups = new Map()
+          // Every lane sees the same prior-wave graph. Persist completions as
+          // they arrive, then merge in plan order, never network finish order.
+          await runRelationQueueHost(task, indices.slice(), '关系补全', async (groupIndex, save, check) => {
+            if (task.cancelled) {
+              const error = new Error('任务已取消')
+              error.code = 'cancelled'
+              throw error
+            }
+            const group = groups[groupIndex].nodes
+            const groupIds = new Set(group.map((node) => node.id))
+            const cached = journal.results[groupIndex]
+            if (cached) {
+              acceptedGroups.set(groupIndex, JSON.parse(JSON.stringify(cached.norm)))
+              return
+            }
+            const payload = buildRelationWeaveUserTextHost(task.title, group, acc.edges, paragraphTexts, working, groupIndex, groups.length, groups[groupIndex].targetIds, groups[groupIndex], task)
+            taskStage('正在编织全图关系 ' + (groupIndex + 1) + '/' + groups.length + '…')
+            let accepted = null
+            let feedback = ''
+            let lastError = ''
+            for (let attempt = 0; attempt < 2; attempt++) {
+              check()
+              try {
+                const prompt = feedback
+                  ? payload.text + NL + NL + '上一次关系候选未通过确定性验收，只修复以下问题，不要新增无关关系：' + NL + feedback
+                  : payload.text
+                const raw = hasKgRelationWeaver
+                  ? await kgExtractor.weaveRelations({
+                    title: task.title,
+                    nodes: group.map(cloneGraphNodeHost),
+                    edges: acc.edges.filter((edge) => groupIds.has(edge.fromNodeId) && groupIds.has(edge.toNodeId)).map(cloneGraphEdgeHost),
+                    units: payload.units.map((unit) => ({ ...unit })),
+                    targetIds: groups[groupIndex].targetIds.slice(),
+                    systemPrompt: weavePromptFor(task),
+                    prompt,
+                    attempt,
+                  })
+                  : await callExtractionModel(model, weavePromptFor(task), prompt, '关系补全（第 ' + (groupIndex + 1) + '/' + groups.length + ' 组）', 0.05)
+                check()
+                const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
+                if (!obj || !Array.isArray(obj.edges)) throw new Error('关系编织结果缺少 edges 数组')
+                const norm = normalizeGraph({ summary: '', nodes: [], edges: obj.edges }, paragraphTexts.length, groupIds, sourceContext, task)
+                if (norm.error) throw new Error(norm.error)
+                let gate = validateGraphInvariantsHost(norm, sourceText, {
+                  includeQuality: false,
+                  extraNodes: acc.nodes,
+                  normalizationWarnings: norm.warnings,
+                  ignoreSafeNormalizationDrops: true,
                 })
-                : await callExtractionModel(model, weavePromptFor(task), prompt, '关系补全（第 ' + (groupIndex + 1) + '/' + groups.length + ' 组）', 0.05)
-              const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
-              if (!obj || !Array.isArray(obj.edges)) throw new Error('关系编织结果缺少 edges 数组')
-              const norm = normalizeGraph({ summary: '', nodes: [], edges: obj.edges }, paragraphTexts.length, groupIds, sourceContext, task)
-              if (norm.error) throw new Error(norm.error)
-              let gate = validateGraphInvariantsHost(norm, sourceText, {
-                includeQuality: false,
-                extraNodes: acc.nodes,
-                normalizationWarnings: norm.warnings,
-                ignoreSafeNormalizationDrops: true,
-              })
-              const repairs = applySafeInvariantRepairsHost(norm, gate, { allowEdgeDrops: true }).repairs
-              if (repairs.length > 0) for (const repair of repairs) norm.warnings.push('relation_weave_auto_repair:' + repair.action + ':' + (repair.targetId || repair.code || ''))
-              gate = validateGraphInvariantsHost(norm, sourceText, {
-                includeQuality: false,
-                extraNodes: acc.nodes,
-                normalizationWarnings: norm.warnings,
-                ignoreSafeNormalizationDrops: true,
-              })
-              if (gate.blockingIssues.length > 0) {
-                lastError = formatInvariantFeedbackHost(gate.blockingIssues)
-                if (attempt === 0) { feedback = lastError; continue }
-                throw new Error(lastError)
-              }
-              accepted = norm
-              break
-            } catch (error) {
-              if (isTerminalTaskOperationErrorHost(error)) throw error
-              lastError = error && error.message ? error.message : String(error)
-              if (attempt === 0 && isRelationRateLimitErrorHost(error)) {
-                taskStage('关系编织触发模型限流，等待 30 秒后重试…', '模型 TPM 暂时耗尽；不会立即重复请求')
-                await cancellableTaskDelayHost(task, RELATION_WEAVE_RATE_LIMIT_DELAY_MS)
+                const repairs = applySafeInvariantRepairsHost(norm, gate, { allowEdgeDrops: true }).repairs
+                if (repairs.length > 0) for (const repair of repairs) norm.warnings.push('relation_weave_auto_repair:' + repair.action + ':' + (repair.targetId || repair.code || ''))
+                gate = validateGraphInvariantsHost(norm, sourceText, {
+                  includeQuality: false,
+                  extraNodes: acc.nodes,
+                  normalizationWarnings: norm.warnings,
+                  ignoreSafeNormalizationDrops: true,
+                })
+                if (gate.blockingIssues.length > 0) {
+                  lastError = formatInvariantFeedbackHost(gate.blockingIssues)
+                  if (attempt === 0) { feedback = lastError; continue }
+                  throw new Error(lastError)
+                }
+                accepted = norm
+                break
+              } catch (error) {
+                check()
+                if (isTerminalTaskOperationErrorHost(error)) throw error
+                lastError = error && error.message ? error.message : String(error)
+                if (attempt === 0 && isRelationRateLimitErrorHost(error)) {
+                  task.relationConcurrencyLimit = 1
+                  taskStage('关系编织触发模型限流，等待 30 秒后重试…', '模型 TPM 暂时耗尽；不会立即重复请求')
+                  await cancellableTaskDelayHost(task, RELATION_WEAVE_RATE_LIMIT_DELAY_MS)
+                }
               }
             }
+            if (!accepted) {
+              acceptedGroups.set(groupIndex, { edges: [], warnings: ['relation_weave_failed:group' + (groupIndex + 1) + ':' + lastError], failed: true })
+              return
+            }
+            // The prompt only exposes group ids; keep the admission fence explicit
+            // even if a custom relation weaver returned extra endpoints.
+            accepted.edges = accepted.edges.filter((edge) => allIds.has(edge.fromNodeId) && allIds.has(edge.toNodeId) && groupIds.has(edge.fromNodeId) && groupIds.has(edge.toNodeId))
+            await save(async () => {
+              const norm = JSON.parse(JSON.stringify(accepted))
+              const next = { ...journal, results: { ...journal.results, [groupIndex]: { norm, hash: sha256HexHost(JSON.stringify(norm)) } } }
+              // A failed write cannot advance either the in-memory checkpoint or UI.
+              if (typeof task.persistRelationWeave === 'function') await task.persistRelationWeave(next)
+              journal = next
+              acceptedGroups.set(groupIndex, accepted)
+              showSavedGroups()
+            })
+          })
+          for (const groupIndex of indices) {
+            const accepted = acceptedGroups.get(groupIndex)
+            if (accepted.failed) { acc.warnings.push(...accepted.warnings); continue }
+            result.addedEdges += mergeRelationEdgesHost(accepted, acc, 'relation_weave_group' + (groupIndex + 1))
+            for (const id of groups[groupIndex].targetIds) searched.add(id)
           }
-          if (!accepted) {
-            acc.warnings.push('relation_weave_failed:group' + (groupIndex + 1) + ':' + lastError)
-            continue
-          }
-          // The prompt only exposes group ids; keep the admission fence explicit
-          // even if a custom relation weaver returned extra endpoints.
-          accepted.edges = accepted.edges.filter((edge) => allIds.has(edge.fromNodeId) && allIds.has(edge.toNodeId) && groupIds.has(edge.fromNodeId) && groupIds.has(edge.toNodeId))
-          if (typeof task.persistRelationWeave === 'function') {
-            const norm = JSON.parse(JSON.stringify(accepted))
-            const next = { ...journal, results: { ...journal.results, [groupIndex]: { norm, hash: sha256HexHost(JSON.stringify(norm)) } } }
-            // A failed write cannot advance either the in-memory checkpoint or UI.
-            await task.persistRelationWeave(next)
-            journal = next
-          }
-          result.addedEdges += mergeRelationEdgesHost(accepted, acc, 'relation_weave_group' + (groupIndex + 1))
-          for (const id of groups[groupIndex].targetIds) searched.add(id)
           updateCoverage()
           showSavedGroups()
+          waveStart += indices.length
         }
         result.candidateEdgeKeys = acc.edges.filter(edge => !originalKeys.has(edgeKeyHost(edge))).map(edgeKeyHost)
         result.after = connectivitySnapshotHost(graphConnectivityHost(nodes, acc.edges))
@@ -6792,9 +6855,9 @@ function createHostPlugin(graphContractOnly) {
         for (let start = 0; start < pending.length; start += 16) queue.push(pending.slice(start, start + 16))
         // Bound each request, not the document. Dropping an unvisited tail can
         // remove the only challenged proposition of an otherwise valid counter-example.
-        while (queue.length) {
+        await runRelationQueueHost(task, queue, '关系审校', async (entries, save, check) => {
           throwIfTaskCancelledHost(task)
-          const entries = queue.shift(), start = entries[0].index
+          const start = entries[0].index
           const batch = entries.map(item => item.edge)
           const selected = entries.map(({ edge, index }) => ({ id: 'r' + index, edge, from: byId.get(edge.fromNodeId), to: byId.get(edge.toNodeId) }))
           const numbers = new Set()
@@ -6809,16 +6872,18 @@ function createHostPlugin(graphContractOnly) {
             const middle = Math.ceil(entries.length / 2)
             queue.unshift(entries.slice(0, middle), entries.slice(middle))
           }
-          if (prompt.length > 40000 && entries.length > 1) { splitBatch(); continue }
+          if (prompt.length > 40000 && entries.length > 1) { splitBatch(); return }
           taskStage('关系审校已完成 ' + review.reviewed + '/' + candidates.length + ' 条，当前 ' + selected.map(item => item.id).join(', '))
           let feedback = ''
           for (let attempt = 0; attempt < 2; attempt++) {
+            check()
             let responseReceived = false
             try {
             // A single relation keeps its complete evidence even if one source
             // paragraph exceeds the packing target. Never silently truncate it.
             const attemptPrompt = feedback ? prompt + NL + '上次响应未通过结构校验；请重新返回本批全部判定，不得只补返回个别项。候选 id：' + selected.map((item) => item.id).join(', ') + '。校验错误代码：' + feedback : prompt
             const raw = reviewer ? await reviewer({ prompt: attemptPrompt, systemPrompt: system, candidates: selected, units, attempt }) : await callExtractionModel(model, system, attemptPrompt, '关系语义审校（已完成 ' + review.reviewed + '/' + candidates.length + ' 条，本批 ' + batch.length + ' 条）', 0.05)
+            check()
             responseReceived = true
             const parsed = raw && typeof raw === 'object' ? raw : parseJson(raw)
             if (!Array.isArray(parsed?.verdicts) || parsed.verdicts.length !== selected.length) throw new Error('review_verdict_count_mismatch')
@@ -6834,20 +6899,30 @@ function createHostPlugin(graphContractOnly) {
               verdicts.set(verdict.id, { verdict: verdict.verdict, reason: String(verdict.reason || '').slice(0, 500), evidence })
             }
             // Validate the complete response before changing any admission decision.
-            for (const item of selected) {
-              const verdict = verdicts.get(item.id)
-              admit(item.edge, verdict)
-              decisions[decisionHash(item.edge)] = verdict
-            }
-            if (task.postprocess) task.postprocess.decisions = decisions
-            updateReviewProgress()
-            if (task.persistPostprocess) await task.persistPostprocess()
+            await save(async () => {
+              const nextDecisions = { ...decisions }
+              for (const item of selected) nextDecisions[decisionHash(item.edge)] = verdicts.get(item.id)
+              if (task.postprocess) {
+                const previous = task.postprocess
+                task.postprocess = { ...previous, decisions: nextDecisions, reviewSummary: {
+                  eligible: review.eligible, reviewed: review.reviewed + selected.length,
+                  pending: review.eligible - review.reviewed - selected.length, reused: review.reused,
+                } }
+                try { if (task.persistPostprocess) await task.persistPostprocess() }
+                catch (error) { task.postprocess = previous; throw error }
+              }
+              Object.assign(decisions, nextDecisions)
+              for (const item of selected) admit(item.edge, verdicts.get(item.id))
+              updateReviewProgress()
+            })
             break
             } catch (error) {
+              check()
               if (isTerminalTaskOperationErrorHost(error) || error?.code === 'persistence_failed') throw error
               const detail = String(error && error.message || error).slice(0, 500)
               const retryDelay = !responseReceived && attempt === 0 ? relationReviewRetryDelayHost(error) : 0
               if (retryDelay) {
+                if (isRelationRateLimitErrorHost(error)) task.relationConcurrencyLimit = 1
                 review.retries.push({ start, count: selected.length, reason: 'review_transport_retry', delayMs: retryDelay })
                 taskStage('关系审校请求中断，' + (retryDelay / 1000) + ' 秒后自动重试（1/1）', '本批 ' + selected.length + ' 条候选仍待审；不会接纳不完整输出')
                 await cancellableTaskDelayHost(task, retryDelay)
@@ -6869,13 +6944,15 @@ function createHostPlugin(graphContractOnly) {
               review.failures.push(failure)
               review.errors.push('关系 ' + failure.ids.join(',') + '：' + detail)
               if (task.postprocess) {
-                task.postprocess.failures = review.failures
-                if (task.persistPostprocess) await task.persistPostprocess()
+                await save(async () => {
+                  task.postprocess.failures = review.failures.slice()
+                  if (task.persistPostprocess) await task.persistPostprocess()
+                })
               }
               break
             }
           }
-        }
+        })
         // A failed or budget-limited review cannot admit a high-risk edge as
         // though the required check succeeded. Keep the candidate for recovery.
         for (const edge of candidates) {
@@ -7042,6 +7119,7 @@ function createHostPlugin(graphContractOnly) {
           pauseRequested: task.pauseRequested === true,
           paused: task.status === 'paused',
           parallel: task.progress?.parallel || null,
+          relationParallel: task.progress?.relationParallel ? { ...task.progress.relationParallel } : null,
           modelUsage: modelUsageSnapshotHost(task),
           review: task.progress?.review || null,
           discovery: task.progress?.discovery || null,
@@ -7278,11 +7356,12 @@ function createHostPlugin(graphContractOnly) {
           }
           task.persistPostprocess = async () => {
             if (!task.postprocess) return
-            task.checkpoint = { ...task.checkpoint, postprocess: JSON.parse(JSON.stringify(task.postprocess)) }
+            const snapshot = { ...task.checkpoint, postprocess: JSON.parse(JSON.stringify(task.postprocess)) }
             if (typeof persistCheckpoint === 'function') {
-              try { await persistCheckpoint(task.checkpoint, task, 'running') }
+              try { await persistCheckpoint(snapshot, task, 'running') }
               catch (error) { throw taskOperationErrorHost('persistence_failed', '后处理检查点保存失败：' + (error?.message || error), 'postprocess') }
             }
+            task.checkpoint = snapshot
           }
           task.persistRelationWeave = async (journal) => {
             const snapshot = { ...task.checkpoint, relationWeave: JSON.parse(JSON.stringify(journal)) }
@@ -10428,6 +10507,7 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq,
           status: 'running',
           kind: 'relation-retry',
+          concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
           continuous: a.continuous === true,
           reviewPendingOnly: a.reviewPendingOnly === true,
           title: canonical.graph.source && canonical.graph.source.title ? canonical.graph.source.title : '',

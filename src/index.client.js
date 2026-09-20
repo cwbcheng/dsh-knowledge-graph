@@ -392,6 +392,7 @@ export default function clientPlugin() {
           h('p', { role: 'status' }, progress.stage || '运行中'),
           h('p', null, '本次运行累计 ' + duration(progress.elapsedMs)),
           h(ModelUsageStatus, { usage: progress.modelUsage }),
+          progress.relationParallel ? h('p', { role: 'status' }, progress.relationParallel.stage + ' · 并发上限 ' + progress.relationParallel.limit + ' 路 · 执行中 ' + progress.relationParallel.active + ' 路') : null,
           progress.review ? h('p', null, '关系已审校 ' + progress.review.reviewed + '/' + progress.review.eligible + ' · 待审 ' + progress.review.pending + ' · 已复用 ' + (progress.review.reused || 0)) : null,
           progress.discovery ? h(RelationDiscoveryStatus, { coverage: progress.discovery }) : null,
           progress.completion ? h(RelationCompletionStatus, { completion: progress.completion }) : null,
@@ -7269,6 +7270,7 @@ export default function clientPlugin() {
           const payload = {
             documentId,
             continuous: continuousRelations,
+            concurrency: extractionConcurrency,
             expectedRevision: graphRevisionRef.current || (graph.source && graph.source.revision) || 0,
             ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
           }
@@ -8386,8 +8388,8 @@ export default function clientPlugin() {
                     }, ...ontologyOptions.map((item) => h('option', { key: item.id, value: item.id },
                       item.label + (item.isDefault ? '（默认）' : '') + ' · ' + item.nodeTypes + ' 类'))))
                 : null,
-              h('label', {style:{display:'flex', alignItems:'center', gap:6}}, '拆分并发',
-                h('select', {value:extractionConcurrency, disabled:phase === 'extracting', onChange:e=>setExtractionConcurrency(Number(e.target.value)), 'aria-label':'拆分并发'},
+              h('label', {style:{display:'flex', alignItems:'center', gap:6}}, '生成并发',
+                h('select', {value:extractionConcurrency, disabled:phase === 'extracting', onChange:e=>setExtractionConcurrency(Number(e.target.value)), 'aria-label':'生成并发'},
                   ...[1,2,4].map(n=>h('option', {key:n,value:n}, n === 1 ? '1 路（串行）' : n + ' 路')))),
               h('button', { type: 'button', className: 'kg-secondary', onClick: () => setHistoryOpen(!historyOpen) },
                 historyOpen ? '返回工作台' : '历史'),

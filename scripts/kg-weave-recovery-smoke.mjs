@@ -30,9 +30,15 @@ if (process.argv[2] === 'worker') {
         id: 'n' + i, type: 'claim', text: unit.text, quote: unit.text, paragraph: unit.num,
       })), edges: [] }
     },
-    async weaveRelations({ nodes, targetIds, units }) {
+    async weaveRelations({ nodes, targetIds, units, prompt }) {
       process.send({ event: 'weave', ids: nodes.map(node => node.id), targets: targetIds })
       calls++
+      if (mode === 'parallel-crash') {
+        const group = Number(prompt.match(/关系编织窗口：(\d+)\//)[1]) - 1
+        if (group === 0 || group === 3) await new Promise(() => { setInterval(() => {}, 1000) })
+        if (group === 1) await new Promise(resolve => setTimeout(resolve, 30))
+        if (group === 2) return { edges: [] }
+      }
       if (mode === 'hole-crash' && calls <= 2) throw Error('fixture first group failed both attempts')
       if ((calls === 3 && mode === 'crash') || (calls === 5 && mode === 'hole-crash')) {
         process.send({ event: 'kill-ready' })
@@ -58,11 +64,19 @@ if (process.argv[2] === 'worker') {
     store.close()
     process.exit(0)
   }
-  const started = await request(api, runId ? 'resume-extract' : 'extract', runId ? { runId, retryFailed: true } : { text: source, concurrency: 2 })
+  // Legacy cases deliberately exercise a serial cursor; the parallel case
+  // below kills a wave with holes and out-of-order durable completions.
+  const started = await request(api, runId ? 'resume-extract' : 'extract', runId ? { runId, retryFailed: true } : { text: source, concurrency: mode.startsWith('parallel') ? 4 : 1 })
   assert.ok(started.taskId, JSON.stringify(started))
   process.send({ event: 'started', taskId: started.taskId })
   for (let i = 0; i < 6000; i++) {
     const status = await request(api, 'task-status', { taskId: started.taskId }, 'GET')
+    if (mode === 'parallel-crash' && status.progress?.discovery?.savedGroups === 2) {
+      // The public progress advances only after the durable write. Do not poll
+      // a second SQLite connection during writes merely to time this crash.
+      await new Promise(resolve => process.send({ event: 'parallel-saved' }, resolve))
+      await new Promise(() => {})
+    }
     if (status.status !== 'running') {
       await new Promise(resolve => process.send({ event: 'done', status: status.status, error: status.error }, resolve))
       process.exit(0)
@@ -83,7 +97,7 @@ if (process.argv[2] === 'worker') {
     child.stderr.on('data', data => { stderr += data })
     child.on('message', event => {
       events.push(event)
-      if (event.event === 'kill-ready') child.kill('SIGKILL')
+      if (event.event === 'kill-ready' || event.event === 'parallel-saved') child.kill('SIGKILL')
     })
     const timer = setTimeout(() => child.kill('SIGKILL'), 60000)
     try {
@@ -156,8 +170,21 @@ if (process.argv[2] === 'worker') {
     const filledCalls = filled.events.filter(event => event.event === 'weave')
     assert.deepEqual(filledCalls[0], holeCalls[0], 'retry the failed earlier group')
     assert.deepEqual(filledCalls[1], holeCalls[4], 'then skip the saved later groups')
+    const parallel = await worker('parallel-crash')
+    assert(parallel.events.some(event => event.event === 'parallel-saved'), 'kill only after out-of-order candidates reached SQLite')
+    const parallelSaved = store.loadCheckpoint(parallel.id).checkpoint.relationWeave
+    assert.deepEqual(Object.keys(parallelSaved.results), ['1', '2'])
+    assert.equal(parallelSaved.results[2].norm.edges.length, 0)
+    const parallelResume = await worker('parallel-resume', parallel.id)
+    assert.equal(parallelResume.done.status, 'succeeded', JSON.stringify(parallelResume.done))
+    const replayed = parallelResume.events.filter(event => event.event === 'weave')
+    const original = parallel.events.filter(event => event.event === 'weave')
+    assert.deepEqual(replayed[0], original[0], 'retry the unfinished first lane')
+    assert.deepEqual(replayed[1], original[3], 'skip both saved lanes, including the empty result')
+    assert.equal(replayed.length, parallelSaved.totalGroups - 2)
+    assert.equal(parallelResume.events.filter(event => event.event === 'extract').length, 0)
     console.log(JSON.stringify({ hardKillRecovery: true, candidateSurvives: true, emptyGroupSurvives: true,
-      independentReview: true, tamperingRejected: true, writeFailureStopsProgress: true, failedGroupRecovery: true }))
+      independentReview: true, tamperingRejected: true, writeFailureStopsProgress: true, failedGroupRecovery: true, parallelHardKillRecovery: true }))
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })
