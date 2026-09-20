@@ -43,7 +43,6 @@ function createHostPlugin(graphContractOnly) {
       // 800 is a renderer/query budget, never a knowledge-retention budget.
       // The canonical graph and checkpoints retain every extracted node.
       const MAX_GRAPH_VIEW_NODES = 800
-      const MAX_GRAPH_VIEW_EDGES = MAX_GRAPH_VIEW_NODES * 6
       // Consumption APIs are intentionally bounded so graph search and
       // evidence-grounded answers never materialize an unbounded prompt or
       // return an entire book graph to the browser/agent in one response.
@@ -1607,24 +1606,6 @@ function createHostPlugin(graphContractOnly) {
            targets: new Set(profile.relationWeave.targets),
          }))
        }
-       /**
-        * The type to use when a node arrives without a usable one. Derived from
-        * the profile's render order so it is never a type the profile does not
-        * declare (proposition → 'fact', learning-view → 'concept').
-        */
-       function ontFallbackType(carrier) {
-         const order = ontProfile(carrier).renderOrder
-         return order && order.length ? order[0] : ''
-       }
-       /** Node type → { layer, modelKind }: the two coordinates of a material. */
-       function ontCoordinates(carrier) {
-         return ontCached(carrier, 'coordinates', (profile) => {
-           const out = Object.create(null)
-           for (const type of profile.nodeTypes) out[type.id] = { layer: type.layer || 'none', modelKind: type.modelKind || 'none' }
-           return out
-         })
-       }
-       /** The presentation face sent to the client with a graph payload. */
        /**
         * The ontology catalogue the UI needs so a person can CHOOSE one. Built
         * from the same ontDescribe payload the renderer consumes, so a new
@@ -6100,7 +6081,7 @@ function createHostPlugin(graphContractOnly) {
         return Array.from(new Set([node.paragraph, ...(node.evidence || []).map(item => item.paragraph)]))
           .filter(paragraph => Number.isInteger(paragraph) && paragraph >= 0 && paragraph < paragraphTexts.length && paragraphTexts[paragraph])
       }
-      function buildRelationWeaveGroupsHost(nodes, edges, stats, paragraphTexts, previousCoverage, sourceText) {
+      function buildRelationWeaveGroupsHost(nodes, stats, paragraphTexts, previousCoverage, sourceText) {
         // Coverage means candidate search, not proof that every possible relation
         // was found. Edge additions do not reset it; changed source/nodes do.
         const signature = sha256HexHost(JSON.stringify([sourceText, nodes.map(node => [node.id, node.type, node.text, node.quote, node.paragraph, (node.evidence || []).map(item => [item.paragraph, item.quote]).sort((a, b) => a[0] - b[0] || String(a[1]).localeCompare(String(b[1]))), node.sectionId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))]))
@@ -6500,12 +6481,19 @@ function createHostPlugin(graphContractOnly) {
         // contains both propositions plus an explicit relation cue. Endpoint
         // evidence alone is never promoted into relation evidence. All other
         // connectivity hints remain candidates for the relation weaver.
-        for (let i = 0; i < nodes.length; i++) {
-          for (let j = i + 1; j < nodes.length; j++) {
-            const a = nodes[i]
-            const b = nodes[j]
-            const paragraph = paragraphOf(a)
-            if (paragraph == null || paragraph !== paragraphOf(b)) continue
+        const byParagraph = new Map()
+        for (const [index, node] of nodes.entries()) {
+          const paragraph = paragraphOf(node)
+          if (paragraph == null) continue
+          if (!byParagraph.has(paragraph)) byParagraph.set(paragraph, [])
+          byParagraph.get(paragraph).push({ index, node })
+        }
+        // Preserve the original pair order (and 16-edge cap), but never compare
+        // unrelated paragraphs. Long books should not require an all-pairs scan.
+        for (const [i, a] of nodes.entries()) {
+          const paragraph = paragraphOf(a)
+          for (const { index: j, node: b } of byParagraph.get(paragraph) || []) {
+            if (j <= i) continue
             const paragraphText = String(paragraphTexts[paragraph] || '')
             const ao = offsetOf(a)
             const bo = offsetOf(b)
@@ -6594,7 +6582,7 @@ function createHostPlugin(graphContractOnly) {
           return result
         }
         result.attempted = true
-        const plan = buildRelationWeaveGroupsHost(nodes, acc.edges, working, paragraphTexts, previousCoverage, sourceText)
+        const plan = buildRelationWeaveGroupsHost(nodes, working, paragraphTexts, previousCoverage, sourceText)
         let groups = plan.groups
         result.coverage = plan.coverage
         result.searchedBefore = plan.coverage.searchedTargets
@@ -6753,7 +6741,6 @@ function createHostPlugin(graphContractOnly) {
       }
 
       function finalizeRelationConnectivityHost(connectivity, graph) {
-        const relationLookup = ontRelationAliases(graph)
         connectivity.after = connectivitySnapshotHost(graphConnectivityHost(graph.nodes, graph.edges))
         connectivity.proposedEdges = connectivity.addedEdges
         connectivity.netEdgeChange = connectivity.after.edgeCount - connectivity.before.edgeCount
@@ -7038,6 +7025,20 @@ function createHostPlugin(graphContractOnly) {
           model: task.progress?.model || null,
           batch: task.progress?.batch || null,
         }
+      }
+      function taskStatusHost(taskId, includeCheckpoint = false) {
+        const task = tasks.get(taskId)
+        if (!task) return { status: 'not_found' }
+        if (task.status === 'succeeded') return { status: 'succeeded', result: task.result, modelUsage: modelUsageSnapshotHost(task) }
+        if (task.status === 'failed' || task.status === 'cancelled') return {
+          status: task.status, modelUsage: modelUsageSnapshotHost(task),
+          error: { code: task.errorCode, message: task.errorMessage },
+          ...(includeCheckpoint && task.checkpoint ? { checkpoint: task.checkpoint } : {}),
+        }
+        return { status: 'running', progress: {
+          ...taskProgressSnapshotHost(task),
+          checkpoint: includeCheckpoint && task.checkpoint ? task.checkpoint : null,
+        } }
       }
       function taskDescriptorHost(task) {
         if (!task) return null
@@ -7424,7 +7425,6 @@ function createHostPlugin(graphContractOnly) {
           }
           task.checkpoint = buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, resumeFromBatch)
            await persistCheckpointSafe('running')
-           const existingDigest = ''
           // The first-pass prompt IS the ontology: it declares which node and
           // relation types the model may emit, so it has to follow the
           // document's profile rather than a single process-wide constant.
@@ -8869,7 +8869,7 @@ function createHostPlugin(graphContractOnly) {
         }
         return snippets.join(NL).slice(0, 1200)
       }
-      function normalizeConsumptionAnswerHost(raw, context, evidenceCatalog) {
+      function normalizeConsumptionAnswerHost(raw, evidenceCatalog) {
         const obj = raw && typeof raw === 'object' ? raw : {}
         const allowedStatuses = new Set(['answered', 'insufficient', 'out_of_scope'])
         let status = allowedStatuses.has(obj.status) ? obj.status : 'insufficient'
@@ -9021,7 +9021,7 @@ function createHostPlugin(graphContractOnly) {
             }
           }
           if (!parsed) return failTask(task, 'schema_invalid', '证据回答无法解析：' + (lastError && lastError.message ? lastError.message : '模型输出格式错误'))
-          const answer = normalizeConsumptionAnswerHost(parsed, context, evidenceCatalog)
+          const answer = normalizeConsumptionAnswerHost(parsed, evidenceCatalog)
           task.status = 'succeeded'
           task.finishedAt = Date.now()
           task.result = {
@@ -9433,7 +9433,7 @@ function createHostPlugin(graphContractOnly) {
         return s
       }
 
-      function buildQuestionContext(graph, sourceText, target, question) {
+      function buildQuestionContext(graph, sourceText, target) {
         const paras = splitParagraphsOffsetsHost(sourceText || '')
         const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
         const nodeById = new Map(nodes.map((n) => [n.id, n]))
@@ -9502,7 +9502,7 @@ function createHostPlugin(graphContractOnly) {
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
           if (model) announceModel(task, model)
-          const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question)
+          const ctx2 = buildQuestionContext(task.graph, task.text, task.target)
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
           for (const p of sorted) {
@@ -10199,37 +10199,7 @@ function createHostPlugin(graphContractOnly) {
       harness.handle('extraction-run-list', async () => ({ runs: [] }))
       harness.handle('extraction-run-delete', async () => ({ error: { code: 'unsupported', message: '当前动态插件没有持久化任务记录可删除' } }))
       harness.handle('task-active', async (args) => activeTaskStatusHost(args))
-      harness.handle('task-status', async (args) => {
-         const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
-        const a = args && typeof args === 'object' ? args : {}
-        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
-        const t = tasks.get(taskId)
-        if (!t) return { status: 'not_found' }
-        if (t.status === 'succeeded') return { status: 'succeeded', result: t.result, modelUsage: modelUsageSnapshotHost(t) }
-        if (t.status === 'cancelled') return { status: 'cancelled', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
-        if (t.status === 'failed') return { status: 'failed', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
-        return {
-          status: 'running',
-          progress: {
-            parallel: t.progress?.parallel || null,
-            modelUsage: modelUsageSnapshotHost(t),
-            review: t.progress?.review || null,
-            discovery: t.progress?.discovery || null,
-            completion: t.progress?.completion ? { ...t.progress.completion } : null,
-            completedBatches: t.checkpoint?.nextBatchIndex || 0,
-            sampledAt: Date.now(),
-            requests: (t.progress?.requests || []).map(request => ({ ...request })),
-            lastRequest: t.progress?.lastRequest ? { ...t.progress.lastRequest } : null,
-            stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
-            charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
-            elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
-            warning: t.progress && t.progress.warning ? t.progress.warning : null,
-            model: t.progress && t.progress.model ? t.progress.model : null,
-             batch: t.progress && t.progress.batch ? t.progress.batch : null,
-             checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
-          },
-        }
-      })
+      harness.handle('task-status', async (args) => taskStatusHost(args?.taskId, args?.includeCheckpoint === true))
 
       harness.handle('verify-graph', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
@@ -10327,35 +10297,7 @@ function createHostPlugin(graphContractOnly) {
         return { taskId: task.id }
       })
 
-      harness.handle('trajectory-status', async (args) => {
-         const includeCheckpoint = args && typeof args === 'object' && args.includeCheckpoint === true
-        const a = args && typeof args === 'object' ? args : {}
-        const taskId = typeof a.taskId === 'string' ? a.taskId : ''
-        const t = tasks.get(taskId)
-        if (!t) return { status: 'not_found' }
-        if (t.status === 'succeeded') return { status: 'succeeded', result: t.result, modelUsage: modelUsageSnapshotHost(t) }
-        if (t.status === 'cancelled') return { status: 'cancelled', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
-        if (t.status === 'failed') return { status: 'failed', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) }
-        return {
-          status: 'running',
-          progress: {
-            stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
-            modelUsage: modelUsageSnapshotHost(t),
-            review: t.progress?.review || null,
-            discovery: t.progress?.discovery || null,
-            completedBatches: t.checkpoint?.nextBatchIndex || 0,
-            sampledAt: Date.now(),
-            requests: (t.progress?.requests || []).map(request => ({ ...request })),
-            lastRequest: t.progress?.lastRequest ? { ...t.progress.lastRequest } : null,
-            charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
-            elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
-            warning: t.progress && t.progress.warning ? t.progress.warning : null,
-            model: t.progress && t.progress.model ? t.progress.model : null,
-             batch: t.progress && t.progress.batch ? t.progress.batch : null,
-             checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
-          },
-        }
-      })
+      harness.handle('trajectory-status', async (args) => taskStatusHost(args?.taskId, args?.includeCheckpoint === true))
 
       harness.handle('trajectory-append-extract', async (args) => {
         const a = args && typeof args === 'object' ? args : {}

@@ -59,7 +59,7 @@
     "test:kg": "node scripts/kg-store-smoke.mjs",
     "test:kg-cordis-boot": "node scripts/kg-cordis-boot-smoke.mjs",
     "test:kg-consumption": "node scripts/kg-consumption-smoke.mjs",
-    "test:kg-timeout": "node scripts/kg-timeout-cancellation-smoke.mjs && node scripts/kg-polling-recovery-smoke.mjs && node scripts/kg-concurrent-extraction-smoke.mjs && node scripts/kg-generation-progress-smoke.mjs && node scripts/kg-active-task-smoke.mjs",
+    "test:kg-timeout": "node scripts/kg-timeout-cancellation-smoke.mjs && node scripts/kg-polling-recovery-smoke.mjs && node scripts/kg-concurrent-extraction-smoke.mjs && node scripts/kg-generation-progress-smoke.mjs && node scripts/kg-active-task-smoke.mjs && node scripts/kg-task-contract-smoke.mjs",
     "test:kg-image": "node scripts/kg-image-extraction-smoke.mjs && node scripts/kg-markdown-smoke.mjs",
     "test:kg-pdf": "node scripts/kg-pdf-import-smoke.mjs",
     "test:kg-performance": "node scripts/kg-consumption-performance-smoke.mjs && node scripts/kg-viewer-performance-smoke.mjs && node scripts/kg-viewer-loading-smoke.mjs",

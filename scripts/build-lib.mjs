@@ -634,33 +634,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
-               const includeCheckpoint = url.searchParams.get('includeCheckpoint') === '1'
-              const t = tasks.get(taskId)
-              if (!t) return writeJson(res, 200, { status: 'not_found' })
-              if (t.status === 'succeeded') return writeJson(res, 200, { status: 'succeeded', result: t.result, modelUsage: modelUsageSnapshotHost(t) })
-              if (t.status === 'cancelled') return writeJson(res, 200, { status: 'cancelled', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
-              if (t.status === 'failed') return writeJson(res, 200, { status: 'failed', modelUsage: modelUsageSnapshotHost(t), error: { code: t.errorCode, message: t.errorMessage }, ...(includeCheckpoint && t.checkpoint ? { checkpoint: t.checkpoint } : {}) })
-              return writeJson(res, 200, {
-                status: 'running',
-                progress: {
-                  parallel: t.progress?.parallel || null,
-                  modelUsage: modelUsageSnapshotHost(t),
-                  review: t.progress?.review || null,
-                  discovery: t.progress?.discovery || null,
-                  completion: t.progress?.completion ? { ...t.progress.completion } : null,
-                  completedBatches: t.checkpoint?.nextBatchIndex || 0,
-                  sampledAt: Date.now(),
-                  requests: (t.progress?.requests || []).map(request => ({ ...request })),
-                  lastRequest: t.progress?.lastRequest ? { ...t.progress.lastRequest } : null,
-                  stage: t.progress && t.progress.stage ? t.progress.stage : '运行中',
-                  charsReceived: t.progress ? (t.progress.charsReceived || 0) : 0,
-                  elapsedMs: t.createdAt ? Date.now() - t.createdAt : 0,
-                  warning: t.progress && t.progress.warning ? t.progress.warning : null,
-                  model: t.progress && t.progress.model ? t.progress.model : null,
-                   batch: t.progress && t.progress.batch ? t.progress.batch : null,
-                   checkpoint: includeCheckpoint && t.checkpoint ? t.checkpoint : null,
-                },
-              })
+              return writeJson(res, 200, taskStatusHost(taskId, url.searchParams.get('includeCheckpoint') === '1'))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-cancel') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -858,11 +832,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } })
               const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } })
-              let canonical = null
-              try {
-                const store = await getSqliteStore()
-                canonical = store.getDocument(documentId)
-              } catch (error) { canonical = null }
+              const store = await getSqliteStore()
+              const canonical = store.getDocument(documentId)
               if (!canonical || !Array.isArray(canonical.nodes) || !canonical.sourceText) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } })
               if (canonical.nodes.length < 2) return writeJson(res, 200, { error: { code: 'invalid_input', message: '至少需要两个节点才能检索关系' } })
               if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
@@ -901,10 +872,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
               let canonical = null
               if (documentId) {
-                try {
-                  const store = await getSqliteStore()
-                  canonical = store.getDocument(documentId)
-                } catch (error) { canonical = null }
+                const store = await getSqliteStore()
+                canonical = store.getDocument(documentId)
               }
               const existing = canonical && Array.isArray(canonical.nodes)
                 ? canonical

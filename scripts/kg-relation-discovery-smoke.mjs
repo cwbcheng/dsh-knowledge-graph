@@ -111,7 +111,7 @@ try {
   remote.graph.nodes[0].text = '独特甲乙丙丁戊己庚辛壬癸 semanticbridgemarker'
   remote.graph.nodes[79].text = 'semanticbridgemarker 另一章节的论述'
   remote.paragraphs = Array.from({ length: 1600 }, (_, i) => '原文段落' + i)
-  const plan = api.buildRelationWeaveGroupsHost(remote.graph.nodes, [], api.graphConnectivityHost(remote.graph.nodes, []), remote.paragraphs, null, remote.paragraphs.join('\n\n'))
+  const plan = api.buildRelationWeaveGroupsHost(remote.graph.nodes, api.graphConnectivityHost(remote.graph.nodes, []), remote.paragraphs, null, remote.paragraphs.join('\n\n'))
   assert.ok(plan.groups.find(group => group.targetIds.includes('n0')).nodes.some(node => node.id === 'n79'), 'rare shared terms must retrieve distant components, not just adjacent paragraphs or hubs')
   assert.ok(!plan.coverage.completedTargetIds.length, 'planning is not successful execution')
 

@@ -444,14 +444,6 @@
       }
 
       // ----------------------------- history -----------------------------
-      function normalizeStoredGraph(g) {
-        if (!g || typeof g !== 'object') return { nodes: [], edges: [] }
-        return {
-          ...g,
-          nodes: Array.isArray(g.nodes) ? g.nodes : [],
-          edges: Array.isArray(g.edges) ? g.edges : [],
-        }
-      }
       function documentIdOfGraph(graph) {
         const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
         return typeof source.documentId === 'string' && source.documentId ? source.documentId : ''
@@ -1956,47 +1948,9 @@
         return [[geometry.x1, geometry.y1, geometry.cx, geometry.cy], [geometry.cx, geometry.cy, geometry.x2, geometry.y2]]
       }
 
-      // Path segments for radial polyline edges: the out/in radial segments
-      // (the outer arc already sweeps clear of every ring).
-      function radialSegmentsOf(edge, sizes, pos) {
-        const a = pos.get(edge.fromNodeId)
-        const b = pos.get(edge.toNodeId)
-        if (!a || !b) return null
-        const sa = sizes.get(edge.fromNodeId)
-        const sb = sizes.get(edge.toNodeId)
-        if (!sa || !sb) return null
-        const ra = Math.hypot(a.x, a.y)
-        const rb = Math.hypot(b.x, b.y)
-        const out = []
-        if (ra < 1 || rb < 1) {
-          const target = ra < 1 ? b : a
-          const tBase = Math.atan2(target.y, target.x)
-          const tFree = radialFreeAngle(tBase, 0, Math.max(ra, rb), edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
-          const exu = Math.cos(tFree)
-          const eyu = Math.sin(tFree)
-          const tOut = intersectDist(sa, exu, eyu)
-          const tIn = intersectDist(sb, exu, eyu)
-          out.push([a.x + exu * tOut, a.y + eyu * tOut, target.x - exu * tIn, target.y - eyu * tIn])
-          return out
-        }
-        const R = outerR + 122
-        const tae = radialFreeAngle(Math.atan2(a.y, a.x), ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
-        const tbe = radialFreeAngle(Math.atan2(b.y, b.x), rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, pos)
-        const exu = Math.cos(tae)
-        const eyu = Math.sin(tae)
-        const exv = Math.cos(tbe)
-        const eyv = Math.sin(tbe)
-        const tA = intersectDist(sa, exu, eyu)
-        const tB = intersectDist(sb, exv, eyv)
-        out.push([a.x + exu * tA, a.y + eyu * tA, exu * R, eyu * R])
-        out.push([exv * R, eyv * R, b.x + exv * tB, b.y + eyv * tB])
-        return out
-      }
-
       // fan rank / shared position tables (set per layout run)
       const fanRank = new Map()
       const posOf = new Map()
-      let outerR = 0
       function fanRankOf(edge) {
         const r = fanRank.get(edge)
         return r == null ? 0 : r
@@ -3582,7 +3536,7 @@
           packDisconnectedComponents, layoutLayeredComponents, resolveNodeOverlaps,
           resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutGraph]
         return [D3_TIMER_SRC, D3_DISPATCH_SRC, D3_QUADTREE_SRC, D3_FORCE_SRC,
-          'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map(); let outerR = 0;',
+          'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map();',
           'const LAYER_Y_GAP=' + LAYER_Y_GAP + ',LAYER_X_GAP=' + LAYER_X_GAP + ',LAYER_COL_GAP=' + LAYER_COL_GAP + ',LAYER_MAX_ROW_WIDTH=' + LAYER_MAX_ROW_WIDTH + ';',
           // The layout tables are graph data, not constants, so they are captured
           // into the worker source at the moment this graph's layout is requested.
@@ -3893,16 +3847,6 @@
           }
           return lanes
         }, [layoutMode, edges, layout])
-
-        // Outermost ring radius (radial mode) so arcs sweep beyond every ring.
-        const outerRingR = useMemo(() => {
-          let r = 0
-          for (const n of nodes) {
-            const p = layout.pos.get(n.id)
-            if (p) r = Math.max(r, Math.hypot(p.x, p.y))
-          }
-          return r
-        }, [nodes, layout])
 
         const fitView = useCallback(() => {
           const el = containerRef.current
@@ -4543,7 +4487,7 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, resultView, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         useEffect(() => {
@@ -4763,7 +4707,7 @@
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, graph, resultView, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
+      function FactCheckPanel({ report, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
