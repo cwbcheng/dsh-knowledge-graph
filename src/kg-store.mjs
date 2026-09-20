@@ -1005,7 +1005,9 @@ export class SqliteKnowledgeStore {
       (SELECT count(*) FROM json_each(checkpoint_json, '$.pendingWave.results') WHERE coalesce(json_extract(value, '$.stage'), 'complete') != 'coverage_pending') AS bufferedBatches,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.pendingWave.results') WHERE json_extract(value, '$.stage') = 'coverage_pending') AS preparedBatches,
       json_extract(checkpoint_json, '$.postprocess.reviewSummary.reviewed') AS reviewedRelations,
-      json_extract(checkpoint_json, '$.postprocess.reviewSummary.eligible') AS totalRelations
+      json_extract(checkpoint_json, '$.postprocess.reviewSummary.eligible') AS totalRelations,
+      (SELECT count(*) FROM json_each(checkpoint_json, '$.relationWeave.results')) AS savedRelationGroups,
+      json_extract(checkpoint_json, '$.relationWeave.totalGroups') AS totalRelationGroups
       FROM extraction_runs WHERE status IN ('running', 'failed')
       ORDER BY updated_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, int(limit, 50))))
   }

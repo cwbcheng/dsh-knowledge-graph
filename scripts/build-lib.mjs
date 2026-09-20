@@ -94,7 +94,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
-              if (checkpoint?.postprocess) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '后处理审校记录只能由 Host 按 runId 从可信存储恢复，不能接纳客户端提供的审校结论' } })
+              if (checkpoint?.postprocess || checkpoint?.relationWeave) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '后处理记录只能由 Host 按 runId 从可信存储恢复，不能接纳客户端提供的候选或审校结论' } })
               if (checkpoint && imageInputs.length > 0) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 恢复不能重新附带图片' } })
               if (checkpointHasVisualSourceHost(checkpoint)) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '包含图片来源的 checkpoint 只能由 Host 按 runId 从 SQLite 恢复' } })
               const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
