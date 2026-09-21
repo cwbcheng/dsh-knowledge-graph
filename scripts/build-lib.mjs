@@ -40,11 +40,11 @@ export function apply(ctx) {
   const persistGraph = async (graph, task) => {
     const store = await getSqliteStore()
     return store.saveGraph(graph, {
-      runId: task && task.id ? task.id : undefined,
       sourceText: task && typeof task.canonicalSourceText === 'string' ? task.canonicalSourceText : (task && typeof task.text === 'string' ? task.text : ''),
       sourceUnits: task && Array.isArray(task.canonicalSourceUnits) ? task.canonicalSourceUnits : undefined,
       kind: task && (task.kind === 'append' || task.kind === 'trajectory-append' || (task.kind === 'resume' && task.checkpoint && (task.checkpoint.taskKind === 'append' || task.checkpoint.taskKind === 'trajectory-append'))) ? 'append' : 'extract',
       ...(task && Number.isInteger(task.baseRevision) ? { expectedRevision: task.baseRevision } : {}),
+      ...(task?.finalizing ? { completedRun: { runId: task.id, checkpoint: task.checkpoint, title: task.title, sourceText: task.text } } : {}),
     })
   }
   const persistCheckpoint = async (checkpoint, task, status) => {
@@ -827,7 +827,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 concurrency: a.concurrency,
                 title, text, existing, existingSourceText, documentId, paragraphOffset,
                 ontology: appendContinuity.ontology,
-                baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : null,
+                baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : 0,
                 baseSource: existing && existing.source ? existing.source : null,
                 baseStaging: existing && existing.staging ? existing.staging : null,
                 model, createdAt: Date.now(),
@@ -852,6 +852,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
                 ontology: resolveTaskOntologyHost(a.ontology),
+                baseRevision: 0,
                 model,
                 createdAt: Date.now(),
               }

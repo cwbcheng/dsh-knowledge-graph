@@ -56,7 +56,7 @@
     "kg": "node scripts/kg-cli.mjs",
     "kg:qa-benchmark": "node scripts/kg-qa-benchmark.mjs",
     "kg:quality-regression": "node scripts/kg-quality-regression.mjs",
-    "test:kg": "node scripts/kg-store-smoke.mjs",
+    "test:kg": "node scripts/kg-store-smoke.mjs && node scripts/kg-persistence-atomicity-smoke.mjs",
     "test:kg-cordis-boot": "node scripts/kg-cordis-boot-smoke.mjs && npm run test:dev-web",
     "test:dev-web": "node scripts/kg-dev-web-smoke.mjs",
     "test:kg-consumption": "node scripts/kg-consumption-smoke.mjs",
