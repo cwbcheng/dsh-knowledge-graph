@@ -102,58 +102,27 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
                 ? a.documentId.trim().slice(0, 160)
                 : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
+              let task
               busy = true
-              let currentRevision
               try {
-                currentRevision = requestedDocumentId ? (await getSqliteStore()).getDocumentRevision(requestedDocumentId) : 0
-              } catch (error) {
-                busy = false
-                throw error
-              }
-              let baseRevision = currentRevision
-              let selectedModel = model
-              let imageAttachments = []
-              let markdownSource = null
-              try {
-                if (checkpoint) {
-                  if (!Number.isInteger(checkpoint.baseRevision)) {
-                    busy = false
-                    return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } })
-                  }
-                  if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) {
-                    busy = false
-                    return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } })
-                  }
-                  if (checkpoint.baseRevision !== currentRevision) {
-                    busy = false
-                    return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } })
-                  }
-                  baseRevision = checkpoint.baseRevision
+                const baseDocument = requestedDocumentId ? (await getSqliteStore()).getDocument(requestedDocumentId) : null
+                const currentRevision = baseDocument?.revision || 0
+                const revisionError = validateResumeRevisionHost(checkpoint, requestedDocumentId, currentRevision)
+                if (revisionError) return writeJson(res, 200, { error: revisionError })
+                const continuity = extractionOntologyHost(a.ontology, checkpoint, baseDocument)
+                if (continuity.error) return writeJson(res, 200, { error: continuity.error })
+                let selectedModel = model
+                let imageAttachments = []
+                let markdownSource = null
+                try {
+                  const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
+                  markdownSource = markdownBundleForExtractHost(a, text)
+                  if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
+                  imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
+                } catch (error) {
+                  return writeJson(res, 200, { error: { code: error && error.code ? error.code : 'image_invalid', message: error && error.message ? error.message : '图片读取失败', ...(error && error.reason ? { details: { reason: error.reason } } : {}) } })
                 }
-                const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
-                markdownSource = markdownBundleForExtractHost(a, text)
-                if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
-                imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
-              } catch (error) {
-                busy = false
-                return writeJson(res, 200, { error: { code: error && error.code ? error.code : 'image_invalid', message: error && error.message ? error.message : '图片读取失败', ...(error && error.reason ? { details: { reason: error.reason } } : {}) } })
-              }
-              if (checkpoint) {
-                if (!Number.isInteger(checkpoint.baseRevision)) {
-                  busy = false
-                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } })
-                }
-                if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) {
-                  busy = false
-                  return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } })
-                }
-                if (checkpoint.baseRevision !== currentRevision) {
-                  busy = false
-                  return writeJson(res, 200, { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } })
-                }
-                baseRevision = checkpoint.baseRevision
-              }
-               const task = {
+                task = {
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
@@ -163,27 +132,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  title,
                  text,
                  documentId: requestedDocumentId,
-                 baseRevision,
+                 baseRevision: currentRevision,
                  checkpoint,
                  existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
                  paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
-                 // A resumed run continues the ontology its checkpoint recorded, so
-                 // an interrupted learning-view extraction cannot come back as a
-                 // proposition one on the next boot. Extracting again into an
-                 // existing document must likewise continue that document's
-                 // ontology rather than quietly re-typing its nodes.
-                 ontology: requestedDocumentId && !checkpoint
-                   ? continueOntologyHost((await getSqliteStore()).getDocument(requestedDocumentId), a.ontology).ontology
-                   : resolveTaskOntologyHost(a.ontology || (checkpoint && checkpoint.graph) || DEFAULT_ONTOLOGY),
+                 ontology: continuity.ontology,
                  model: selectedModel,
                  createdAt: Date.now(),
-               }
-              tasks.set(task.id, task)
-              Promise.resolve().then(() => runTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] task crashed', e)
-                failTask(task, 'failed', 'AI 拆分失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+                }
+              } finally {
+                busy = false
+              }
+              return writeJson(res, 200, startTaskHost(task, runTask))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/document-import') {
               const raw = await readBody(req, 24 * 1024 * 1024)
@@ -508,13 +468,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', question, context, model, createdAt: Date.now() }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runConsumptionAnswerTask(task)).catch((error) => {
-                console.error('[dsh-knowledge-graph] answer task crashed', error)
-                failTask(task, 'failed', '知识图证据问答失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runConsumptionAnswerTask, '知识图证据问答失败：内部错误'))
             }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/extraction-run-list') {
               const store = await getSqliteStore()
@@ -626,13 +580,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 model,
                 createdAt: Date.now(),
               }
-              tasks.set(runId, task)
-              busy = true
-              Promise.resolve().then(() => runTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] resumed task crashed', e)
-                failTask(task, 'failed', 'AI 拆分失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: runId, resumed: true })
+              const started = startTaskHost(task, runTask)
+              return writeJson(res, 200, { ...started, ...(started.taskId ? { resumed: true } : {}) })
             }
             if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/task-active') {
               return writeJson(res, 200, activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }))
@@ -657,10 +606,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!t) return writeJson(res, 200, { status: 'not_found' })
               if (taskStateHost(t) !== 'running') return writeJson(res, 200, { status: taskStateHost(t) })
               t.cancelled = true
-              if (Array.isArray(t.cancelHooks)) {
-                for (const hook of t.cancelHooks.slice()) { try { hook() } catch (e) {} }
-              }
-              if (typeof t.abortStream === 'function') { try { t.abortStream() } catch (e) {} }
+              abortTaskOperationsHost(t)
               return writeJson(res, 200, { status: 'cancelling' })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
@@ -692,13 +638,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
                 text, graph, mode, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runVerifyTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] verify task crashed', e)
-                failTask(task, 'failed', 'AI 审校失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/question-graph') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -730,13 +670,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
                 text, graph, target, question, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runQuestionTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] question task crashed', e)
-                failTask(task, 'failed', 'AI 质疑回答失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runQuestionTask, 'AI 质疑回答失败：内部错误'))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/fact-check') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -767,13 +701,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
                 text, graph, mode, sources, rules, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runFactCheckTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] fact-check task crashed', e)
-                failTask(task, 'failed', 'AI 外部事实核查失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runFactCheckTask, 'AI 外部事实核查失败：内部错误'))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-append-extract') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -797,6 +725,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 return writeJson(res, 200, { error: { code: 'revision_conflict', message: '轨迹知识图已被其他修改更新，请重新载入后再追加', currentRevision: canonical.revision } })
               }
               const existing = canonical
+              const continuity = continueOntologyHost(existing, a.ontology)
+              if (continuity.error) return writeJson(res, 200, { error: continuity.error })
               const baseTraceText = typeof canonical.traceText === 'string' && canonical.traceText ? canonical.traceText : (canonical.sourceText || '')
               const baseTraceEvents = Array.isArray(canonical.traceEvents) ? canonical.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
               if (baseTraceText && baseTraceEvents.length === 0) {
@@ -819,20 +749,14 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
                 title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
                 documentId, existingSourceText: canonical.sourceText || baseTraceText,
-                ontology: continueOntologyHost(existing, a.ontology).ontology,
+                ontology: continuity.ontology,
                 baseTraceText, baseTraceEvents, existing, paragraphOffset,
                 baseRevision: canonical.revision,
                 baseSource: existing && existing.source ? existing.source : null,
                 baseStaging: existing && existing.staging ? existing.staging : null,
                 model, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
-                failTask(task, 'failed', 'AI 拆分失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runTask))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/relation-retry') {
               const raw = await readBody(req, 1024 * 1024)
@@ -852,24 +776,21 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision)
+              const continuity = continueOntologyHost(canonical, a.ontology)
+              if (continuity.error) return writeJson(res, 200, { error: continuity.error })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq,
                 status: 'running', kind: 'relation-retry',
+                concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 continuous: a.continuous === true, reviewPendingOnly: a.reviewPendingOnly === true,
                 title: canonical.source && canonical.source.title ? canonical.source.title : '',
                 text: canonical.sourceText, documentId,
-                ontology: continueOntologyHost(canonical, a.ontology).ontology,
+                ontology: continuity.ontology,
                 baseRevision: canonical.revision, model, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runRelationRetryTask(task)).catch((error) => {
-                console.error('[dsh-knowledge-graph] relation retry task crashed', error)
-                failTask(task, 'failed', '关系补全失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runRelationRetryTask, '关系补全失败：内部错误'))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/append-extract') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -911,13 +832,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 baseStaging: existing && existing.staging ? existing.staging : null,
                 model, createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] append task crashed', e)
-                failTask(task, 'failed', 'AI 拆分失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runTask))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/trajectory-extract') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -940,13 +855,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 model,
                 createdAt: Date.now(),
               }
-              tasks.set(task.id, task)
-              busy = true
-              Promise.resolve().then(() => runTask(task)).catch((e) => {
-                console.error('[dsh-knowledge-graph] trajectory task crashed', e)
-                failTask(task, 'failed', 'AI 拆分失败：内部错误')
-              }).finally(() => { busy = false })
-              return writeJson(res, 200, { taskId: task.id })
+              return writeJson(res, 200, startTaskHost(task, runTask))
             }
             return writeJson(res, 404, { error: { code: 'not_found', message: 'unknown endpoint' } })
           } catch (error) {

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function callModel('
 assert.equal(source.split(marker).length, 2)
-const instrumented = source.replace(marker, `      harness.progressTest = { callModel, attach(task) { activeTask = task; tasks.set(task.id, task) } }
+const instrumented = source.replace(marker, `      harness.progressTest = { callModel, cancellableTaskDelayHost, addTaskCancelHookHost, attach(task) { activeTask = task; tasks.set(task.id, task) } }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const handlers = new Map()
@@ -76,9 +76,18 @@ await b
 assert.equal((await status()).progress.requests.length, 0)
 assert.equal((await status()).progress.lastRequest.state, '已完成')
 const c = call('摘要汇总')
+const d = call('关系审校')
+const delay = harness.progressTest.cancellableTaskDelayHost(task, 60000)
+const removeBrokenHook = harness.progressTest.addTaskCancelHookHost(task, () => { throw Error('broken provider abort') })
+// A failing first hook must not stop cancellation, and self-removal while
+// iterating must not skip the next operation.
+task.cancelHooks.unshift(task.cancelHooks.pop())
+const cancelled = [c, d, delay].map(promise => assert.rejects(promise, error => error.code === 'cancelled'))
 await tick()
 await handlers.get('task-cancel')({ taskId: task.id })
-await assert.rejects(c, error => error.code === 'cancelled')
+await Promise.all(cancelled)
+removeBrokenHook()
+assert.equal(task.cancelHooks.length, 0, 'settled model and retry-delay hooks must be removed')
 assert.equal(task.progress.requests.length, 0, 'cancellation must remove active requests')
 
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')

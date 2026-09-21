@@ -10,7 +10,6 @@ const host = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf
 const store = readFileSync(new URL('../src/kg-store.mjs', import.meta.url), 'utf8')
 const buildLib = readFileSync(new URL('./build-lib.mjs', import.meta.url), 'utf8')
 const consumptionStore = store.slice(store.indexOf('queryDocumentGraph(documentId, options = {})'), store.indexOf('commitViewGraph(options = {})'))
-const extractionRoute = buildLib.slice(buildLib.indexOf("pathname === '/api/dsh-knowledge-graph/extract'"), buildLib.indexOf("pathname === '/api/dsh-knowledge-graph/document-import'"))
 const consumptionRoutes = buildLib.slice(buildLib.indexOf("pathname === '/api/dsh-knowledge-graph/graph-query'"), buildLib.indexOf("pathname === '/api/dsh-knowledge-graph/resume-extract'"))
 const buildClient = readFileSync(new URL('./build-client.mjs', import.meta.url), 'utf8')
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
@@ -66,9 +65,11 @@ assert(host.includes("scored.reasons.unshift('关系端点')") && store.includes
 assert(host.includes('nodeIds: requestedNodeIds.slice().sort()') && host.includes('relations: Array.from(relations).sort()') && store.includes('relations: relations.slice().sort()'), 'queryId omits normalized selectors or budgets')
 assert(buildLib.includes("pathname === '/api/dsh-knowledge-graph/graph-query'") && buildLib.includes("pathname === '/api/dsh-knowledge-graph/answer-graph'") && buildLib.includes('store.queryDocumentGraph'), 'persistent consumption HTTP routes are missing or materialize the full graph')
 assert(!consumptionRoutes.includes('queryGraphConsumptionHost(') && !consumptionRoutes.includes('includeSourceText') && !consumptionRoutes.includes('document: { sourceText'), 'persistent consumption routes still perform a second in-memory query or retain sourceText in task state')
-assert(store.includes('getDocumentRevision(documentId)') && extractionRoute.includes('checkpoint.baseRevision !== currentRevision') && extractionRoute.includes('baseRevision = checkpoint.baseRevision') && buildLib.includes('baseRevision: checkpoint.baseRevision'), 'persistent extraction/resume does not fence every canonical replacement/checkpoint by its start revision')
-assert(extractionRoute.indexOf('busy = true') >= 0 && extractionRoute.indexOf('busy = true') < extractionRoute.indexOf('await getSqliteStore()'), 'persistent extraction does not reserve the single-task slot before asynchronous revision lookup')
-assert(host.includes('const baseDocument = requestedDocumentId ? loadCanonicalDocumentHost(requestedDocumentId) : null') && host.includes('checkpoint.baseRevision !== currentRevision') && host.includes("if (Number.isInteger(task.baseRevision) && typeof persistGraph !== 'function')"), 'dynamic replacement/checkpoint tasks do not enforce the same start-revision fence')
+// Route-level adversarial tests enforce CAS, admission and runtime cleanup.
+// Counting inline copies of those checks would forbid a shared implementation
+// without proving that the checks actually run at the right time.
+assert(packageJson.scripts['test:kg-append-revision'].includes('kg-append-revision-smoke.mjs') && packageJson.scripts.test.includes('test:kg-append-revision'), 'canonical replacement revision tests must run in npm test')
+assert(packageJson.scripts['test:kg-audit'].includes('kg-task-admission-smoke.mjs') && packageJson.scripts.test.includes('test:kg-audit'), 'admission and runtime cleanup tests must run in npm test')
 assert(buildLib.includes("kgExtensionAllowedEndpoints = new Set(['extract', 'task-status', 'task-cancel', 'list-models'])") && buildLib.includes('kgExtensionAllowedEndpoints.has(endpoint)'), 'extension route exposes canonical document/query endpoints')
 assert(buildClient.includes('method === "graph-query"') && buildClient.includes("host.call('answer-graph'"), 'persistent client bridge does not map consumption RPCs')
 assert(client.includes('function KnowledgeConsumePanel') && (client.match(/h\(KnowledgeConsumePanel/g) || []).length === 2, 'shared consumption panel is not mounted in both graph views')
@@ -78,8 +79,7 @@ assert(packageJson.scripts && packageJson.scripts['test:kg-consumption'] && pack
 assert(packageJson.scripts['test:kg-timeout'] && packageJson.scripts.test.includes('test:kg-timeout'), 'timeout/cancellation regression is not part of npm test')
 assert(packageJson.scripts['test:kg-performance'] && packageJson.scripts.test.includes('test:kg-performance'), 'large consumption performance smoke is not part of npm test')
 assert(host.includes('function effectiveModelTimeoutHost') && host.includes("taskOperationErrorHost('timeout'") && !host.includes('userText, _timeoutMs'), 'model timeout argument is still advisory instead of a real deadline')
-assert(host.includes('function addTaskCancelHookHost') && host.includes('removeCancelHook()') && host.includes('t.cancelHooks.slice()'), 'task cancellation hooks are not removable or safe during iteration')
-assert((host.match(/finishTaskRuntimeHost\(task\)/g) || []).length >= 7, 'task runners do not consistently clear active runtime state')
+assert(host.includes('function addTaskCancelHookHost') && host.includes('removeCancelHook()') && host.includes('(task.cancelHooks || []).slice()'), 'task cancellation hooks are not removable or safe during iteration')
 assert(host.includes("ontEvidenceRequired(graph)") && host.includes("claim_evidence_missing") && host.includes("const entailmentStatus = 'unverified'") && host.includes('function preserveEntailmentAuthorityHost'), 'generation/browser paths can still self-certify semantic entailment')
 assert(ci.includes('extension/viewer.css extension/d3'), 'CI generated-artifact gate does not cover viewer.css/d3')
 

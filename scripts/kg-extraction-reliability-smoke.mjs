@@ -44,7 +44,7 @@ const graph = { summary: 'Independent assertions', nodes: [
   { id: 'e', type: 'concept', text: '目标对象', quote: '目标对象', paragraph: 3 },
   { id: 'f', type: 'definition', text: '目标对象', quote: '目标对象', paragraph: 3 },
 ], edges: [] }
-for (const mode of ['max-tokens', 'malformed', 'aborted']) {
+for (const mode of ['max-tokens', 'malformed', 'aborted', 'error']) {
   finish = mode === 'malformed' ? 'stop' : mode
   response = mode === 'malformed' ? JSON.stringify(graph).slice(0, -2) : JSON.stringify(graph)
   const result = await completed(await handlers.get('extract')({ title: mode, text, model }))

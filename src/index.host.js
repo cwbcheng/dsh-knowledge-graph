@@ -1709,6 +1709,14 @@ function createHostPlugin(graphContractOnly) {
          }
          return { ontology: current }
        }
+       function extractionOntologyHost(requested, checkpoint, existing) {
+         const base = checkpoint ? { ontology: resolveTaskOntologyHost(checkpoint.ontology || checkpoint.graph || checkpoint) } : existing
+         if (checkpoint && existing) {
+           const continuity = continueOntologyHost(existing, base.ontology)
+           if (continuity.error) return continuity
+         }
+         return base ? continueOntologyHost(base, requested) : { ontology: resolveTaskOntologyHost(requested) }
+       }
 
        const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
        function candidateDocumentId(graph) {
@@ -4670,6 +4678,11 @@ function createHostPlugin(graphContractOnly) {
           if (index >= 0) task.cancelHooks.splice(index, 1)
         }
       }
+      function abortTaskOperationsHost(task) {
+        for (const hook of (task.cancelHooks || []).slice()) {
+          try { hook() } catch { /* One broken provider must not block sibling cancellation. */ }
+        }
+      }
       function throwIfTaskCancelledHost(task) {
         if (task && task.cancelled) throw taskOperationErrorHost('cancelled', '任务已取消', 'task')
       }
@@ -4845,7 +4858,6 @@ function createHostPlugin(graphContractOnly) {
             }, ms))
           }
           if (task) {
-            task.abortStream = abort
             task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
             task.progress.stage = stagePrefix + '正在发起模型请求…'
             task.progress.updatedAt = Date.now()
@@ -4876,7 +4888,6 @@ function createHostPlugin(graphContractOnly) {
               throw taskOperationErrorHost('cancelled', '任务已取消', 'llm_stream')
             }
             if (task && activeTask === task) {
-              task.abortStream = abort
               task.progress = task.progress || { stage: '运行中', charsReceived: 0, updatedAt: Date.now() }
               requestProgress.state = '等待首个字符'
               task.progress.stage = stagePrefix + '模型请求已发出，等待首个字符…'
@@ -4940,7 +4951,6 @@ function createHostPlugin(graphContractOnly) {
           } finally {
             clearWarnTimers()
             closeIterator()
-            if (task && task.abortStream === abort) task.abortStream = null
           }
           if (cancelled || (task && task.cancelled)) {
             const err = new Error('任务已取消')
@@ -4957,8 +4967,8 @@ function createHostPlugin(graphContractOnly) {
             throw error
           }
           if (finishReason && finishReason.kind === 'aborted') throw taskOperationErrorHost('cancelled', '模型流被中断', 'llm_stream')
-          if (finishReason && finishReason.kind === 'error' && finishReason.failure) {
-             const failure = finishReason.failure
+          if (finishReason && finishReason.kind === 'error') {
+             const failure = finishReason.failure || {}
              const error = new Error((failure.message || '模型流以错误结束') + (failure.code ? '（code=' + failure.code + '）' : '') + '；请更换模型后重试')
              error.code = hasImageContent && failure.code === 'UNSUPPORTED_CONTENT' ? 'model_image_unsupported' : 'llm_error'
              error.providerCode = typeof failure.code === 'string' ? failure.code : ''
@@ -4973,8 +4983,6 @@ function createHostPlugin(graphContractOnly) {
               error.reasoningChars = reasoning.length
               throw error
             }
-            if (finishReason && finishReason.kind === 'aborted') throw taskOperationErrorHost('cancelled', '模型流被中断', 'llm_stream')
-            if (finishReason && finishReason.kind === 'max-tokens') throw new Error('模型在输出正文前就达到了 token 上限；请缩短资料后重试')
             if (finishReason && finishReason.kind === 'tool-calls') throw new Error('模型只发起了工具调用，没有返回正文；请更换模型后重试')
             const detail = chunkTypes ? '（收到流事件类型：' + chunkTypes + (finishReason ? '，结束原因：' + finishReason.kind : '') + '）' : '（未收到任何流事件）'
             throw new Error('模型没有返回任何内容' + detail + '；请更换模型后重试')
@@ -4994,7 +5002,6 @@ function createHostPlugin(graphContractOnly) {
             deadlineTimer = null
             clearWarnTimers()
             removeCancelHook()
-            if (task && task.abortStream === abortOperation) task.abortStream = null
           }
           const finish = (error, value, shouldAbort) => {
             if (settled) return
@@ -6529,33 +6536,19 @@ function createHostPlugin(graphContractOnly) {
         return ['TRANSPORT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET'].includes(code) ? 3000 : 0
       }
       async function cancellableTaskDelayHost(task, ms) {
-        if (!task || task.cancelled) {
-          const error = new Error('任务已取消')
-          error.code = 'cancelled'
-          throw error
-        }
+        if (!task || task.cancelled) throw taskOperationErrorHost('cancelled', '任务已取消', 'task')
         await new Promise((resolve, reject) => {
           let settled = false
-          const cleanup = () => {
-            const hooks = Array.isArray(task.cancelHooks) ? task.cancelHooks : []
-            const index = hooks.indexOf(cancel)
-            if (index >= 0) hooks.splice(index, 1)
-          }
+          let removeCancelHook = () => {}
           const finish = (fn, value) => {
             if (settled) return
             settled = true
             clearTimeout(timer)
-            cleanup()
+            removeCancelHook()
             fn(value)
           }
-          const cancel = () => {
-            const error = new Error('任务已取消')
-            error.code = 'cancelled'
-            finish(reject, error)
-          }
           const timer = setTimeout(() => finish(resolve), ms)
-          task.cancelHooks = task.cancelHooks || []
-          task.cancelHooks.push(cancel)
+          removeCancelHook = addTaskCancelHookHost(task, () => finish(reject, taskOperationErrorHost('cancelled', '任务已取消', 'task')))
         })
       }
       function relationConcurrencyHost(task) {
@@ -6572,9 +6565,7 @@ function createHostPlugin(graphContractOnly) {
           failure = error
           // Abort sibling streams, but preserve the original failure and task
           // identity. A persistence failure is not a user cancellation.
-          for (const hook of (task.cancelHooks || []).slice()) {
-            try { hook() } catch { /* Keep the root failure if a provider's abort hook fails. */ }
-          }
+          abortTaskOperationsHost(task)
         }
         const check = () => { if (failure) throw failure; throwIfTaskCancelledHost(task) }
         const save = async fn => {
@@ -7103,8 +7094,7 @@ function createHostPlugin(graphContractOnly) {
           // Persist the pause intent before acknowledging it, including duplicate
           // requests. Later writes retain this intent while the runtime drains.
           task.pauseWrite = persistCheckpoint(task.checkpoint, task, 'paused')
-          for (const hook of (task.cancelHooks || []).slice()) { try { hook() } catch (error) {} }
-          if (typeof task.abortStream === 'function') { try { task.abortStream() } catch (error) {} }
+          abortTaskOperationsHost(task)
         }
         try {
           await task.pauseWrite
@@ -7177,6 +7167,26 @@ function createHostPlugin(graphContractOnly) {
         const active = activeTaskStatusHost().task
         return { error: { code: 'busy', message: active ? active.label + '任务正在进行，请查看后台任务进度' : '后台正在准备 AI 任务，请稍候', activeTask: active } }
       }
+      function startTaskHost(task, run, failureMessage = 'AI 拆分失败：内部错误') {
+        // Admission must be synchronous AFTER any route-level awaits. An early
+        // busy check alone cannot reserve a task while its inputs are loading.
+        if (busy) return busyTaskResponseHost()
+        tasks.set(task.id, task)
+        busy = true
+        Promise.resolve().then(() => run(task)).catch(error => {
+          console.error('[dsh-knowledge-graph] ' + (task.kind || 'extract') + ' task crashed', error)
+          failTask(task, 'failed', failureMessage)
+        }).finally(() => { finishTaskRuntimeHost(task); busy = false })
+        return { taskId: task.id }
+      }
+
+      function validateResumeRevisionHost(checkpoint, documentId, revision) {
+        if (!checkpoint) return null
+        if (!Number.isInteger(checkpoint.baseRevision)) return { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' }
+        if (!checkpoint.documentId || checkpoint.documentId !== documentId) return { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' }
+        if (checkpoint.baseRevision !== revision) return { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + revision + '；禁止覆盖恢复' }
+        return null
+      }
 
       /**
         * Why a restored concurrent wave can no longer be trusted, or null when it
@@ -7207,7 +7217,6 @@ function createHostPlugin(graphContractOnly) {
       function finishTaskRuntimeHost(task) {
         if (!task) return
         if (activeTask === task) activeTask = null
-        task.abortStream = null
         task.persistPostprocess = null
         task.persistRelationWeave = null
         task.pauseWrite = null
@@ -8141,24 +8150,20 @@ function createHostPlugin(graphContractOnly) {
           // `return failTask(...)` paths still execute this finally block. This
           // makes deterministic failures durable instead of leaving the last
           // SQLite checkpoint marked as "running" and therefore resumable.
-          try {
-            if (task.pauseRequested) {
-              try {
-                await task.pauseWrite
-                if (task.errorCode && task.errorCode !== 'cancelled') throw new Error(task.errorMessage)
-                await persistCheckpoint(task.checkpoint, task, 'paused')
-                task.status = 'paused'
-                task.finishedAt = Date.now()
-                task.errorCode = null
-                task.errorMessage = null
-                task.progress.stage = '已暂停，检查点已保存'
-              } catch (error) {
-                failTask(task, 'persistence_failed', '暂停未能安全完成：' + (error?.message || error))
-              } finally { task.pauseSettled = true }
-            } else if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
-          } finally {
-            finishTaskRuntimeHost(task)
-          }
+          if (task.pauseRequested) {
+            try {
+              await task.pauseWrite
+              if (task.errorCode && task.errorCode !== 'cancelled') throw new Error(task.errorMessage)
+              await persistCheckpoint(task.checkpoint, task, 'paused')
+              task.status = 'paused'
+              task.finishedAt = Date.now()
+              task.errorCode = null
+              task.errorMessage = null
+              task.progress.stage = '已暂停，检查点已保存'
+            } catch (error) {
+              failTask(task, 'persistence_failed', '暂停未能安全完成：' + (error?.message || error))
+            } finally { task.pauseSettled = true }
+          } else if (task.status === 'failed' || task.status === 'cancelled') await persistCheckpointSafe(task.status)
         }
       }
 
@@ -8347,7 +8352,6 @@ function createHostPlugin(graphContractOnly) {
           if (task.status !== 'succeeded' && task.progress.completion.savedCycles) {
             task.errorMessage += '；已保存 ' + task.progress.completion.savedTargets + '/' + task.progress.completion.totalTargets + ' 个节点的检索进度，可从此继续'
           }
-          finishTaskRuntimeHost(task)
         }
       }
 
@@ -9169,8 +9173,6 @@ function createHostPlugin(graphContractOnly) {
           if (error && error.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (error && error.code === 'timeout') failTask(task, 'timeout', '知识图证据问答超时：' + (error && error.message ? error.message : String(error)))
           else failTask(task, 'failed', '知识图证据问答失败：' + (error && error.message ? error.message : String(error)))
-        } finally {
-          finishTaskRuntimeHost(task)
         }
       }
 
@@ -9548,8 +9550,6 @@ function createHostPlugin(graphContractOnly) {
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 审校超时，请稍后重试')
           else failTask(task, 'failed', 'AI 审校失败：' + msg)
-        } finally {
-          finishTaskRuntimeHost(task)
         }
       }
 
@@ -9684,8 +9684,6 @@ function createHostPlugin(graphContractOnly) {
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 质疑回答超时，请稍后重试')
           else failTask(task, 'failed', 'AI 质疑回答失败：' + msg)
-        } finally {
-          finishTaskRuntimeHost(task)
         }
       }
 
@@ -9921,8 +9919,6 @@ function createHostPlugin(graphContractOnly) {
           if (e && e.code === 'cancelled') failTask(task, 'cancelled', '任务已取消')
           else if (e && e.code === 'timeout') failTask(task, 'timeout', 'AI 外部事实核查超时，请稍后重试')
           else failTask(task, 'failed', 'AI 外部事实核查失败：' + msg)
-        } finally {
-          finishTaskRuntimeHost(task)
         }
       }
 
@@ -9978,13 +9974,7 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check', ontology: ontIdOf(graph),
           text, graph, mode, sources, rules, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runFactCheckTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] fact-check task crashed', e)
-          failTask(task, 'failed', 'AI 外部事实核查失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runFactCheckTask, 'AI 外部事实核查失败：内部错误')
       })
 
       harness.handle('markdown-import', importMarkdownBundleHost)
@@ -10220,13 +10210,7 @@ function createHostPlugin(graphContractOnly) {
            id: 'kg-' + Date.now().toString(36) + '-' + seq,
            status: 'running', kind: 'answer', question, context, document, model, createdAt: Date.now(),
          }
-                  tasks.set(task.id, task)
-         busy = true
-         Promise.resolve().then(() => runConsumptionAnswerTask(task)).catch((error) => {
-           console.error('[dsh-knowledge-graph] answer task crashed', error)
-           failTask(task, 'failed', '知识图证据问答失败：内部错误')
-         }).finally(() => { busy = false })
-         return { taskId: task.id }
+         return startTaskHost(task, runConsumptionAnswerTask, '知识图证据问答失败：内部错误')
        })
 
        harness.handle('resume-extract', async () => ({
@@ -10254,30 +10238,22 @@ function createHostPlugin(graphContractOnly) {
           : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
         const baseDocument = requestedDocumentId ? loadCanonicalDocumentHost(requestedDocumentId) : null
         const currentRevision = baseDocument && Number.isInteger(baseDocument.revision) ? baseDocument.revision : 0
-        let baseRevision = currentRevision
+        const revisionError = validateResumeRevisionHost(checkpoint, requestedDocumentId, currentRevision)
+        if (revisionError) return { error: revisionError }
+        const continuity = extractionOntologyHost(a.ontology, checkpoint, baseDocument?.graph)
+        if (continuity.error) return { error: continuity.error }
          let selectedModel = model
          busy = true
          try {
-           if (checkpoint) {
-             if (!Number.isInteger(checkpoint.baseRevision)) { busy = false; return { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } } }
-             if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) { busy = false; return { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } } }
-             if (checkpoint.baseRevision !== currentRevision) { busy = false; return { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } } }
-             baseRevision = checkpoint.baseRevision
-           }
            markdownSource = markdownBundleForExtractHost(a, text)
            const decodedImageInputs = imageInputs.length > 0 ? decodeImageInputsHost(imageInputs) : []
            if (decodedImageInputs.length > 0) selectedModel = await preflightImageModelHost(selectedModel)
            imageAttachments = decodedImageInputs.length > 0 ? await admitDecodedImageInputsHost(decodedImageInputs) : []
          } catch (error) {
-           busy = false
            return { error: { code: error && error.code ? error.code : 'image_invalid', message: error && error.message ? error.message : '图片读取失败', ...(error && error.reason ? { details: { reason: error.reason } } : {}) } }
+         } finally {
+           busy = false
          }
-        if (checkpoint) {
-          if (!Number.isInteger(checkpoint.baseRevision)) { busy = false; return { error: { code: 'checkpoint_invalid', message: 'checkpoint 缺少 base revision，无法安全恢复' } } }
-          if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId || checkpoint.documentId !== requestedDocumentId) { busy = false; return { error: { code: 'checkpoint_invalid', message: 'checkpoint documentId 与恢复目标不一致' } } }
-          if (checkpoint.baseRevision !== currentRevision) { busy = false; return { error: { code: 'revision_conflict', message: 'checkpoint 基于 revision ' + checkpoint.baseRevision + '，当前 canonical graph 已是 revision ' + currentRevision + '；禁止覆盖恢复' } } }
-          baseRevision = checkpoint.baseRevision
-        }
          const task = {
            id: 'kg-' + Date.now().toString(36) + '-' + seq,
            status: 'running',
@@ -10288,25 +10264,15 @@ function createHostPlugin(graphContractOnly) {
            title,
            text,
            documentId: requestedDocumentId,
-           baseRevision,
+           baseRevision: currentRevision,
            checkpoint,
            existing: checkpoint && checkpoint.graph && typeof checkpoint.graph === 'object' ? checkpoint.graph : null,
            paragraphOffset: checkpoint && Number.isInteger(checkpoint.paragraphOffset) ? checkpoint.paragraphOffset : 0,
            model: selectedModel,
-           // The document's ontology governs the whole run: which types the
-           // prompt allows, which relations survive normalization, and which
-           // diagnostics apply. Explicit request wins; otherwise inherit from
-           // the stored document so re-extraction cannot change it by accident.
-           ontology: resolveTaskOntologyHost(a.ontology || (baseDocument && baseDocument.graph) || DEFAULT_ONTOLOGY),
+           ontology: continuity.ontology,
            createdAt: Date.now(),
          }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runTask)
       })
 
       harness.handle('task-cancel', async (args) => {
@@ -10316,14 +10282,7 @@ function createHostPlugin(graphContractOnly) {
         if (!t) return { status: 'not_found' }
         if (taskStateHost(t) !== 'running') return { status: taskStateHost(t) }
         t.cancelled = true
-        if (Array.isArray(t.cancelHooks)) {
-          for (const hook of t.cancelHooks.slice()) {
-            try { hook() } catch (e) { /* hook already fired */ }
-          }
-        }
-        if (typeof t.abortStream === 'function') {
-          try { t.abortStream() } catch (e) { /* stream already closed */ }
-        }
+        abortTaskOperationsHost(t)
         return { status: 'cancelling' }
       })
 
@@ -10360,13 +10319,7 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
           text, graph, mode, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runVerifyTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] verify task crashed', e)
-          failTask(task, 'failed', 'AI 审校失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误')
       })
 
       harness.handle('question-graph', async (args) => {
@@ -10396,13 +10349,7 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
           text, graph, target, question, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runQuestionTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] question task crashed', e)
-          failTask(task, 'failed', 'AI 质疑回答失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runQuestionTask, 'AI 质疑回答失败：内部错误')
       })
 
       harness.handle('trajectory-extract', async (args) => {
@@ -10419,15 +10366,10 @@ function createHostPlugin(graphContractOnly) {
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
+          ontology: resolveTaskOntologyHost(a.ontology),
           model, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] trajectory task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runTask)
       })
 
       harness.handle('trajectory-status', async (args) => taskStatusHost(args?.taskId, args?.includeCheckpoint === true))
@@ -10450,6 +10392,8 @@ function createHostPlugin(graphContractOnly) {
           return { error: { code: 'revision_conflict', message: '轨迹知识图已被其他修改更新，请重新载入后再追加', currentRevision: canonical.revision } }
         }
         const existing = canonical.graph
+        const continuity = continueOntologyHost(existing, a.ontology)
+        if (continuity.error) return { error: continuity.error }
         const baseTraceText = typeof existing.traceText === 'string' && existing.traceText ? existing.traceText : canonical.sourceText
         const baseTraceEvents = Array.isArray(existing.traceEvents) ? existing.traceEvents.filter((e) => e && typeof e.seq === 'number') : []
         if (baseTraceText && baseTraceEvents.length === 0) {
@@ -10473,19 +10417,14 @@ function createHostPlugin(graphContractOnly) {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'trajectory-append',
           title: '', text: trace.traceText, traceText: trace.traceText, traceEvents: trace.traceEvents,
           documentId, existingSourceText: canonical.sourceText || baseTraceText,
+          ontology: continuity.ontology,
           baseTraceText, baseTraceEvents, existing, paragraphOffset,
           baseRevision: canonical.revision,
           baseSource: existing && existing.source ? existing.source : null,
           baseStaging: existing && existing.staging ? existing.staging : null,
           model, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] trajectory append task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runTask)
       })
 
       harness.handle('relation-retry', async (args) => {
@@ -10501,6 +10440,8 @@ function createHostPlugin(graphContractOnly) {
         const expectedRevision = a.expectedRevision
         if (expectedRevision !== canonical.revision) return { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } }
         if (busy) return busyTaskResponseHost()
+        const continuity = continueOntologyHost(canonical.graph, a.ontology)
+        if (continuity.error) return { error: continuity.error }
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
@@ -10515,18 +10456,12 @@ function createHostPlugin(graphContractOnly) {
           documentId,
           // Relation completion edits an existing graph, so it must keep that
           // graph's ontology; re-typing its nodes would orphan every edge.
-          ontology: continueOntologyHost(canonical.graph, a.ontology).ontology,
+          ontology: continuity.ontology,
           baseRevision: canonical.revision,
           model,
           createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runRelationRetryTask(task)).catch((error) => {
-          console.error('[dsh-knowledge-graph] relation retry task crashed', error)
-          failTask(task, 'failed', '关系补全失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runRelationRetryTask, '关系补全失败：内部错误')
       })
 
       harness.handle('append-extract', async (args) => {
@@ -10565,13 +10500,7 @@ function createHostPlugin(graphContractOnly) {
           baseStaging: existing && existing.staging ? existing.staging : null,
           model, createdAt: Date.now(),
         }
-        tasks.set(task.id, task)
-        busy = true
-        Promise.resolve().then(() => runTask(task)).catch((e) => {
-          console.error('[dsh-knowledge-graph] append task crashed', e)
-          failTask(task, 'failed', 'AI 拆分失败：内部错误')
-        }).finally(() => { busy = false })
-        return { taskId: task.id }
+        return startTaskHost(task, runTask)
       })
 
       // Periodically purge finished tasks (kept for 2h after completion).

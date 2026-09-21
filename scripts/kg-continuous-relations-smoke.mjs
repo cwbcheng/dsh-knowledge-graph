@@ -91,37 +91,45 @@ try {
   assert.equal(store.getDocument('no-reviewer').edges.length, 0, 'unavailable review must not admit proposed edges')
   assert.equal(store.getDocument('no-reviewer').revision, 1, 'unreviewed batches cannot advance the durable cursor')
 
-  fixture('cancel')
-  const reached = deferred(), release = deferred(), cancelledTargets = []
-  let calls = 0
-  const cancellable = createHost({ async weaveRelations({ targetIds }) {
-    if (++calls === 5) { reached.resolve(); await release.promise }
-    cancelledTargets.push(...targetIds)
-    return { edges: [] }
-  } })
-  const cancelling = await start(cancellable, 'cancel')
-  await reached.promise
-  const progress = await request(cancellable, 'task-active', {}, 'GET')
-  assert.equal(progress.task.taskId, cancelling.taskId)
-  assert.equal(progress.task.progress.completion.continuous, true)
-  assert.equal(progress.task.progress.completion.savedCycles, 1)
-  assert.equal(progress.task.progress.completion.savedTargets, 48)
-  assert.equal(store.getDocument('cancel').generation.relationDiscovery.searchedTargets, 48)
-  const duplicate = await start(cancellable, 'cancel')
-  assert.equal(duplicate.error.code, 'busy')
-  assert.equal((await request(cancellable, 'task-cancel', { taskId: cancelling.taskId })).status, 'cancelling')
-  release.resolve()
-  const stopped = await terminal(cancellable, cancelling.taskId)
-  assert.equal(stopped.status, 'cancelled')
-  assert.match(stopped.error.message, /48\/137/)
-  assert.equal(calls, 5, 'cancel must not launch another group')
-  assert.equal(store.getDocument('cancel').revision, 2, 'late cancelled output cannot commit')
-  const resumedTargets = []
-  const restarted = createHost({ async weaveRelations({ targetIds }) { resumedTargets.push(...targetIds); return { edges: [] } } })
-  assert.equal((await request(restarted, 'task-active', {}, 'GET')).busy, false, 'new Host cannot invent a live task from the stored cursor')
-  assert.equal((await terminal(restarted, (await start(restarted, 'cancel')).taskId)).status, 'succeeded')
-  assert.equal(resumedTargets.length, 89)
-  assert(resumedTargets.every(id => !cancelledTargets.slice(0, 48).includes(id)), 'fresh Host resumes committed coverage, not the beginning')
+  for (const concurrency of [1, 2, 4]) {
+    const cancelId = 'cancel-' + concurrency
+    fixture(cancelId)
+    const reached = deferred(), release = deferred(), cancelledTargets = []
+    let calls = 0
+    const cancellable = createHost({ async weaveRelations({ targetIds }) {
+      if (++calls > 4) {
+        if (calls === 4 + concurrency) reached.resolve()
+        await release.promise
+      }
+      cancelledTargets.push(...targetIds)
+      return { edges: [] }
+    } })
+    const cancelling = await start(cancellable, cancelId, { concurrency })
+    await reached.promise
+    const progress = await request(cancellable, 'task-active', {}, 'GET')
+    assert.equal(progress.task.taskId, cancelling.taskId)
+    assert.equal(progress.task.progress.completion.continuous, true)
+    assert.equal(progress.task.progress.completion.savedCycles, 1)
+    assert.equal(progress.task.progress.completion.savedTargets, 48)
+    assert.equal(progress.task.progress.relationParallel.active, concurrency)
+    assert.equal(calls, 4 + concurrency, 'all requested lanes must be in flight before cancellation')
+    assert.equal(store.getDocument(cancelId).generation.relationDiscovery.searchedTargets, 48)
+    const duplicate = await start(cancellable, cancelId)
+    assert.equal(duplicate.error.code, 'busy')
+    assert.equal((await request(cancellable, 'task-cancel', { taskId: cancelling.taskId })).status, 'cancelling')
+    release.resolve()
+    const stopped = await terminal(cancellable, cancelling.taskId)
+    assert.equal(stopped.status, 'cancelled')
+    assert.match(stopped.error.message, /48\/137/)
+    assert.equal(calls, 4 + concurrency, 'cancel must not launch another group after the in-flight wave')
+    assert.equal(store.getDocument(cancelId).revision, 2, 'late cancelled output cannot commit')
+    const resumedTargets = []
+    const restarted = createHost({ async weaveRelations({ targetIds }) { resumedTargets.push(...targetIds); return { edges: [] } } })
+    assert.equal((await request(restarted, 'task-active', {}, 'GET')).busy, false, 'new Host cannot invent a live task from the stored cursor')
+    assert.equal((await terminal(restarted, (await start(restarted, cancelId, { concurrency })).taskId)).status, 'succeeded')
+    assert.equal(resumedTargets.length, 89)
+    assert(resumedTargets.every(id => !cancelledTargets.slice(0, 48).includes(id)), 'fresh Host resumes committed coverage, not the beginning')
+  }
 
   fixture('partial')
   const partial = createHost({ async weaveRelations({ targetIds }) { return targetIds.includes('n0') ? { malformed: true } : { edges: [] } } })
