@@ -49,6 +49,7 @@ export default function clientPlugin() {
 .kg-toast { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); z-index: 70; pointer-events: none; padding: 8px 14px; border-radius: 10px; font-size: 12.5px; background: rgba(30,64,175,0.92); border: 1px solid rgba(96,165,250,0.6); color: #eff6ff; box-shadow: 0 6px 18px rgba(0,0,0,0.25); white-space: nowrap; }
 .kg-card { border: 1px solid var(--kg-border); border-radius: 12px; padding: 14px 16px; background: var(--kg-panel); margin-bottom: 14px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+.kg-delete-progress { position: sticky; top: 0; z-index: 20; margin: 0; padding: 8px 0; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 13px; }
 .kg-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .kg-panel-head .kg-section-title { margin: 0; }
 .kg-collapse-btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; }
@@ -1380,17 +1381,21 @@ export default function clientPlugin() {
         const required = needle.length <= 4 ? needle.length : needle.length - 2
         return best.matched >= required ? best.pos : null
       }
-      function resolveNeedle(needle, source) {
+      function resolveNeedle(needle, source, sourceForms) {
         if (!needle) return null
         const q = needle.trim()
         if (!q) return null
         const idx = source.indexOf(q)
         if (idx >= 0) return idx
+        const normalizeSource = mode => {
+          if (!sourceForms.has(mode)) sourceForms.set(mode, normalizeFor(source, mode))
+          return sourceForms.get(mode)
+        }
         const modes = ['ws', 'punct', 'both']
         for (const mode of modes) {
           const qn = normalizeFor(q, mode)
           if (qn.text.length < 2) continue
-          const sn = normalizeFor(source, mode)
+          const sn = normalizeSource(mode)
           const hit = sn.text.indexOf(qn.text)
           if (hit >= 0) return sn.map[hit]
         }
@@ -1408,15 +1413,15 @@ export default function clientPlugin() {
         if (rawHit != null) return rawHit
         const pn = normalizeFor(q, 'punct')
         if (pn.text.length >= 3) {
-          const sn2 = normalizeFor(source, 'punct')
+          const sn2 = normalizeSource('punct')
           const pnHit = fuzzyMatch(pn.text, sn2.text, 2)
           if (pnHit != null) return sn2.map[pnHit]
         }
         return null
       }
-      function resolveAnchor(quote, source, fallbackText) {
-        let off = resolveNeedle(quote, source)
-        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedle(fallbackText, source)
+      function resolveAnchor(quote, source, fallbackText, sourceForms = new Map()) {
+        let off = resolveNeedle(quote, source, sourceForms)
+        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedle(fallbackText, source, sourceForms)
         return off
       }
 
@@ -1823,6 +1828,9 @@ export default function clientPlugin() {
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
         const paragraphs = splitParagraphs(sourceText)
+        // Normalize this document at most once per mode, not once per node.
+        // Keep the cache local so switching documents cannot reuse stale offsets.
+        const sourceForms = new Map()
         const anchors = {}
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
@@ -1845,7 +1853,7 @@ export default function clientPlugin() {
         }
         for (const n of graph.nodes) {
           // 1) precise quote match; 2) deterministic paragraph number; 3) token overlap
-          let off = resolveAnchor(n.quote, sourceText, n.text)
+          let off = resolveAnchor(n.quote, sourceText, n.text, sourceForms)
           if (off == null && typeof n.paragraph === 'number' && n.paragraph >= 0 && n.paragraph < paragraphs.length) {
             off = paragraphs[n.paragraph].start
           }
@@ -7446,17 +7454,22 @@ export default function clientPlugin() {
             + (nodes.length > 8 ? '\n另有 ' + (nodes.length - 8) + ' 个节点' : '')
             + '\n\n这些节点的全部关系（包括连接其他窗口的关系）也会删除。原文、其他类型和其他段落的节点保留。')) return
           paragraphRemovalRef.current = true
-          setRemovingParagraphType(true)
+          setRemovingParagraphType('正在检查任务状态…')
           const expectedRevision = graphRevisionRef.current
           try {
             setError(null)
             const active = await host.call('task-active', {})
             if (!active || typeof active.busy !== 'boolean' || active.error) throw new Error('无法确认后台任务状态，尚未删除节点')
             if (active.busy) throw new Error('后台任务正在运行，请等待完成后再移除标签和节点')
+            setRemovingParagraphType('正在校验并保存删除结果…')
+            await graphPaint()
             if (currentResultRef.current !== baseline) throw new Error('知识图视图已变化，请重新选择要移除的标签')
             const next = removeParagraphType(baseline, paragraph, type)
             const response = await persistGraph(next, baseline.graph, expectedRevision)
             if (!response || currentResultRef.current !== baseline) return
+            setRemovingParagraphType('删除已保存，正在刷新知识图…')
+            await graphPaint()
+            if (currentResultRef.current !== baseline) return
             const meta = graphViewMetadata(baseline.graph)
             let graph = response.graph
             let refreshFailed = false
@@ -8255,6 +8268,8 @@ export default function clientPlugin() {
               }
               return h('section', { className: 'kg-card kg-result', 'aria-label': '原文 ⇄ 知识图结果' },
                 h('h3', { className: 'kg-section-title' }, '原文 ⇄ 知识图'),
+                removingParagraphType ? h('p', { className: 'kg-delete-progress', role: 'status', 'aria-live': 'polite', 'aria-label': '删除进度' },
+                  h('span', { className: 'kg-verify-spinner', 'aria-hidden': true }), removingParagraphType) : null,
                 h('p', { className: 'kg-summary' },
                   h('strong', null, '一句话总结：'), ' ', graph.summary || '（无）'),
                 h('div', { className: 'kg-stats' },

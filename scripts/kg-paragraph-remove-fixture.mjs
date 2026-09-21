@@ -10,7 +10,10 @@ const root = new URL('../', import.meta.url)
 const dir = mkdtempSync(join(tmpdir(), 'kg-paragraph-browser-'))
 process.env.DSH_KG_DB = join(dir, 'test.sqlite')
 const documentId = 'document-paragraph-browser-test'
-const sourceText = '# Test book\n\n# Contents and learning\n\nTest Author\n\nLearning concept'
+const extraNodes = process.env.KG_FIXTURE_LARGE === '1'
+  ? Array.from({ length: 4695 }, (_, i) => ({ id: 'extra-' + i, type: 'concept', paragraph: i + 4,
+    text: 'Material ' + i + ' explains a distinct learning idea.', quote: 'Material ' + i + ' explains a distinct learning idea!' })) : []
+const sourceText = ['# Test book', '# Contents and learning', 'Test Author', 'Learning concept', ...extraNodes.map(node => node.text)].join('\n\n')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 store.saveGraph({
   ontology: 'learning-view-v1',
@@ -21,6 +24,7 @@ store.saveGraph({
     { id: 'other-type', type: 'concept', text: 'Contents and learning', paragraph: 1, quote: 'Contents and learning' },
     { id: 'author', type: 'memory_material', text: 'Test Author', paragraph: 2, quote: 'Test Author' },
     { id: 'concept', type: 'concept', text: 'Learning concept', paragraph: 3, quote: 'Learning concept' },
+    ...extraNodes,
   ], edges: [],
 }, { sourceText })
 store.close()

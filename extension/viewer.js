@@ -854,17 +854,21 @@
         const required = needle.length <= 4 ? needle.length : needle.length - 2
         return best.matched >= required ? best.pos : null
       }
-      function resolveNeedle(needle, source) {
+      function resolveNeedle(needle, source, sourceForms) {
         if (!needle) return null
         const q = needle.trim()
         if (!q) return null
         const idx = source.indexOf(q)
         if (idx >= 0) return idx
+        const normalizeSource = mode => {
+          if (!sourceForms.has(mode)) sourceForms.set(mode, normalizeFor(source, mode))
+          return sourceForms.get(mode)
+        }
         const modes = ['ws', 'punct', 'both']
         for (const mode of modes) {
           const qn = normalizeFor(q, mode)
           if (qn.text.length < 2) continue
-          const sn = normalizeFor(source, mode)
+          const sn = normalizeSource(mode)
           const hit = sn.text.indexOf(qn.text)
           if (hit >= 0) return sn.map[hit]
         }
@@ -882,15 +886,15 @@
         if (rawHit != null) return rawHit
         const pn = normalizeFor(q, 'punct')
         if (pn.text.length >= 3) {
-          const sn2 = normalizeFor(source, 'punct')
+          const sn2 = normalizeSource('punct')
           const pnHit = fuzzyMatch(pn.text, sn2.text, 2)
           if (pnHit != null) return sn2.map[pnHit]
         }
         return null
       }
-      function resolveAnchor(quote, source, fallbackText) {
-        let off = resolveNeedle(quote, source)
-        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedle(fallbackText, source)
+      function resolveAnchor(quote, source, fallbackText, sourceForms = new Map()) {
+        let off = resolveNeedle(quote, source, sourceForms)
+        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedle(fallbackText, source, sourceForms)
         return off
       }
 
@@ -1297,6 +1301,9 @@
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
         const paragraphs = splitParagraphs(sourceText)
+        // Normalize this document at most once per mode, not once per node.
+        // Keep the cache local so switching documents cannot reuse stale offsets.
+        const sourceForms = new Map()
         const anchors = {}
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
@@ -1319,7 +1326,7 @@
         }
         for (const n of graph.nodes) {
           // 1) precise quote match; 2) deterministic paragraph number; 3) token overlap
-          let off = resolveAnchor(n.quote, sourceText, n.text)
+          let off = resolveAnchor(n.quote, sourceText, n.text, sourceForms)
           if (off == null && typeof n.paragraph === 'number' && n.paragraph >= 0 && n.paragraph < paragraphs.length) {
             off = paragraphs[n.paragraph].start
           }

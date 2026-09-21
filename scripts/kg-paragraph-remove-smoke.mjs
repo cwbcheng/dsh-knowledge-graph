@@ -54,7 +54,7 @@ const actionStart = source.indexOf('        const handleRemoveParagraphType = as
 const actionEnd = source.indexOf('        const commitGraph =', actionStart)
 assert(actionStart >= 0 && actionEnd > actionStart)
 function actionHarness(overrides = {}) {
-  const calls = [], errors = [], toasts = [], views = []
+  const calls = [], errors = [], toasts = [], views = [], progress = [], painted = []
   const env = {
     ...helpers, resultView: view, currentResultRef: { current: view }, paragraphRemovalRef: { current: false },
     graphRevisionRef: { current: 7 }, taskId: null, phase: 'done', graphWindowLoading: false, documentLoading: null,
@@ -63,12 +63,13 @@ function actionHarness(overrides = {}) {
     persistGraph: async (g, baseline, revision) => { calls.push(['commit', ids(g.nodes), baseline, revision]); return { documentId, revision: 8, graph: { ...g, revision: 8 } } },
     loadGraphDocument: async () => { throw new Error('unexpected reload') },
     setError: e => { if (e) errors.push(e) }, toastStore: { show: text => toasts.push(text) },
-    setResultView: value => views.push(value), setRemovingParagraphType() {}, setSelectedNodeId() {}, setSelectedEdgeId() {},
+    setResultView: value => views.push(value), setRemovingParagraphType: value => progress.push(value),
+    graphPaint: async () => { painted.push(progress.at(-1)) }, setSelectedNodeId() {}, setSelectedEdgeId() {},
     setActiveIssueId() {}, setFocusReq() {}, setQuestionTarget() {}, setQuestionResult() {}, setVerification() {}, setFactReport() {},
     setGraphPageDraft() {}, setGraphQueryDraft() {}, ...overrides,
   }
   const action = new Function(...Object.keys(env), source.slice(actionStart, actionEnd) + '\nreturn handleRemoveParagraphType')(...Object.values(env))
-  return { action, env, calls, errors, toasts, views }
+  return { action, env, calls, errors, toasts, views, progress, painted }
 }
 let ui = actionHarness({ window: { confirm: () => false } })
 await ui.action(1, 'memory_material')
@@ -84,6 +85,8 @@ ui = actionHarness({ persistGraph: async () => null })
 await ui.action(1, 'memory_material')
 assert.equal(ui.views.length, 0, 'failed persistence must keep the displayed tags')
 assert.equal(ui.toasts.length, 0, 'failed persistence must not report success')
+assert.equal(ui.progress.at(-1), false, 'failed persistence must clear busy state')
+assert(!ui.progress.some(value => String(value).includes('删除已保存')), 'do not report saved before acknowledgment')
 ui = actionHarness()
 await ui.action(1, 'memory_material')
 assert.deepEqual(ui.calls[1].slice(0, 2), ['commit', ['concept', 'author']])
@@ -91,6 +94,8 @@ assert.equal(ui.calls[1][3], 7, 'pin the original revision across queued edits')
 assert.equal(ui.views.length, 1)
 assert.equal(ui.views[0].paraTypes[1].includes('memory_material'), false)
 assert.equal(ui.toasts.length, 1)
+assert.deepEqual(ui.painted, ['正在校验并保存删除结果…', '删除已保存，正在刷新知识图…'], 'paint actual stages before synchronous work')
+assert.equal(ui.progress.at(-1), false)
 let release
 const waiting = new Promise(resolve => { release = resolve })
 ui = actionHarness({ host: { call: () => waiting } })

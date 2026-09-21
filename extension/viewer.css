@@ -8,6 +8,7 @@
 .kg-toast { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); z-index: 70; pointer-events: none; padding: 8px 14px; border-radius: 10px; font-size: 12.5px; background: rgba(30,64,175,0.92); border: 1px solid rgba(96,165,250,0.6); color: #eff6ff; box-shadow: 0 6px 18px rgba(0,0,0,0.25); white-space: nowrap; }
 .kg-card { border: 1px solid var(--kg-border); border-radius: 12px; padding: 14px 16px; background: var(--kg-panel); margin-bottom: 14px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+.kg-delete-progress { position: sticky; top: 0; z-index: 20; margin: 0; padding: 8px 0; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 13px; }
 .kg-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .kg-panel-head .kg-section-title { margin: 0; }
 .kg-collapse-btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; }

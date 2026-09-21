@@ -3601,17 +3601,21 @@ function createHostPlugin(graphContractOnly) {
         const required = needle.length <= 4 ? needle.length : needle.length - 2
         return best.matched >= required ? best.pos : null
       }
-      function resolveNeedleHost(needle, source) {
+      function resolveNeedleHost(needle, source, sourceForms) {
         if (!needle) return null
         const q = String(needle).trim()
         if (!q) return null
         const idx = source.indexOf(q)
         if (idx >= 0) return idx
+        const normalizeSource = mode => {
+          if (!sourceForms.has(mode)) sourceForms.set(mode, normalizeForHost(source, mode))
+          return sourceForms.get(mode)
+        }
         const modes = ['ws', 'punct', 'both']
         for (const mode of modes) {
           const qn = normalizeForHost(q, mode)
           if (qn.text.length < 2) continue
-          const sn = normalizeForHost(source, mode)
+          const sn = normalizeSource(mode)
           const hit = sn.text.indexOf(qn.text)
           if (hit >= 0) return sn.map[hit]
         }
@@ -3629,15 +3633,15 @@ function createHostPlugin(graphContractOnly) {
         if (rawHit != null) return rawHit
         const pn = normalizeForHost(q, 'punct')
         if (pn.text.length >= 3) {
-          const sn2 = normalizeForHost(source, 'punct')
+          const sn2 = normalizeSource('punct')
           const pnHit = fuzzyMatchHost(pn.text, sn2.text, 2)
           if (pnHit != null) return sn2.map[pnHit]
         }
         return null
       }
-      function resolveAnchorHost(quote, source, fallbackText) {
-        let off = resolveNeedleHost(quote, source)
-        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedleHost(fallbackText, source)
+      function resolveAnchorHost(quote, source, fallbackText, sourceForms = new Map()) {
+        let off = resolveNeedleHost(quote, source, sourceForms)
+        if (off == null && fallbackText && fallbackText !== quote) off = resolveNeedleHost(fallbackText, source, sourceForms)
         return off
       }
       function tokenizeHost(s) {
@@ -3940,6 +3944,9 @@ function createHostPlugin(graphContractOnly) {
           : ''
         const paras = splitParagraphsOffsetsHost(sourceText || '')
         const paragraphTexts = paras.map((paragraph) => paragraph.text)
+        // One validation pass shares source normalization across all node lookups.
+        // This is not a validation-result cache: every invariant still runs.
+        const sourceForms = new Map()
         const quoteInParagraph = (quote, paragraph) => {
           if (!quote || !Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphTexts.length) return false
           return Boolean(exactOrUniqueTypographicQuoteHost(String(paragraphTexts[paragraph] || ''), quote))
@@ -3989,7 +3996,7 @@ function createHostPlugin(graphContractOnly) {
               canRestoreFromQuote ? { action: 'update_node', nodePatch: { id, patch: { text: quote } } } : { action: 'none' }, 1,
               { safeRepairable: canRestoreFromQuote, semanticGuardContext: { marker: semanticGuard, text: node.text, quote, paragraph: pNum } })
           }
-          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '') : null
+          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '', undefined, sourceForms) : null
           const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paragraphIndexOfOffset(paras, quoteOffset) : null)
           if (quote && quotePara != null && pNum != null && pNum !== quotePara) {
             add('node_paragraph_mismatch', true, 'error', 'grounding', 'node', id,
@@ -4105,7 +4112,7 @@ function createHostPlugin(graphContractOnly) {
           const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
           const pNum = Number.isInteger(node.paragraph) && node.paragraph >= 0 && node.paragraph < paras.length ? node.paragraph : null
           const declaredQuoteMatch = quote && pNum != null && quoteInParagraph(quote, pNum)
-          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '') : null
+          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '', undefined, sourceForms) : null
           const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paragraphIndexOfOffset(paras, quoteOffset) : null)
           if (declaredQuoteMatch || quoteOffset != null || pNum != null) anchorOk += 1
           if (declaredQuoteMatch || quoteOffset != null || node.groundingStatus === 'grounded') evidenceOk += 1
