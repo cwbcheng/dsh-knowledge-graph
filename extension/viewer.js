@@ -1391,6 +1391,23 @@
         const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
         return { ...graph, verification: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
       }
+      function paragraphTypeNodes(view, paragraph, type) {
+        const anchored = new Set(view && view.paraNodes && view.paraNodes[paragraph] || [])
+        return (view && view.graph && view.graph.nodes || []).filter(node => anchored.has(node.id) && node.type === type)
+      }
+      function removeParagraphType(view, paragraph, type) {
+        let graph = view.graph
+        for (const node of paragraphTypeNodes(view, paragraph, type)) {
+          graph = applyPatch(graph, { targetKind: 'node', targetId: node.id,
+            proposedFix: { action: 'delete_node', nodePatch: { id: node.id } } })
+        }
+        if (graph === view.graph) return graph
+        // Keep reports as history, but do not present them as validating an edited graph.
+        return { ...graph,
+          verification: { ...graph.verification, stale: true },
+          ...(graph.factCheck ? { factCheck: { ...graph.factCheck, stale: true } } : {}),
+        }
+      }
       function withFactCheck(graph, report, stale) {
         const prev = graph && graph.factCheck && typeof graph.factCheck === 'object' ? graph.factCheck : {}
         return { ...graph, factCheck: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }

@@ -245,6 +245,12 @@ export default function clientPlugin() {
 .kg-para:focus-visible { outline: 2px solid rgba(59,130,246,0.55); outline-offset: 1px; }
 .kg-para.kg-active { border-color: #3b82f6; box-shadow: inset 3px 0 0 #3b82f6; }
 .kg-para-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kg-para-tag { display: inline-flex; align-items: center; gap: 3px; }
+.kg-para-tag-remove { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 24px; border: 1px solid var(--kg-border); border-radius: 4px; padding: 0; background: transparent; color: var(--kg-text-dim); font: inherit; font-size: 17px; cursor: pointer; }
+.kg-para-tag-remove:hover:not(:disabled) { color: #dc2626; border-color: #dc2626; background: rgba(239,68,68,0.08); }
+.kg-para-tag-remove:focus-visible, button.kg-para-num:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+.kg-para-tag-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+.kg-para-num { cursor: inherit; }
 .kg-para-num { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(59,130,246,0.22); background: rgba(59,130,246,0.08); color: #2563eb; font-size: 11px; line-height: 18px; font-weight: 600; }
 @media (prefers-color-scheme: dark) { .kg-para-num { color: #93c5fd; background: rgba(59,130,246,0.12); border-color: rgba(96,165,250,0.25); } }
 .knowledge-type-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 18px; background: #64748b; color: #fff; font-weight: 500; }
@@ -1910,6 +1916,23 @@ export default function clientPlugin() {
       function withVerification(graph, report, stale) {
         const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
         return { ...graph, verification: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
+      }
+      function paragraphTypeNodes(view, paragraph, type) {
+        const anchored = new Set(view && view.paraNodes && view.paraNodes[paragraph] || [])
+        return (view && view.graph && view.graph.nodes || []).filter(node => anchored.has(node.id) && node.type === type)
+      }
+      function removeParagraphType(view, paragraph, type) {
+        let graph = view.graph
+        for (const node of paragraphTypeNodes(view, paragraph, type)) {
+          graph = applyPatch(graph, { targetKind: 'node', targetId: node.id,
+            proposedFix: { action: 'delete_node', nodePatch: { id: node.id } } })
+        }
+        if (graph === view.graph) return graph
+        // Keep reports as history, but do not present them as validating an edited graph.
+        return { ...graph,
+          verification: { ...graph.verification, stale: true },
+          ...(graph.factCheck ? { factCheck: { ...graph.factCheck, stale: true } } : {}),
+        }
       }
       function withFactCheck(graph, report, stale) {
         const prev = graph && graph.factCheck && typeof graph.factCheck === 'object' ? graph.factCheck : {}
@@ -6183,6 +6206,10 @@ export default function clientPlugin() {
         })
         const [chapterFilter, setChapterFilter] = useState('all')
         const [graphWindowLoading, setGraphWindowLoading] = useState(false)
+        const [removingParagraphType, setRemovingParagraphType] = useState(false)
+        const paragraphRemovalRef = useRef(false)
+        const currentResultRef = useRef(resultView)
+        currentResultRef.current = resultView
         const [continuousRelations, setContinuousRelations] = useState(true)
         const [documentLoading, loadGraphDocument] = useGraphDocumentLoading()
         const [graphPageDraft, setGraphPageDraft] = useState('1')
@@ -7326,7 +7353,7 @@ export default function clientPlugin() {
         }
 
         // ---- verification / questioning actions ----
-        const persistGraph = (g, baseGraph) => {
+        const persistGraph = (g, baseGraph, pinnedRevision) => {
           const documentId = documentIdOfGraph(g)
           if (!documentId) return Promise.resolve(null)
           const baseline = baseGraph && typeof baseGraph === 'object'
@@ -7360,6 +7387,7 @@ export default function clientPlugin() {
             return (details && details.message ? details.message : '知识图提交失败') + suffix
           }
           const restoreAfterCommitFailure = (error) => {
+            if (Number.isSafeInteger(pinnedRevision) && currentResultRef.current !== resultView) return
             const details = error && error.details && typeof error.details === 'object' ? error.details : error
             setError({ ...(details && typeof details === 'object' ? details : {}), message: describeCommitError(error) })
             if (details && details.code === 'revision_conflict') {
@@ -7377,7 +7405,7 @@ export default function clientPlugin() {
             }
           }
           const queued = graphCommitQueueRef.current.catch(() => {}).then(async () => {
-            const expectedRevision = graphRevisionRef.current
+            const expectedRevision = Number.isSafeInteger(pinnedRevision) ? pinnedRevision : graphRevisionRef.current
             const response = await host.call('graph-commit', {
               documentId,
               expectedRevision,
@@ -7391,6 +7419,10 @@ export default function clientPlugin() {
               failure.details = response.error
               throw failure
             }
+            if (!response || response.documentId !== documentId || !Number.isSafeInteger(response.revision) || !response.graph) {
+              throw new Error('保存结果未确认，请重新载入知识图后核对')
+            }
+            if (Number.isSafeInteger(pinnedRevision) && currentResultRef.current !== resultView) return response
             if (response && Number.isInteger(response.revision)) graphRevisionRef.current = response.revision
             graphSemanticOperations.delete(g)
             rememberLocalGraph()
@@ -7401,6 +7433,59 @@ export default function clientPlugin() {
           })
           graphCommitQueueRef.current = queued
           return queued
+        }
+        const handleRemoveParagraphType = async (paragraph, type) => {
+          if (!resultView || paragraphRemovalRef.current || taskId || phase === 'extracting' || graphWindowLoading || documentLoading) return
+          const baseline = resultView
+          const nodes = paragraphTypeNodes(baseline, paragraph, type)
+          const documentId = documentIdOfGraph(baseline.graph)
+          if (!documentId || nodes.length === 0) return
+          const label = TYPE_META[type]?.label || type
+          const preview = nodes.slice(0, 8).map(node => node.id + '：' + String(node.text || '').slice(0, 80)).join('\n')
+          if (!window.confirm('移除 P' + (paragraph + 1) + ' 的“' + label + '”标签及当前窗口对应的 ' + nodes.length + ' 个节点？\n\n' + preview
+            + (nodes.length > 8 ? '\n另有 ' + (nodes.length - 8) + ' 个节点' : '')
+            + '\n\n这些节点的全部关系（包括连接其他窗口的关系）也会删除。原文、其他类型和其他段落的节点保留。')) return
+          paragraphRemovalRef.current = true
+          setRemovingParagraphType(true)
+          const expectedRevision = graphRevisionRef.current
+          try {
+            setError(null)
+            const active = await host.call('task-active', {})
+            if (!active || typeof active.busy !== 'boolean' || active.error) throw new Error('无法确认后台任务状态，尚未删除节点')
+            if (active.busy) throw new Error('后台任务正在运行，请等待完成后再移除标签和节点')
+            if (currentResultRef.current !== baseline) throw new Error('知识图视图已变化，请重新选择要移除的标签')
+            const next = removeParagraphType(baseline, paragraph, type)
+            const response = await persistGraph(next, baseline.graph, expectedRevision)
+            if (!response || currentResultRef.current !== baseline) return
+            const meta = graphViewMetadata(baseline.graph)
+            let graph = response.graph
+            let refreshFailed = false
+            if (meta) {
+              try {
+                const loaded = await loadGraphDocument({ documentId, nodeOffset: meta.nodeOffset, nodeLimit: meta.nodeLimit,
+                  ...(meta.kind === 'query' ? { query: meta.query } : {}), includeSourceText: false })
+                if (!loaded || loaded.error || !loaded.graph) throw new Error('window reload failed')
+                graph = loaded.graph
+              } catch (error) { refreshFailed = true }
+            }
+            if (currentResultRef.current !== baseline) return
+            graphRevisionRef.current = graph.revision || graph.source?.revision || response.revision
+            setResultView(makeView(graph, baseline.sourceText))
+            setSelectedNodeId(null); setSelectedEdgeId(null); setActiveIssueId(null)
+            setFocusReq(value => ({ nodeId: null, seq: value.seq + 1 }))
+            setQuestionTarget(null); setQuestionResult(null)
+            setVerification(graph.verification?.lastReport || null)
+            setFactReport(graph.factCheck?.lastReport || null)
+            const nextMeta = graphViewMetadata(graph)
+            if (nextMeta) { setGraphPageDraft(String(nextMeta.page)); setGraphQueryDraft(nextMeta.query || '') }
+            toastStore.show('已保存：移除 P' + (paragraph + 1) + ' 的' + nodes.length + ' 个“' + label + '”节点')
+            if (refreshFailed) setError({ message: '删除已保存，但原窗口刷新失败，现显示服务器返回的知识图窗口。' })
+          } catch (error) {
+            if (currentResultRef.current === baseline) setError({ message: error.message || '删除未完成，请重新载入知识图后核对' })
+          } finally {
+            paragraphRemovalRef.current = false
+            setRemovingParagraphType(false)
+          }
         }
         const commitGraph = (g) => {
           if (!resultView) return
@@ -8067,14 +8152,20 @@ export default function clientPlugin() {
           return h('div', {
             key: i, id: 'kg-para-' + i,
             className: 'kg-para' + (activePara === i ? ' kg-active' : '') + (flashPara === i ? ' kg-flash' : ''),
-            role: 'button', tabIndex: 0,
+            role: 'group',
             'aria-label': '原文第 ' + (i + 1) + ' 段' + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t].label).join('、') : '') + '，点击可在图中聚焦对应节点',
             onClick: () => handleParagraphClick(i),
-            onKeyDown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleParagraphClick(i) } },
           },
             h('div', { className: 'kg-para-badges' },
-              h('span', { className: 'kg-para-num', title: '段落编号 P' + (i + 1) }, 'P' + (i + 1)),
-              badges.map((t) => h('span', { key: t, className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label))),
+              h('button', { type: 'button', className: 'kg-para-num', title: '定位 P' + (i + 1) + ' 对应节点', 'aria-label': '定位 P' + (i + 1) + ' 对应节点' }, 'P' + (i + 1)),
+              badges.map((t) => h('span', { key: t, className: 'kg-para-tag' },
+                h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label),
+                h('button', { type: 'button', className: 'kg-para-tag-remove',
+                  title: '移除本段“' + TYPE_META[t].label + '”标签及对应节点（当前窗口），保留原文',
+                  'aria-label': '移除 P' + (i + 1) + ' 的' + TYPE_META[t].label + '标签和对应节点',
+                  disabled: removingParagraphType || Boolean(taskId) || phase === 'extracting' || graphWindowLoading || Boolean(documentLoading) || !documentIdOfGraph(resultView.graph),
+                  onClick: (event) => { event.stopPropagation(); handleRemoveParagraphType(i, t) },
+                }, h('span', { 'aria-hidden': true }, '×'))))),
             h('p', null, p.text),
             ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).includes(i)).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
           )

@@ -204,6 +204,12 @@
 .kg-para:focus-visible { outline: 2px solid rgba(59,130,246,0.55); outline-offset: 1px; }
 .kg-para.kg-active { border-color: #3b82f6; box-shadow: inset 3px 0 0 #3b82f6; }
 .kg-para-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kg-para-tag { display: inline-flex; align-items: center; gap: 3px; }
+.kg-para-tag-remove { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 24px; border: 1px solid var(--kg-border); border-radius: 4px; padding: 0; background: transparent; color: var(--kg-text-dim); font: inherit; font-size: 17px; cursor: pointer; }
+.kg-para-tag-remove:hover:not(:disabled) { color: #dc2626; border-color: #dc2626; background: rgba(239,68,68,0.08); }
+.kg-para-tag-remove:focus-visible, button.kg-para-num:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+.kg-para-tag-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+.kg-para-num { cursor: inherit; }
 .kg-para-num { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(59,130,246,0.22); background: rgba(59,130,246,0.08); color: #2563eb; font-size: 11px; line-height: 18px; font-weight: 600; }
 @media (prefers-color-scheme: dark) { .kg-para-num { color: #93c5fd; background: rgba(59,130,246,0.12); border-color: rgba(96,165,250,0.25); } }
 .knowledge-type-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 18px; background: #64748b; color: #fff; font-weight: 500; }
