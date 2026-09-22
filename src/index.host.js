@@ -1777,6 +1777,47 @@ function createHostPlugin(graphContractOnly) {
        function graphViewNodeLimitHost(value) {
          return Number.isInteger(value) && value > 0 ? Math.min(2000, value) : MAX_GRAPH_VIEW_NODES
        }
+       function graphNeighborhoodHost(documentId, saved, options) {
+         if (!saved) return { error: { code: 'not_found', message: '找不到知识图文档' } }
+         if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0 ||
+             typeof options.centerId !== 'string' || !options.centerId || options.centerId.length > 160 ||
+             !['both', 'in', 'out'].includes(options.direction || 'both') ||
+             (options.relation != null && (typeof options.relation !== 'string' || options.relation.length > 160)) ||
+             !Number.isSafeInteger(options.offset ?? 0) || (options.offset ?? 0) < 0 ||
+             !Number.isSafeInteger(options.limit ?? 80) || (options.limit ?? 80) < 1 || (options.limit ?? 80) > 200) {
+           return { error: { code: 'invalid_input', message: '无效的关系聚拢查询' } }
+         }
+         if (options.expectedRevision !== saved.revision) return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后聚拢', currentRevision: saved.revision } }
+         const graph = saved.graph, centerId = options.centerId, direction = options.direction || 'both', relation = options.relation || ''
+         const byId = new Map((graph.nodes || []).map(n => [n.id, n]))
+         if (!byId.has(centerId)) return { error: { code: 'not_found', message: '中心节点已不存在，请重新载入知识图' } }
+         const incident = (graph.edges || []).filter(e => byId.has(e.fromNodeId) && byId.has(e.toNodeId) &&
+           ((direction !== 'in' && e.fromNodeId === centerId) || (direction !== 'out' && e.toNodeId === centerId)))
+         const relationTypes = [...new Set(incident.map(e => e.relation))].sort()
+         const neighborRelations = new Map()
+         for (const edge of incident) {
+           if (relation && edge.relation !== relation) continue
+           const id = edge.fromNodeId === centerId ? edge.toNodeId : edge.fromNodeId
+           if (id === centerId) continue
+           const previous = neighborRelations.get(id)
+           if (previous === undefined || edge.relation < previous) neighborRelations.set(id, edge.relation)
+         }
+         const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0
+         const neighbors = [...neighborRelations.keys()].sort((a, b) => cmp(neighborRelations.get(a), neighborRelations.get(b)) ||
+           (byId.get(a).paragraph ?? Number.MAX_SAFE_INTEGER) - (byId.get(b).paragraph ?? Number.MAX_SAFE_INTEGER) || cmp(a, b))
+         const offset = Math.min(options.offset ?? 0, neighbors.length), page = neighbors.slice(offset, offset + (options.limit ?? 80))
+         const nextOffset = offset + page.length, selected = new Set([centerId, ...neighbors.slice(0, nextOffset)])
+         const added = new Set(offset === 0 ? [centerId, ...page] : page)
+         const edges = (graph.edges || []).filter(e => selected.has(e.fromNodeId) && selected.has(e.toNodeId) &&
+           (added.has(e.fromNodeId) || added.has(e.toNodeId)) && (!relation || e.relation === relation) &&
+           (direction === 'both' || (e.fromNodeId !== centerId && e.toNodeId !== centerId) ||
+             (direction === 'in' ? e.toNodeId === centerId : e.fromNodeId === centerId)))
+           .sort((a, b) => cmp(a.fromNodeId, b.fromNodeId) || cmp(a.toNodeId, b.toNodeId) || cmp(a.relation, b.relation))
+         return { documentId, revision: saved.revision, centerId, direction, relation, relationTypes, offset, nextOffset,
+           neighborsTotal: neighbors.length, hasMore: nextOffset < neighbors.length,
+           nodes: [byId.get(centerId), ...page.map(id => byId.get(id))], edges }
+       }
+
        function buildGraphViewHost(graph, nodeOffset, queryText, requestedLimit) {
          const nodeLimit = graphViewNodeLimitHost(requestedLimit)
          if (!graph || typeof graph !== 'object') return graph
@@ -10162,6 +10203,13 @@ function createHostPlugin(graphContractOnly) {
          merged.source = { ...(current.graph.source || incoming.source || {}), revision }
          rememberCanonicalGraphHost(merged, current.sourceText, revision)
          return { documentId, revision, graph: buildGraphViewHost(merged) }
+       })
+
+       harness.handle('graph-neighborhood', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         if (!documentId) return { error: { code: 'invalid_input', message: '关系聚拢缺少 documentId' } }
+         return graphNeighborhoodHost(documentId, loadCanonicalDocumentHost(documentId), a)
        })
 
        harness.handle('graph-query', async (args) => {

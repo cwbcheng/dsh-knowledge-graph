@@ -5,7 +5,7 @@ import { Worker as NodeWorker } from 'node:worker_threads'
 
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
-const exports = 'graphLayoutWorkerSource, computeGraphLayoutAsync, prepareGraphScene, GraphViewer, GraphLoading, graphPaint, useGraphDocumentLoading,'
+const exports = 'graphLayoutWorkerSource, computeGraphLayoutAsync, prepareGraphScene, GraphCanvas, GraphViewer, GraphLoading, graphPaint, useGraphDocumentLoading,'
 const sandbox = { window: { React: {} }, setTimeout, clearTimeout, setInterval, clearInterval, console }
 vm.runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = {' + exports), sandbox)
 const engine = sandbox.window.KGViewer
@@ -26,7 +26,7 @@ const inWorker = data => new Promise((resolve, reject) => {
     else { worker.terminate().then(() => message.error ? reject(new Error(message.error)) : resolve({ ...message, progress })) }
   })
 })
-for (const mode of ['layered', 'force', 'circular', 'radial']) {
+for (const mode of ['layered', 'force', 'circular', 'radial', 'neighborhood']) {
   for (const count of [0, 1, 24]) {
     const data = graph(count)
     const expected = engine.layoutGraph(data.nodes, data.edges, data.sizes, mode)
@@ -71,7 +71,7 @@ function hooks(fn, dependencies) {
   }
 }
 const jobs = [], Scene = () => {}, Loading = () => {}
-const renderer = hooks(engine.GraphViewer, {
+const renderer = hooks(engine.GraphCanvas, {
   GraphScene: Scene, GraphLoading: Loading,
   prepareGraphScene(nodes, edges, mode, signal, report) { return new Promise((resolve, reject) => jobs.push({ nodes, signal, report, resolve, reject })) },
 })
@@ -165,7 +165,7 @@ await assert.rejects(unmountedRead, { name: 'AbortError' })
 
 for (const path of ['lib/client.js', 'extension/viewer.js']) {
   const built = readFileSync(new URL('../' + path, import.meta.url), 'utf8')
-  for (const name of ['graphLayoutWorkerSource', 'prepareGraphScene', 'GraphViewer', 'GraphLoading']) assert(built.includes(engine[name].toString()), path + ': ' + name + ' parity')
+  for (const name of ['graphLayoutWorkerSource', 'prepareGraphScene', 'GraphCanvas', 'GraphViewer', 'GraphLoading']) assert(built.includes(engine[name].toString()), path + ': ' + name + ' parity')
 }
 assert(source.includes('@media (prefers-reduced-motion: reduce)'))
-console.log(JSON.stringify({ ok: true, layoutParity: '4 modes: empty, singleton, connected/disconnected', nodes: 2000, heartbeats, paintBarrier: true, cancelSafe: true, staleSafe: true, errorRetry: true, workerCleanup: true }))
+console.log(JSON.stringify({ ok: true, layoutParity: '5 modes: empty, singleton, connected/disconnected', nodes: 2000, heartbeats, paintBarrier: true, cancelSafe: true, staleSafe: true, errorRetry: true, workerCleanup: true }))

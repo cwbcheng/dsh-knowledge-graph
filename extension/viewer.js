@@ -3423,7 +3423,32 @@
         return base
       }
 
+      function layoutNeighborhood(nodes, sizes) {
+        const pos = new Map()
+        if (!nodes.length) return { pos }
+        const center = nodes[0], centerSize = sizes.get(center.id)
+        pos.set(center.id, { x: 0, y: 0 })
+        if (nodes.length === 1) return { pos }
+        // Circumscribed circles guarantee rectangle separation, including long
+        // labels. Fixed ring spacing avoids an iterative all-pairs simulation.
+        const radiusOf = node => { const s = sizes.get(node.id); return Math.hypot(s.w, s.h) / 2 }
+        const nodeRadius = nodes.slice(1).reduce((radius, node) => Math.max(radius, radiusOf(node)), 0)
+        let radius = Math.hypot(centerSize.w, centerSize.h) / 2 + nodeRadius + 48
+        let index = 1
+        while (index < nodes.length) {
+          const capacity = Math.max(1, Math.floor(Math.PI / Math.asin(Math.min(1, (nodeRadius + 14) / radius))))
+          const count = Math.min(capacity, nodes.length - index)
+          for (let i = 0; i < count; i++) {
+            const angle = -Math.PI / 2 + 2 * Math.PI * i / count
+            pos.set(nodes[index++].id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
+          }
+          radius += 2 * nodeRadius + 32
+        }
+        return { pos }
+      }
+
       function layoutGraph(nodes, edges, sizes, mode, onProgress) {
+        if (mode === 'neighborhood') return layoutNeighborhood(nodes, sizes)
         if (mode === 'circular') {
           const pos = layoutCircular(nodes, edges, sizes)
           posOf.clear()
@@ -3573,7 +3598,7 @@
         const functions = [clamp, intersectDist, bezierGeometry, fanRankOf, buildFanRanks,
           layoutForce, layoutCircular, layoutRadial, layoutLayered, resolveLayeredOverlaps,
           packDisconnectedComponents, layoutLayeredComponents, resolveNodeOverlaps,
-          resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutGraph]
+          resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutNeighborhood, layoutGraph]
         return [D3_TIMER_SRC, D3_DISPATCH_SRC, D3_QUADTREE_SRC, D3_FORCE_SRC,
           'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map();',
           'const LAYER_Y_GAP=' + LAYER_Y_GAP + ',LAYER_X_GAP=' + LAYER_X_GAP + ',LAYER_COL_GAP=' + LAYER_COL_GAP + ',LAYER_MAX_ROW_WIDTH=' + LAYER_MAX_ROW_WIDTH + ';',
@@ -3734,7 +3759,161 @@
             error && onRetry ? h('button', { type: 'button', className: 'kg-secondary', onClick: onRetry }, '重新加载') : null))
       }
 
+      function neighborhoodEdgeKey(edge) {
+        return JSON.stringify([edge.fromNodeId, edge.toNodeId, edge.relation])
+      }
+
+      function mergeNeighborhoodPage(previous, page) {
+        if (!page || !Array.isArray(page.nodes) || !Array.isArray(page.edges) || page.nodes[0]?.id !== page.centerId ||
+            !Number.isSafeInteger(page.neighborsTotal) || !Number.isSafeInteger(page.offset) || !Number.isSafeInteger(page.nextOffset) ||
+            page.offset < 0 || page.nextOffset < page.offset || page.neighborsTotal < page.nextOffset) throw new Error('关系聚拢返回的数据不完整')
+        if (previous && (page.documentId !== previous.documentId || page.revision !== previous.revision ||
+            page.centerId !== previous.centerId || page.direction !== previous.direction || page.relation !== previous.relation ||
+            page.neighborsTotal !== previous.neighborsTotal || page.offset !== previous.nextOffset)) {
+          throw new Error('关系聚拢分页已失效，请重新载入')
+        }
+        if (!previous && page.offset !== 0) throw new Error('关系聚拢缺少第一页')
+        const nodes = new Map((previous?.nodes || []).map(n => [n.id, n]))
+        const edges = new Map((previous?.edges || []).map(e => [neighborhoodEdgeKey(e), e]))
+        for (const node of page.nodes) nodes.set(node.id, node)
+        for (const edge of page.edges) edges.set(neighborhoodEdgeKey(edge), edge)
+        if ([...edges.values()].some(e => !nodes.has(e.fromNodeId) || !nodes.has(e.toNodeId)) || nodes.size - 1 !== page.nextOffset ||
+            page.hasMore !== (page.nextOffset < page.neighborsTotal) || (previous && page.hasMore && page.nextOffset <= previous.nextOffset)) {
+          throw new Error('关系聚拢分页不完整，请重新载入')
+        }
+        return { ...page, nodes: [...nodes.values()], edges: [...edges.values()] }
+      }
+
+      function neighborhoodAnchors(nodes, sourceText, existing) {
+        const paragraphs = splitParagraphs(sourceText || ''), forms = new Map(), anchors = {}
+        for (const node of nodes) {
+          if (Object.prototype.hasOwnProperty.call(existing, node.id)) { anchors[node.id] = existing[node.id]; continue }
+          anchors[node.id] = resolveAnchor(node.quote, sourceText || '', node.text, forms) ??
+            (Number.isInteger(node.paragraph) ? paragraphs[node.paragraph]?.start : null) ?? null
+        }
+        return anchors
+      }
+
       function GraphViewer(props) {
+        const [request, setRequest] = useState(null), [result, setResult] = useState(null)
+        const [status, setStatus] = useState(null), [history, setHistory] = useState([])
+        const [notice, setNotice] = useState(null)
+        const [selection, setSelection] = useState({ node: null, edge: null })
+        const shell = useRef(null), restore = useRef(null), basePrepared = useRef(null), localPrepared = useRef(null)
+        const baseIdentity = useRef(null), sequence = useRef(0), active = useRef(null)
+        const latest = useRef(props); latest.current = props
+        const rememberBase = useCallback(value => { basePrepared.current = value }, [])
+        const rememberLocal = useCallback(value => { localPrepared.current = value }, [])
+        const exit = (restoreContext = true) => {
+          sequence.current++
+          active.current?.abort()
+          setRequest(null); setResult(null); setStatus(null); setHistory([])
+          latest.current.onGatherProjection?.(null)
+          localPrepared.current = null
+          if (restore.current) {
+            if (restoreContext) restore.current.callback?.()
+            if (restoreContext && restore.current.element?.isConnected) restore.current.element.scrollTop = restore.current.top
+            restore.current = null
+          }
+        }
+        const gather = (centerId, options = {}) => {
+          setNotice(null)
+          if (!request) {
+            const element = shell.current?.closest('.kg-cols, .kg-traj-cols')?.querySelector('.kg-original, .kg-traj-original')
+            restore.current = { element, top: element?.scrollTop || 0, callback: props.onGatherEnd, baseProps: props,
+              selection: { selectedNodeId: props.selectedNodeId, selectedEdgeId: props.selectedEdgeId, focusReq: props.focusReq } }
+          } else if (centerId !== request.centerId) {
+            setHistory(value => [...value, { centerId: request.centerId, direction: request.direction, relation: request.relation }])
+          }
+          setRequest({ centerId, direction: 'both', relation: '', ...options, offset: 0, nonce: ++sequence.current })
+        }
+        useEffect(() => {
+          if (!request) return
+          const controller = new AbortController(), nonce = request.nonce
+          active.current?.abort(); active.current = controller
+          const updateAllowed = () => !controller.signal.aborted && sequence.current === nonce
+          setStatus({ busy: true })
+          const p = latest.current
+          const previous = request.offset > 0 ? result : null
+          p.loadNeighborhood({ documentId: p.documentId, expectedRevision: p.revision, centerId: request.centerId,
+            direction: request.direction, relation: request.relation, offset: request.offset, limit: 80 }, controller.signal)
+            .then(page => {
+              if (!updateAllowed()) return
+              if (page?.error) throw new Error(page.error.message || '无法读取相关节点')
+              if (page.documentId !== p.documentId || page.revision !== p.revision || page.centerId !== request.centerId ||
+                  page.direction !== request.direction || page.relation !== request.relation) throw new Error('关系聚拢结果与当前查询不一致')
+              const next = mergeNeighborhoodPage(previous, page)
+              next.anchors = neighborhoodAnchors(next.nodes, p.sourceText, previous ? { ...p.anchors, ...previous.anchors } : p.anchors)
+              setResult(next); setStatus(null)
+              p.onGatherProjection?.(next)
+              if (!previous) setSelection({ node: next.centerId, edge: null })
+            })
+            .catch(error => { if (updateAllowed()) setStatus({ error: error.message || '关系聚拢查询失败' }) })
+          return () => controller.abort()
+        }, [request])
+        useEffect(() => {
+          const identity = [props.documentId, props.revision, props.nodes, props.edges]
+          const previous = baseIdentity.current
+          baseIdentity.current = identity
+          // A new graph/window must never leave an old projection actionable.
+          if (previous && identity.some((value, index) => value !== previous[index])) {
+            exit(false)
+            if (request) setNotice('知识图已更新，已退出关系聚拢。')
+          }
+        }, [props.documentId, props.revision, props.nodes, props.edges])
+        useEffect(() => () => { sequence.current++; active.current?.abort() }, [])
+        useEffect(() => {
+          if (result && result.nodes.some(n => n.id === props.focusReq?.nodeId)) setSelection({ node: props.focusReq.nodeId, edge: null })
+        }, [props.focusReq?.seq])
+        const focused = !!request
+        const capability = typeof props.loadNeighborhood === 'function' && props.documentId && Number.isSafeInteger(props.revision)
+        const baseInputs = focused ? restore.current?.baseProps || props : props
+        const baseElement = useMemo(() => h(GraphCanvas, { ...baseInputs, height: props.height,
+          onPrepared: rememberBase, onGather: capability ? gather : undefined }), [baseInputs, props.height, focused, capability])
+        const edgeKey = selection.edge, selectedEdge = result ? result.edges.findIndex(e => neighborhoodEdgeKey(e) === edgeKey) : -1
+        // The projection has its own edge ordering. Only existing base-view
+        // targets can enter its edit/verification flow, always by full identity.
+        const baseEdge = result && selectedEdge >= 0 ? props.edges.find(e => neighborhoodEdgeKey(e) === edgeKey) : null
+        const localSource = localPrepared.current || basePrepared.current
+        return h('div', { className: 'kg-gather-shell', ref: shell, style: { height: (props.height || 560) + 'px' } },
+          h('div', { style: focused ? { visibility: 'hidden', pointerEvents: 'none' } : undefined, 'aria-hidden': focused || undefined, inert: focused ? '' : undefined },
+            baseElement),
+          focused ? h('div', { className: 'kg-gather-layer', 'aria-label': '关系聚拢视图' },
+            h('div', { className: 'kg-gather-bar' },
+              h('button', { type: 'button', className: 'kg-secondary', disabled: !history.length, title: '返回上个中心', 'aria-label': '返回上个中心',
+                onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
+              h('strong', null, '关系聚拢 · ' + (result?.centerId || request.centerId)),
+              result ? h('span', { role: 'status' }, '已显示 ' + (result.nodes.length - 1) + '/' + result.neighborsTotal + ' 个直接相关节点 · ' + result.edges.length + ' 条关系') : null,
+              h('div', { className: 'kg-gather-directions', role: 'group', 'aria-label': '关系方向' },
+                [['both', '全部'], ['in', '指向它'], ['out', '由它指向']].map(([value, label]) => h('button', {
+                  key: value, type: 'button', className: 'kg-secondary', 'aria-pressed': request.direction === value,
+                  onClick: () => gather(request.centerId, { direction: value, relation: request.relation }),
+                }, label))),
+              h('select', { value: request.relation, 'aria-label': '聚拢关系类型', onChange: event => gather(request.centerId, { direction: request.direction, relation: event.target.value }) },
+                h('option', { value: '' }, '全部关系类型'), [...new Set([...(result?.relationTypes || []), ...(request.relation ? [request.relation] : [])])].map(value => h('option', { key: value, value }, REL_LABEL[value] || value))),
+              result?.hasMore ? h('button', { type: 'button', className: 'kg-secondary', disabled: !!status || result.centerId !== request.centerId || result.direction !== request.direction || result.relation !== request.relation,
+                onClick: () => setRequest({ ...request, offset: result.nextOffset, nonce: ++sequence.current }) }, '继续展开') : null,
+              h('button', { type: 'button', className: 'kg-secondary', title: '重新读取相关节点', 'aria-label': '重新读取相关节点', onClick: () => gather(request.centerId, { direction: request.direction, relation: request.relation }) }, '↻'),
+              h('button', { type: 'button', className: 'kg-secondary', title: '退出聚拢', 'aria-label': '退出聚拢', onClick: () => exit() }, '×')),
+            status ? h('div', { className: 'kg-gather-notice', role: status.error ? 'alert' : 'status' },
+              status.error || ('正在查询相关节点：' + request.centerId),
+              status.error ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => setRequest({ ...request, nonce: ++sequence.current }) }, '重试') : h('progress', { 'aria-label': '查询相关节点' })) : null,
+            h('div', { className: 'kg-gather-canvas' }, result ? h(GraphCanvas, {
+              ...props, nodes: result.nodes, edges: result.edges, anchors: result.anchors,
+              layoutMode: 'neighborhood', onPrepared: rememberLocal, transitionFrom: localSource,
+              loading: false, focusReq: props.focusReq === restore.current?.selection.focusReq ? { seq: 0 } : props.focusReq, onGather: id => gather(id),
+              selectedNodeId: selection.node, selectedEdgeId: selectedEdge < 0 ? null : selectedEdge,
+              onSelectNode: id => { setSelection({ node: id, edge: null }); if (id) props.onSelectNode(id, result.anchors[id] ?? null) },
+              onSelectEdge: index => setSelection({ node: null, edge: index == null ? null : neighborhoodEdgeKey(result.edges[index]) }),
+              onQuestionNode: undefined, onOpenNodeIssues: undefined,
+              onQuestionEdge: baseEdge && props.onQuestionEdge ? () => props.onQuestionEdge(baseEdge, props.edges.indexOf(baseEdge)) : undefined,
+              onDeleteEdge: baseEdge && props.onDeleteEdge ? () => props.onDeleteEdge(baseEdge, props.edges.indexOf(baseEdge)) : undefined,
+            }) : null)) : null,
+          !focused && notice ? h('div', { className: 'kg-gather-updated', role: 'status' }, notice,
+            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭更新提示', onClick: () => setNotice(null) }, '×')) : null)
+      }
+
+      function GraphCanvas(props) {
         const { nodes, edges, layoutMode, height, loading } = props
         const [state, setState] = useState(null)
         const [attempt, setAttempt] = useState(0)
@@ -3746,7 +3925,7 @@
           const update = patch => { if (!controller.signal.aborted) setState(previous => ({ ...(matches(previous) ? previous : identity), ...patch })) }
           update({ progress: { stage: 0, title: '测量节点' }, prepared: null, done: false, error: null })
           prepareGraphScene(nodes, edges, layoutMode || 'layered', controller.signal, progress => update({ progress }))
-            .then(prepared => update({ prepared }))
+            .then(prepared => { if (!controller.signal.aborted) { props.onPrepared?.(prepared); update({ prepared }) } })
             .catch(error => { if (error.name !== 'AbortError') update({ error: error.message || '无法绘制知识图' }) })
           return () => controller.abort()
         }, [nodes, edges, layoutMode, attempt])
@@ -3760,7 +3939,7 @@
             onRetry: () => setAttempt(value => value + 1) }) : null)
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady }) {
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -3790,6 +3969,20 @@
         if (!markerIdRef.current) markerIdRef.current = 'kg-arrow-' + Math.random().toString(36).slice(2, 9)
 
         const { sizes, layout, bbox, layeredEdgeGeometry } = prepared
+        useEffect(() => {
+          if (layoutMode !== 'neighborhood' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+          const animations = [], old = transitionFrom?.layout.pos, oldCenter = old?.get(nodes[0]?.id)
+          for (const element of containerRef.current?.querySelectorAll('.kg-node') || []) {
+            if (typeof element.animate !== 'function') break
+            const id = element.getAttribute('data-node-id'), to = layout.pos.get(id), from = old?.get(id)
+            if (!to) continue
+            const dx = from && oldCenter ? clamp(from.x - oldCenter.x - to.x, -240, 240) : to.x * 0.15
+            const dy = from && oldCenter ? clamp(from.y - oldCenter.y - to.y, -240, 240) : to.y * 0.15
+            animations.push(element.animate([{ transform: 'translate(' + dx + 'px,' + dy + 'px)', opacity: 0.4 },
+              { transform: 'translate(0px,0px)', opacity: 1 }], { duration: 240, easing: 'ease-out' }))
+          }
+          return () => animations.forEach(animation => animation.cancel())
+        }, [prepared])
         const nodeDegree = useMemo(() => {
           const degree = new Map((nodes || []).map((node) => [node.id, 0]))
           for (const edge of edges || []) {
@@ -3894,7 +4087,7 @@
           const ch = el.clientHeight
           if (cw <= 0 || ch <= 0) return
           const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), 0.3, 1)
-          setView({ k, tx: cw / 2 - bbox.cx * k, ty: ch / 2 - bbox.cy * k })
+          setView({ k, tx: cw / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cx * k), ty: ch / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cy * k) })
         }, [bbox])
 
         useEffect(() => { fitView() }, [fitView])
@@ -4128,7 +4321,11 @@
           let labelW = layoutMode === 'layered' ? 0 : measureLabel(rel) + 10
           let labelH = 15
           let labelHidden = false
-          if (layoutMode === 'layered') {
+          if (edge.fromNodeId === edge.toNodeId) {
+            const x = a.x + sa.w / 2, y = a.y
+            d = 'M ' + x + ' ' + (y - 12) + ' C ' + (x + 70) + ' ' + (y - 65) + ' ' + (x + 70) + ' ' + (y + 65) + ' ' + x + ' ' + (y + 12)
+            lblX = x + 55; lblY = y
+          } else if (layoutMode === 'layered') {
             const geometry = layeredEdgeGeometry.get(edge)
             if (!geometry) return null
             d = geometry.d
@@ -4210,6 +4407,7 @@
             lblX = bx - geometry.ey * 11
             lblY = by + geometry.ex * 11
           }
+          if (layoutMode === 'neighborhood' && edges.length > 12) labelHidden = true
           return h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: 'button', tabIndex: 0,
@@ -4308,7 +4506,7 @@
           const off = anchors[node.id]
           const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
           return h('g', {
-            key: node.id, className: 'kg-node', role: 'button', tabIndex: 0,
+            key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
             'aria-pressed': sel, 'aria-label': aria,
             style: { cursor: 'pointer', opacity: dim ? 0.22 : 1 },
             onPointerDown: (e) => { e.stopPropagation(); startPress(e, node) },
@@ -4374,6 +4572,8 @@
                 ? h('div', { className: 'kg-node-detail-quote' }, '原文摘录：' + detail.quote)
                 : null,
               h('div', { className: 'kg-node-detail-actions' },
+                onGather ? h('button', { type: 'button', className: 'kg-secondary',
+                  onClick: () => { setDetail(null); onGather(detail.id) } }, layoutMode === 'neighborhood' ? '以此为中心' : '聚拢相关') : null,
                 h('button', {
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
                   disabled: anchors[detail.id] == null,
@@ -4451,13 +4651,15 @@
             }, edgeEls, nodeEls),
           ),
           h('div', { className: 'kg-graph-toolbar' },
-            h('select', {
+            onGather ? h('button', { type: 'button', title: '聚拢选中节点的关系', 'aria-label': '聚拢选中节点的关系',
+              disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
+            layoutMode !== 'neighborhood' ? h('select', {
               className: 'kg-layout-select',
               value: layoutMode || 'layered',
               'aria-label': '布局形态',
               title: '切换布局形态',
               onChange: (e) => onLayoutModeChange(e.target.value),
-            }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))),
+            }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))) : null,
             h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG'),
             h('button', { type: 'button', 'aria-label': '缩小（10%）', onClick: () => zoomBy(-0.1) }, '−'),
             h('button', { type: 'button', 'aria-label': '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),

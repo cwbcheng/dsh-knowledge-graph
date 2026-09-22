@@ -45,7 +45,15 @@ window.__ModuleLoader__.load({
     }
 
     // ---------- RPC to the host half (webServer route, replaces host.call) ----------
-    async function rpc(method, body) {
+    async function rpc(method, body, options = {}) {
+      if (method === "graph-neighborhood") {
+        const res = await fetch("/api/dsh-knowledge-graph/graph-neighborhood", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body), signal: options.signal,
+        })
+        if (!res.ok) throw new Error("关系聚拢查询失败：HTTP " + res.status)
+        return res.json()
+      }
       if (method === "list-models" || method === "ontology-list") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, { cache: "no-store" })
         return res.json()
@@ -200,6 +208,7 @@ c = c.split("host.call('ontology-list'").join("rpc('ontology-list'")
 c = c.split("host.call('document-import'").join("rpc('document-import'")
 c = c.split("host.call('markdown-import'").join("rpc('markdown-import'")
 c = c.split("host.call('graph-query'").join("rpc('graph-query'")
+c = c.split("host.call('graph-neighborhood'").join("rpc('graph-neighborhood'")
 c = c.split("host.call('answer-graph'").join("rpc('answer-graph'")
 c = c.split("host.call('document-list'").join("rpc('document-list'")
 c = c.split("host.call('extraction-run-list'").join("rpc('extraction-run-list'")

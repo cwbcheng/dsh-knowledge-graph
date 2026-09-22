@@ -1217,6 +1217,67 @@ export class SqliteKnowledgeStore {
     }
   }
 
+  getGraphNeighborhood(documentId, options = {}) {
+    const row = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(documentId)
+    if (!row) return null
+    const revision = row.graph_revision
+    if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0 ||
+        typeof options.centerId !== 'string' || !options.centerId || options.centerId.length > 160 ||
+        !['both', 'in', 'out'].includes(options.direction || 'both') ||
+        (options.relation != null && (typeof options.relation !== 'string' || options.relation.length > 160)) ||
+        !Number.isSafeInteger(options.offset ?? 0) || (options.offset ?? 0) < 0 ||
+        !Number.isSafeInteger(options.limit ?? 80) || (options.limit ?? 80) < 1 || (options.limit ?? 80) > 200) {
+      return { error: { code: 'invalid_input', message: '无效的关系聚拢查询' } }
+    }
+    if (options.expectedRevision !== revision) return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后聚拢', currentRevision: revision } }
+    const centerId = options.centerId, direction = options.direction || 'both', relation = options.relation || ''
+    const center = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id = ?').get(documentId, centerId)
+    if (!center) return { error: { code: 'not_found', message: '中心节点已不存在，请重新载入知识图' } }
+    const incident = this.db.prepare(`SELECT from_node_id, to_node_id, relation FROM graph_edges
+      WHERE document_id = ? AND (from_node_id = ? OR to_node_id = ?)` ).all(documentId, centerId, centerId)
+      .filter(e => direction === 'both' || (direction === 'in' ? e.to_node_id === centerId : e.from_node_id === centerId))
+    const relationTypes = [...new Set(incident.map(e => e.relation))].sort()
+    const neighborRelations = new Map()
+    for (const edge of incident) {
+      if (relation && edge.relation !== relation) continue
+      const id = edge.from_node_id === centerId ? edge.to_node_id : edge.from_node_id
+      if (id === centerId) continue
+      const previous = neighborRelations.get(id)
+      if (previous === undefined || edge.relation < previous) neighborRelations.set(id, edge.relation)
+    }
+    // Read only ordering metadata for the full neighborhood; hydrate evidence
+    // and node text only for this page, never the entire document.
+    const neighbors = this.db.prepare(`SELECT node_id, paragraph FROM graph_nodes
+      WHERE document_id = ? AND node_id IN (SELECT value FROM json_each(?))`)
+      .all(documentId, JSON.stringify([...neighborRelations.keys()]))
+    const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0
+    neighbors.sort((a, b) => cmp(neighborRelations.get(a.node_id), neighborRelations.get(b.node_id)) ||
+      (a.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.paragraph ?? Number.MAX_SAFE_INTEGER) || cmp(a.node_id, b.node_id))
+    const offset = Math.min(options.offset ?? 0, neighbors.length), limit = options.limit ?? 80
+    const pageIds = neighbors.slice(offset, offset + limit).map(n => n.node_id)
+    const nextOffset = offset + pageIds.length
+    const selected = [centerId, ...neighbors.slice(0, nextOffset).map(n => n.node_id)]
+    const added = offset === 0 ? [centerId, ...pageIds] : pageIds
+    const nodes = this.db.prepare(`SELECT * FROM graph_nodes WHERE document_id = ?
+      AND node_id IN (SELECT value FROM json_each(?))`).all(documentId, JSON.stringify(pageIds)).map(nodeFromRow)
+    const byId = new Map(nodes.map(n => [n.id, n]))
+    // Each induced edge is delivered once, on the page that introduces its
+    // last endpoint. UNION deduplicates reciprocal incident lookups, not edges.
+    const edgeRows = this.db.prepare(`SELECT * FROM graph_edges WHERE document_id = ?
+      AND from_node_id IN (SELECT value FROM json_each(?)) AND to_node_id IN (SELECT value FROM json_each(?))
+      UNION SELECT * FROM graph_edges WHERE document_id = ?
+      AND to_node_id IN (SELECT value FROM json_each(?)) AND from_node_id IN (SELECT value FROM json_each(?))`)
+      .all(documentId, JSON.stringify(added), JSON.stringify(selected), documentId, JSON.stringify(added), JSON.stringify(selected))
+      .filter(e => (!relation || e.relation === relation) &&
+        (direction === 'both' || (e.from_node_id !== centerId && e.to_node_id !== centerId) ||
+          (direction === 'in' ? e.to_node_id === centerId : e.from_node_id === centerId)))
+    edgeRows.sort((a, b) => cmp(a.from_node_id, b.from_node_id) || cmp(a.to_node_id, b.to_node_id) || cmp(a.relation, b.relation))
+    if (this.getDocumentRevision(documentId) !== revision) return { error: { code: 'revision_conflict', message: '知识图在查询期间已更新，请重新载入后聚拢' } }
+    return { documentId, revision, centerId, direction, relation, relationTypes, offset, nextOffset,
+      neighborsTotal: neighbors.length, hasMore: nextOffset < neighbors.length,
+      nodes: [nodeFromRow(center), ...pageIds.map(id => byId.get(id))], edges: edgeRows.map(edgeFromRow) }
+  }
+
   queryDocumentGraph(documentId, options = {}) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null

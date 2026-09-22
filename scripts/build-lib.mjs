@@ -407,6 +407,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-neighborhood') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的关系聚拢查询' } }) }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '关系聚拢缺少 documentId' } })
+              const store = await getSqliteStore()
+              return writeJson(res, 200, store.getGraphNeighborhood(documentId, a) || { error: { code: 'not_found', message: '找不到知识图文档' } })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-query') {
               const raw = await readBody(req, 64 * 1024)
               let payload = {}
