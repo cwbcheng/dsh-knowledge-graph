@@ -25,8 +25,16 @@ const calls = []
 // A model that returns whatever types the prompt declared: it echoes the first
 // node type it was offered, which lets the test read the ontology back out of
 // the model's input rather than trusting host-side state.
-const extractor = async ({ title, systemPrompt }) => {
+const extractor = async ({ title, systemPrompt, chunk }) => {
   calls.push({ title, systemPrompt })
+  if (title === 'lv-append') {
+    const unit = chunk.units.find((item) => item.text.includes('可迁移性'))
+    return {
+      summary: '追加学习观材料',
+      nodes: [{ id: 'new-feature', type: 'feature_description', text: unit.text, quote: unit.text, paragraph: unit.num, stage: 'processed', hidden: 'not-declared' }],
+      edges: [],
+    }
+  }
   if (title === 'lv') {
     return {
       summary: '学习观材料',
@@ -184,6 +192,26 @@ const conflict = await handlers.get('append-extract')({
 })
 assert.equal(conflict.error && conflict.error.code, 'ontology_conflict', 'an append must refuse to change ontology: ' + JSON.stringify(conflict))
 
+// Appending must keep both the prompt vocabulary and the original semantic
+// attributes. A valid new batch must not erase meaning from the existing graph.
+const appended = await waitTask((await handlers.get('append-extract')({
+  documentId: lv.result.source.documentId, title: 'lv-append', text: '可迁移性是掌握的特征。',
+})).taskId)
+assert.equal(appended.status, 'succeeded', JSON.stringify(appended.error))
+const appendPrompt = calls.find((call) => call.title === 'lv-append').systemPrompt
+assert(appendPrompt.includes('学习观拆解引擎'), 'append must use the document ontology, not the hard-coded proposition prompt')
+assert(appendPrompt.includes('已有') && appendPrompt.includes('新正文'), 'append must retain its incremental constraints')
+assert(!appendPrompt.includes('type 只能取 fact/claim'), 'append must not give conflicting ontology instructions')
+assert.equal(appended.result.nodes.find((node) => node.id === 'n1').stage, 'data')
+assert.equal(appended.result.nodes.find((node) => node.id === 'n2').relKind, 'basic')
+const appendedEdge = appended.result.edges.find((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n2')
+assert.equal(appendedEdge.role, 'input')
+assert.equal(appendedEdge.mode, 'contrast')
+const newFeature = appended.result.nodes.find((node) => node.id === 'new-feature')
+assert.equal(newFeature.stage, 'processed')
+assert(!Object.hasOwn(newFeature, 'hidden'), 'append must not bypass the attribute allowlist')
+assert(newFeature.paragraph > Math.max(...lv.result.nodes.map((node) => node.paragraph)), 'appended source anchors must be offset into the canonical document')
+
 console.log(JSON.stringify({
   ok: true,
   learningViewNodes: lvTypes,
@@ -194,4 +222,5 @@ console.log(JSON.stringify({
   payloadOntology: record.id,
   storeRoundTrip: reopened.ontology,
   appendOntologyConflict: true,
+  appendOntologyAndAttributes: true,
 }))

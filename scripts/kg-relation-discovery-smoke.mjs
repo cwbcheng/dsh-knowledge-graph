@@ -115,6 +115,30 @@ try {
   assert.ok(plan.groups.find(group => group.targetIds.includes('n0')).nodes.some(node => node.id === 'n79'), 'rare shared terms must retrieve distant components, not just adjacent paragraphs or hubs')
   assert.ok(!plan.coverage.completedTargetIds.length, 'planning is not successful execution')
 
+  // The stable concept was merged across chapters. Its later source anchor is
+  // the only retrieval signal linking it to a differently worded local claim.
+  const repeated = structuredClone(remote)
+  repeated.graph.nodes.forEach((node, i) => {
+    node.text = 'record' + i
+    node.quote = repeated.paragraphs[node.paragraph]
+    node.evidence = [{ paragraph: node.paragraph, quote: node.quote }]
+  })
+  repeated.graph.nodes[0].type = 'concept'
+  repeated.graph.nodes[0].evidence.push({ paragraph: 1580, quote: repeated.paragraphs[1580] })
+  const repeatPlan = api.buildRelationWeaveGroupsHost(repeated.graph.nodes, api.graphConnectivityHost(repeated.graph.nodes, []), repeated.paragraphs, null, repeated.paragraphs.join('\n\n'))
+  assert.ok(repeatPlan.groups.find(group => group.targetIds.includes('n0')).nodes.some(node => node.id === 'n79'), 'all authenticated concept occurrences must retrieve local neighbors, not only the first paragraph')
+  const tailCoverage = { ...repeatPlan.coverage, completedTargetIds: repeated.graph.nodes.slice(0, 79).map(node => node.id) }
+  const tailPlan = api.buildRelationWeaveGroupsHost(repeated.graph.nodes, api.graphConnectivityHost(repeated.graph.nodes, []), repeated.paragraphs, tailCoverage, repeated.paragraphs.join('\n\n'))
+  assert.ok(tailPlan.groups[0].nodes.some(node => node.id === 'n0'), 'a tail target must retrieve an already-searched concept through its later evidence anchor')
+
+  const pair = fixture(2)
+  await weave(pair)
+  assert.equal(calls.length, 1, 'two-node extractions can still be missing a source-backed relation')
+  assert.deepEqual(new Set(calls[0].targetIds), new Set(['n0', 'n1']))
+  const singleton = fixture(1)
+  await weave(singleton)
+  assert.equal(calls.length, 0, 'a single node has no candidate relation to search')
+
   const metrics = { before: { edgeCount: 5 }, addedEdges: 2, candidateEdgeKeys: ['a>b:supports', 'a>c:supports'] }
   api.finalizeRelationConnectivityHost(metrics, { nodes: ['a', 'b', 'c', 'd'].map(id => ({ id })), edges: [{ fromNodeId: 'a', toNodeId: 'b', relation: 'supports' }, { fromNodeId: 'b', toNodeId: 'c', relation: 'supports' }, { fromNodeId: 'b', toNodeId: 'd', relation: 'supports' }] })
   assert.equal(metrics.proposedEdges, 2)
@@ -138,7 +162,7 @@ try {
   store = await openSqliteStore(process.env.DSH_KG_DB)
   store.saveGraph(routeFixture.graph, { sourceText: routeFixture.paragraphs.join('\n\n') })
   store.close(); store = null
-  let release, arrived, waitFirst = true, rejectSameParagraph = false, reviewedSameParagraph = 0
+  let release, arrived, waitFirst = true, rejectSameParagraph = false, reviewedSameParagraph = 0, recallFixture = null, reviewedRecall = 0
   const reached = new Promise(resolve => { arrived = resolve })
   const barrier = new Promise(resolve => { release = resolve })
   const routeTargets = []
@@ -149,8 +173,21 @@ try {
       return name === 'kgExtractor' ? { async weaveRelations(args) {
         routeTargets.push(...args.targetIds)
         if (waitFirst) { waitFirst = false; arrived(); await barrier }
+        if (recallFixture) {
+          const ids = new Set(args.nodes.map(node => node.id))
+          return { edges: ids.has('n0') && ids.has('n79') ? [['n0', 'n79'], ['n79', 'n0']].map(([fromNodeId, toNodeId]) => ({
+            fromNodeId, toNodeId, relation: 'contains', evidence: [{ paragraph: 1580, quote: recallFixture.paragraphs[1580] }],
+          })) : [] }
+        }
         return { edges: rejectSameParagraph ? [{ fromNodeId: 'left', toNodeId: 'right', relation: 'supports', evidence: [{ paragraph: 0, quote: args.units[0].text }] }] : [] }
       }, async reviewRelations({ candidates, units }) {
+        if (recallFixture) {
+          reviewedRecall += candidates.length
+          assert.ok(units.some(unit => unit.num === 1580 && unit.text === recallFixture.paragraphs[1580]), 'the independent reviewer must receive the later relation evidence')
+          return { verdicts: candidates.map(item => ({ id: item.id, verdict: item.edge.fromNodeId === 'n0' ? 'supported' : 'contradicted',
+            reason: 'The source states part-whole direction explicitly', evidence: [{ paragraph: 1580, quote: recallFixture.paragraphs[1580] }],
+          })) }
+        }
         reviewedSameParagraph += candidates.length
         return { verdicts: candidates.map(item => ({ id: item.id, verdict: 'insufficient', reason: 'Same-paragraph co-occurrence is not logical support', evidence: [{ paragraph: 0, quote: units[0].text }] })) }
       } } : null
@@ -224,7 +261,29 @@ try {
   assert.equal(sameResult.result.edges.length, 0, 'co-occurrence cannot manufacture logical support')
   assert.equal(sameResult.result.generation.connectivity.proposedEdges, 1)
   assert.equal(sameResult.result.generation.connectivity.addedEdges, 0)
-  console.log(JSON.stringify({ progressiveCoverage: visited.size, sqliteReload: true, noInventedEdges: true, failedAndCancelledCoverage: true, fullEvidence: true, distantRecall: true, acceptedCounts: true, ui: true }))
+
+  recallFixture = structuredClone(repeated)
+  recallFixture.graph.source = { id: 'source-repeated', documentId: 'repeated-concept-discovery' }
+  recallFixture.paragraphs[0] = '温控器用于调节温度。'
+  recallFixture.paragraphs[1580] = '温控器包含热敏电阻。'
+  Object.assign(recallFixture.graph.nodes[0], { text: '温控器', quote: '温控器', evidence: [0, 1580].map(paragraph => ({ paragraph, quote: '温控器' })) })
+  Object.assign(recallFixture.graph.nodes[79], { type: 'concept', text: '热敏电阻', quote: '热敏电阻', evidence: [{ paragraph: 1580, quote: '热敏电阻' }] })
+  store = await openSqliteStore(process.env.DSH_KG_DB)
+  store.saveGraph(recallFixture.graph, { sourceText: recallFixture.paragraphs.join('\n\n') })
+  store.close(); store = null
+  const recallHost = createHost()
+  const recallStarted = await request(recallHost, 'relation-retry', { documentId: 'repeated-concept-discovery', expectedRevision: 1, continuous: true })
+  const recalled = await terminal(recallHost, recallStarted.taskId)
+  assert.equal(recalled.status, 'succeeded', JSON.stringify(recalled.error))
+  assert.equal(recalled.result.generation.relationDiscovery.remainingTargets, 0)
+  assert(reviewedRecall >= 2, 'both genuine and reversed candidates must pass through independent review')
+  assert.deepEqual(recalled.result.edges.map(edge => [edge.fromNodeId, edge.toNodeId, edge.relation]), [['n0', 'n79', 'contains']], 'retrieval must recover the genuine relation without admitting the reversed one')
+  store = await openSqliteStore(process.env.DSH_KG_DB)
+  const canonicalEdges = store.getDocument('repeated-concept-discovery').edges
+  assert.equal(canonicalEdges.length, recalled.result.edges.length)
+  for (const [key, value] of Object.entries(recalled.result.edges[0])) assert.deepEqual(canonicalEdges[0][key], value, 'canonical reload must preserve ' + key)
+  store.close(); store = null
+  console.log(JSON.stringify({ progressiveCoverage: visited.size, sqliteReload: true, noInventedEdges: true, failedAndCancelledCoverage: true, fullEvidence: true, distantRecall: true, repeatedConceptRecall: true, reversedRelationRejected: true, smallGraphDiscovery: true, acceptedCounts: true, ui: true }))
 } finally {
   for (const cleanup of cleanups.reverse()) cleanup()
   store?.close()

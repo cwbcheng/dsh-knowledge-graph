@@ -70,10 +70,10 @@ async function extractor({ chunk, systemPrompt }) {
   return {
     summary: '学习观记录',
     nodes: [
-      { id: 'n1', type: 'intension_description', text: unit.text, quote: unit.text, paragraph: unit.num },
-      { id: 'n2', type: 'positive_example', text: unit.text, quote: unit.text, paragraph: unit.num },
+      { id: 'n1', type: 'intension_description', text: unit.text, quote: unit.text, paragraph: unit.num, relKind: 'basic' },
+      { id: 'n2', type: 'positive_example', text: unit.text, quote: unit.text, paragraph: unit.num, stage: 'data' },
     ],
-    edges: [{ fromNodeId: 'n2', toNodeId: 'n1', relation: 'exemplifies', evidence: [{ paragraph: unit.num, quote: unit.text }] }],
+    edges: [{ fromNodeId: 'n2', toNodeId: 'n1', relation: 'exemplifies', role: 'input', mode: 'contrast', evidence: [{ paragraph: unit.num, quote: unit.text }] }],
   }
 }
 
@@ -129,6 +129,76 @@ try {
   const foreign = [...new Set(resumed.result.nodes.map((node) => node.type))].filter((type) => !declared.has(type))
   assert.deepEqual(foreign, [], 'a resumed learning-view run must contain no foreign types: ' + foreign.join(','))
   assert(resumed.result.nodes.some((node) => node.type === 'negative_example' || node.type === 'positive_example'), 'learning-view materials must survive the resume')
+  for (const node of resumed.result.nodes) {
+    if (node.type === 'intension_description') assert.equal(node.relKind, 'basic', 'resume must preserve declared attributes in the merged prefix as well as the pending wave')
+    if (node.type === 'positive_example') assert.equal(node.stage, 'data')
+  }
+  for (const edge of resumed.result.edges) {
+    assert.equal(edge.role, 'input', 'resume must preserve relation roles, not just relation types')
+    assert.equal(edge.mode, 'contrast')
+  }
+  const reloaded = store.getDocument(resumed.result.source.documentId)
+  assert.deepEqual(reloaded.nodes.map((node) => [node.id, node.stage, node.relKind]), resumed.result.nodes.map((node) => [node.id, node.stage, node.relKind]))
+  assert.deepEqual(reloaded.edges.map((edge) => [edge.role, edge.mode]), resumed.result.edges.map((edge) => [edge.role, edge.mode]))
+
+  // Append through a fresh persistent host, fail after its first wave, then
+  // resume through another host. Both the old document and new prefix matter.
+  failOn = 3
+  prompts.length = 0
+  const api3 = createHost(extractor)
+  const appendSource = source.replace(/设备功率/g, '备用设备功率')
+  const appendStarted = await request(api3, 'append-extract', { documentId: reloaded.source.documentId, text: appendSource, concurrency: 2 })
+  const appendFailed = await wait(api3, appendStarted)
+  assert.equal(appendFailed.error?.code, 'timeout')
+  assert.equal(store.getDocument(reloaded.source.documentId).revision, reloaded.revision, 'an incomplete append must not replace the canonical graph')
+  assert(prompts.length > 0 && prompts.every((item) => item.learningView), 'persistent append must use its document ontology')
+  failOn = -1
+  prompts.length = 0
+  const api4 = createHost(extractor)
+  const appendResumed = await wait(api4, await request(api4, 'resume-extract', { runId: appendStarted.taskId, retryFailed: true }))
+  assert.equal(appendResumed.status, 'succeeded', JSON.stringify(appendResumed.error))
+  assert(prompts.length > 0 && prompts.every((item) => item.learningView), 'resumed append must retain the same ontology prompt')
+  const appendReloaded = store.getDocument(reloaded.source.documentId)
+  assert.equal(appendReloaded.revision, reloaded.revision + 1)
+  assert.equal(appendReloaded.nodes.length, reloaded.nodes.length * 2)
+  for (const node of appendReloaded.nodes) {
+    if (node.type === 'intension_description') assert.equal(node.relKind, 'basic')
+    if (node.type === 'positive_example') assert.equal(node.stage, 'data')
+    if (!reloaded.nodes.some((prior) => prior.id === node.id)) {
+      assert(node.paragraph >= reloaded.source.paragraphCount, 'resumed append must retain canonical source offsets')
+    }
+  }
+  assert(appendReloaded.edges.every((edge) => edge.role === 'input' && edge.mode === 'contrast'))
+
+  let completionCalls = 0, reviewCalls = 0
+  const completionApi = createHost({
+    async weaveRelations({ nodes, prompt }) {
+      completionCalls++
+      assert(nodes.filter(node => node.type === 'positive_example').every(node => node.stage === 'data'))
+      assert(prompt.includes('"stage":"data"') && prompt.includes('"relKind":"basic"'), 'model context must contain the declared node semantics')
+      assert(prompt.includes('"role":"input"') && prompt.includes('"mode":"contrast"'), 'existing relation semantics must reach the model')
+      const from = nodes.find(node => node.id === 'n4')
+      return { edges: [{ fromNodeId: from.id, toNodeId: 'n1', relation: 'exemplifies', role: 'input', mode: 'contrast', evidence: from.evidence }] }
+    },
+    async reviewRelations({ prompt, candidates }) {
+      reviewCalls++
+      const payload = JSON.parse(prompt)
+      assert.equal(payload.candidates[0].role, 'input')
+      assert.equal(payload.candidates[0].mode, 'contrast')
+      assert.equal(payload.candidates[0].from.stage, 'data')
+      assert.equal(payload.candidates[0].to.relKind, 'basic', 'independent review must receive the full candidate meaning')
+      return { verdicts: candidates.map(item => ({ id: item.id, verdict: 'insufficient', reason: 'Co-occurrence does not prove the relation', evidence: [] })) }
+    },
+  })
+  const completed = await wait(completionApi, await request(completionApi, 'relation-retry', { documentId: reloaded.source.documentId, expectedRevision: appendReloaded.revision, continuous: true }))
+  assert.equal(completed.status, 'succeeded', JSON.stringify(completed.error))
+  assert.equal(completionCalls, 1)
+  assert.equal(reviewCalls, 1)
+  assert.equal(completed.result.edges.length, appendReloaded.edges.length, 'semantic attributes must not bypass independent admission')
+  const completedCanonical = store.getDocument(reloaded.source.documentId)
+  assert.deepEqual(completedCanonical.nodes.map(node => [node.id, node.stage, node.relKind]), appendReloaded.nodes.map(node => [node.id, node.stage, node.relKind]))
+  assert.deepEqual(completedCanonical.edges.map(edge => [edge.role, edge.mode]), appendReloaded.edges.map(edge => [edge.role, edge.mode]))
+  store.close()
 
   console.log(JSON.stringify({
     ok: true,
@@ -139,6 +209,9 @@ try {
     foreignTypes: foreign.length,
     resumedPromptsAllLearningView: prompts.every((item) => item.learningView),
     rejectedResumeKeptCheckpoint: true,
+    semanticAttributesSurviveRestart: true,
+    persistentAppendResume: true,
+    completionSemanticContext: true,
   }))
 } finally {
   for (const cleanup of cleanups.reverse()) { try { cleanup() } catch (error) {} }

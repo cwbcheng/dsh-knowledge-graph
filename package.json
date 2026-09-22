@@ -102,7 +102,7 @@
     "test:kg-qa-benchmark": "node scripts/kg-qa-benchmark-smoke.mjs",
     "test:kg-quality-gate": "node scripts/kg-quality-regression-smoke.mjs",
     "kg:validate-lv-book": "node scripts/kg-ontology-book-validate.mjs",
-    "test:kg-ontology-checkpoint": "node scripts/kg-ontology-checkpoint-smoke.mjs",
+    "test:kg-ontology-checkpoint": "node scripts/kg-ontology-checkpoint-smoke.mjs && node scripts/kg-ontology-persistence-smoke.mjs",
     "dev:web": "bash scripts/dev-web.sh",
     "dev:web:stop": "bash scripts/dev-web.sh --stop"
   },
