@@ -1397,7 +1397,7 @@ export default function clientPlugin() {
         const required = needle.length <= 4 ? needle.length : needle.length - 2
         return best.matched >= required ? best.pos : null
       }
-      function resolveNeedle(needle, source, sourceForms) {
+      function resolveNeedle(needle, source, sourceForms, exactOnly = false) {
         if (!needle) return null
         const q = needle.trim()
         if (!q) return null
@@ -1415,6 +1415,7 @@ export default function clientPlugin() {
           const hit = sn.text.indexOf(qn.text)
           if (hit >= 0) return sn.map[hit]
         }
+        if (exactOnly) return null
         const minLen = 3
         const maxLen = Math.min(q.length, 24)
         for (let len = maxLen; len >= minLen; len--) {
@@ -1839,6 +1840,19 @@ export default function clientPlugin() {
         )
       }
 
+      function resolveNodeAnchor(node, sourceText, paragraphs, sourceForms) {
+        const paragraph = Number.isInteger(node.paragraph) && node.paragraph >= 0 ? paragraphs[node.paragraph] : null
+        if (paragraph) {
+          // Disambiguate repeated quotes locally. A complete quote elsewhere
+          // can correct stale paragraph metadata; a fuzzy prefix cannot.
+          const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
+          const offset = resolveNeedle(quote, paragraph.text, new Map(), true)
+          if (offset != null) return paragraph.start + offset
+          return resolveNeedle(quote, sourceText, sourceForms, true) ?? paragraph.start
+        }
+        return resolveAnchor(node.quote, sourceText, node.text, sourceForms)
+      }
+
       function makeView(graph, sourceText) {
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
@@ -1868,11 +1882,8 @@ export default function clientPlugin() {
           if (clean.length !== graph.edges.length) graph = { ...graph, edges: clean }
         }
         for (const n of graph.nodes) {
-          // 1) precise quote match; 2) deterministic paragraph number; 3) token overlap
-          let off = resolveAnchor(n.quote, sourceText, n.text, sourceForms)
-          if (off == null && typeof n.paragraph === 'number' && n.paragraph >= 0 && n.paragraph < paragraphs.length) {
-            off = paragraphs[n.paragraph].start
-          }
+          // Legacy nodes without a paragraph retain quote/token fallbacks.
+          let off = resolveNodeAnchor(n, sourceText, paragraphs, sourceForms)
           if (off == null && n.quote) {
             const qt = tokenize(n.quote)
             if (qt.length > 0) {
@@ -4331,8 +4342,7 @@ export default function clientPlugin() {
         const paragraphs = splitParagraphs(sourceText || ''), forms = new Map(), anchors = {}
         for (const node of nodes) {
           if (Object.prototype.hasOwnProperty.call(existing, node.id)) { anchors[node.id] = existing[node.id]; continue }
-          anchors[node.id] = resolveAnchor(node.quote, sourceText || '', node.text, forms) ??
-            (Number.isInteger(node.paragraph) ? paragraphs[node.paragraph]?.start : null) ?? null
+          anchors[node.id] = resolveNodeAnchor(node, sourceText || '', paragraphs, forms) ?? null
         }
         return anchors
       }
@@ -10142,17 +10152,17 @@ export default function clientPlugin() {
                       onOpenNodeIssues: handleOpenNodeIssues,
                       exportTitle: '轨迹知识图',
                     }),
-                    ontologyModeBadge(resultView),
+                    ontologyModeBadge(view),
                     h('div', { className: 'kg-legend' },
                       TYPE_ORDER.map((t) => h('span', { key: t, className: 'kg-legend-item' },
                         h('span', { className: 'kg-legend-dot', style: { background: TYPE_META[t].color } }),
                         TYPE_META[t].label))),
-                    ontologyDiagnosticStrip(resultView, (nodeId) => {
+                    ontologyDiagnosticStrip(view, (nodeId) => {
                       if (!nodeId) return
                       handleSelectNode(nodeId)
                       setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
                     }),
-                    ontologyCoordinateGrid(resultView, (nodeId) => {
+                    ontologyCoordinateGrid(view, (nodeId) => {
                       if (!nodeId) return
                       handleSelectNode(nodeId)
                       setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))

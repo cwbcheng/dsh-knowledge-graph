@@ -36,9 +36,11 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewp
 <script src="/extension/vendor/react.production.min.js"></script><script src="/extension/vendor/react-dom.production.min.js"></script></head>
 <body><div id="app"></div><script>
 localStorage.setItem('dsh-kg-result-v2', JSON.stringify({documentId:'${documentId}',title:'Paragraph deletion fixture'}));
+const trajectory=new URLSearchParams(location.search).has('trajectory');
+if(trajectory)localStorage.setItem('dsh-kg-traj-result-v2:fixture-session', JSON.stringify({documentId:'${documentId}',revision:1}));
 const slots=new Map();
 const ctx={get(name){return name==='slots'?{inject(name,fn){fn()},register(spec,render){slots.set(spec.id,render);return()=>{}}}:null},timeout(fn,ms){const id=setTimeout(fn,ms);return()=>clearTimeout(id)}};
-window.__ModuleLoader__={load:async({factory})=>{const plugin=factory(name=>{if(name==='react')return React;throw new Error(name)});await plugin.apply(ctx);ReactDOM.createRoot(document.getElementById('app')).render(React.createElement(React.Fragment,null,slots.get('kg-workbench-launcher')(),slots.get('kg-workbench-window')()))}};
+window.__ModuleLoader__={load:async({factory})=>{const plugin=factory(name=>{if(name==='react')return React;throw new Error(name)});await plugin.apply(ctx);ReactDOM.createRoot(document.getElementById('app')).render(trajectory?slots.get('kg-trajectory')({sessionId:'fixture-session'}):React.createElement(React.Fragment,null,slots.get('kg-workbench-launcher')(),slots.get('kg-workbench-window')()))}};
 </script><script src="/lib/client.js"></script></body></html>`
 const files = new Set(['lib/client.js', 'extension/vendor/react.production.min.js', 'extension/vendor/react-dom.production.min.js'])
 const server = createServer((request, response) => {
