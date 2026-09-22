@@ -198,16 +198,34 @@ npm run kg -- restore-revision --db ./data/knowledge.sqlite --id document_xxx --
 
 ### 对着 dsh 源码跑
 
+日常启动、关闭脚本位于 DSH 仓库 `deepseek-harness/scripts/`，不在本插件仓库中。在 WSL 中执行（需已安装下方的 systemd 用户服务）：
+
+```bash
+cd /mnt/d/github/deepseek-harness
+npm run dsh:start              # 等待知识图接口认证及就绪，打印本次地址
+npm run dsh:stop               # 先暂停可恢复任务，再关闭服务
+# 也可从任意目录直接执行：
+bash /mnt/d/github/deepseek-harness/scripts/start-dsh.sh
+bash /mnt/d/github/deepseek-harness/scripts/stop-dsh.sh
+```
+
+这两个入口管理同一个 `dsh-kgsrc-web.service`，重复启动不会新建实例，关闭后不会被守护器自动拉起。运行环境、解释执行参数、profile 和数据库沿用服务配置；不会设置开机自启、重新导入资料或自动解除崩溃重启限流。默认使用 `/opt/node-v24.14.0/bin/node` 执行控制脚本，可通过 `DSH_DEV_NODE` 指定其他 Node。
+
+关闭前若有可恢复任务，会请求暂停并等待检查点落盘；不能暂停、状态查询失败或暂停未完成时会拒绝关闭。暂停的任务在下次启动后需要手动“继续任务”。确实要强制中断服务时使用 `npm run dsh:stop -- --force`，这可能丢失最后一个检查点之后的未保存工作，但不会删除已有图或检查点。
+
+`DSH_CONTROL_TIMEOUT_SECONDS` 调整启动/暂停的等待时间（默认 90 秒）。控制器默认连接 `127.0.0.1:3099`，可读取 `DSH_SERVICE_UNIT` / `DSH_DEV_PROFILE` / `DSH_DEV_PORT` / `DSH_DEV_LOG` / `DSH_DEV_PID` 指向其他已安装服务；这些变量只选择控制目标，不会改写 systemd 服务配置，必须与目标服务一致。
+
 想让它跑在 `/mnt/d/github` 里那份 dsh **源码构建**上（而不是 npx 装的那份），用 `scripts/dev-web.sh`：
 
 ```bash
+cd /mnt/d/github/dsh-knowledge-graph
 npm run dev:web                 # 前台启动，Ctrl-C 结束
 npm run dev:web -- --detach     # 后台启动并打印带 token 的地址
 npm run dev:web:stop            # 停掉后台实例
 npm run dev:web -- --rebuild    # 先 pnpm install + build（含本插件）
 ```
 
-它会自己搞定：快进 `DSH_REPO`、装依赖、构建、从随包 `web` 模板建 profile、把本插件作为 bundle 层装进去，最后**用独立端口和独立 profile 启动**——不会碰你平时在跑的那个实例。启动后会请求一次 `ontology-list` 确认插件真的回答了，因为**插件加载失败时外壳照样能起来**，「起来了」不等于「能用」。它还会在 `src` 比 `lib` 新时警告：profile 是软链到本目录的，客户端包过期是这里最容易踩的坑。端口被占用时直接报错退出，不抢端口。
+它沿用本地 `DSH_REPO` checkout，不会自动拉取或切换 Git 分支；缺少构建产物或显式 `--rebuild` 时安装依赖并构建。随后从随包 `web` 模板创建缺失的 profile，把本插件作为 bundle 层装进去，最后**用独立端口和独立 profile 启动**，不会碰其他实例。启动后会请求一次 `ontology-list` 确认插件真的回答了，因为**插件加载失败时外壳照样能起来**，「起来了」不等于「能用」。源码或构建脚本比 `lib` 新时会自动重建插件。端口被占用时直接报错退出，不抢端口。
 
 可用 `DSH_REPO` / `DSH_DEV_PORT` / `DSH_DEV_PROFILE` / `DSH_DEV_LOG` 覆盖默认值（默认 `/mnt/d/github/deepseek-harness`、3099、`kgsrc`）。
 
