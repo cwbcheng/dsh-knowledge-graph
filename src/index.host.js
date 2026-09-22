@@ -3714,7 +3714,8 @@ function createHostPlugin(graphContractOnly) {
       function jaccardHost(a, b) {
         if (!a || !b || a.size === 0 || b.size === 0) return 0
         let inter = 0
-        for (const x of a) if (b.has(x)) inter += 1
+        const [small, large] = a.size <= b.size ? [a, b] : [b, a]
+        for (const x of small) if (large.has(x)) inter += 1
         return inter / (a.size + b.size - inter)
       }
       // Chinese text has no whitespace word boundaries, so duplicate /
@@ -6066,7 +6067,8 @@ function createHostPlugin(graphContractOnly) {
           }
           const { normalized, tokens } = indexed
           let overlap = 0
-          if (queryTokens.size > 0) for (const token of queryTokens) if (tokens.has(token)) overlap += 1
+          const [small, large] = tokens.size <= queryTokens.size ? [tokens, queryTokens] : [queryTokens, tokens]
+          for (const token of small) if (large.has(token)) overlap += 1
           const score = queryTokens.size > 0 ? (normalized === query ? 2 : overlap / Math.max(queryTokens.size, tokens.size, 1)) : 0
           candidates.push({ node: n, index, score })
         }
@@ -6213,7 +6215,11 @@ function createHostPlugin(graphContractOnly) {
           }
         }
         stats.lookupTokens = tokens
+        // The graph and scores are frozen for this plan. Reserving context and
+        // filling a group must not score the same target's candidates twice.
+        const relatedByTarget = new Map()
         const relatedFor = target => {
+          if (relatedByTarget.has(target.id)) return relatedByTarget.get(target.id)
           const candidates = new Set()
           for (const paragraph of stats.lookupParagraphs.get(target.id)) for (let p = paragraph - 8; p <= paragraph + 8; p++) {
             for (const id of byParagraph.get(p) || []) candidates.add(id)
@@ -6231,7 +6237,9 @@ function createHostPlugin(graphContractOnly) {
             .sort((a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)))
           const bridges = ranked.filter(item => stats.componentById.get(item.node.id) !== stats.componentById.get(target.id))
           const distant = bridges.filter(item => Number.isFinite(item.distance) && item.distance > 8)
-          return Array.from(new Map([...distant.slice(0, 2), ...bridges.slice(0, 3), ...ranked.slice(0, 6)].map(item => [item.node.id, item.node])).values())
+          const related = Array.from(new Map([...distant.slice(0, 2), ...bridges.slice(0, 3), ...ranked.slice(0, 6)].map(item => [item.node.id, item.node])).values())
+          relatedByTarget.set(target.id, related)
+          return related
         }
         const groups = []
         if (nodes.length <= MAX_RELATION_WEAVE_NODES && relationEvidenceUnitsHost(nodes, paragraphTexts).reduce((sum, unit) => sum + unit.text.length, 0) <= MAX_RELATION_WEAVE_SOURCE_CHARS) {
@@ -6915,13 +6923,20 @@ function createHostPlugin(graphContractOnly) {
         if (!model && !reviewer) { review.skippedReason = 'reviewer_unavailable'; return review }
         const rejected = new Set()
         const reviewedEdges = new Set()
-        const decisions = task.postprocess?.decisions || {}
+        const decisions = task.postprocess?.decisions || task.relationReviewCache || {}
+        let sourceHash = task.postprocess?.sourceHash
         const updateReviewProgress = () => {
           const summary = { eligible: review.eligible, reviewed: review.reviewed, pending: review.eligible - review.reviewed, reused: review.reused }
           if (task.progress) task.progress.review = summary
           if (task.postprocess) task.postprocess.reviewSummary = summary
         }
-        const decisionHash = edge => sha256HexHost(JSON.stringify({ policy: 'relation-review-v2', edge, from: byId.get(edge.fromNodeId), to: byId.get(edge.toNodeId), sourceHash: task.postprocess?.sourceHash }))
+        // Preserve the persisted v2 codec exactly. Task-local reuse additionally
+        // binds the actual source paragraphs and ontology, never just edge ids.
+        const decisionHash = edge => {
+          if (!task.postprocess && sourceHash === undefined) sourceHash = sha256HexHost(JSON.stringify(paragraphTexts))
+          return sha256HexHost(JSON.stringify({ policy: task.postprocess ? 'relation-review-v2' : 'relation-review-task-v1', edge, from: byId.get(edge.fromNodeId), to: byId.get(edge.toNodeId), sourceHash,
+            ...(task.postprocess ? {} : { ontology: ontIdOf(task) }) }))
+        }
         const admit = (edge, verdict) => {
           review.reviewed++
           reviewedEdges.add(edge)
@@ -6995,18 +7010,18 @@ function createHostPlugin(graphContractOnly) {
             }
             // Validate the complete response before changing any admission decision.
             await save(async () => {
-              const nextDecisions = { ...decisions }
-              for (const item of selected) nextDecisions[decisionHash(item.edge)] = verdicts.get(item.id)
+              const additions = {}
+              for (const item of selected) additions[decisionHash(item.edge)] = verdicts.get(item.id)
               if (task.postprocess) {
                 const previous = task.postprocess
-                task.postprocess = { ...previous, decisions: nextDecisions, reviewSummary: {
+                task.postprocess = { ...previous, decisions: { ...decisions, ...additions }, reviewSummary: {
                   eligible: review.eligible, reviewed: review.reviewed + selected.length,
                   pending: review.eligible - review.reviewed - selected.length, reused: review.reused,
                 } }
                 try { if (task.persistPostprocess) await task.persistPostprocess() }
                 catch (error) { task.postprocess = previous; throw error }
               }
-              Object.assign(decisions, nextDecisions)
+              Object.assign(decisions, additions)
               for (const item of selected) admit(item.edge, verdicts.get(item.id))
               updateReviewProgress()
             })
@@ -8430,6 +8445,9 @@ function createHostPlugin(graphContractOnly) {
       async function runRelationRetryTask(task) {
         if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
         task.cancelHooks = []
+        // A continuous run can rediscover the same withheld edge in adjacent
+        // cycles. Reuse only this task's fully validated independent verdicts.
+        task.relationReviewCache = {}
         task.progress = { stage: '准备关系补全', charsReceived: 0, updatedAt: Date.now(),
           completion: { continuous: task.continuous === true, savedCycles: 0, acceptedEdges: 0, savedTargets: 0 } }
         activeTask = task
@@ -8471,6 +8489,7 @@ function createHostPlugin(graphContractOnly) {
           else if (error && error.code === 'timeout') failTask(task, 'timeout', '关系补全超时：' + (error && error.message ? error.message : String(error)))
           else failTask(task, 'failed', '关系补全失败：' + (error && error.message ? error.message : String(error)))
         } finally {
+          delete task.relationReviewCache
           if (task.status !== 'succeeded' && task.progress.completion.savedCycles) {
             task.errorMessage += '；已保存 ' + task.progress.completion.savedTargets + '/' + task.progress.completion.totalTargets + ' 个节点的检索进度，可从此继续'
           }

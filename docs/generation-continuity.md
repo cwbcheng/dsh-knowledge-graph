@@ -63,6 +63,36 @@ and validation scope for compatibility; they are not silently reinterpreted as
 version 2. Subsequent new waves/journals use version 2. Unknown versions fail
 closed.
 
+## Generation and Completion Speed
+
+Existing-graph retrieval counts exact token overlap by iterating the smaller
+of the query and node token sets. It retains the original score denominator,
+normalization, recent-node tie breaking, and result limit. Text edits still
+invalidate the existing per-node token cache. Relation similarity likewise
+uses the smaller set without changing its Jaccard score.
+
+Relation discovery computes each target's ranked candidates once per frozen
+grouping plan, reusing them for context reservation and group filling. This
+cache does not survive the invocation: later edge additions, evidence changes,
+and source edits receive a new plan. No candidate, target, or evidence limits
+are reduced.
+
+Continuous relation completion keeps a task-local cache of fully validated
+independent-review verdicts. An identical withheld candidate rediscovered in
+a later cycle does not require the same model review again. Keys bind the
+complete edge, both complete endpoint nodes, actual ordered source paragraphs,
+and ontology. Changed semantics or evidence cause a fresh review. Discovery
+still searches every target, and cached rejections stay rejected. Malformed,
+partial, failed, or cancelled reviews do not populate the cache.
+The source fingerprint is computed lazily, so a cycle with no review candidates
+does not scan the entire source merely to build unused cache keys.
+
+This cache is discarded on completion, failure, or cancellation; a new explicit
+run gets a fresh review. It is not hydrated from stored graph annotations.
+Extraction recovery retains its existing durable version-2 review codec and
+write-before-admission behavior. Canonical persistence and invariant checks
+are unchanged.
+
 ## Regression Evidence
 
 - `kg-ontology-extraction-smoke.mjs`: dynamic append prompt, source offsets,
@@ -82,6 +112,15 @@ closed.
 - `kg-weave-semantic-cache-smoke.mjs`: changed relation semantics invalidate a
   cached search, unchanged empty results are reused, and the version-1 codec
   still restores compatible journals without extra model calls.
+- `kg-generation-speed-smoke.mjs`: exact agreement with exhaustive digest
+  ranking, mutation invalidation, bounded token probes, and no duplicate
+  target/candidate scoring within a plan.
+- `kg-relation-review-cache-smoke.mjs`: source/ontology/attribute/direction/
+  evidence invalidation, supported and rejected verdicts, incomplete responses,
+  cancellation, failed durable writes, and legacy review keys. A persistent
+  continuous-completion fixture searches all 137 targets in three saved cycles
+  with 12 discovery calls and one review of a repeated rejected candidate;
+  a second explicit run performs a fresh review.
 
 Run the standard `npm test` command for these checks and the existing evidence,
 concurrency, cancellation, checkpoint, semantic, and packaging regressions.
