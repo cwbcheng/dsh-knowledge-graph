@@ -93,6 +93,21 @@ Extraction recovery retains its existing durable version-2 review codec and
 write-before-admission behavior. Canonical persistence and invariant checks
 are unchanged.
 
+Invariant validation retains a single parsed source index per Host runtime,
+keyed by the exact source string. Switching source text replaces it; graph,
+ontology, evidence, normalization warnings, and existing-node authority are
+still checked on every invocation. The cache stores no acceptance decisions.
+
+A batch with no coverage work persists its full `complete` result directly,
+before the extraction worker returns. It does not write an intermediate
+`coverage_pending` record that would immediately be superseded. Batches that
+need coverage still persist the first-pass candidate before coverage begins.
+Each completed sibling remains independently durable before ordered wave merge;
+write failures cannot advance the durable checkpoint or publish a graph. Old
+`coverage_pending` records remain resumable and keep the same generation counts.
+SQLite durability settings, wave merge barriers, and final revision CAS are
+unchanged.
+
 ## Regression Evidence
 
 - `kg-ontology-extraction-smoke.mjs`: dynamic append prompt, source offsets,
@@ -121,6 +136,15 @@ are unchanged.
   continuous-completion fixture searches all 137 targets in three saved cycles
   with 12 discovery calls and one review of a repeated rejected candidate;
   a second explicit run performs a fresh review.
+- `kg-validation-source-cache-smoke.mjs`: one parse for repeated validation,
+  exact fresh-result agreement across changed source/graph/ontology/evidence,
+  normalization warnings, external nodes, and retention of only one source.
+- `kg-generation-checkpoint-speed-smoke.mjs`: one complete write per batch
+  without coverage work, process exit immediately after the durable write,
+  restart without regenerating a completed sibling, legacy prepared-record
+  promotion, unchanged coverage counts, and failed-write isolation.
+- Existing concurrent-extraction and task-pause checks retain coverage-stage
+  recovery, explicit pause, process-kill recovery, and admission-lock checks.
 
 Run the standard `npm test` command for these checks and the existing evidence,
 concurrency, cancellation, checkpoint, semantic, and packaging regressions.

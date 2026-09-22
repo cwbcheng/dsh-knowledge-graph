@@ -2827,9 +2827,8 @@ function createHostPlugin(graphContractOnly) {
       }
 
       async function repairMechanismCoverageHost(task, model, batch, accepted, acc, existingIds, existingDigest, batchContext, totalParagraphs, batchLabel) {
-        const result = { attempted: false, addedNodes: 0, addedEdges: 0, prunedNodes: 0 }
-        if (!mechanismCoverageNeededHost(batch, accepted)) return result
-        result.attempted = true
+        // The caller checks coverage before choosing the durable batch stage.
+        const result = { attempted: true, addedNodes: 0, addedEdges: 0, prunedNodes: 0 }
         const seeded = applyDeterministicLimitationCoverageHost(task, batch, accepted, acc, existingIds, batchContext, totalParagraphs)
         result.addedNodes += seeded.addedNodes
         result.prunedNodes += seeded.prunedNodes
@@ -3942,6 +3941,7 @@ function createHostPlugin(graphContractOnly) {
         return graph
       }
 
+      let invariantSourceCache = null
       function validateGraphInvariantsHost(graph, sourceText, options = {}) {
         const typeLookup = ontTypeAliases(graph)
         const relationLookup = ontRelationAliases(graph)
@@ -3994,8 +3994,13 @@ function createHostPlugin(graphContractOnly) {
         const edgeKey = (edge) => edge && typeof edge.fromNodeId === 'string' && typeof edge.toNodeId === 'string'
           ? edge.fromNodeId + '>' + edge.toNodeId
           : ''
-        const paras = splitParagraphsOffsetsHost(sourceText || '')
-        const paragraphTexts = paras.map((paragraph) => paragraph.text)
+        const source = sourceText || ''
+        // Retain only the latest immutable source index, never a graph verdict.
+        if (!invariantSourceCache || typeof source !== 'string' || invariantSourceCache.text !== source) {
+          const paras = splitParagraphsOffsetsHost(source)
+          invariantSourceCache = { text: source, paras, paragraphTexts: paras.map((paragraph) => paragraph.text) }
+        }
+        const { paras, paragraphTexts } = invariantSourceCache
         // One validation pass shares source normalization across all node lookups.
         // This is not a validation-result cache: every invariant still runs.
         const sourceForms = new Map()
@@ -7683,7 +7688,7 @@ function createHostPlugin(graphContractOnly) {
             : (effectiveTaskKind === 'append'
               ? appendPromptFor(task)
               : (effectiveTaskKind === 'trajectory' ? TRAJ_SYSTEM_PROMPT : systemPromptFor(task)))
-          const extractBatch = async (i, prepared, savePrepared) => {
+          const extractBatch = async (i, prepared, saveBatchResult) => {
             const generationInvariantRepairs = prepared?.metrics?.repairs?.slice() || []
             let generationInvariantRetries = prepared?.metrics?.retries || 0, generationInvariantCollapseRetries = prepared?.metrics?.collapseRetries || 0
             let initialAcceptedNodes = 0, initialAcceptedEdges = 0
@@ -7844,7 +7849,18 @@ function createHostPlugin(graphContractOnly) {
             }
             initialAcceptedNodes += norm.nodes.length
             initialAcceptedEdges += norm.edges.length
-            if (!prepared) await savePrepared({norm, metrics: {repairs:generationInvariantRepairs, retries:generationInvariantRetries, collapseRetries:generationInvariantCollapseRetries}})
+            const completedResult = () => ({ norm, metrics: { repairs: generationInvariantRepairs, retries: generationInvariantRetries, collapseRetries: generationInvariantCollapseRetries,
+              nodes: initialAcceptedNodes, edges: initialAcceptedEdges, coverageAttempted: coverageAttemptedBatches, coverageRepaired: coverageRepairedBatches,
+              coverageNodes: coverageAddedNodes, coverageEdges: coverageAddedEdges, coveragePruned: coveragePrunedNodes } })
+            const needsCoverage = (effectiveTaskKind === 'extract' || effectiveTaskKind === 'append') && mechanismCoverageNeededHost(batch, norm)
+            if (!needsCoverage) {
+              const result = completedResult()
+              // Persist before returning: a pause/crash must not lose a completed
+              // model result just because there was no coverage work to checkpoint.
+              await saveBatchResult(result, 'complete')
+              return result
+            }
+            if (!prepared) await saveBatchResult({norm, metrics: {repairs:generationInvariantRepairs, retries:generationInvariantRetries, collapseRetries:generationInvariantCollapseRetries}})
             if (effectiveTaskKind === 'extract' || effectiveTaskKind === 'append') {
               const coverage = await repairMechanismCoverageHost(task, model, batch, norm, acc, existingIds, existingDigest, batchContext, paras.length, (i + 1) + '/' + batches.length)
               if (coverage.attempted) coverageAttemptedBatches += 1
@@ -7856,9 +7872,7 @@ function createHostPlugin(graphContractOnly) {
                 norm.warnings.push('coverage_repair_added:nodes=' + coverage.addedNodes + ':edges=' + coverage.addedEdges)
               }
             }
-            return { norm, metrics: { repairs: generationInvariantRepairs, retries: generationInvariantRetries, collapseRetries: generationInvariantCollapseRetries,
-              nodes: initialAcceptedNodes, edges: initialAcceptedEdges, coverageAttempted: coverageAttemptedBatches, coverageRepaired: coverageRepairedBatches,
-              coverageNodes: coverageAddedNodes, coverageEdges: coverageAddedEdges, coveragePruned: coveragePrunedNodes } }
+            return completedResult()
           }
           for (let waveStart = resumeFromBatch; waveStart < batches.length;) {
             throwIfTaskCancelledHost(task)
@@ -7898,17 +7912,19 @@ function createHostPlugin(graphContractOnly) {
               throwIfTaskCancelledHost(task)
               task.progress.parallel.active++
               try {
-                const result = await extractBatch(i, wave.results[i], async prepared => {
+                const result = await extractBatch(i, wave.results[i], async (record, stage = 'coverage_pending') => {
                   throwIfTaskCancelledHost(task)
-                  wave.results[i] = {chunkId:batches[i].chunkId, inputHash:sha256HexHost(JSON.stringify(batches[i].units)), stage:'coverage_pending', ...JSON.parse(JSON.stringify(prepared))}
+                  wave.results[i] = {chunkId:batches[i].chunkId, inputHash:sha256HexHost(JSON.stringify(batches[i].units)), stage, ...JSON.parse(JSON.stringify(record))}
                   await saveWave()
                   updateSavedCounts()
                 })
                 if (result.failure) throw taskOperationErrorHost(result.failure.code, result.failure.message, 'batch_extract')
                 throwIfTaskCancelledHost(task)
-                wave.results[i] = { chunkId: batches[i].chunkId, inputHash: sha256HexHost(JSON.stringify(batches[i].units)), stage: 'complete', norm: result.norm, metrics: result.metrics }
-                await saveWave()
-                updateSavedCounts()
+                if (wave.results[i].stage !== 'complete') {
+                  wave.results[i] = { chunkId: batches[i].chunkId, inputHash: sha256HexHost(JSON.stringify(batches[i].units)), stage: 'complete', norm: result.norm, metrics: result.metrics }
+                  await saveWave()
+                  updateSavedCounts()
+                }
                 return result.norm
               } finally { task.progress.parallel.active-- }
             }))
