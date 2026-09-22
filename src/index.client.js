@@ -4126,6 +4126,25 @@ export default function clientPlugin() {
       }
 
       // --------------------------- GraphViewer ---------------------------
+      function graphYield(signal) {
+        return new Promise((resolve, reject) => {
+          if (signal && signal.aborted) { reject(new DOMException('已取消加载', 'AbortError')); return }
+          let timer = null, settled = false
+          const finish = error => {
+            if (settled) return
+            settled = true
+            if (timer !== null) clearTimeout(timer)
+            if (signal) signal.removeEventListener('abort', abort)
+            if (error) reject(error); else resolve()
+          }
+          const abort = () => finish(new DOMException('已取消加载', 'AbortError'))
+          if (signal) signal.addEventListener('abort', abort, { once: true })
+          // Let input, cancellation and React updates run between bounded batches.
+          // Painting is a stage barrier, not a fixed delay after every 8ms of work.
+          timer = setTimeout(() => finish(), 0)
+        })
+      }
+
       function graphPaint(signal) {
         return new Promise((resolve, reject) => {
           let frame = null, timer = null, settled = false
@@ -4140,7 +4159,7 @@ export default function clientPlugin() {
           const abort = () => finish(new DOMException('已取消加载', 'AbortError'))
           if (signal && signal.aborted) { abort(); return }
           if (signal) signal.addEventListener('abort', abort, { once: true })
-          // Two frames let React commit and the browser paint before the next batch.
+          // Two frames let React commit and the browser paint before the next stage.
           // Throttled/background tabs must not stall the entire loading pipeline.
           timer = setTimeout(() => finish(), 100)
           frame = requestAnimationFrame(() => {
@@ -4224,7 +4243,7 @@ export default function clientPlugin() {
           for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges)) sizes.set(id, size)
           if (performance.now() - lastYield >= 8 || index + 100 >= nodes.length) {
             report({ stage: 0, title: '测量节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
-            await graphPaint(signal)
+            await graphYield(signal)
             lastYield = performance.now()
           }
         }
@@ -4256,7 +4275,7 @@ export default function clientPlugin() {
             }
             if (performance.now() - lastYield >= 8 || index === edges.length - 1) {
               report({ stage: 2, title: '整理连线', detail: (index + 1) + '/' + edges.length + ' 条关系' })
-              await graphPaint(signal)
+              await graphYield(signal)
               lastYield = performance.now()
             }
           }
