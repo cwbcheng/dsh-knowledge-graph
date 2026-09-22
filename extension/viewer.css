@@ -199,7 +199,8 @@
 .kg-h-handle { display: flex; align-items: center; justify-content: center; height: 10px; margin-top: 10px; cursor: row-resize; touch-action: none; user-select: none; }
 .kg-h-bar { width: 56px; height: 3px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; }
 .kg-h-handle:hover .kg-h-bar, .kg-h-handle:active .kg-h-bar { background: #3b82f6; }
-.kg-para { border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; background: var(--kg-panel); cursor: pointer; transition: border-color 0.15s; }
+/* Source navigation measures paragraph offsets; estimated offscreen heights break long-distance jumps. */
+.kg-para { flex-shrink: 0; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; background: var(--kg-panel); cursor: pointer; transition: border-color 0.15s; }
 .kg-para:hover { border-color: rgba(59,130,246,0.6); }
 .kg-para p { margin: 6px 0 2px; white-space: pre-wrap; font-size: 13.5px; word-break: break-word; }
 .kg-para:focus-visible { outline: 2px solid rgba(59,130,246,0.55); outline-offset: 1px; }
@@ -331,7 +332,7 @@
 .kg-win-title { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kg-win-close { flex: none; width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent; color: var(--kg-text-dim); font-size: 16px; line-height: 1; cursor: pointer; }
 .kg-win-close:hover { background: rgba(239,68,68,0.14); color: #dc2626; }
-.kg-win-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; container-type: inline-size; }
+.kg-win-body { box-sizing: border-box; flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; container-type: inline-size; }
 .kg-win-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; }
 .kg-win-resize::after { content: ''; position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px; border-right: 2px solid var(--kg-text-dim); border-bottom: 2px solid var(--kg-text-dim); border-bottom-right-radius: 2px; }
 @container (min-width: 900px) { .kg-cols { grid-template-columns: minmax(240px, var(--kg-split, 46%)) 12px minmax(0, 1fr); align-items: start; gap: 14px 0; } .kg-split-handle { display: flex; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; user-select: none; } .kg-split-bar { width: 3px; height: 52px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; } .kg-split-handle:hover .kg-split-bar, .kg-split-handle:active .kg-split-bar { background: #3b82f6; } .kg-graph-col { position: sticky; top: 10px; } }

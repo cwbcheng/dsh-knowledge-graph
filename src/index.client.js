@@ -240,7 +240,8 @@ export default function clientPlugin() {
 .kg-h-handle { display: flex; align-items: center; justify-content: center; height: 10px; margin-top: 10px; cursor: row-resize; touch-action: none; user-select: none; }
 .kg-h-bar { width: 56px; height: 3px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; }
 .kg-h-handle:hover .kg-h-bar, .kg-h-handle:active .kg-h-bar { background: #3b82f6; }
-.kg-para { border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; background: var(--kg-panel); cursor: pointer; transition: border-color 0.15s; }
+/* Source navigation measures paragraph offsets; estimated offscreen heights break long-distance jumps. */
+.kg-para { flex-shrink: 0; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; background: var(--kg-panel); cursor: pointer; transition: border-color 0.15s; }
 .kg-para:hover { border-color: rgba(59,130,246,0.6); }
 .kg-para p { margin: 6px 0 2px; white-space: pre-wrap; font-size: 13.5px; word-break: break-word; }
 .kg-para:focus-visible { outline: 2px solid rgba(59,130,246,0.55); outline-offset: 1px; }
@@ -372,7 +373,7 @@ export default function clientPlugin() {
 .kg-win-title { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kg-win-close { flex: none; width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent; color: var(--kg-text-dim); font-size: 16px; line-height: 1; cursor: pointer; }
 .kg-win-close:hover { background: rgba(239,68,68,0.14); color: #dc2626; }
-.kg-win-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; container-type: inline-size; }
+.kg-win-body { box-sizing: border-box; flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; container-type: inline-size; }
 .kg-win-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; }
 .kg-win-resize::after { content: ''; position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px; border-right: 2px solid var(--kg-text-dim); border-bottom: 2px solid var(--kg-text-dim); border-bottom-right-radius: 2px; }
 @container (min-width: 900px) { .kg-cols { grid-template-columns: minmax(240px, var(--kg-split, 46%)) 12px minmax(0, 1fr); align-items: start; gap: 14px 0; } .kg-split-handle { display: flex; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; user-select: none; } .kg-split-bar { width: 3px; height: 52px; border-radius: 2px; background: var(--kg-border); transition: background 0.15s; } .kg-split-handle:hover .kg-split-bar, .kg-split-handle:active .kg-split-bar { background: #3b82f6; } .kg-graph-col { position: sticky; top: 10px; } }
@@ -4426,18 +4427,42 @@ export default function clientPlugin() {
 
         useEffect(() => { fitView() }, [fitView])
 
-        // Refit (debounced) when the container resizes (window resize / split drag / height drag).
+        // Resize previews change CSS only. Keep the camera still until release;
+        // otherwise slow pointer events can repeatedly trigger the debounce.
         useEffect(() => {
           const el = containerRef.current
           if (!el || typeof ResizeObserver === 'undefined') return
           let timer = null
+          let width = el.clientWidth, height = el.clientHeight
+          const syncChangedSize = () => {
+            if (el.closest('[data-kg-geometry-drag]')) return
+            const nextWidth = el.clientWidth, nextHeight = el.clientHeight
+            if (nextWidth === width && nextHeight === height) return
+            const dx = (nextWidth - width) / 2, dy = (nextHeight - height) / 2
+            width = nextWidth; height = nextHeight
+            // Keep the same graph location and zoom under the viewport center.
+            setView(current => ({ ...current, tx: current.tx + dx, ty: current.ty + dy }))
+          }
           const ro = new ResizeObserver(() => {
             if (timer) { timer(); timer = null }
-            timer = ctx.timeout(() => { timer = null; fitView() }, 250)
+            timer = ctx.timeout(() => {
+              timer = null
+              syncChangedSize()
+            }, 250)
           })
+          const onSettled = event => {
+            if (!event.target.contains(el)) return
+            if (timer) { timer(); timer = null }
+            syncChangedSize()
+          }
           ro.observe(el)
-          return () => { ro.disconnect(); if (timer) { timer(); timer = null } }
-        }, [fitView])
+          el.ownerDocument.addEventListener('kg-geometry-settled', onSettled)
+          return () => {
+            ro.disconnect()
+            el.ownerDocument.removeEventListener('kg-geometry-settled', onSettled)
+            if (timer) { timer(); timer = null }
+          }
+        }, [fitView, setView])
 
         // Focus a node (paragraph click -> graph).
         useEffect(() => {
@@ -5670,14 +5695,130 @@ export default function clientPlugin() {
         )
       }
 
+      // Preview geometry without rerendering thousands of source paragraphs and
+      // SVG elements. React and storage receive exactly the final pointer value.
+      function createGeometryDrag(requestFrame, cancelFrame) {
+        let active = null, frame = null
+        const clearFrame = () => { if (frame !== null) { cancelFrame(frame); frame = null } }
+        const finish = (event, cancelled) => {
+          if (!active || (event && event.pointerId !== active.id)) return
+          const drag = active
+          if (!cancelled && event?.type === 'pointerup') drag.value = drag.project(event.clientX - drag.x, event.clientY - drag.y)
+          active = null
+          clearFrame()
+          drag.cleanup()
+          drag.preview(cancelled ? drag.initial : drag.value)
+          drag.releasePreview?.()
+          if (drag.resize) drag.surface.removeAttribute('data-kg-geometry-drag')
+          if (drag.target.hasPointerCapture(drag.id)) drag.target.releasePointerCapture(drag.id)
+          if (!cancelled) drag.commit(drag.value)
+          if (drag.resize) drag.surface.dispatchEvent(new Event('kg-geometry-settled', { bubbles: true }))
+        }
+        const controller = {
+          start(event, options) {
+            if (active || !options.surface || event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return
+            const target = event.currentTarget
+            target.setPointerCapture(event.pointerId)
+            event.preventDefault()
+            event.stopPropagation()
+            active = { resize: true, ...options, target, id: event.pointerId, x: event.clientX, y: event.clientY, value: options.initial }
+            const doc = target.ownerDocument
+            const cancel = () => finish(null, true)
+            doc.addEventListener('pointermove', controller.move)
+            doc.addEventListener('pointerup', controller.end)
+            doc.addEventListener('pointercancel', controller.cancel)
+            target.addEventListener('lostpointercapture', controller.cancel)
+            doc.defaultView?.addEventListener('blur', cancel)
+            active.cleanup = () => {
+              doc.removeEventListener('pointermove', controller.move)
+              doc.removeEventListener('pointerup', controller.end)
+              doc.removeEventListener('pointercancel', controller.cancel)
+              target.removeEventListener('lostpointercapture', controller.cancel)
+              doc.defaultView?.removeEventListener('blur', cancel)
+            }
+            active.releasePreview = options.preparePreview?.()
+            if (active.resize) active.surface.setAttribute('data-kg-geometry-drag', '')
+          },
+          move(event) {
+            if (!active || event.pointerId !== active.id) return
+            const drag = active
+            drag.value = drag.project(event.clientX - drag.x, event.clientY - drag.y)
+            if (frame !== null) return
+            frame = requestFrame(() => {
+              if (active !== drag) return
+              frame = null
+              drag.preview(drag.value)
+            })
+          },
+          end: event => finish(event, false),
+          cancel: event => finish(event, true),
+        }
+        return controller
+      }
+      function useGeometryDrag() {
+        const ref = useRef(null)
+        if (!ref.current) ref.current = createGeometryDrag(requestAnimationFrame, cancelAnimationFrame)
+        useEffect(() => () => ref.current.cancel(), [])
+        return ref.current
+      }
+      function useResultGeometry({ colsRef, splitRatio, resultHeight, setSplitRatio, setResultHeight, splitKey, heightKey }) {
+        const drag = useGeometryDrag()
+        const start = (event, split) => {
+          const surface = colsRef.current
+          if (!surface) return
+          const initial = split ? splitRatio : resultHeight
+          const width = Math.max(surface.clientWidth, 1)
+          const original = split && surface.querySelector('.kg-original, .kg-traj-original')
+          const originalWidth = original ? original.getBoundingClientRect().width : 0
+          const sized = split ? [] : [...surface.querySelectorAll('.kg-graph-stage, .kg-graph, .kg-original, .kg-traj-original')]
+            .map(el => ({ el, key: el.matches('.kg-original, .kg-traj-original') ? 'maxHeight' : 'height' }))
+          drag.start(event, {
+            surface, initial,
+            preparePreview: () => {
+              const columns = surface.style.gridTemplateColumns
+              const sizes = sized.map(({ el, key }) => el.style[key])
+              const originalStyle = original && { width: original.style.width, clipPath: original.style.clipPath }
+              if (original) original.style.width = originalWidth + 'px'
+              // A percentage-sized SVG invalidates every node when its viewport
+              // changes. Resize the clipping container, then fit the SVG once.
+              const svg = surface.querySelector('.kg-graph > svg')
+              const width = svg?.style.width, height = svg?.style.height
+              if (svg) {
+                const bounds = svg.getBoundingClientRect()
+                svg.style.width = bounds.width + 'px'; svg.style.height = bounds.height + 'px'
+              }
+              return () => {
+                surface.style.gridTemplateColumns = columns
+                sized.forEach(({ el, key }, i) => { el.style[key] = sizes[i] })
+                if (original) Object.assign(original.style, originalStyle)
+                if (svg) { svg.style.width = width; svg.style.height = height }
+              }
+            },
+            project: (dx, dy) => split ? clamp(initial + dx / width * 100, 24, 70) : clamp(initial + dy, 320, 900),
+            // Inherited CSS variables would invalidate styles on the entire
+            // source/SVG subtree at every move. Preview only container styles.
+            preview: value => {
+              if (split) {
+                surface.style.gridTemplateColumns = 'minmax(240px, ' + value + '%) 12px minmax(0, 1fr)'
+                if (original) original.style.clipPath = 'inset(0 ' + Math.max(0, originalWidth - Math.max(240, width * value / 100)) + 'px 0 0)'
+              }
+              else sized.forEach(({ el, key }) => { el.style[key] = value + 'px' })
+            },
+            commit: value => {
+              if (split) setSplitRatio(value); else setResultHeight(value)
+              try { localStorage.setItem(split ? splitKey : heightKey, String(Math.round(value))) } catch (error) {}
+            },
+          })
+        }
+        return { startSplitDrag: event => start(event, true), startHDrag: event => start(event, false) }
+      }
+
       function WindowInner({ ctx }) {
         const winRef = useRef(null)
-        const dragRef = useRef(null)
-        const resizeRef = useRef(null)
+        const geometryDrag = useGeometryDrag()
         const [rect, setRect] = useState(() => loadWinRect())
-        const rectRef = useRef(rect)
         const toastMsg = useSyncExternalStore(toastStore.subscribe, toastStore.get)
-        useEffect(() => { rectRef.current = rect }, [rect])
+        const body = useMemo(() => h(WorkbenchBody, { ctx }), [ctx])
 
         useEffect(() => {
           const onKey = (e) => { if (e.key === 'Escape') winStore.setOpen(false) }
@@ -5689,68 +5830,40 @@ export default function clientPlugin() {
           try { localStorage.setItem(LS_WIN, JSON.stringify({ x: r.x, y: r.y, w: r.w, h: r.h })) } catch (e) {}
         }
 
-        const onBarDown = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          if (e.target && typeof e.target.closest === 'function' && e.target.closest('button')) return
-          const el = winRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          dragRef.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: rectRef.current.x, y: rectRef.current.y }
-        }
-        const onResizeDown = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          const el = winRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          resizeRef.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, w: rectRef.current.w, h: rectRef.current.h }
-        }
-        const onWinMove = (e) => {
-          const d = dragRef.current
-          if (d && d.id === e.pointerId) {
-            const r = rectRef.current
-            setRect({
-              ...r,
-              x: clamp(d.x + (e.clientX - d.sx), -r.w + 140, window.innerWidth - 80),
-              y: clamp(d.y + (e.clientY - d.sy), 0, window.innerHeight - 44),
-            })
-            return
-          }
-          const z = resizeRef.current
-          if (z && z.id === e.pointerId) {
-            const r = rectRef.current
-            setRect({
-              ...r,
-              w: clamp(z.w + (e.clientX - z.sx), 480, window.innerWidth - 12),
-              h: clamp(z.h + (e.clientY - z.sy), 360, window.innerHeight - 12),
-            })
-          }
-        }
-        const onWinUp = (e) => {
-          if (dragRef.current && dragRef.current.id === e.pointerId) {
-            dragRef.current = null
-            saveRect(rectRef.current)
-          }
-          if (resizeRef.current && resizeRef.current.id === e.pointerId) {
-            resizeRef.current = null
-            saveRect(rectRef.current)
-          }
+        const startWindowDrag = (event, resize) => {
+          if (!resize && event.target.closest('button')) return
+          const surface = winRef.current
+          geometryDrag.start(event, {
+            surface, initial: rect, resize,
+            preparePreview: resize ? () => {
+              // Keep source text at its current width while the frame follows
+              // the pointer; reflow the book only once, after releasing it.
+              const body = surface.querySelector('.kg-win-body')
+              const width = body.style.width
+              body.style.width = body.getBoundingClientRect().width + 'px'
+              return () => { body.style.width = width }
+            } : null,
+            project: (dx, dy) => resize
+              ? { ...rect, w: clamp(rect.w + dx, 480, window.innerWidth - 12), h: clamp(rect.h + dy, 360, window.innerHeight - 12) }
+              : { ...rect, x: clamp(rect.x + dx, -rect.w + 140, window.innerWidth - 80), y: clamp(rect.y + dy, 0, window.innerHeight - 44) },
+            preview: value => Object.assign(surface.style, { left: value.x + 'px', top: value.y + 'px', width: value.w + 'px', height: value.h + 'px' }),
+            commit: value => { setRect(value); saveRect(value) },
+          })
         }
 
         return h('div', {
           className: 'kg-win', ref: winRef,
           role: 'dialog', 'aria-label': '资料 ⇄ 知识图 浮动工作台',
           style: { left: rect.x, top: rect.y, width: rect.w, height: rect.h },
-          onPointerMove: onWinMove,
-          onPointerUp: onWinUp,
         },
-          h('div', { className: 'kg-win-bar', onPointerDown: onBarDown, title: '拖动移动窗口' },
+          h('div', { className: 'kg-win-bar', onPointerDown: event => startWindowDrag(event, false), title: '拖动移动窗口' },
             h('span', { className: 'kg-win-dot', 'aria-hidden': 'true' }),
             h('span', { className: 'kg-win-title' }, '知识库 · 资料 ⇄ 知识图'),
             h('button', { type: 'button', className: 'kg-win-close', 'aria-label': '关闭工作台', onClick: () => winStore.setOpen(false) }, '×'),
           ),
-          h('div', { className: 'kg-win-body' }, h(WorkbenchBody, { ctx })),
+          h('div', { className: 'kg-win-body' }, body),
           toastMsg ? h('div', { className: 'kg-toast', role: 'status' }, toastMsg) : null,
-          h('div', { className: 'kg-win-resize', 'aria-hidden': 'true', onPointerDown: onResizeDown, title: '拖动调整大小' }),
+          h('div', { className: 'kg-win-resize', 'aria-hidden': 'true', onPointerDown: event => startWindowDrag(event, true), title: '拖动调整大小' }),
         )
       }
 
@@ -6264,9 +6377,6 @@ export default function clientPlugin() {
           }
         }
         const colsRef = useRef(null)
-        const splitDragRef = useRef(null)
-        const hHandleRef = useRef(null)
-        const hDragRef = useRef(null)
         const submittedRef = useRef(null)
         const submissionBusyRef = useRef(false)
         const resumeAttemptRef = useRef(false)
@@ -8105,47 +8215,10 @@ export default function clientPlugin() {
           mergeServerHistory(loadHistory()).then(setHistory)
         }
 
-        // ---- column width / row height drag handlers ----
-        const startSplitDrag = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          const el = colsRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          splitDragRef.current = { id: e.pointerId, startX: e.clientX, startW: el.clientWidth, startRatio: splitRatio }
-        }
-        const onSplitMove = (e) => {
-          const d = splitDragRef.current
-          if (!d || d.id !== e.pointerId) return
-          const el = colsRef.current
-          if (!el) return
-          const dx = e.clientX - d.startX
-          setSplitRatio(clamp(d.startRatio + (dx / Math.max(d.startW, 1)) * 100, 24, 70))
-        }
-        const onSplitUp = (e) => {
-          if (splitDragRef.current && splitDragRef.current.id === e.pointerId) {
-            splitDragRef.current = null
-            try { localStorage.setItem(LS_SPLIT, String(Math.round(splitRatio))) } catch (err) {}
-          }
-        }
-
-        const startHDrag = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          const el = hHandleRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          hDragRef.current = { id: e.pointerId, startY: e.clientY, startH: resultHeight }
-        }
-        const onHMove = (e) => {
-          const d = hDragRef.current
-          if (!d || d.id !== e.pointerId) return
-          setResultHeight(clamp(d.startH + (e.clientY - d.startY), 320, 900))
-        }
-        const onHUp = (e) => {
-          if (hDragRef.current && hDragRef.current.id === e.pointerId) {
-            hDragRef.current = null
-            try { localStorage.setItem(LS_HEIGHT, String(Math.round(resultHeight))) } catch (err) {}
-          }
-        }
+        const { startSplitDrag, startHDrag } = useResultGeometry({
+          colsRef, splitRatio, resultHeight, setSplitRatio, setResultHeight,
+          splitKey: LS_SPLIT, heightKey: LS_HEIGHT,
+        })
 
         // ---- view constructors ----
         const chapterSections = resultView ? chapterSectionsOf(resultView.graph) : []
@@ -8356,8 +8429,6 @@ export default function clientPlugin() {
                   className: 'kg-cols',
                   ref: colsRef,
                   style: { '--kg-split': splitRatio + '%' },
-                  onPointerMove: onSplitMove,
-                  onPointerUp: onSplitUp,
                 },
                   h('div', { className: 'kg-original', 'aria-label': '原文段落', style: { maxHeight: resultHeight + 'px' } },
                     visualImages.length > 0 && visualMeta.kind !== 'markdown-assets' ? h(React.Fragment, null,
@@ -8425,10 +8496,7 @@ export default function clientPlugin() {
                 h('div', {
                   className: 'kg-h-handle', role: 'separator', 'aria-orientation': 'horizontal',
                   'aria-label': '拖动调整结果区高度', title: '拖动调整高度',
-                  ref: hHandleRef,
                   onPointerDown: startHDrag,
-                  onPointerMove: onHMove,
-                  onPointerUp: onHUp,
                 },
                   h('div', { className: 'kg-h-bar' })),
               )
@@ -8769,9 +8837,6 @@ export default function clientPlugin() {
         const toastTimer = useRef(null)
         const sessionSeq = useRef(0)
         const colsRef = useRef(null)
-        const splitDragRef = useRef(null)
-        const hHandleRef = useRef(null)
-        const hDragRef = useRef(null)
         const mountedSessionRef = useRef(null)
         const trajRevisionRef = useRef(0)
         const trajCommitQueueRef = useRef(Promise.resolve())
@@ -9721,46 +9786,10 @@ export default function clientPlugin() {
           writeModelChoice(key)
         }
 
-        // ---- column width / result height drag handlers ----
-        const startSplitDrag = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          const el = colsRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          splitDragRef.current = { id: e.pointerId, startX: e.clientX, startW: el.clientWidth, startRatio: splitRatio }
-        }
-        const onSplitMove = (e) => {
-          const d = splitDragRef.current
-          if (!d || d.id !== e.pointerId) return
-          const el = colsRef.current
-          if (!el) return
-          const dx = e.clientX - d.startX
-          setSplitRatio(clamp(d.startRatio + (dx / Math.max(d.startW, 1)) * 100, 24, 70))
-        }
-        const onSplitUp = (e) => {
-          if (splitDragRef.current && splitDragRef.current.id === e.pointerId) {
-            splitDragRef.current = null
-            try { localStorage.setItem(LS_TRAJ_SPLIT, String(Math.round(splitRatio))) } catch (err) {}
-          }
-        }
-        const startHDrag = (e) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return
-          const el = hHandleRef.current
-          if (!el) return
-          el.setPointerCapture(e.pointerId)
-          hDragRef.current = { id: e.pointerId, startY: e.clientY, startH: resultHeight }
-        }
-        const onHMove = (e) => {
-          const d = hDragRef.current
-          if (!d || d.id !== e.pointerId) return
-          setResultHeight(clamp(d.startH + (e.clientY - d.startY), 320, 900))
-        }
-        const onHUp = (e) => {
-          if (hDragRef.current && hDragRef.current.id === e.pointerId) {
-            hDragRef.current = null
-            try { localStorage.setItem(LS_TRAJ_HEIGHT, String(Math.round(resultHeight))) } catch (err) {}
-          }
-        }
+        const { startSplitDrag, startHDrag } = useResultGeometry({
+          colsRef, splitRatio, resultHeight, setSplitRatio, setResultHeight,
+          splitKey: LS_TRAJ_SPLIT, heightKey: LS_TRAJ_HEIGHT,
+        })
 
         const paraEl = (p, i) => {
           const badges = view ? (view.paraTypes[i] || []) : []
@@ -9841,8 +9870,6 @@ export default function clientPlugin() {
                   className: 'kg-traj-cols',
                   ref: colsRef,
                   style: { '--kg-traj-split': splitRatio + '%' },
-                  onPointerMove: onSplitMove,
-                  onPointerUp: onSplitUp,
                 },
                   h('div', { className: 'kg-traj-original', 'aria-label': '轨迹事件', style: { maxHeight: resultHeight + 'px' } },
                     view.paragraphs.map(paraEl)),
@@ -9885,10 +9912,7 @@ export default function clientPlugin() {
                 h('div', {
                   className: 'kg-h-handle', role: 'separator', 'aria-orientation': 'horizontal',
                   'aria-label': '拖动调整结果区高度', title: '拖动调整高度',
-                  ref: hHandleRef,
                   onPointerDown: startHDrag,
-                  onPointerMove: onHMove,
-                  onPointerUp: onHUp,
                 },
                   h('div', { className: 'kg-h-bar' })),
               )

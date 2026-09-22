@@ -3899,18 +3899,42 @@
 
         useEffect(() => { fitView() }, [fitView])
 
-        // Refit (debounced) when the container resizes (window resize / split drag / height drag).
+        // Resize previews change CSS only. Keep the camera still until release;
+        // otherwise slow pointer events can repeatedly trigger the debounce.
         useEffect(() => {
           const el = containerRef.current
           if (!el || typeof ResizeObserver === 'undefined') return
           let timer = null
+          let width = el.clientWidth, height = el.clientHeight
+          const syncChangedSize = () => {
+            if (el.closest('[data-kg-geometry-drag]')) return
+            const nextWidth = el.clientWidth, nextHeight = el.clientHeight
+            if (nextWidth === width && nextHeight === height) return
+            const dx = (nextWidth - width) / 2, dy = (nextHeight - height) / 2
+            width = nextWidth; height = nextHeight
+            // Keep the same graph location and zoom under the viewport center.
+            setView(current => ({ ...current, tx: current.tx + dx, ty: current.ty + dy }))
+          }
           const ro = new ResizeObserver(() => {
             if (timer) { timer(); timer = null }
-            timer = ctx.timeout(() => { timer = null; fitView() }, 250)
+            timer = ctx.timeout(() => {
+              timer = null
+              syncChangedSize()
+            }, 250)
           })
+          const onSettled = event => {
+            if (!event.target.contains(el)) return
+            if (timer) { timer(); timer = null }
+            syncChangedSize()
+          }
           ro.observe(el)
-          return () => { ro.disconnect(); if (timer) { timer(); timer = null } }
-        }, [fitView])
+          el.ownerDocument.addEventListener('kg-geometry-settled', onSettled)
+          return () => {
+            ro.disconnect()
+            el.ownerDocument.removeEventListener('kg-geometry-settled', onSettled)
+            if (timer) { timer(); timer = null }
+          }
+        }, [fitView, setView])
 
         // Focus a node (paragraph click -> graph).
         useEffect(() => {

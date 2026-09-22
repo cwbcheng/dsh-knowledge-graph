@@ -52,7 +52,12 @@ const server = createServer((request, response) => {
   if (path === 'favicon.ico') { response.writeHead(204).end(); return }
   if (!files.has(path)) { response.writeHead(404).end(); return }
   response.setHeader('content-type', 'text/javascript; charset=utf-8')
-  response.end(readFileSync(new URL(path, root)))
+  let body = readFileSync(new URL(path, root), 'utf8')
+  if (path === 'lib/client.js' && process.env.KG_FIXTURE_RESIZE_PROFILE === '1') {
+    body = body.replace(/(function (WindowInner|WorkbenchBody|GraphScene|prepareGraphScene)\([^\n]*\) \{)/g,
+      '$1 window.__kgResizeCounts ||= {}; window.__kgResizeCounts["$2"] = (window.__kgResizeCounts["$2"] || 0) + 1;')
+  }
+  response.end(body)
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 function stop() { server.close(() => { rmSync(dir, { recursive: true, force: true }); process.exit(0) }); server.closeAllConnections() }
