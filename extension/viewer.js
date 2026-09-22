@@ -3579,10 +3579,11 @@
         const chordLen = Math.max(Math.hypot(x2 - x1, y2 - y1), 0.001)
         return { x1, y1, x2, y2, cx, cy, ex: (x2 - x1) / chordLen, ey: (y2 - y1) / chordLen }
       }
+      const GRAPH_MIN_SCALE = 0.3
       function zoomAround(v, factor, px, py) {
         const wx = (px - v.tx) / v.k
         const wy = (py - v.ty) / v.k
-        const k2 = clamp(v.k * factor, 0.5, 2)
+        const k2 = clamp(v.k * factor, GRAPH_MIN_SCALE, 2)
         return { k: k2, tx: px - wx * k2, ty: py - wy * k2 }
       }
 
@@ -4157,7 +4158,7 @@
           const cw = el.clientWidth
           const ch = el.clientHeight
           if (cw <= 0 || ch <= 0) return
-          const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), 0.3, 1)
+          const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), GRAPH_MIN_SCALE, 1)
           setView({ k, tx: cw / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cx * k), ty: ch / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cy * k) })
         }, [bbox])
 

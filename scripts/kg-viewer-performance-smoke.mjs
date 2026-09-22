@@ -32,7 +32,24 @@ const compile = name => new Function('return (' + extractFunction(source, name) 
 // Async preparation, worker cancellation and loading-stage tests live in
 // kg-viewer-loading-smoke.mjs; pointer scheduling stays independent here.
 const schedulerFactory = compile('createGraphViewScheduler')
-const zoomAround = new Function('clamp', 'return (' + extractFunction(source, 'zoomAround') + ')')((v, lo, hi) => Math.max(lo, Math.min(hi, v)))
+const minScale = Number(source.match(/const GRAPH_MIN_SCALE = ([0-9.]+)/)[1])
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+const zoomAround = new Function('clamp', 'GRAPH_MIN_SCALE', 'return (' + extractFunction(source, 'zoomAround') + ')')(clamp, minScale)
+const fitSource = source.slice(source.indexOf('const fitView = useCallback('), source.indexOf('useEffect(() => { fitView() }'))
+let fitted
+const fitView = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'GRAPH_MIN_SCALE', fitSource + '; return fitView')(
+  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'layered', value => { fitted = value }, clamp, minScale,
+)
+fitView()
+assert.equal(fitted.k, minScale)
+assert.equal(zoomAround(fitted, 0.9, 500, 300).k, fitted.k, 'zoom-out at the fit minimum must never zoom in')
+assert.equal(zoomAround(fitted, 1.1, 500, 300).k, fitted.k * 1.1, 'zoom-in from a large-graph fit must not jump to a different minimum')
+for (const factor of [0.9, 1.1, 10, 0.01]) {
+  const next = zoomAround(fitted, factor, 123, 456)
+  assert(next.k >= minScale && next.k <= 2)
+  assert(Math.abs((123 - next.tx) / next.k - (123 - fitted.tx) / fitted.k) < 1e-9)
+  assert(Math.abs((456 - next.ty) / next.k - (456 - fitted.ty) / fitted.k) < 1e-9)
+}
 const frames = new Map()
 let nextId = 0
 const commits = []
