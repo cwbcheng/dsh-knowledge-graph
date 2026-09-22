@@ -9,6 +9,7 @@
 // the ontology was missing from the carrier that needed it.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { openSqliteStore } from '../src/kg-store.mjs'
@@ -100,6 +101,38 @@ try {
   // makes the rebuild observably different from what is stored, and corrupting the
   // wave hash makes the resume fail: the stored bytes must survive untouched.
   const original = structuredClone(saved.checkpoint)
+  for (const mutate of [
+    checkpoint => { checkpoint.graph.nodes.find(node => node.stage).stage = 'processed' },
+    checkpoint => { checkpoint.graph.nodes.find(node => node.relKind).relKind = 'advanced' },
+    checkpoint => { checkpoint.graph.edges[0].role = 'output' },
+    checkpoint => { checkpoint.graph.edges[0].mode = 'analogy' },
+    checkpoint => { checkpoint.pendingWave.contextVersion = 999 },
+  ]) {
+    const changed = structuredClone(original)
+    mutate(changed)
+    store.saveCheckpoint(changed, { runId: started.taskId, status: 'failed', sourceText: source })
+    const beforeCalls = prompts.length
+    const changedApi = createHost(extractor)
+    const refused = await wait(changedApi, await request(changedApi, 'resume-extract', { runId: started.taskId, retryFailed: true }))
+    assert.equal(refused.error?.code, 'checkpoint_invalid', 'changed semantic context must invalidate buffered model output')
+    assert.equal(prompts.length, beforeCalls, 'a mismatched context must be rejected before model calls')
+    assert.deepEqual(store.loadCheckpoint(started.taskId).checkpoint.graph, changed.graph, 'refusal must preserve the recovery record')
+  }
+  // This is the frozen pre-v2 fingerprint format, not the current writer.
+  const legacy = structuredClone(original)
+  delete legacy.pendingWave.contextVersion
+  const legacySnapshot = JSON.stringify({ summary: '',
+    nodes: legacy.graph.nodes.map(({ id, type, text, quote, paragraph }) => ({ id, type, text, quote, paragraph })),
+    edges: legacy.graph.edges.map(({ fromNodeId, toNodeId, relation, evidence }) => ({ fromNodeId, toNodeId, relation, evidence: evidence.map(({ paragraph, quote }) => ({ paragraph, quote })) })),
+  })
+  legacy.pendingWave.contextHash = createHash('sha256').update(legacy.sourceId + legacySnapshot).digest('hex')
+  store.saveCheckpoint(legacy, { runId: started.taskId, status: 'failed', sourceText: source })
+  const legacyCallStart = prompts.length
+  const legacyApi = createHost(extractor)
+  const legacyRetry = await wait(legacyApi, await request(legacyApi, 'resume-extract', { runId: started.taskId, retryFailed: true }))
+  assert.equal(legacyRetry.error?.code, 'timeout', 'legacy checkpoints must still reach the intentionally failing unfinished batch')
+  assert.deepEqual(prompts.slice(legacyCallStart).map(item => item.index), [3], 'legacy buffered work must not be regenerated')
+  assert.deepEqual(store.loadCheckpoint(started.taskId).checkpoint.graph, original.graph)
   const tampered = structuredClone(saved.checkpoint)
   tampered.pendingWave.contextHash = 'corrupted'
   delete tampered.staging.chunks[0].nodeIds
@@ -212,6 +245,8 @@ try {
     semanticAttributesSurviveRestart: true,
     persistentAppendResume: true,
     completionSemanticContext: true,
+    semanticFingerprint: true,
+    legacyWaveCompatible: true,
   }))
 } finally {
   for (const cleanup of cleanups.reverse()) { try { cleanup() } catch (error) {} }

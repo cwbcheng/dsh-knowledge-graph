@@ -40,6 +40,29 @@ Two-node extractions with no relation now receive a discovery pass. Single-node
 graphs, and already-connected two-node graphs, do not incur that automatic
 pass. An explicit relation-completion request keeps its existing behavior.
 
+## Targeted Repair and Recovery Bindings
+
+An invariant-repair prompt carries all ontology-declared node and edge
+attributes from the normalized candidate, but not internal approval flags.
+Changing an unrelated invariant cannot silently remove or rewrite a retained
+node's attributes or a retained, uniquely identified relation's attributes.
+Attribute drift, including renaming an attributed node out of the candidate,
+produces `repair_semantic_attributes_changed` feedback and consumes the existing
+three-attempt budget. A repeatedly lossy repair fails instead of being published.
+Invalid or duplicate edges can still be removed/deduplicated by the existing
+repair contract; preserving attributes is not a substitute for evidence or
+independent semantic review.
+
+New extraction waves record `contextVersion: 2`; new relation-weave journals use
+version 2. Their context fingerprints bind the ontology and declared semantic
+attributes in addition to the existing source, node, edge, and plan fields. A
+mismatch is rejected before further model calls or checkpoint replacement.
+Successful unchanged candidates, including empty relation searches, remain
+reusable. Version-1 checkpoints/journals retain their original fingerprint codec
+and validation scope for compatibility; they are not silently reinterpreted as
+version 2. Subsequent new waves/journals use version 2. Unknown versions fail
+closed.
+
 ## Regression Evidence
 
 - `kg-ontology-extraction-smoke.mjs`: dynamic append prompt, source offsets,
@@ -53,6 +76,12 @@ pass. An explicit relation-completion request keeps its existing behavior.
 - `kg-relation-discovery-smoke.mjs`: bidirectional retrieval through a repeated
   concept's later evidence, small-graph discovery, and a persistent continuous
   completion run that accepts a supported direction but rejects its reversal.
+- `kg-generation-semantics-smoke.mjs`: full repair payloads, dropped/changed/
+  added attributes, renamed attributed nodes, bounded retry, and persistent
+  failure in both dynamic and persistent transports.
+- `kg-weave-semantic-cache-smoke.mjs`: changed relation semantics invalidate a
+  cached search, unchanged empty results are reused, and the version-1 codec
+  still restores compatible journals without extra model calls.
 
 Run the standard `npm test` command for these checks and the existing evidence,
 concurrency, cancellation, checkpoint, semantic, and packaging regressions.
