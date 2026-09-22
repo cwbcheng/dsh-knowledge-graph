@@ -2813,16 +2813,21 @@
       function resolveLayeredOverlaps(nodes, sizes, pos, gap, pinnedX) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Only x changes during relaxation. Keep live point references and
+        // immutable sizes/lane flags outside the repeated all-pairs scan.
+        const entries = nodes.map((node) => ({
+          point: pos.get(node.id),
+          size: sizes.get(node.id),
+          pinned: pinnedX && typeof pinnedX.has === 'function' && pinnedX.has(node.id),
+        }))
         for (let iter = 0; iter < 120; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
+            const { point: a, size: sa, pinned: aPinned } = entries[i]
+            if (!sa) continue
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
-              if (!sa || !sb) continue
+              const { point: b, size: sb, pinned: bPinned } = entries[j]
+              if (!sb) continue
               let dx = b.x - a.x
               let dy = b.y - a.y
               if (Math.abs(dy) > (sa.h + sb.h) / 2 + gap) continue
@@ -2831,8 +2836,6 @@
               let s = dx >= 0 ? 1 : -1
               if (dx === 0) s = ((i + j) % 2 === 0 ? -1 : 1)
               const overlap = need - Math.abs(dx)
-              const aPinned = pinnedX && typeof pinnedX.has === 'function' && pinnedX.has(ids[i])
-              const bPinned = pinnedX && typeof pinnedX.has === 'function' && pinnedX.has(ids[j])
               if (aPinned && bPinned) continue
               if (aPinned) b.x += s * overlap
               else if (bPinned) a.x -= s * overlap
