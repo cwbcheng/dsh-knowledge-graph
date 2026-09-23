@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+const workbenchStart = client.indexOf('      function WorkbenchBody({ ctx }) {')
+const verifyTaskState = client.indexOf('        const [verifyTaskId, setVerifyTaskId] = useState(null)', workbenchStart)
+assert(workbenchStart >= 0 && verifyTaskState > workbenchStart)
+assert(!/\bverifyTaskId\b/.test(client.slice(workbenchStart, verifyTaskState)),
+  'workbench render must initialize verifyTaskId before evaluating effects or their dependencies')
 const start = client.indexOf('        const recoverSavedRun = async (run) => {')
 const end = client.indexOf('        const deleteSavedRun = async (run) => {', start)
 assert(start >= 0 && end > start)

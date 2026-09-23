@@ -6746,6 +6746,7 @@ export default function clientPlugin() {
         const sourceImageUrlRef = useRef({})
         const [phase, setPhase] = useState('idle')
         const [taskId, setTaskId] = useState(null)
+        const [verifyTaskId, setVerifyTaskId] = useState(null)
         const [resultView, setResultView] = useState(null)
         const [error, setError] = useState(null)
         const [showDiag, setShowDiag] = useState(false)
@@ -6947,7 +6948,6 @@ export default function clientPlugin() {
         // ---- 验证 / 质疑（verify & question）----
         const [verification, setVerification] = useState(null) // VerificationReport | null
         const [verifyPhase, setVerifyPhase] = useState('idle') // idle | running
-        const [verifyTaskId, setVerifyTaskId] = useState(null)
         const verifySnapshotRef = useRef(null)
         const [activeIssueId, setActiveIssueId] = useState(null)
         const [issueFilter, setIssueFilter] = useState('all')
