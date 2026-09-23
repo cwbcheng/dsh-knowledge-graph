@@ -29,6 +29,9 @@ function createHostPlugin(graphContractOnly) {
     inject: ['timer'],
     apply(ctx) {
       const NL = String.fromCharCode(10)
+      // The persistent Node build binds its native SHA-256 here. The dynamic
+      // package keeps the self-contained implementation without Node imports.
+      const nativeSha256HexHost = null
       // Extraction accepts a substantially larger source than one model prompt;
       // runTask still processes it in bounded chunks. Keep the cap below the
       // HTTP/body and browser-storage limits while allowing book-sized inputs.
@@ -3394,7 +3397,9 @@ function createHostPlugin(graphContractOnly) {
       // because the dynamic Cordis package is defined from this function body
       // and therefore cannot depend on top-level Node imports.
       function sha256HexHost(value) {
-        const bytes = new TextEncoder().encode(String(value == null ? '' : value))
+        const text = String(value == null ? '' : value)
+        if (nativeSha256HexHost) return nativeSha256HexHost(text)
+        const bytes = new TextEncoder().encode(text)
         const bitLen = bytes.length * 8
         const total = Math.ceil((bytes.length + 9) / 64) * 64
         const data = new Uint8Array(total)
@@ -6182,6 +6187,31 @@ function createHostPlugin(graphContractOnly) {
         return Array.from(new Set([node.paragraph, ...(node.evidence || []).map(item => item.paragraph)]))
           .filter(paragraph => Number.isInteger(paragraph) && paragraph >= 0 && paragraph < paragraphTexts.length && paragraphTexts[paragraph])
       }
+      function selectRelationCandidatesHost(candidates, target, byId, stats) {
+        const ranked = [], bridges = [], distant = []
+        const compare = (a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id))
+        const retain = (list, item, limit) => {
+          if (list.length === limit && compare(item, list[list.length - 1]) >= 0) return
+          let index = list.length
+          // Strict comparison preserves the full stable sort's insertion order
+          // even when distinct Unicode IDs compare equal in the current locale.
+          while (index > 0 && compare(item, list[index - 1]) < 0) index--
+          list.splice(index, 0, item)
+          if (list.length > limit) list.pop()
+        }
+        // Score every candidate, but retain only the exact prefixes consumed by
+        // the planner instead of sorting and filtering the entire retrieval set.
+        for (const id of candidates) {
+          const node = byId.get(id), distance = relationParagraphDistanceHost(target, node, stats)
+          const item = { node, distance, score: relationCandidateScoreHost(target, node, stats, distance) }
+          retain(ranked, item, 6)
+          if (stats.componentById.get(node.id) !== stats.componentById.get(target.id)) {
+            retain(bridges, item, 3)
+            if (Number.isFinite(distance) && distance > 8) retain(distant, item, 2)
+          }
+        }
+        return Array.from(new Map([...distant, ...bridges, ...ranked].map(item => [item.node.id, item.node])).values())
+      }
       function buildRelationWeaveGroupsHost(nodes, stats, paragraphTexts, previousCoverage, sourceText) {
         // Coverage means candidate search, not proof that every possible relation
         // was found. Edge additions do not reset it; changed source/nodes do.
@@ -6235,14 +6265,7 @@ function createHostPlugin(graphContractOnly) {
             .sort((a, b) => byToken.get(a).length - byToken.get(b).length || a.localeCompare(b)).slice(0, 12)
           for (const token of rare) for (const id of byToken.get(token)) candidates.add(id)
           candidates.delete(target.id)
-          const ranked = Array.from(candidates, id => {
-            const node = byId.get(id), distance = relationParagraphDistanceHost(target, node, stats)
-            return { node, distance, score: relationCandidateScoreHost(target, node, stats, distance) }
-          })
-            .sort((a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)))
-          const bridges = ranked.filter(item => stats.componentById.get(item.node.id) !== stats.componentById.get(target.id))
-          const distant = bridges.filter(item => Number.isFinite(item.distance) && item.distance > 8)
-          const related = Array.from(new Map([...distant.slice(0, 2), ...bridges.slice(0, 3), ...ranked.slice(0, 6)].map(item => [item.node.id, item.node])).values())
+          const related = selectRelationCandidatesHost(candidates, target, byId, stats)
           relatedByTarget.set(target.id, related)
           return related
         }
@@ -7993,7 +8016,13 @@ function createHostPlugin(graphContractOnly) {
             waveStart = wave.end
             task.pendingWave = null
             task.progress.parallel = null
-            await saveTaskCheckpointHost(task, buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, waveStart))
+            // The next wave's admission write includes this ordered merge. Until
+            // it succeeds, the completed prior wave remains the durable recovery
+            // point; no new model request can start. Only the final wave needs a
+            // standalone merged checkpoint before postprocessing.
+            if (waveStart === batches.length) {
+              await saveTaskCheckpointHost(task, buildTaskCheckpoint(task, sourceManifest, chunkResults, acc, summary, waveStart))
+            }
           }
           task.progress.batch = { index: batches.length, total: batches.length, completed: true }
           if (task.postprocess) summary = task.postprocess.graph.summary

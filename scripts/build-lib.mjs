@@ -28,6 +28,7 @@ export const name = 'dsh-knowledge-graph'
 // webServer hosts the RPC route; timer gives ctx.timeout/ctx.interval.
 export const inject = ['webServer', 'timer']
 import { openSqliteStore, defaultStorePath } from './kg-store.mjs'
+import { createHash } from 'node:crypto'
 
 export function apply(ctx) {
   // The persistent plugin always starts the runtime, never the headless factory.
@@ -68,6 +69,10 @@ host = host.replace(`  return {
     apply(ctx) {`, hostHeader)
 host = host.replace(`    },
   }`, '    }')
+
+const nativeHashBinding = 'const nativeSha256HexHost = null'
+if (host.split(nativeHashBinding).length !== 2) throw new Error('host SHA-256 binding not found or ambiguous')
+host = host.replace(nativeHashBinding, "const nativeSha256HexHost = text => createHash('sha256').update(text, 'utf8').digest('hex')")
 
 const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent mode) ----
       const webServer = ctx.get('webServer')

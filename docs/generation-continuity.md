@@ -65,6 +65,15 @@ closed.
 
 ## Generation and Completion Speed
 
+The persistent Node build uses `node:crypto` for synchronous SHA-256. The
+dynamic package retains its self-contained implementation. Both hash the same
+UTF-8 bytes, with the same null/string coercion and no Unicode normalization;
+source IDs, truncated evidence/chunk IDs, and recovery bindings are unchanged.
+The native binding is private and fixed at build time, not caller-supplied.
+Native hashing errors propagate rather than bypassing fingerprint validation.
+This removes interpreted hashing cost without enabling JIT or relaxing the
+existing safe-runtime flags.
+
 Existing-graph retrieval counts exact token overlap by iterating the smaller
 of the query and node token sets. It retains the original score denominator,
 normalization, recent-node tie breaking, and result limit. Text edits still
@@ -76,6 +85,13 @@ grouping plan, reusing them for context reservation and group filling. This
 cache does not survive the invocation: later edge additions, evidence changes,
 and source edits receive a new plan. No candidate, target, or evidence limits
 are reduced.
+
+Each target still scores every retrieved candidate. The planner retains only
+the exact sorted prefixes it consumes: six overall, three cross-component,
+and two distant cross-component candidates. Bounded insertion replaces full
+sorting and filtering, preserving score order, locale-aware stable ties,
+deduplication, and context packing. This is exact selection, not approximate
+retrieval or permission to admit a relation.
 
 Continuous relation completion keeps a task-local cache of fully validated
 independent-review verdicts. An identical withheld candidate rediscovered in
@@ -108,8 +124,18 @@ write failures cannot advance the durable checkpoint or publish a graph. Old
 SQLite durability settings, wave merge barriers, and final revision CAS are
 unchanged.
 
+Adjacent extraction waves share one durable handoff: admission of the next
+wave stores the preceding ordered merge as well. There is no model call
+between these transitions. Until admission succeeds, the prior wave's complete
+results remain the recovery point; a failed admission cannot start new model
+work. The last wave still writes a standalone merged checkpoint before
+postprocessing. Legacy between-wave checkpoints remain resumable.
+
 ## Regression Evidence
 
+- `kg-native-hash-smoke.mjs`: known SHA-256 vectors including one million bytes,
+  304 parity inputs covering UTF-8/block boundaries and malformed UTF-16, exact
+  coercion and truncated identities, native-path execution, and visible errors.
 - `kg-ontology-extraction-smoke.mjs`: dynamic append prompt, source offsets,
   old/new attributes, and undeclared-field filtering.
 - `kg-ontology-checkpoint-smoke.mjs`: persistent extraction failure and restart,
@@ -130,6 +156,9 @@ unchanged.
 - `kg-generation-speed-smoke.mjs`: exact agreement with exhaustive digest
   ranking, mutation invalidation, bounded token probes, and no duplicate
   target/candidate scoring within a plan.
+- `kg-relation-ranking-smoke.mjs`: exhaustive selection and full-plan agreement
+  with zero to 4,096 candidates, stable Unicode ties, missing/multiple anchors,
+  connectivity and source edits, coverage restart, and linear comparison bounds.
 - `kg-relation-review-cache-smoke.mjs`: source/ontology/attribute/direction/
   evidence invalidation, supported and rejected verdicts, incomplete responses,
   cancellation, failed durable writes, and legacy review keys. A persistent
@@ -143,6 +172,10 @@ unchanged.
   without coverage work, process exit immediately after the durable write,
   restart without regenerating a completed sibling, legacy prepared-record
   promotion, unchanged coverage counts, and failed-write isolation.
+- `kg-wave-handoff-smoke.mjs`: durable-before-model admission at concurrency
+  one, two, and four; SIGKILL after completed results and after next-wave
+  admission; real SQLite handoff failure; legacy recovery; pause and explicit
+  resume in a new Host without regenerating saved siblings or changing metrics.
 - Existing concurrent-extraction and task-pause checks retain coverage-stage
   recovery, explicit pause, process-kill recovery, and admission-lock checks.
 
