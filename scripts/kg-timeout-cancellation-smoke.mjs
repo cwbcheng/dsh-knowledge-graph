@@ -78,6 +78,12 @@ function fakeLlm() {
           },
         }
       }
+      if (String(request?.system || '').includes('独立的逐句证据核验员')) {
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: JSON.stringify({ decisions: [{ partId: 'draft-0', verdict: 'supported', evidenceIds: ['ev1'] }] }) }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      }
       return (async function* () {
         yield { type: 'text-delta', index: 0, text: JSON.stringify({
           status: 'answered',

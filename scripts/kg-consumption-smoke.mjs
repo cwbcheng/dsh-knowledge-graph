@@ -123,7 +123,7 @@ function makeLlm() {
         const input = JSON.parse(userText)
         if (input.question.includes('核验报错')) return (async function* () { throw new Error('synthetic reviewer failure') })()
         let decisions = input.parts.map((part) => ({ partId: part.partId, verdict: 'supported', evidenceIds: part.evidence.map((item) => item.evidenceId) }))
-        if (input.question.includes('语义偷换') || input.question.includes('限定泄漏')) decisions = decisions.map((item) => ({ ...item, verdict: 'unsupported' }))
+        if (input.question.includes('语义偷换') || input.question.includes('限定泄漏') || input.question.includes('伪造作者意图')) decisions = decisions.map((item) => ({ ...item, verdict: 'unsupported' }))
         if (input.question.includes('核验缺失')) decisions = []
         if (input.question.includes('核验伪造引用')) decisions = decisions.map((item) => ({ ...item, evidenceIds: ['ev-does-not-exist'] }))
         if (input.question.includes('核验漏引')) decisions = decisions.map((item) => ({ ...item, evidenceIds: item.evidenceIds.slice(0, 1) }))
@@ -185,6 +185,21 @@ function makeLlm() {
       } else if (question.includes('SOURCE_ONLY_TOKEN')) {
         const evidenceId = findEvidence(/\[(ev\d+)\] source paragraph:2\b/)
         output = { status: 'answered', parts: [{ text: '原文说明蓝色开关用于恢复。', evidenceIds: [evidenceId] }], confidence: 0.78, followUps: [] }
+      } else if (question.includes('对象层和共象层是关于模型应用阶段')) {
+        const evidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        const quote = question.includes('而非构造阶段的概念')
+          ? '对象层和共象层是关于模型应用阶段的概念，而非构造阶段的概念。'
+          : '对象层和共象层是关于模型应用阶段的概念，而非应用阶段的概念。'
+        output = question.includes('请指出歧义')
+          ? { status: 'insufficient', parts: [
+              { text: '原文把模型应用阶段与应用阶段对举，却没有交代两者区别。', evidenceIds: [evidenceId] },
+              { text: quote, evidenceIds: [evidenceId] },
+            ], confidence: 0.3 }
+          : question.includes('未给出解释')
+            ? { status: 'insufficient', parts: [], confidence: 0.2 }
+            : question.includes('伪造作者意图')
+              ? { status: 'insufficient', parts: [{ text: '原文把模型应用阶段与应用阶段对举，因此作者原意必然是构造阶段。', evidenceIds: [evidenceId] }], confidence: 0.9 }
+              : { status: 'answered', parts: [{ text: quote, evidenceIds: [evidenceId] }, { text: '这就解释了为什么。', evidenceIds: [evidenceId] }], confidence: 0.91 }
       } else if (question.includes('关系如何')) {
         const evidenceId = findEvidence(/\[(ev\d+)\] edge n1 -supports-> n2\b/)
         output = { status: 'answered', parts: [{ text: '资料中的关系证据表明，检查点支持断点续跑。', evidenceIds: [evidenceId] }], confidence: 0.82, followUps: [] }
@@ -428,7 +443,7 @@ const dynamicNumber = await dynamicAnswer('恢复数字越界应该怎样处理�
 assert(dynamicNumber.result.status === 'insufficient' && !dynamicNumber.result.answer.includes('10个'), 'new numbers absent from the cited quote were admitted')
 
 const dynamicSemanticSwap = await dynamicAnswer('恢复语义偷换应该怎样处理？')
-assert(dynamicSemanticSwap.result.status === 'answered' && dynamicSemanticSwap.result.answerStyle === 'extractive' && !dynamicSemanticSwap.result.answer.includes('自动恢复'), 'semantic reviewer did not replace an unsupported explanation with authenticated source text')
+assert(dynamicSemanticSwap.result.status === 'insufficient' && dynamicSemanticSwap.result.answerStyle === 'extractive' && !dynamicSemanticSwap.result.answer.includes('自动恢复'), 'unsupported explanation was presented as an answer instead of related source text')
 assert(llm.calls.some((call) => call.system.includes('独立的逐句证据核验员') && call.userText.includes('语义偷换')), 'the semantic-swap candidate bypassed independent review')
 
 const dynamicExplained = await dynamicAnswer('恢复多段解释依靠什么？')
@@ -463,6 +478,37 @@ const dynamicSource = await dynamicAnswer('SOURCE_ONLY_TOKEN 蓝色开关用于�
 assert(dynamicSource.result.status === 'answered', 'source fallback answer did not succeed')
 assert(dynamicSource.result.citations.length === 1 && dynamicSource.result.citations[0].targetKind === 'source' && dynamicSource.result.citations[0].paragraph === 2, 'source-only evidence did not produce an authenticated paragraph citation')
 assert(dynamicSource.result.retrieval.metrics.sourceFallbackUnits > 0, 'source fallback retrieval was not reported')
+
+const ambiguousClaim = '对象层和共象层是关于模型应用阶段的概念，而非应用阶段的概念。'
+const ambiguousGraph = structuredClone(fixture.dynamicGraph)
+ambiguousGraph.nodes[0].text = ambiguousClaim
+ambiguousGraph.nodes[0].quote = ambiguousClaim
+ambiguousGraph.nodes[0].evidence = [{ documentId: fixture.documentId, sourceId: fixture.sourceId, chunkId: 'chunk-main', paragraph: 0, quote: ambiguousClaim }]
+const ambiguousText = fixture.sourceText.replace('恢复依赖检查点。', ambiguousClaim)
+const repeatedClaim = await dynamicAnswer('为什么说“' + ambiguousClaim + '”？', ambiguousGraph, ambiguousText)
+assert(repeatedClaim.result.status === 'insufficient' && repeatedClaim.result.citations.length === 1 && repeatedClaim.result.citations[0].paragraph === 0,
+  'a quoted claim repeated as its own explanation must not be presented as an answered why-question')
+assert(!repeatedClaim.result.answer.includes('这就解释了为什么'), 'a non-explanatory sibling part survived the downgrade')
+assert(repeatedClaim.result.answer.includes('措辞重叠') && repeatedClaim.result.answer.includes('不能擅自断定作者原意'),
+  'overlapping terms in a quoted contrast were not explained to the user')
+const ambiguityExplained = await dynamicAnswer('为什么说“' + ambiguousClaim + '”？请指出歧义', ambiguousGraph, ambiguousText)
+assert(ambiguityExplained.result.status === 'insufficient' && ambiguityExplained.result.citations[0]?.paragraph === 0,
+  'a source ambiguity must retain its authenticated citation without claiming a resolved answer')
+assert(ambiguityExplained.result.answer.includes('措辞重叠'), 'an overlapping contrast was replaced by a generic insufficient message')
+assert(ambiguityExplained.result.parts.length === 1, 'an insufficient answer repeated related source text instead of giving one focused reason')
+const ambiguityWithoutDraft = await dynamicAnswer('为什么说“' + ambiguousClaim + '”？未给出解释', ambiguousGraph, ambiguousText)
+assert(ambiguityWithoutDraft.result.status === 'insufficient' && ambiguityWithoutDraft.result.citations[0]?.paragraph === 0 && ambiguityWithoutDraft.result.answer.includes('措辞重叠'),
+  'a matching source sentence lost its citation when the model omitted parts')
+const forgedIntent = await dynamicAnswer('为什么说“' + ambiguousClaim + '”？伪造作者意图', ambiguousGraph, ambiguousText)
+assert(forgedIntent.result.status === 'insufficient' && !forgedIntent.result.answer.includes('原意必然'),
+  'an unsupported correction of the author was exposed from a source ambiguity')
+const distinctClaim = '对象层和共象层是关于模型应用阶段的概念，而非构造阶段的概念。'
+const distinctGraph = structuredClone(ambiguousGraph)
+distinctGraph.nodes[0].text = distinctClaim
+distinctGraph.nodes[0].quote = distinctClaim
+distinctGraph.nodes[0].evidence[0].quote = distinctClaim
+const distinctAnswer = await dynamicAnswer('为什么说“' + distinctClaim + '”？', distinctGraph, ambiguousText.replace(ambiguousClaim, distinctClaim))
+assert(!distinctAnswer.result.answer.includes('措辞重叠'), 'genuinely different contrasted stages were falsely diagnosed as overlapping wording')
 
 const dynamicOut = await dynamicAnswer('恢复问题但超出范围')
 assert(dynamicOut.result.status === 'out_of_scope' && dynamicOut.result.citations.length === 0, 'out_of_scope was not preserved as a successful semantic outcome')
