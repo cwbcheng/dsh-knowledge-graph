@@ -88,9 +88,9 @@ try {
   let calls = 0, confirm = false, error = '', rows = [{ runId: 'ui', title: 'Example', updatedAt: 42 }]
   let pending = JSON.stringify({ taskId: 'other' }), response = { deleted: true, runId: 'ui' }, refreshing = 0
   const lock = { current: false }
-  const action = new Function('host', 'window', 'runActionRef', 'taskId', 'setDeletingRun', 'setRunsError', 'setIncompleteRuns', 'localStorage', 'LS_PENDING', 'toastStore', 'setRunsRefresh', actionCode + '; return deleteSavedRun')(
+  const action = new Function('host', 'window', 'runActionRef', 'taskId', 'verifyTaskId', 'setDeletingRun', 'setRunsError', 'setIncompleteRuns', 'localStorage', 'LS_PENDING', 'toastStore', 'setRunsRefresh', actionCode + '; return deleteSavedRun')(
     { async call(name, payload) { calls++; assert.equal(name, 'extraction-run-delete'); assert.deepEqual(payload, { runId: 'ui', expectedUpdatedAt: 42 }); return response } },
-    { confirm(message) { assert.match(message, /永久删除/); return confirm } }, lock, null, () => {}, value => { error = value }, fn => { rows = fn(rows) },
+    { confirm(message) { assert.match(message, /永久删除/); return confirm } }, lock, null, null, () => {}, value => { error = value }, fn => { rows = fn(rows) },
     { getItem() { return pending }, removeItem() { pending = null } }, 'pending', { show() {} }, () => { refreshing++ })
   const row = rows[0]
   await action(row)

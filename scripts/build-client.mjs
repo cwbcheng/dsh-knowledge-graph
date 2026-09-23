@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { encodeVerificationRequest } from './verification-wire.mjs'
 
 // Extract the plugin body directly from the source file (previously this
 // read an externally prepared /tmp/kg-client-body.js; self-contained now).
@@ -31,6 +32,8 @@ window.__ModuleLoader__.load({
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
     let React = require("react");
+
+    ${encodeVerificationRequest.toString()}
 
     // ---------- CSS injection (no \`styles\` closure in composition mode) ----------
     const CSS_TAG_ID = "dsh-knowledge-graph"
@@ -66,7 +69,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -107,10 +110,11 @@ window.__ModuleLoader__.load({
         return res.json()
       }
       if (method === "verify-graph") {
+        const request = await encodeVerificationRequest(body)
         const res = await fetch("/api/dsh-knowledge-graph/verify-graph", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          headers: request.headers,
+          body: request.body,
         })
         return res.json()
       }
@@ -167,6 +171,7 @@ if (!c.includes("host.call('image-load'")) throw new Error('image-load call not 
 if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
 if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
 if (!c.includes("host.call('resume-extract'")) throw new Error('resume-extract call not found')
+if (!c.includes("host.call('resume-verify'")) throw new Error('resume-verify call not found')
 if (!c.includes("host.call('relation-retry'")) throw new Error('relation-retry call not found')
 if (!c.includes("host.call('extract', payload)")) throw new Error('extract call not found')
 if (!c.includes("host.call('task-status'")) throw new Error('task-status call not found')
@@ -190,6 +195,7 @@ c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
 c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
+c = c.split("host.call('resume-verify'").join("rpc('resume-verify'")
 c = c.split("host.call('relation-retry'").join("rpc('relation-retry'")
 c = c.split("host.call('extract', payload)").join("rpc('extract', payload)")
 c = c.split("host.call('task-status'").join("rpc('task-status'")

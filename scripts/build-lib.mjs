@@ -29,6 +29,7 @@ export const name = 'dsh-knowledge-graph'
 export const inject = ['webServer', 'timer']
 import { openSqliteStore, defaultStorePath } from './kg-store.mjs'
 import { createHash } from 'node:crypto'
+import { gunzip } from 'node:zlib'
 
 export function apply(ctx) {
   // The persistent plugin always starts the runtime, never the headless factory.
@@ -60,7 +61,17 @@ export function apply(ctx) {
     })
     if (task) task.checkpointPersisted = true
     return saved
-  }`
+  }
+  const persistVerificationBatch = async (task, batchIndex, result) => {
+    const store = await getSqliteStore()
+    if (task.pauseRequested || task.cancelled) throw taskOperationErrorHost('cancelled', '任务已停止', 'verification')
+    try { return store.saveVerificationBatch(task.id, batchIndex, result, task.checkpoint.inputHash) }
+    catch (error) {
+      if (task.pauseRequested) throw taskOperationErrorHost('cancelled', '任务已暂停', 'verification')
+      throw error
+    }
+  }
+`
 
 // strip the dynamic wrapper: `return { inject, apply(ctx) {` -> header,
 // and the trailing `    },\n  }` (comma before the closing brace) -> `    }`
@@ -534,6 +545,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该任务状态为 ' + savedRun.status + '，不是 Host 重启遗留的运行中任务，禁止自动续跑' } })
               }
               const checkpoint = savedRun.checkpoint && typeof savedRun.checkpoint === 'object' ? savedRun.checkpoint : null
+              if (checkpoint?.taskKind === 'verify') return writeJson(res, 200, { error: { code: 'wrong_task_kind', message: '这是审校任务，请使用审校继续入口' } })
               if (!checkpoint || checkpoint.version !== 2 || !savedRun.sourceText) {
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '持久化 checkpoint 不完整，无法安全续跑' } })
               }
@@ -597,12 +609,62 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const started = startTaskHost(task, runTask)
               return writeJson(res, 200, { ...started, ...(started.taskId ? { resumed: true } : {}) })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/resume-verify') {
+              const raw = await readBody(req, 4096)
+              let payload
+              try { payload = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_json', message: 'Invalid JSON' } }) }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const runId = typeof a.runId === 'string' ? a.runId.trim().slice(0, 200) : ''
+              if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少审校任务编号' } })
+              const liveTask = tasks.get(runId)
+              if (liveTask && ['running', 'pausing'].includes(taskStateHost(liveTask))) return writeJson(res, 200, busyTaskResponseHost())
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const store = await getSqliteStore()
+              const savedRun = store.loadCheckpoint(runId)
+              if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到审校检查点' } })
+              if ((savedRun.status === 'paused' && a.resumePaused !== true) || (savedRun.status === 'running' && a.resumeInterrupted !== true)) {
+                return writeJson(res, 200, { error: { code: 'task_paused', message: '审校不会自动继续，请明确点击继续任务' } })
+              }
+              if (!['paused', 'running'].includes(savedRun.status) && !(savedRun.status === 'failed' && a.retryFailed === true)) {
+                return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该审校任务不可继续：' + savedRun.status } })
+              }
+              const checkpoint = savedRun.checkpoint
+              if (!checkpoint || checkpoint.version !== 1 || checkpoint.taskKind !== 'verify' || !savedRun.sourceText ||
+                !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes) || !checkpoint.model ||
+                !Number.isInteger(checkpoint.totalBatches) || checkpoint.totalBatches < 1 ||
+                checkpoint.inputHash !== verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
+                  mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: checkpoint.model })) {
+                return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '审校输入或检查点不完整，禁止续跑' } })
+              }
+              const documentId = savedRun.documentId || checkpoint.documentId || ''
+              if (documentId && (!Number.isInteger(checkpoint.baseRevision) || store.getDocumentRevision(documentId) !== checkpoint.baseRevision)) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已改变，不能把旧审校结果附加到新图' } })
+              }
+              const task = {
+                id: runId, status: 'running', kind: 'verify', title: savedRun.title || '', documentId,
+                text: savedRun.sourceText, graph: checkpoint.graph, mode: checkpoint.mode,
+                scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: checkpoint.model,
+                concurrency: checkpoint.concurrency, baseRevision: checkpoint.baseRevision,
+                checkpoint, verificationResults: store.loadVerificationBatches(runId), createdAt: Date.now(),
+              }
+              const started = startTaskHost(task, runVerifyTask, 'AI 审校恢复失败：内部错误')
+              return writeJson(res, 200, { ...started, ...(started.taskId ? { resumed: true } : {}) })
+            }
             if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/task-active') {
               return writeJson(res, 200, activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }))
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
-              return writeJson(res, 200, taskStatusHost(taskId, url.searchParams.get('includeCheckpoint') === '1'))
+              const liveStatus = taskStatusHost(taskId, url.searchParams.get('includeCheckpoint') === '1')
+              if (liveStatus.status !== 'not_found' || pathname !== '/api/dsh-knowledge-graph/task-status') return writeJson(res, 200, liveStatus)
+              const savedRun = taskId && taskId.length <= 200 ? (await getSqliteStore()).loadCheckpoint(taskId) : null
+              const checkpoint = savedRun?.checkpoint
+              if (savedRun?.status === 'succeeded' && checkpoint?.taskKind === 'verify' &&
+                checkpoint.report?.reportId && Array.isArray(checkpoint.report.issues)) {
+                return writeJson(res, 200, { status: 'succeeded', result: checkpoint.report,
+                  documentId: savedRun.documentId, baseRevision: checkpoint.baseRevision, recovered: true })
+              }
+              return writeJson(res, 200, liveStatus)
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/task-pause') {
               const raw = await readBody(req, 4096)
@@ -624,7 +686,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { status: 'cancelling' })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
-              const raw = await readBody(req, 4 * 1024 * 1024)
+              let raw
+              try { raw = await readVerificationBody(req) }
+              catch (error) {
+                const code = error && error.code
+                const status = code === 'body_too_large' ? 413 : code === 'unsupported_encoding' ? 415 : 400
+                const message = status === 413 ? '审校请求超过传输上限；请缩小审校范围后重试'
+                  : status === 415 ? '不支持的审校请求压缩格式' : '审校请求体无法解码'
+                return writeJson(res, status, { error: { code: code || 'invalid_body', message } })
+              }
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
@@ -647,12 +717,17 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                }
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              const metadata = verificationTaskMetadataHost(a, graph)
+              const currentRevision = metadata.documentId ? (await getSqliteStore()).getDocumentRevision(metadata.documentId) : null
+              if (Number.isInteger(a.expectedRevision) && currentRevision !== a.expectedRevision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入后审校' } })
+              }
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
-                ...verificationTaskMetadataHost(a, graph),
+                ...metadata,
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
-                text, graph, mode, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                text, graph, mode, model, baseRevision: currentRevision, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))
             }
@@ -947,7 +1022,7 @@ if (rpcStartIdx < 0 || rpcEndIdx <= rpcStartIdx) throw new Error('host RPC regio
 host = host.slice(0, rpcStartIdx) + routeBlock + host.slice(rpcEndIdx)
 
 const helpers = `
-function readBody(req, limit) {
+function readBody(req, limit, asBuffer = false) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let bytes = 0
@@ -955,7 +1030,12 @@ function readBody(req, limit) {
     const onData = (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8')
       bytes += buffer.length
-      if (bytes > limit) { finish(new Error('body too large')); return }
+      if (bytes > limit) {
+        const error = new Error('body too large')
+        error.code = 'body_too_large'
+        finish(error)
+        return
+      }
       chunks.push(buffer)
     }
     const onEnd = () => finish()
@@ -969,7 +1049,10 @@ function readBody(req, limit) {
       if (err) reject(err)
       else {
         // Decode once: a UTF-8 character may span multiple network chunks.
-        try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))) }
+        try {
+          const buffer = Buffer.concat(chunks, bytes)
+          resolve(asBuffer ? buffer : new TextDecoder('utf-8', { fatal: true }).decode(buffer))
+        }
         catch (error) { reject(error) }
       }
       chunks.length = 0
@@ -978,6 +1061,29 @@ function readBody(req, limit) {
     req.on('end', onEnd)
     req.on('error', onError)
   })
+}
+
+async function readVerificationBody(req) {
+  const encoding = String(req.headers?.['content-encoding'] || 'identity').trim().toLowerCase()
+  if (encoding !== 'identity' && encoding !== 'gzip') {
+    const error = new Error('unsupported content encoding')
+    error.code = 'unsupported_encoding'
+    throw error
+  }
+  const wire = await readBody(req, 4 * 1024 * 1024, true)
+  let body = wire
+  if (encoding === 'gzip') {
+    try {
+      body = await new Promise((resolve, reject) => {
+        gunzip(wire, { maxOutputLength: 32 * 1024 * 1024 }, (error, output) => error ? reject(error) : resolve(output))
+      })
+    } catch (cause) {
+      const error = new Error('invalid or oversized gzip body')
+      error.code = cause?.code === 'ERR_BUFFER_TOO_LARGE' ? 'body_too_large' : 'invalid_encoding'
+      throw error
+    }
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(body)
 }
 
 function writeJson(res, status, body) {

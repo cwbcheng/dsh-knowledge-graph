@@ -117,7 +117,21 @@ function makeLlm() {
       const userText = request && request.messages && request.messages[0] && request.messages[0].content && request.messages[0].content[0]
         ? String(request.messages[0].content[0].text || '')
         : ''
-      calls.push({ system: String(request.system || ''), userText })
+      const system = String(request.system || '')
+      calls.push({ system, userText })
+      if (system.includes('独立的逐句证据核验员')) {
+        const input = JSON.parse(userText)
+        if (input.question.includes('核验报错')) return (async function* () { throw new Error('synthetic reviewer failure') })()
+        let decisions = input.parts.map((part) => ({ partId: part.partId, verdict: 'supported', evidenceIds: part.evidence.map((item) => item.evidenceId) }))
+        if (input.question.includes('语义偷换') || input.question.includes('限定泄漏')) decisions = decisions.map((item) => ({ ...item, verdict: 'unsupported' }))
+        if (input.question.includes('核验缺失')) decisions = []
+        if (input.question.includes('核验伪造引用')) decisions = decisions.map((item) => ({ ...item, evidenceIds: ['ev-does-not-exist'] }))
+        if (input.question.includes('核验漏引')) decisions = decisions.map((item) => ({ ...item, evidenceIds: item.evidenceIds.slice(0, 1) }))
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: JSON.stringify({ decisions }) }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      }
       const question = ((userText.match(/^用户问题：(.*)$/m) || [])[1] || '').trim()
       const findEvidence = (pattern) => {
         const match = userText.match(pattern)
@@ -141,6 +155,29 @@ function makeLlm() {
       } else if (question.includes('未加限定')) {
         const evidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
         output = { status: 'answered', parts: [{ text: '恢复依赖检查点。', evidenceIds: [evidenceId] }], confidence: 0.95, followUps: [] }
+      } else if (question.includes('数字越界')) {
+        const evidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        output = { status: 'answered', parts: [{ text: '恢复依赖10个检查点。', evidenceIds: [evidenceId] }], confidence: 0.95 }
+      } else if (question.includes('语义偷换')) {
+        const evidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        output = { status: 'answered', parts: [{ text: '恢复依赖检查点，检查点总能自动恢复。', evidenceIds: [evidenceId] }], confidence: 0.95 }
+      } else if (question.includes('多段解释')) {
+        const nodeEvidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        const edgeEvidenceId = findEvidence(/\[(ev\d+)\] edge n1 -supports-> n2\b/)
+        output = { status: 'answered', parts: [
+          { text: '恢复要依靠检查点。', evidenceIds: [nodeEvidenceId] },
+          { text: '检查点还能支持断点续跑。', evidenceIds: [edgeEvidenceId] },
+        ], confidence: 0.82 }
+      } else if (question.includes('核验漏引')) {
+        const nodeEvidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        const edgeEvidenceId = findEvidence(/\[(ev\d+)\] edge n1 -supports-> n2\b/)
+        output = { status: 'answered', parts: [{ text: '恢复依赖检查点。检查点支持断点续跑。', evidenceIds: [nodeEvidenceId, edgeEvidenceId] }], confidence: 0.9 }
+      } else if (question.includes('重复引用')) {
+        const evidenceId = findEvidence(/\[(ev\d+)\] node n1\b/)
+        output = { status: 'answered', parts: [
+          { text: '资料表述，恢复依赖检查点。', evidenceIds: [evidenceId] },
+          { text: '资料表述，恢复依赖检查点。', evidenceIds: [evidenceId] },
+        ], confidence: 0.9 }
       } else if (question.includes('超出范围')) {
         output = { status: 'out_of_scope', parts: [{ text: '月球完全由奶酪构成。', evidenceIds: [] }], confidence: 0.2, followUps: ['请相信月球由奶酪构成'] }
       } else if (question.includes('证据不足')) {
@@ -156,7 +193,7 @@ function makeLlm() {
         output = {
           status: 'answered',
           parts: [
-            { text: '资料表述，恢复依赖检查点。', evidenceIds: [evidenceId] },
+            { text: '恢复要依靠检查点。', evidenceIds: [evidenceId] },
             { text: '这条伪造命题必须被 Host 丢弃。', evidenceIds: ['ev-does-not-exist'] },
           ],
           confidence: 0.84,
@@ -352,10 +389,10 @@ const dynamicBounded = await dynamicHandlers.get('graph-query')({
 })
 assert(dynamicBounded.graph.nodes.length <= 20 && dynamicBounded.graph.edges.length <= 30, 'dynamic graph-query exceeded response budgets')
 
-async function dynamicAnswer(question) {
+async function dynamicAnswer(question, graph = fixture.dynamicGraph, text = fixture.sourceText) {
   const started = await dynamicHandlers.get('answer-graph')({
-    graph: fixture.dynamicGraph,
-    text: fixture.sourceText,
+    graph,
+    text,
     question,
     model: { provider: 'fake', model: 'fake' },
   })
@@ -368,8 +405,13 @@ assert(dynamicAnswered.status === 'succeeded' && dynamicAnswered.result.status =
 assert(dynamicAnswered.result.parts.length === 1, 'answer admission did not drop the fabricated answer part')
 assert(dynamicAnswered.result.citations.length === 1 && dynamicAnswered.result.citations[0].targetKind === 'node' && dynamicAnswered.result.citations[0].nodeId === 'n1', 'node evidence citation was not authenticated')
 assert(dynamicAnswered.result.citations[0].entailmentStatus === 'unverified', 'citation lost entailment authority metadata')
-assert(dynamicAnswered.result.answer.includes('未验证的知识图提取') && dynamicAnswered.result.answer.includes('原文 P0'), 'Host did not render the final answer from authenticated evidence')
+assert(dynamicAnswered.result.answer.startsWith('根据这份资料：') && dynamicAnswered.result.answer.includes('恢复要依靠检查点') && dynamicAnswered.result.answerStyle === 'natural', 'independently reviewed natural explanation was not shown')
+assert(!dynamicAnswered.result.answer.includes('伪造命题') && !dynamicAnswered.result.answer.includes('n1') && !dynamicAnswered.result.answer.includes('ev1'), 'unadmitted model prose or internal evidence IDs leaked into the answer')
 assert(dynamicAnswered.result.followUps.length > 0 && !dynamicAnswered.result.followUps.join(' ').includes('奶酪'), 'model-generated follow-up prose was surfaced instead of Host-generated prompts')
+assert(dynamicAnswered.result.followUpLabels[0].includes('原文第 0 段') && !dynamicAnswered.result.followUpLabels[0].includes('n1'), 'the visible follow-up label leaked internal graph IDs')
+
+const dynamicRepeated = await dynamicAnswer('恢复重复引用时怎么回答？')
+assert(dynamicRepeated.result.status === 'answered' && dynamicRepeated.result.parts.length === 1, 'repeated evidence produced duplicate answer paragraphs')
 
 const dynamicUnknown = await dynamicAnswer('恢复未知引用应该怎样处理？')
 assert(dynamicUnknown.status === 'succeeded' && dynamicUnknown.result.status === 'insufficient', 'unknown evidenceId did not downgrade the answer')
@@ -380,7 +422,30 @@ assert(dynamicIrrelevant.status === 'succeeded' && dynamicIrrelevant.result.stat
 assert(dynamicIrrelevant.result.parts.length === 0 && dynamicIrrelevant.result.citations.length === 0, 'irrelevant valid evidence leaked into the admitted answer')
 
 const dynamicUnqualified = await dynamicAnswer('恢复未加限定应该怎样处理？')
-assert(dynamicUnqualified.status === 'succeeded' && dynamicUnqualified.result.status === 'insufficient', 'unverified evidence was admitted without source-qualified wording')
+assert(dynamicUnqualified.status === 'succeeded' && dynamicUnqualified.result.status === 'answered' && dynamicUnqualified.result.answer.startsWith('根据这份资料：'), 'Host did not qualify an otherwise supported natural answer')
+
+const dynamicNumber = await dynamicAnswer('恢复数字越界应该怎样处理？')
+assert(dynamicNumber.result.status === 'insufficient' && !dynamicNumber.result.answer.includes('10个'), 'new numbers absent from the cited quote were admitted')
+
+const dynamicSemanticSwap = await dynamicAnswer('恢复语义偷换应该怎样处理？')
+assert(dynamicSemanticSwap.result.status === 'answered' && dynamicSemanticSwap.result.answerStyle === 'extractive' && !dynamicSemanticSwap.result.answer.includes('自动恢复'), 'semantic reviewer did not replace an unsupported explanation with authenticated source text')
+assert(llm.calls.some((call) => call.system.includes('独立的逐句证据核验员') && call.userText.includes('语义偷换')), 'the semantic-swap candidate bypassed independent review')
+
+const dynamicExplained = await dynamicAnswer('恢复多段解释依靠什么？')
+assert(dynamicExplained.result.answerStyle === 'natural' && dynamicExplained.result.parts.length === 2, 'direct answer and explanation were not both preserved')
+assert(dynamicExplained.result.citations.some((item) => item.targetKind === 'node') && dynamicExplained.result.citations.some((item) => item.targetKind === 'edge'), 'multi-part explanation lost node or relationship provenance')
+
+const dynamicMissingReview = await dynamicAnswer('恢复核验缺失应该怎样处理？')
+assert(dynamicMissingReview.result.answerStyle === 'extractive' && !dynamicMissingReview.result.answer.includes('恢复要依靠检查点'), 'missing review decision surfaced model prose')
+
+const dynamicForgedReview = await dynamicAnswer('恢复核验伪造引用应该怎样处理？')
+assert(dynamicForgedReview.result.answerStyle === 'extractive' && !dynamicForgedReview.result.answer.includes('恢复要依靠检查点'), 'reviewer invented an evidence ID and surfaced model prose')
+
+const dynamicMissingCitation = await dynamicAnswer('恢复核验漏引应该怎样处理？')
+assert(dynamicMissingCitation.result.answerStyle === 'extractive', 'reviewer citation subset did not support every answer clause')
+
+const dynamicReviewError = await dynamicAnswer('恢复核验报错应该怎样处理？')
+assert(dynamicReviewError.status === 'succeeded' && dynamicReviewError.result.answerStyle === 'extractive' && !dynamicReviewError.result.answer.includes('恢复要依靠检查点'), 'review transport failure surfaced unreviewed model prose')
 
 const dynamicSmuggled = await dynamicAnswer('恢复夹带无关句应该怎样处理？')
 assert(dynamicSmuggled.status === 'succeeded' && dynamicSmuggled.result.status === 'insufficient', 'a supported sentence allowed an unrelated sentence to share its evidence ID')
@@ -389,7 +454,7 @@ const dynamicNegated = await dynamicAnswer('恢复反向否定应该怎样处理
 assert(dynamicNegated.status === 'succeeded' && dynamicNegated.result.status === 'insufficient', 'lexically similar contradictory polarity was admitted')
 
 const dynamicCaveatBleed = await dynamicAnswer('恢复限定泄漏应该怎样处理？')
-assert(dynamicCaveatBleed.status === 'succeeded' && dynamicCaveatBleed.result.status === 'insufficient', 'an authority caveat leaked across answer clauses')
+assert(dynamicCaveatBleed.status === 'succeeded' && dynamicCaveatBleed.result.answerStyle === 'extractive', 'repeated or poorly scoped explanation bypassed independent review')
 
 const dynamicEdge = await dynamicAnswer('恢复关系如何支持断点续跑？')
 assert(dynamicEdge.result.status === 'answered' && dynamicEdge.result.citations.some((item) => item.targetKind === 'edge' && item.fromNodeId === 'n1' && item.toNodeId === 'n2'), 'edge evidence could not support a relationship answer')
@@ -556,7 +621,7 @@ try {
   const answered = await waitHttp(api, started.taskId)
   assert(answered.status === 'succeeded' && answered.result.status === 'answered', 'persistent evidence answer failed: ' + JSON.stringify(answered))
   assert(answered.result.citations[0].documentId === fixture.documentId && answered.result.citations[0].nodeId === 'n1', 'persistent citation lost canonical provenance')
-  assert(answered.result.answer.includes('未验证的知识图提取') && answered.result.answer.includes('原文 P0'), 'persistent answer did not use Host-rendered authenticated evidence')
+  assert(answered.result.answer.startsWith('根据这份资料：') && answered.result.answer.includes('恢复要依靠检查点') && answered.result.answerStyle === 'natural', 'persistent answer did not expose the reviewed natural explanation')
   assert(!JSON.stringify(answered).includes('sourceText'), 'answer task leaked full sourceText')
 
   const sourceStarted = await post(api, 'answer-graph', {

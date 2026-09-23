@@ -132,6 +132,19 @@ assert.equal(recovery.queue.size, 0)
 assert.ok(recovery.calls.every(method => method === 'task-status'), 'reconnection cannot resubmit AI work')
 recovery.close()
 
+let pausePolls = 0
+const pausedWatcher = mount(async () => {
+  pausePolls++
+  return pausePolls === 1 ? { status: 'paused', progress: { canPause: false, verification: { completedBatches: 1, totalBatches: 3 } } }
+    : { status: 'running', progress: { canPause: true, verification: { completedBatches: 1, totalBatches: 3 } } }
+})
+await flush()
+assert.equal(pausedWatcher.progress.status, 'paused')
+assert.equal(pausedWatcher.finishes.length, 0, 'pause retains task ownership')
+await pausedWatcher.tick()
+assert.equal(pausedWatcher.progress.status, 'running', 'explicit resume is observed by the same watcher')
+pausedWatcher.close()
+
 for (const terminal of ['failed', 'cancelled', 'not_found', 'invalid-report', 'save-failed']) {
   const test = mount(async () => terminal === 'invalid-report' || terminal === 'save-failed'
     ? { status: 'succeeded', result: terminal === 'invalid-report' ? {} : { issues: [] } }
@@ -221,7 +234,7 @@ for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no
 }
 
 const h = (tag, attrs, ...children) => ({ tag, attrs, children })
-const render = new Function('h', 'useState', 'useEffect', common + '; return VerificationTaskStatus')(h, value => [value, () => {}], () => {})
+const render = new Function('h', 'useState', 'useEffect', 'TaskPauseControls', common + '; return VerificationTaskStatus')(h, value => [value, () => {}], () => {}, () => null)
 const tree = render({ progress: { kind: 'verify', status: 'running', elapsedMs: 1500, startedAt: Date.now(), stage: 'waiting', verification: { totalBatches: 3, completedBatches: 1, phase: 'confirm' }, requests: [] }, taskId: 't', ctx: {} })
 assert.ok(JSON.stringify(tree).includes('已审校 1/3 批'))
 assert.ok(JSON.stringify(tree).includes('独立复核候选问题'))
@@ -229,8 +242,8 @@ assert.ok(JSON.stringify(tree).includes('1 秒'))
 assert.equal(render({ progress: null, ctx: {} }), null)
 let focused = false, scrolled = false
 const reportPanel = { focus() { focused = true }, scrollIntoView() { scrolled = true } }
-const reportStatus = new Function('h', 'useState', 'useEffect', 'document', common + '; return VerificationTaskStatus')(
-  h, value => [value, () => {}], () => {}, { getElementById(id) { assert.equal(id, 'report'); return reportPanel } },
+const reportStatus = new Function('h', 'useState', 'useEffect', 'document', 'TaskPauseControls', common + '; return VerificationTaskStatus')(
+  h, value => [value, () => {}], () => {}, { getElementById(id) { assert.equal(id, 'report'); return reportPanel } }, () => null,
 )({ progress: { kind: 'verify', status: 'succeeded', stage: 'done' }, panelId: 'report', ctx: {} })
 const find = (tree, check) => tree && typeof tree === 'object' ? check(tree) ? tree : tree.children?.flat().map(child => find(child, check)).find(Boolean) : null
 find(reportStatus, node => node.tag === 'button').attrs.onClick()

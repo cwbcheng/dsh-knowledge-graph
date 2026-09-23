@@ -67,7 +67,7 @@
     "test:kg-candidates": "node scripts/kg-candidate-sync-smoke.mjs",
     "test:kg-incremental": "node scripts/kg-incremental-smoke.mjs",
     "test:kg-security": "node scripts/kg-security-smoke.mjs",
-    "test:kg-verification": "node scripts/kg-verification-smoke.mjs && node scripts/kg-verification-progress-smoke.mjs && node scripts/kg-verification-speed-smoke.mjs",
+    "test:kg-verification": "node scripts/kg-verification-smoke.mjs && node scripts/kg-verification-progress-smoke.mjs && node scripts/kg-verification-speed-smoke.mjs && node scripts/kg-verification-transport-smoke.mjs && node scripts/kg-verification-pause-smoke.mjs && node scripts/kg-verification-recovery-ui-smoke.mjs",
     "test:kg-export": "node scripts/kg-export-smoke.mjs",
     "test:kg-large": "node scripts/kg-large-graph-smoke.mjs",
     "test:kg-identity": "node scripts/kg-identity-smoke.mjs && node scripts/kg-native-hash-smoke.mjs",

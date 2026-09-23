@@ -137,6 +137,14 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS extraction_runs_document_idx ON extraction_runs(document_id, updated_at);
+CREATE TABLE IF NOT EXISTS verification_batch_results (
+  run_id TEXT NOT NULL,
+  batch_index INTEGER NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (run_id, batch_index),
+  FOREIGN KEY (run_id) REFERENCES extraction_runs(run_id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS graph_revisions (
   document_id TEXT NOT NULL,
   revision INTEGER NOT NULL,
@@ -981,7 +989,10 @@ export class SqliteKnowledgeStore {
     const status = text(options.status || checkpoint.status, 'running')
     const documentId = text(checkpoint.documentId || options.documentId) || null
     const sourceId = text(checkpoint.sourceId || options.sourceId) || null
-    const nextBatchIndex = int(checkpoint.nextBatchIndex, 0)
+    const nextBatchIndex = checkpoint.taskKind === 'verify'
+      ? this.db.prepare('SELECT COUNT(*) AS count FROM verification_batch_results WHERE run_id = ?').get(runId).count
+      : int(checkpoint.nextBatchIndex, 0)
+    const savedCheckpoint = checkpoint.taskKind === 'verify' ? { ...checkpoint, nextBatchIndex } : checkpoint
     const totalBatches = int(checkpoint.totalBatches, 0)
     const title = text(options.title || checkpoint.title)
     const sourceText = text(options.sourceText)
@@ -1002,7 +1013,7 @@ export class SqliteKnowledgeStore {
         error_code = excluded.error_code,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at
-    `).run(runId, documentId, sourceId, status, nextBatchIndex, totalBatches, JSON.stringify(checkpoint), title, sourceText, errorCode, errorMessage, now, now)
+    `).run(runId, documentId, sourceId, status, nextBatchIndex, totalBatches, JSON.stringify(savedCheckpoint), title, sourceText, errorCode, errorMessage, now, now)
     return { runId, documentId, sourceId, status, nextBatchIndex, totalBatches }
   }
 
@@ -1026,9 +1037,41 @@ export class SqliteKnowledgeStore {
     }
   }
 
+  saveVerificationBatch(runId, batchIndex, result, inputHash) {
+    if (typeof runId !== 'string' || !runId || !Number.isInteger(batchIndex) || batchIndex < 0 ||
+      !result || !Array.isArray(result.issues) || !Array.isArray(result.warnings) || typeof inputHash !== 'string') {
+      throw Object.assign(new Error('审校批次记录无效'), { code: 'checkpoint_invalid' })
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const run = this.db.prepare('SELECT status, total_batches, checkpoint_json FROM extraction_runs WHERE run_id = ?').get(runId)
+      const checkpoint = run ? parseJson(run.checkpoint_json, {}) : null
+      if (!run || run.status !== 'running' || checkpoint?.taskKind !== 'verify' || checkpoint.inputHash !== inputHash || batchIndex >= run.total_batches) {
+        throw Object.assign(new Error('审校任务状态或输入已变化，拒绝保存批次'), { code: 'checkpoint_invalid' })
+      }
+      const json = JSON.stringify(result)
+      const existing = this.db.prepare('SELECT result_json FROM verification_batch_results WHERE run_id = ? AND batch_index = ?').get(runId, batchIndex)
+      if (existing && existing.result_json !== json) throw Object.assign(new Error('审校批次已保存不同结果'), { code: 'checkpoint_invalid' })
+      if (!existing) this.db.prepare('INSERT INTO verification_batch_results (run_id, batch_index, result_json, created_at) VALUES (?, ?, ?, ?)').run(runId, batchIndex, json, Date.now())
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM verification_batch_results WHERE run_id = ?').get(runId).count
+      this.db.prepare('UPDATE extraction_runs SET next_batch_index = ?, updated_at = ? WHERE run_id = ?').run(count, Date.now(), runId)
+      this.db.exec('COMMIT')
+      return count
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  loadVerificationBatches(runId) {
+    return this.db.prepare('SELECT batch_index AS batchIndex, result_json AS resultJson FROM verification_batch_results WHERE run_id = ? ORDER BY batch_index')
+      .all(runId).map(row => ({ batchIndex: row.batchIndex, result: parseJson(row.resultJson, null) }))
+  }
+
   listIncompleteRuns(limit = 50) {
     return this.db.prepare(`SELECT run_id AS runId, document_id AS documentId,
       title, status, next_batch_index AS nextBatchIndex, total_batches AS totalBatches,
+      json_extract(checkpoint_json, '$.taskKind') AS taskKind,
       error_code AS errorCode, updated_at AS updatedAt,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.pendingWave.results') WHERE coalesce(json_extract(value, '$.stage'), 'complete') != 'coverage_pending') AS bufferedBatches,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.pendingWave.results') WHERE json_extract(value, '$.stage') = 'coverage_pending') AS preparedBatches,
@@ -1036,7 +1079,13 @@ export class SqliteKnowledgeStore {
       json_extract(checkpoint_json, '$.postprocess.reviewSummary.eligible') AS totalRelations,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.relationWeave.results')) AS savedRelationGroups,
       json_extract(checkpoint_json, '$.relationWeave.totalGroups') AS totalRelationGroups
-      FROM extraction_runs WHERE status IN ('running', 'failed', 'paused')
+      FROM extraction_runs AS run WHERE status IN ('running', 'failed', 'paused')
+        OR (status = 'succeeded' AND document_id IS NOT NULL
+          AND json_extract(checkpoint_json, '$.taskKind') = 'verify'
+          AND json_type(checkpoint_json, '$.report.reportId') = 'text'
+          AND (SELECT json_extract(graph_meta_json, '$.verification.lastReport.reportId')
+            FROM documents WHERE document_id = run.document_id)
+            IS NOT json_extract(checkpoint_json, '$.report.reportId'))
       ORDER BY updated_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, int(limit, 50))))
   }
 
@@ -1044,7 +1093,7 @@ export class SqliteKnowledgeStore {
     if (typeof runId !== 'string' || !runId.trim() || runId.length > 200 || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
       throw Object.assign(new Error('任务标识或更新时间无效'), { code: 'invalid_input' })
     }
-    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND status IN ('running', 'failed', 'paused')").run(runId, expectedUpdatedAt)
+    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND (status IN ('running', 'failed', 'paused') OR (status = 'succeeded' AND json_extract(checkpoint_json, '$.taskKind') = 'verify'))").run(runId, expectedUpdatedAt)
     if (result.changes) return { deleted: true, runId }
     const row = this.db.prepare('SELECT status FROM extraction_runs WHERE run_id = ?').get(runId)
     if (!row) return { deleted: false, runId }

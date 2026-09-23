@@ -202,8 +202,15 @@ export default function clientPlugin() {
 .kg-consume-state { margin: 10px 0 0; padding: 8px 10px; border-radius: 9px; background: rgba(127,127,127,0.06); color: var(--kg-text-dim); font-size: 12px; }
 .kg-consume-error { border: 1px solid rgba(220,38,38,0.28); background: rgba(220,38,38,0.06); color: #dc2626; }
 .kg-consume-answer { margin-top: 10px; padding: 11px 13px; border: 1px solid rgba(59,130,246,0.35); border-radius: 10px; background: rgba(59,130,246,0.055); }
-.kg-consume-answer-text { margin: 8px 0 0; white-space: pre-wrap; font-size: 13px; line-height: 1.75; }
-.kg-consume-citations { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.kg-consume-answer-text { margin: 9px 0 0; white-space: pre-wrap; font-size: 14px; line-height: 1.7; }
+.kg-consume-answer-part { margin-top: 9px; line-height: 1.7; font-size: 14px; overflow-wrap: anywhere; }
+.kg-consume-answer-part-label { margin-bottom: 2px; color: var(--kg-text-dim); font-size: 11px; }
+.kg-consume-answer-sources { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.kg-consume-answer-source { padding: 0; border: 0; background: none; color: #2563eb; font: inherit; font-size: 11px; cursor: pointer; }
+.kg-consume-answer-source:hover { text-decoration: underline; }
+.kg-consume-citations { margin-top: 12px; }
+.kg-consume-citations > summary { cursor: pointer; font-size: 12px; color: var(--kg-text-dim); }
+.kg-consume-citation-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .kg-consume-citation { width: 100%; text-align: left; border: 1px solid var(--kg-border); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; line-height: 1.55; cursor: pointer; }
 .kg-consume-citation:hover { border-color: rgba(59,130,246,0.65); }
 .kg-consume-followups { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
@@ -442,8 +449,8 @@ export default function clientPlugin() {
           let response
           try {
             response = await host.call('task-status', { taskId })
-            if (!response || !['running', 'succeeded', 'failed', 'cancelled', 'not_found'].includes(response.status)
-              || (response.error && ['running', 'succeeded'].includes(response.status))) {
+            if (!response || !['running', 'pausing', 'paused', 'succeeded', 'failed', 'cancelled', 'not_found'].includes(response.status)
+              || (response.error && ['running', 'pausing', 'paused', 'succeeded'].includes(response.status))) {
               throw new Error(response?.error?.message || '无效的任务状态响应')
             }
           } catch (error) {
@@ -455,9 +462,11 @@ export default function clientPlugin() {
           }
           if (!current()) return
           failures = 0
-          if (response.status === 'running') {
-            setProgress(previous => ({ ...previous, ...response.progress, kind: 'verify', status: 'running', connectionError: '', receivedAt: Date.now() }))
-            stop = ctx.timeout(tick, 3000)
+          if (['running', 'pausing', 'paused'].includes(response.status)) {
+            setProgress(previous => ({ ...previous, ...response.progress, kind: 'verify', status: response.status, taskId,
+              stage: response.status === 'paused' ? 'AI 深度审校已暂停' : response.status === 'pausing' ? '正在安全暂停审校' : response.progress?.stage,
+              connectionError: '', receivedAt: Date.now() }))
+            stop = ctx.timeout(tick, response.status === 'paused' ? 8000 : 3000)
             return
           }
           let status = response.status, error = response.error
@@ -504,7 +513,7 @@ export default function clientPlugin() {
       function VerificationTaskStatus({ progress, taskId, onCancel, panelId, ctx }) {
         const [now, setNow] = useState(Date.now())
         const visible = progress?.kind === 'verify'
-        const active = visible && ['submitting', 'running', 'saving'].includes(progress.status)
+        const active = visible && ['submitting', 'running', 'pausing', 'saving'].includes(progress.status)
         useEffect(() => {
           if (!active) return
           let stop
@@ -525,14 +534,15 @@ export default function clientPlugin() {
             active ? h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }) : null,
             h('strong', { role: 'status' }, stage),
             h('span', null, '耗时 ' + duration(elapsed)),
-            active && progress.status !== 'saving' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel, disabled: !taskId || progress.cancelling }, progress.cancelling ? '取消中…' : '取消审校') : null,
+            taskId && ['running', 'pausing', 'paused'].includes(progress.status) ? h(TaskPauseControls, { taskId, kind: 'verify', status: progress.status, progress }) : null,
+            active && progress.status === 'running' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel, disabled: !taskId || progress.cancelling }, progress.cancelling ? '取消中…' : '取消审校') : null,
             progress.status === 'succeeded' ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
               const panel = document.getElementById(panelId)
               if (panel) { panel.focus({ preventScroll: true }); panel.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
             } }, '查看审校报告') : null),
           progress.connectionError ? h('p', { role: 'status' }, progress.connectionError) : null,
           progress.cancelError ? h('p', { role: 'alert' }, progress.cancelError) : null,
-          active && total ? h('div', null,
+          (active || progress.status === 'paused') && total ? h('div', null,
             h('p', null, '已审校 ' + completed + '/' + total + ' 批' + (batches.phase === 'confirm' ? ' · 正在独立复核候选问题' : '') + (completed === total ? ' · 正在整理报告' : '')),
             h('progress', { value: completed, max: total, 'aria-label': 'AI 审校批次进度' })) : null,
           active && !total ? h('progress', { 'aria-label': 'AI 审校准备进度' }) : null,
@@ -588,7 +598,7 @@ export default function clientPlugin() {
           h('div', null, label + ' · 已结束 ' + finished + '/' + (usage.startedRequests || 0) + ' 请求 · 用量已上报 ' + (usage.reportedRequests || 0) + '/' + finished),
           finished ? h('div', null, tokens('totalInputTokens', '输入') + ' · ' + tokens('outputTokens', '输出') + ' · ' + cacheText) : null)
       }
-      function TaskPauseControls({ taskId, status, progress, onResumed, onChanged }) {
+      function TaskPauseControls({ taskId, kind = 'extract', status, progress, onResumed, onChanged }) {
         const [action, setAction] = useState('')
         const [error, setError] = useState('')
         const busyRef = useRef(false)
@@ -603,7 +613,9 @@ export default function clientPlugin() {
           setError('')
           try {
             const res = paused
-              ? await host.call('resume-extract', { runId: taskId, resumePaused: true })
+              ? kind === 'verify'
+                ? await host.call('resume-verify', { runId: taskId, resumePaused: true })
+                : await host.call('resume-extract', { runId: taskId, resumePaused: true })
               : await host.call('task-pause', { taskId })
             if (!res || res.error || (paused ? res.taskId !== taskId : !['pausing', 'paused'].includes(res.status))) throw new Error(res?.error?.message || '任务状态已改变，请刷新后重试')
             if (paused && onResumed) onResumed(taskId)
@@ -658,7 +670,8 @@ export default function clientPlugin() {
           task ? h('p', { style: { margin: '4px 0', fontSize: 12, color: 'var(--kg-muted)' } }, '任务编号：' + task.taskId) : null,
           connectionError ? h('p', { role: 'status' }, connectionError) : null,
           running || task?.status === 'paused' ? h(GenerationProgress, { progress: task.progress }) : null,
-          task ? h(TaskPauseControls, { taskId: task.taskId, status: task.status, progress: task.progress, onChanged: () => setRefresh(value => value + 1) }) : null,
+          task && task.kind !== 'verify' ? h(TaskPauseControls, { taskId: task.taskId, kind: task.kind, status: task.status, progress: task.progress, onChanged: () => setRefresh(value => value + 1) }) : null,
+          task?.kind === 'verify' && task.status === 'paused' ? h('p', null, '请在可恢复任务与报告列表中继续审校，以便完成后保存报告。') : null,
           running && task.kind === 'relation-retry' && onStopTask ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: () => onStopTask(task.taskId) }, '停止补全') : null,
           task?.error ? h('p', { role: 'status' }, task.error.message) : null,
           !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' && task.kind !== 'verify' ? '查看更新后的知识图' : '查看已保存知识图') : null)
@@ -5997,6 +6010,8 @@ export default function clientPlugin() {
           setSearchState({ phase: 'idle', rows: [], total: 0, error: null, result: null })
         }
         const answer = askState.result
+        const answerCitations = Array.isArray(answer && answer.citations) ? answer.citations : []
+        const visibleCitations = answerCitations.filter((citation, index) => answerCitations.findIndex((item) => item.paragraph === citation.paragraph && item.quote === citation.quote) === index)
         const answerStatusLabel = answer && answer.status === 'answered' ? '有证据答案' : answer && answer.status === 'out_of_scope' ? '超出范围' : '证据不足'
         const answerVerdictClass = answer && answer.status === 'answered' ? 'kg-verdict-supported' : answer && answer.status === 'out_of_scope' ? 'kg-verdict-out_of_scope' : 'kg-verdict-insufficient'
         return h('section', { className: 'kg-card', 'aria-label': '使用这张知识图' },
@@ -6091,22 +6106,42 @@ export default function clientPlugin() {
                 answer ? h('div', { className: 'kg-consume-answer' },
                   h('div', { className: 'kg-consume-result-top' },
                     h('span', { className: 'kg-verdict ' + answerVerdictClass }, answerStatusLabel),
-                    h('span', { className: 'kg-hint' }, '置信度 ' + Math.round(Number(answer.confidence || 0) * 100) + '%'),
-                    answer.model ? h('span', { className: 'kg-hint' }, answer.model.provider + '/' + answer.model.model) : null,
                     typeof navigator !== 'undefined' && navigator.clipboard ? h('button', { type: 'button', className: 'kg-secondary', style: { marginLeft: 'auto' }, onClick: () => navigator.clipboard.writeText(answer.answer || '').then(() => notify('答案已复制')).catch(() => notify('复制失败')) }, '复制答案') : null,
                   ),
-                  h('div', { className: 'kg-consume-answer-text' }, answer.answer),
-                  Array.isArray(answer.citations) && answer.citations.length > 0 ? h('div', { className: 'kg-consume-citations' },
-                    answer.citations.map((citation) => h('button', {
-                      key: citation.id, type: 'button', className: 'kg-consume-citation',
-                      onClick: () => locate(citation),
-                    },
-                      h('strong', null, citation.id + ' · ' + (citation.targetKind === 'edge' ? '关系证据' : (citation.targetKind === 'source' ? '原文证据' : '节点证据')) + (citation.nodeId ? ' · ' + citation.nodeId : '') + ' · P' + citation.paragraph),
-                      h('div', null, citation.quote),
-                    )),
+                  answer.status === 'answered' && Array.isArray(answer.parts) && answer.parts.length > 0
+                    ? h(React.Fragment, null,
+                        h('div', { className: 'kg-hint', style: { marginTop: 8 } }, answer.answerStyle === 'natural'
+                          ? '以下解释依据所列原文，不代表已经独立核实。'
+                          : answer.answerStyle === 'mixed'
+                            ? '部分解释未通过逐句核验，已改用原文摘录。'
+                            : '自然解释未通过逐句核验，以下保留原文摘录。'),
+                        answer.parts.map((part) => h('div', { key: part.id, className: 'kg-consume-answer-part' },
+                          part.mode === 'extractive' ? h('div', { className: 'kg-consume-answer-part-label' }, '原文摘录') : null,
+                          h('div', null, part.text),
+                          h('div', { className: 'kg-consume-answer-sources' }, (Array.isArray(part.evidenceIds) ? part.evidenceIds : [])
+                            .map((id) => answerCitations.find((citation) => citation.id === id))
+                            .filter(Boolean)
+                            .filter((citation, index, citations) => citations.findIndex((item) => item.paragraph === citation.paragraph) === index)
+                            .map((citation) => h('button', { key: citation.id, type: 'button', className: 'kg-consume-answer-source', onClick: () => locate(citation) }, '原文第 ' + citation.paragraph + ' 段')),
+                          ),
+                        )),
+                      )
+                    : h('div', { className: 'kg-consume-answer-text' }, answer.answer),
+                  visibleCitations.length > 0 ? h('details', { className: 'kg-consume-citations' },
+                    h('summary', null, '查看原文证据（' + visibleCitations.length + ' 处）'),
+                    h('div', { className: 'kg-consume-citation-list' },
+                      visibleCitations.map((citation) => h('button', {
+                        key: citation.id, type: 'button', className: 'kg-consume-citation',
+                        onClick: () => locate(citation),
+                      },
+                        h('strong', null, '原文第 ' + citation.paragraph + ' 段' + (citation.sectionTitle ? ' · ' + citation.sectionTitle : '')),
+                        h('div', null, citation.quote),
+                      )),
+                    ),
+                    h('div', { className: 'kg-hint', style: { marginTop: 7 } }, '模型自评 ' + Math.round(Number(answer.confidence || 0) * 100) + '%' + (answer.model ? ' · ' + answer.model.provider + '/' + answer.model.model : '')),
                   ) : null,
                   Array.isArray(answer.followUps) && answer.followUps.length > 0 ? h('div', { className: 'kg-consume-followups' },
-                    answer.followUps.map((item, index) => h('button', { key: index, type: 'button', className: 'kg-secondary', onClick: () => startAsk(item) }, item)),
+                    answer.followUps.map((item, index) => h('button', { key: index, type: 'button', className: 'kg-secondary', onClick: () => startAsk(item) }, Array.isArray(answer.followUpLabels) ? answer.followUpLabels[index] || item : item)),
                   ) : null,
                 ) : null,
               ),
@@ -6813,12 +6848,56 @@ export default function clientPlugin() {
             else if (res && res.error) setRunsError(res.error.message || '读取未完成任务失败')
           }).catch(() => { if (!disposed) setRunsError('无法读取未完成任务，请检查服务连接') })
           return () => { disposed = true }
-        }, [taskId, runsRefresh])
+        }, [taskId, verifyTaskId, runsRefresh])
         const recoverSavedRun = async (run) => {
-          if (runActionRef.current || taskId) return
+          if (runActionRef.current || taskId || verifyTaskId) return
           runActionRef.current = true
           setRecoveringRun(run.runId)
           try {
+            if (run.taskKind === 'verify') {
+              const loaded = await loadHistoryEntry({ documentId: run.documentId, title: run.title,
+                id: history.find(entry => entry.documentId === run.documentId)?.id })
+              if (!loaded) return
+              const status = await host.call('task-status', { taskId: run.runId })
+              if (status?.status === 'succeeded' || run.status === 'succeeded') {
+                const report = status?.result
+                if (!report?.reportId || !Array.isArray(report.issues) || status.documentId !== run.documentId) {
+                  setError({ message: '已完成审校的报告无法读取，请保留恢复记录并检查服务状态' }); return
+                }
+                if (loaded.view.graph.verification?.lastReport?.reportId === report.reportId) {
+                  setVerification(report)
+                  setRunsRefresh(value => value + 1)
+                  return
+                }
+                if (!Number.isSafeInteger(status.baseRevision) || loaded.revision !== status.baseRevision) {
+                  setError({ code: 'revision_conflict', message: '知识图已在审校后更新，旧报告未自动写入新图；恢复记录仍保留' }); return
+                }
+                const graph = withVerification(loaded.view.graph, report, false)
+                const saved = await persistGraph(graph, loaded.view.graph, loaded.revision)
+                if (!saved) { setError({ message: '审校报告保存未确认，恢复记录仍保留，请刷新后重试' }); return }
+                if (Number.isSafeInteger(saved.revision)) graphRevisionRef.current = saved.revision
+                setVerification(report)
+                setResultView(makeView(graph, loaded.view.sourceText))
+                setRunsRefresh(value => value + 1)
+                toastStore.show('已恢复并保存 AI 深度审校报告')
+                return
+              }
+              let res = status
+              if (!['running', 'pausing', 'paused'].includes(status?.status)) {
+                res = await host.call('resume-verify', { runId: run.runId, resumePaused: true,
+                  resumeInterrupted: true, retryFailed: true })
+                if (!res || res.error || res.taskId !== run.runId) { setError(res?.error || { message: '无法继续审校' }); return }
+              }
+              verifySnapshotRef.current = loaded
+              verifyBusyRef.current = true
+              setVerifyPhase('running')
+              setVerifyProgress({ kind: 'verify', taskId: run.runId, status: res.status === 'paused' ? 'paused' : 'running',
+                stage: res.status === 'paused' ? 'AI 深度审校已暂停' : '正在连接 AI 深度审校…',
+                ...(res.progress || {}), startedAt: Date.now(), elapsedMs: 0 })
+              setVerifyTaskId(run.runId)
+              setRunsRefresh(value => value + 1)
+              return
+            }
             const res = await host.call('resume-extract', { runId: run.runId, retryFailed: true, resumePaused: true, concurrency: extractionConcurrency, ...(effectiveModelArg ? {model: effectiveModelArg} : {}) })
             if (!res || res.error || !res.taskId) { setError(res && res.error || {message:'无法恢复任务'}); return }
             const pending = {taskId:res.taskId, documentId:run.documentId, title:run.title || '', text:'', baseText:'', prevEdgeCount:-1}
@@ -6834,8 +6913,8 @@ export default function clientPlugin() {
           finally { runActionRef.current = false; setRecoveringRun(null) }
         }
         const deleteSavedRun = async (run) => {
-          if (runActionRef.current || taskId) return
-          if (!window.confirm('确定删除未完成任务“' + (run.title || '未命名资料') + '”吗？\n该任务的拆分检查点和待合并结果将永久删除，无法继续此任务。已保存的知识图及其他任务不受影响。')) return
+          if (runActionRef.current || taskId || verifyTaskId) return
+          if (!window.confirm('确定删除' + (run.status === 'succeeded' ? '待保存审校报告' : '未完成任务') + '“' + (run.title || '未命名资料') + '”吗？\n该任务的检查点和已完成批次将永久删除，无法继续此任务。已保存的知识图及其他任务不受影响。')) return
           runActionRef.current = true
           setDeletingRun(run.runId)
           setRunsError('')
@@ -6850,7 +6929,7 @@ export default function clientPlugin() {
               const pending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null')
               if (pending?.taskId === run.runId) localStorage.removeItem(LS_PENDING)
             } catch (e) {}
-            toastStore.show(res.deleted ? '未完成任务已删除，已保存的知识图不受影响' : '该任务已经删除')
+            toastStore.show(res.deleted ? '恢复记录已删除，已保存的知识图不受影响' : '该任务已经删除')
             setRunsRefresh(value => value + 1)
           } catch (e) {
             setRunsError('删除请求未确认，请刷新列表检查；不要重复恢复该任务：' + (e.message || '连接失败'))
@@ -8090,6 +8169,7 @@ export default function clientPlugin() {
                ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
               mode: 'standard', concurrency: verifyConcurrency,
               documentId: documentIdOfGraph(resultView.graph),
+              expectedRevision: graphRevisionRef.current,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
@@ -8598,7 +8678,8 @@ export default function clientPlugin() {
             setFullText(sourceText)
             setCurrentHistoryId(entry.id)
             setAppendCount(0)
-            setResultView(makeView(graph, sourceText))
+            const loadedView = makeView(graph, sourceText)
+            setResultView(loadedView)
             setMarkdownBundle(null)
             setChapterFilter('all')
             setPhase('done')
@@ -8616,6 +8697,7 @@ export default function clientPlugin() {
             setActiveIssueId(null); setIssueFilter('all'); setFactActiveId(null)
             setQuestionTarget(null); setQuestionResult(null); setQuestionDraft('')
             try { localStorage.setItem(LS_RESULT, JSON.stringify({ title: entry.title || '', documentId: entry.documentId, ts: Date.now() })) } catch (e) {}
+            return { view: loadedView, revision: graphRevisionRef.current }
           } catch (e) {
             setError({ message: '载入历史知识图失败：' + (e && e.message ? e.message : '未知错误') })
           }
@@ -9013,14 +9095,14 @@ export default function clientPlugin() {
             },
             onOpenDocument: task => loadHistoryEntry({ documentId: task.documentId, title: task.title, id: history.find(entry => entry.documentId === task.documentId)?.id }) }),
           !taskId && (incompleteRuns.length > 0 || runsError) ? h('details', { open: true, style: {padding:'12px 16px', borderBottom:'1px solid #ddd'} },
-            h('summary', null, '未完成任务（' + incompleteRuns.length + '）'),
+            h('summary', null, '可恢复任务与报告（' + incompleteRuns.length + '）'),
             h('button', {type:'button', className:'kg-secondary', onClick:()=>setRunsRefresh(value=>value+1)}, '刷新列表'),
             runsError ? h('p', {role:'status'}, runsError) : null,
             ...incompleteRuns.map(run => h('div', {key:run.runId, style:{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', padding:'8px 0'}},
-              h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + ' · 已合并 ' + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '') + ' · ' + (run.status === 'paused' ? '已暂停' : run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
+              h('span', {style:{flex:'1 1 240px', overflowWrap:'anywhere'}}, (run.title || '未命名资料') + (run.taskKind === 'verify' ? ' · 已审校 ' : ' · 已合并 ') + run.nextBatchIndex + '/' + run.totalBatches + ' 批' + (run.taskKind === 'verify' ? '' : (run.bufferedBatches ? ' · 另已保存 ' + run.bufferedBatches + ' 批待合并' : '') + (run.preparedBatches ? ' · 主拆分已保存 ' + run.preparedBatches + ' 批待补全' : '')) + ' · ' + (run.status === 'succeeded' ? '报告待保存' : run.status === 'paused' ? '已暂停' : run.status === 'failed' ? '失败待处理' : '待连接') + ' · ' + new Date(run.updatedAt).toLocaleString()),
               run.totalRelations != null ? h('span', {className:'kg-empty-sub'}, '关系审校已保存 ' + (run.reviewedRelations || 0) + '/' + run.totalRelations) : null,
               run.totalRelationGroups != null ? h('span', {className:'kg-empty-sub'}, '关系候选已落盘 ' + (run.savedRelationGroups || 0) + '/' + run.totalRelationGroups + ' 组') : null,
-              h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun || !!deletingRun, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : '继续任务'),
+              h('button', {type:'button', className:'kg-secondary', disabled:!!recoveringRun || !!deletingRun || !!verifyTaskId, onClick:()=>recoverSavedRun(run)}, recoveringRun === run.runId ? '恢复中…' : run.status === 'succeeded' ? '保存审校报告' : run.taskKind === 'verify' ? '继续审校' : '继续任务'),
               h('button', {type:'button', className:'kg-secondary', style:{color:'#c62828', minWidth:64}, title:'删除此任务的恢复记录，不删除已保存的知识图', 'aria-label':'删除未完成任务：' + (run.title || '未命名资料'), disabled:!!recoveringRun || !!deletingRun, onClick:()=>deleteSavedRun(run)}, deletingRun === run.runId ? '删除中…' : '删除'),
             )),
           ) : null,
@@ -9860,6 +9942,7 @@ export default function clientPlugin() {
                 summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'standard', concurrency: verifyConcurrency,
               documentId: documentIdOfGraph(view.graph),
+              expectedRevision: trajRevisionRef.current,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
             if (myGen !== verifyGenRef.current) return

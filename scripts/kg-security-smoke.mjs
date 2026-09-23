@@ -147,7 +147,7 @@ const attachments = await attachmentSmoke()
 const origin = await originSmoke()
 async function bodyEncodingSmoke() {
   const built = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-  const start = built.indexOf('function readBody(req, limit) {')
+  const start = built.indexOf('function readBody(req, limit, asBuffer = false) {')
   const end = built.indexOf('\nfunction writeJson(', start)
   assert(start >= 0 && end > start, 'built request reader missing')
   const readBody = runInNewContext(built.slice(start,end) + '\nreadBody', { Buffer, TextDecoder })

@@ -311,6 +311,8 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - 收尾期间显示「暂停中」，检查点保存并释放运行锁后才显示「已暂停」。保存失败会明确报错，不把未保存的结果当作成功暂停。
 - 刷新页面或重启 DSH 后仍保持暂停，可在「未完成任务」列表点击 **继续任务**；后台自动恢复逻辑不会唤醒主动暂停的任务。继续仍校验原文、本体与知识图版本，不覆盖已被其他操作修改的图。
 - 暂停与取消、删除相互独立。无持久化检查点的任务，以及最终结果正在提交的短暂阶段，不显示暂停按钮。已有图上的独立「持续补全关系」任务仍使用下节的「停止补全」和已保存游标恢复机制。
+- **AI 深度审校**也可暂停：已完成的批次及其独立复核结果逐批落盘；暂停中止在途请求，重启后只有点击「继续审校」才会重跑未完成批次。继续时沿用原模型和审校输入，并检查知识图版本。取消审校不会伪装成暂停，也不能从已取消任务继续。
+- 若审校完成时浏览器已关闭，报告仍保存在任务检查点中。「可恢复任务与报告」会显示尚未附加到知识图的报告，点击「保存审校报告」即可按原图版本提交；图已被修改时明确拒绝自动覆盖。已成功附加的报告不再出现在恢复列表。
 
 ### 持续补全关系
 
@@ -336,7 +338,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 生成正文知识图或轨迹知识图后，下方会出现共享的 **「使用这张知识图」** 面板：
 
 1. **结构化检索**：输入关键词，并可叠加节点类型与章节筛选；返回列表只表示直接命中，关系邻居保留在响应子图中作为上下文，不会伪装成直接命中。
-2. **证据问答**：输入自然语言问题，Host 先做有界节点召回、最多两跳关系扩展和原文段落 fallback，再调用当前选择的模型；`answered`、`insufficient`、`out_of_scope` 都是成功的语义结果。
+2. **证据问答**：输入自然语言问题，Host 先做有界节点召回、最多两跳关系扩展和原文段落 fallback。模型先写简洁解释，Host 逐句检查证据 ID、词汇与数值，再单独调用模型核对每个命题是否被所引原文支持；未通过的句子退回原文摘录。`answered`、`insufficient`、`out_of_scope` 都是成功的语义结果。
 3. 点击检索结果或回答 citation 会同时聚焦节点与原文。若目标节点不在当前 800 节点窗口，Client 会调用 `document-load({ query: nodeId })` 加载该节点及其邻居后再定位，而不是把“当前没渲染”误判为“图中不存在”。
 4. 面板的错误、任务轮询与取消状态独立于抽取/验证面板，不会覆盖父工作台的错误提示。
 
@@ -398,9 +400,10 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 ```json
 {
   "status": "answered",
-  "answer": "由 Host 拼接的已接纳回答",
+  "answer": "根据这份资料：\n恢复要依靠检查点。",
+  "answerStyle": "natural",
   "parts": [
-    { "id": "part-1", "text": "一个独立回答命题", "evidenceIds": ["ev3"] }
+    { "id": "part-1", "text": "恢复要依靠检查点。", "evidenceIds": ["ev3"], "mode": "natural" }
   ],
   "citations": [
     {
@@ -409,7 +412,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
       "targetId": "n12",
       "nodeId": "n12",
       "paragraph": 8,
-      "quote": "canonical 原文逐字摘录",
+      "quote": "恢复依赖检查点。",
       "groundingStatus": "grounded",
       "entailmentStatus": "unverified"
     }
@@ -426,11 +429,11 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - `image-load` 与其他 canonical document API 一样依赖 DSH Web 的同源 / 工作区信任边界；`documentId` 是高熵随机 UUID，但不是多租户授权令牌。不要把同一 DSH Web origin 暴露给互不信任的租户；Chrome 扩展的 `/dsh-kg` allowlist 不开放 `image-load`。
 - 对带 `documentId` 的请求，Host/SQLite **只从服务端加载 canonical graph 与 source**；客户端提交的 `graph` / `text` 不会成为事实源。
 - Host 在调用模型前，从已认证 node evidence、edge evidence 和 source paragraph fallback 中预分配最多 24 个 `evidenceId`。模型只能返回 `parts[].evidenceIds`，不能自行声明 `nodeId/paragraph/quote`。
-- Host 丢弃未知 evidenceId、真实但与命题词汇无关的 evidenceId，以及没有合法证据的 `answered` part；`candidate/unverified/uncertain` 证据还要求回答显式使用“资料表述/可能/未验证”等限定措辞，`unsupported` 证据不能被包装成已证实结论。若所有 part 都被丢弃，结果自动降级为 `insufficient`。即使 part 通过准入，模型原始 `part.text` 也不会直接展示：Host 会从已认证 node/edge/source evidence 确定性渲染 part，再拼接最终 `answer`；`insufficient/out_of_scope` 也只返回 Host 固定语义文案且不返回 follow-up；`answered` 的 follow-up 由 citation target ID / paragraph 确定性生成，因此模型自由文本无法借回答或可点击追问混入结果。
+- Host 丢弃未知 evidenceId、与命题词汇无关的 evidenceId、引文中不存在的新数字，以及没有合法证据的 `answered` part。通过初筛的草稿会接受一次单独的逐句语义核验：核验输入只含问题、草稿和对应的已认证原文 quote；只有核验明确判为 `supported` 且返回的 evidenceId 属于该草稿时，模型写的自然解释才会展示。核验缺失、格式错误、拒绝或超时时，该 part 只展示 Host 从已认证引文生成的原文摘录，标记为 `extractive`；所有 part 都无法准入时降级为 `insufficient`。`answerStyle` 区分 `natural`、`mixed` 和 `extractive`，每个 part 保留 `mode` 与回链引文。Host 在回答外统一注明“根据资料”，不把 `grounded` 或模型自评置信度当作外部事实验证。`insufficient/out_of_scope` 只返回固定语义文案；追问查询由 citation target ID / paragraph 确定性生成，界面只展示人可读的段落标签。
 - `targetKind=node | edge | source` 分别支持节点命题、关系命题和图覆盖不足时的原文段落证据。关系结论可直接引用 edge evidence，而不是只拿端点节点充当关系证明。
 - `groundingStatus=grounded` 只表示 quote 可回到 canonical 原文，**不等价于外部事实已证实**；外部真实性仍应使用「外部事实核查」。`entailmentStatus` 会原样进入 citation，UI 不会把 `unverified/uncertain/unsupported` 包装成已验证事实。
 - 原文中的 prompt injection 文本在问答提示中明确标记为待分析数据；输出仍经过严格 JSON 解析、evidence-ID admission、长度和数量上限。
-- 每次模型调用都执行真实 wall-clock deadline，计时覆盖 `llm.stream()` 建立连接和完整异步迭代；超时以 typed `timeout` 失败，取消以 `cancelled` 结束。即使 provider 忽略 `AbortSignal` 或 `iterator.return()` 不返回，任务也会立即释放前台 busy 状态，晚到 iterator 会在进入 `next()` 前被幂等关闭，部分输出不会发布。运维/回归可用 `DSH_KG_MODEL_TIMEOUT_CAP_MS`（最小 20ms）把各调用点原有 deadline 统一下调；未设置时保留各阶段 60–360 秒的既有预算。
+- 每次模型调用都执行真实 wall-clock deadline，计时覆盖 `llm.stream()` 建立连接和完整异步迭代；生成阶段超时以 typed `timeout` 失败，独立核验阶段超时则退回原文摘录，取消均以 `cancelled` 结束。即使 provider 忽略 `AbortSignal` 或 `iterator.return()` 不返回，任务也会立即释放前台 busy 状态，晚到 iterator 会在进入 `next()` 前被幂等关闭，部分输出不会发布。运维/回归可用 `DSH_KG_MODEL_TIMEOUT_CAP_MS`（最小 20ms）把各调用点原有 deadline 统一下调；未设置时保留各阶段既有预算。
 
 ## Chrome 扩展（划线拆图）
 
@@ -483,7 +486,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - **不猜偏移**：锚点解析失败时节点在图/原文间不可回链，但绝不臆造偏移，统一暴露在诊断列表（`anchor_unresolved:node:...`）中。
 - **轨迹图与正文图共用同一 canonical 生命周期**：会话执行轨迹序列化为编号内容单元（用户消息 / 工具调用 / 工具结果 / AI 回复），每个事件记录 `[start, end)` 偏移。轨迹首次拆解产生 `documentId/revision/sourceId`；后续 append 只提交 `sessionId + documentId + expectedRevision`，Host/SQLite 读取完整 canonical graph 与持久化的 `traceText/traceEvents` 后增量追加。浏览器 `localStorage` 只保存轨迹 `documentId/revision` 引用，不保存整图/全文，因此 >800 节点重复追加也不会把不可见节点当作不存在。
 - **增量合并（追加拆分）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、单元号偏移（对齐全文编号）与语义去重。同一 canonical Node/Edge 再次出现时会合并新的 provenance-rich evidence；append 始终受 base revision fence 保护。
-- **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃；验证/质疑输入限制最多 800 个节点，避免恶意大图拖垮 Host。
+- **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃。常驻 Web 插件的审校请求在较大时用 gzip 传输，不丢弃节点或关系；Host 分别限制压缩请求与解压后的 JSON 大小，并对超限返回明确错误。单次验证最多接纳 2000 个节点。
 - **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`。窗口化以后浏览器不再分配连续 canonical node id：新增节点使用 `node_<UUID>`，Host/SQLite 仍会拒绝不可见节点 ID 碰撞。`merge_nodes` 通过 semantic operation `merge_node(from→into)` 交给 Host 在完整 canonical graph 上执行，因此窗口外 incident edges 会被重定向而不是静默删除。所有提交都受 `expectedRevision` + invariant gate 保护；blocking 修改返回 `invariant_violation`，并发冲突返回 `revision_conflict`。
 - **任务可观测、有 deadline、可即时取消**：进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮。模型调用的 wall-clock deadline 同时覆盖 stream acquisition 与完整 iteration；`timeout` 与 `cancelled` 使用独立 typed 状态。取消 hook 在操作完成后移除，各 runner 在 `finally` 清理 `activeTask`；即使 provider 不合作，前台任务也不会被永久占住。
 - **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图和任务启动时冻结的 `baseRevision`；append 还保存 `baseSource / baseStaging`。trajectory checkpoint 额外保存 `traceEvents` 与追加时的 `baseTraceText/baseTraceEvents`。无论通过 `/extract` 提交 checkpoint，还是 Host 重启后走 `/resume-extract`，恢复前都必须确认 canonical revision 仍等于该 frozen base；旧 checkpoint 不会被重新绑定到新 revision。常驻 `/extract` 还会在异步 revision lookup 前原子占用 busy slot，两个并发请求不能同时入场。已完成 batch 不重跑；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
