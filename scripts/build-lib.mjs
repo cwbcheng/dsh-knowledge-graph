@@ -650,6 +650,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
+                ...verificationTaskMetadataHost(a, graph),
+                concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 text, graph, mode, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))

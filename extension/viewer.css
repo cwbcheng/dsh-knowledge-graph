@@ -9,6 +9,10 @@
 .kg-card { border: 1px solid var(--kg-border); border-radius: 12px; padding: 14px 16px; background: var(--kg-panel); margin-bottom: 14px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .kg-delete-progress { position: sticky; top: 0; z-index: 20; margin: 0; padding: 8px 0; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 13px; }
+.kg-verify-progress { position: sticky; top: 0; z-index: 19; padding: 10px 0; margin: 8px 0; border-block: 1px solid var(--kg-border); background: var(--kg-edge-label-bg); font-size: 13px; overflow-wrap: anywhere; }
+.kg-verify-progress-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.kg-verify-progress p { margin: 4px 0; }
+.kg-verify-progress progress { display: block; width: 100%; height: 8px; accent-color: #2563eb; }
 .kg-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .kg-panel-head .kg-section-title { margin: 0; }
 .kg-collapse-btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; }

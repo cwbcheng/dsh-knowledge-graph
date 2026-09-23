@@ -34,7 +34,7 @@ async function bind(kind) {
   // ownership are production code, exercised across both transports.
   source = source.replace(marker, `      ctx.admissionTest = {
     tasks, activeTaskStatusHost, rememberCanonicalGraphHost,
-    setRunner(run) { runTask = run; runRelationRetryTask = run; runConsumptionAnswerTask = run },
+    setRunner(run) { runTask = run; runRelationRetryTask = run; runConsumptionAnswerTask = run; runVerifyTask = run },
     ${kind === 'persistent' ? 'setStore(store) { sqliteStorePromise = Promise.resolve(store) },' : ''}
   };
 ` + marker)
@@ -118,6 +118,35 @@ await check('overlapping persistent admissions start exactly one task', async ()
 })
 
 for (const kind of ['dynamic', 'persistent']) {
+  await check(kind + ' deep verification preserves bounded task identity without inventing a document', async () => {
+    const host = await bind(kind)
+    let finished = deferred()
+    host.setRunner(async task => { await finished.promise; task.status = 'succeeded' })
+    try {
+      const cases = [
+        { args: { title: '  Review title  ', documentId: '  review-document  ' }, title: 'Review title', id: 'review-document' },
+        { args: {}, title: 'Admission', id: documentId },
+        { args: { title: 42, documentId: {} }, title: 'Admission', id: documentId },
+        { args: { graph: { ...graph, source: {} } }, title: '', id: '' },
+        { args: { title: 'x'.repeat(250), documentId: 'd'.repeat(180) }, title: 'x'.repeat(200), id: 'd'.repeat(160) },
+      ]
+      for (const test of cases) {
+        finished = deferred()
+        const concurrency = [1, 2, 4, undefined, 99][cases.indexOf(test)]
+        const started = await host.post('verify-graph', { text: graph.sourceText, graph, mode: 'standard', concurrency, ...test.args })
+        assert.ok(started.response.taskId)
+        const descriptor = host.activeTaskStatusHost().task
+        assert.equal(descriptor.taskId, started.response.taskId)
+        assert.equal(descriptor.label, 'AI 深度审校')
+        assert.equal(descriptor.title, test.title)
+        assert.equal(descriptor.documentId, test.id)
+        assert.equal(host.tasks.get(started.response.taskId).concurrency, [1, 2, 4].includes(concurrency) ? concurrency : 2)
+        finished.resolve()
+        await tick()
+      }
+    } finally { finished.resolve(); await tick(); host.close() }
+  })
+
   await check(kind + ' unexpected task errors release all runtime ownership', async () => {
     const host = await bind(kind)
     const logged = [], originalError = console.error

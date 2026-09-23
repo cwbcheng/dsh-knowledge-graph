@@ -65,6 +65,8 @@ let tree = JSON.stringify(ui.render())
 assert.ok(tree.includes('关系检索 · 进行中'))
 assert.ok(tree.includes('12/140'))
 assert.ok(tree.includes('task-running'))
+assert.ok(tree.includes('资料：book'))
+assert.ok(tree.includes('任务编号：task-running'))
 assert.ok(!tree.includes('查看更新后的知识图'), 'cannot open a future result while still running')
 current = { busy: false, task: null, trackedTask: { ...current.task, status: 'succeeded' } }
 await ui.tick()
@@ -75,6 +77,19 @@ current = { busy: false, task: null, trackedTask: null }
 await ui.tick()
 assert.ok(JSON.stringify(ui.render()).includes('已断开'), 'host restart cannot leave a stale running spinner')
 ui.close(); assert.equal(ui.queue.size, 0)
+
+for (const title of ['', 'Reviewed material']) {
+  const descriptor = { ...running, taskId: 'review-task', kind: 'verify', label: 'AI 深度审校', title, status: 'succeeded' }
+  const review = mount(async () => ({ busy: false, task: null, trackedTask: descriptor }), { onOpenDocument() {} })
+  review.render(); await flush()
+  const rendered = JSON.stringify(review.render())
+  assert.ok(rendered.includes(title ? '资料：Reviewed material' : '资料标题未记录'))
+  assert.ok(rendered.includes('任务编号：review-task'))
+  assert.ok(!rendered.includes('未命名资料'))
+  assert.ok(rendered.includes('查看已保存知识图'))
+  assert.ok(!rendered.includes('查看更新后的知识图'), 'a completed review does not imply that its report has been saved')
+  review.close()
+}
 
 // Reopening with empty browser state discovers the same owner; known local
 // progress is not rendered twice. Read failures retain the last observation.

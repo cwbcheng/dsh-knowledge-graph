@@ -4870,7 +4870,7 @@
         const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
-        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑' },
+        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
               h('h3', { className: 'kg-verify-title' }, '验证与质疑'),
@@ -4891,11 +4891,11 @@
                 }, '一键修复 ' + fixableCount + ' 项')
               : null,
             verifying
-              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+              ? h('div', { style: { minWidth: 0, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', overflowWrap: 'anywhere' } },
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
+                        (progress.stage || '运行中') + ' · ' + Math.floor((progress.elapsedMs || 0) / 1000) + ' 秒' + (progress.connectionError ? ' · 正在重连' : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)

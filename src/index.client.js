@@ -50,6 +50,10 @@ export default function clientPlugin() {
 .kg-card { border: 1px solid var(--kg-border); border-radius: 12px; padding: 14px 16px; background: var(--kg-panel); margin-bottom: 14px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .kg-delete-progress { position: sticky; top: 0; z-index: 20; margin: 0; padding: 8px 0; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 13px; }
+.kg-verify-progress { position: sticky; top: 0; z-index: 19; padding: 10px 0; margin: 8px 0; border-block: 1px solid var(--kg-border); background: var(--kg-edge-label-bg); font-size: 13px; overflow-wrap: anywhere; }
+.kg-verify-progress-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.kg-verify-progress p { margin: 4px 0; }
+.kg-verify-progress progress { display: block; width: 100%; height: 8px; accent-color: #2563eb; }
 .kg-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .kg-panel-head .kg-section-title { margin: 0; }
 .kg-collapse-btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; }
@@ -417,6 +421,7 @@ export default function clientPlugin() {
           h(ModelUsageStatus, { usage: progress.modelUsage }),
           progress.relationParallel ? h('p', { role: 'status' }, progress.relationParallel.stage + ' · 并发上限 ' + progress.relationParallel.limit + ' 路 · 执行中 ' + progress.relationParallel.active + ' 路') : null,
           progress.review ? h('p', null, '关系已审校 ' + progress.review.reviewed + '/' + progress.review.eligible + ' · 待审 ' + progress.review.pending + ' · 已复用 ' + (progress.review.reused || 0)) : null,
+          progress.verification?.totalBatches ? h('p', null, 'AI 审校已完成 ' + progress.verification.completedBatches + '/' + progress.verification.totalBatches + ' 批 · ' + (progress.verification.phase === 'confirm' ? '独立复核候选问题' : '报告尚未完成')) : null,
           progress.discovery ? h(RelationDiscoveryStatus, { coverage: progress.discovery }) : null,
           progress.completion ? h(RelationCompletionStatus, { completion: progress.completion }) : null,
           total && requests ? h('div', null,
@@ -427,6 +432,119 @@ export default function clientPlugin() {
             h('div', null, '当前请求 ' + duration(progress.sampledAt - request.startedAt) + ' · 正文 ' + request.outputChars + ' 字符 · 思考 ' + request.reasoningChars + ' 字符'),
             h('div', null, request.lastContentAt ? '距最近内容 ' + duration(progress.sampledAt - request.lastContentAt) : '尚未收到内容'))) : h('p', null, '旧版服务未提供请求级进度' + (total ? ' · 当前内容块 ' + progress.batch.index + '/' + total : '') + ' · 最近显示的接收量 ' + (progress.charsReceived || 0) + ' 字符'),
           requests && !requests.length && progress.lastRequest ? h('p', null, '最近请求：' + progress.lastRequest.stage + ' · ' + progress.lastRequest.state) : null)
+      }
+      // Transport failures must not release ownership of an accepted AI task.
+      function watchVerificationTask({ ctx, taskId, isCurrent, setProgress, onReport, onFinish }) {
+        let disposed = false, stop = null, failures = 0
+        const current = () => !disposed && isCurrent()
+        const tick = async () => {
+          if (!current()) return
+          let response
+          try {
+            response = await host.call('task-status', { taskId })
+            if (!response || !['running', 'succeeded', 'failed', 'cancelled', 'not_found'].includes(response.status)
+              || (response.error && ['running', 'succeeded'].includes(response.status))) {
+              throw new Error(response?.error?.message || '无效的任务状态响应')
+            }
+          } catch (error) {
+            if (!current()) return
+            failures++
+            setProgress(previous => ({ ...previous, connectionError: '进度连接中断，正在重连；不会重复提交审校。' }))
+            stop = ctx.timeout(tick, Math.min(3000 * Math.pow(1.5, failures), 15000))
+            return
+          }
+          if (!current()) return
+          failures = 0
+          if (response.status === 'running') {
+            setProgress(previous => ({ ...previous, ...response.progress, kind: 'verify', status: 'running', connectionError: '', receivedAt: Date.now() }))
+            stop = ctx.timeout(tick, 3000)
+            return
+          }
+          let status = response.status, error = response.error
+          if (status === 'succeeded') {
+            try {
+              if (!response.result || !Array.isArray(response.result.issues)) throw new Error('审校任务未返回有效报告，请重新审校')
+              setProgress(previous => ({ ...previous, status: 'saving', stage: '审校已结束，正在保存报告', connectionError: '', cancelling: false, cancelError: '' }))
+              await onReport(response.result)
+            } catch (failure) {
+              status = 'failed'
+              error = { message: failure.message || '审校报告保存失败' }
+            }
+          }
+          if (!current()) return
+          if (status === 'not_found') error = { message: '审校任务已过期或服务已重启；不会自动重新提交，请确认后重试。' }
+          const stage = status === 'succeeded' ? 'AI 深度审校已完成' : status === 'cancelled' ? 'AI 深度审校已取消' : error?.message || 'AI 深度审校失败'
+          setProgress(previous => ({ ...previous, status, stage, connectionError: '', cancelError: '',
+            elapsedMs: Date.now() - (previous?.startedAt || Date.now()),
+            summary: status === 'succeeded' ? response.result.summary : '', modelUsage: response.modelUsage || previous?.modelUsage }))
+          onFinish(status, status === 'succeeded' || status === 'cancelled' ? null : { ...error, message: stage })
+        }
+        tick()
+        return () => { disposed = true; if (stop) stop() }
+      }
+      async function cancelVerificationTask(taskId, isCurrent, setProgress) {
+        if (!taskId) return
+        setProgress(previous => previous?.taskId === taskId ? { ...previous, cancelling: true, cancelError: '' } : previous)
+        try {
+          const response = await host.call('task-cancel', { taskId })
+          if (!response || response.error || !['cancelling', 'cancelled', 'succeeded', 'failed', 'not_found'].includes(response.status)) {
+            throw new Error(response?.error?.message || '取消未确认，请重试')
+          }
+          // The status poll remains authoritative, including a completion racing cancellation.
+        } catch (error) {
+          if (isCurrent()) setProgress(previous => previous?.taskId === taskId && previous.status === 'running'
+            ? { ...previous, cancelling: false, cancelError: '取消未确认：' + (error.message || '连接失败') } : previous)
+        }
+      }
+      function VerificationConcurrencyControl({ value, onChange, disabled }) {
+        return h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 } }, '审校并发',
+          h('select', { value, disabled, onChange: event => onChange(Number(event.target.value)), 'aria-label': '审校并发' },
+            [1, 2, 4].map(limit => h('option', { key: limit, value: limit }, limit + ' 路'))))
+      }
+      function VerificationTaskStatus({ progress, taskId, onCancel, panelId, ctx }) {
+        const [now, setNow] = useState(Date.now())
+        const visible = progress?.kind === 'verify'
+        const active = visible && ['submitting', 'running', 'saving'].includes(progress.status)
+        useEffect(() => {
+          if (!active) return
+          let stop
+          const tick = () => { setNow(Date.now()); stop = ctx.timeout(tick, 1000) }
+          tick()
+          return () => { if (stop) stop() }
+        }, [active])
+        if (!visible) return null
+        const duration = ms => Math.floor(Math.max(0, ms || 0) / 60000) + ' 分 ' + Math.floor(Math.max(0, ms || 0) / 1000) % 60 + ' 秒'
+        const elapsed = active ? (progress.elapsedMs || 0) + Math.max(0, now - (progress.receivedAt || progress.startedAt || now)) : progress.elapsedMs
+        const batches = progress.verification
+        const total = batches?.totalBatches || 0
+        const completed = Math.min(total, batches?.completedBatches || 0)
+        const requests = Array.isArray(progress.requests) ? progress.requests : []
+        const stage = progress.cancelling && active ? '正在取消审校，等待后台确认' : progress.stage
+        return h('section', { className: 'kg-verify-progress', 'aria-label': 'AI 深度审校执行状态' },
+          h('div', { className: 'kg-verify-progress-head' },
+            active ? h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }) : null,
+            h('strong', { role: 'status' }, stage),
+            h('span', null, '耗时 ' + duration(elapsed)),
+            active && progress.status !== 'saving' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: onCancel, disabled: !taskId || progress.cancelling }, progress.cancelling ? '取消中…' : '取消审校') : null,
+            progress.status === 'succeeded' ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+              const panel = document.getElementById(panelId)
+              if (panel) { panel.focus({ preventScroll: true }); panel.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
+            } }, '查看审校报告') : null),
+          progress.connectionError ? h('p', { role: 'status' }, progress.connectionError) : null,
+          progress.cancelError ? h('p', { role: 'alert' }, progress.cancelError) : null,
+          active && total ? h('div', null,
+            h('p', null, '已审校 ' + completed + '/' + total + ' 批' + (batches.phase === 'confirm' ? ' · 正在独立复核候选问题' : '') + (completed === total ? ' · 正在整理报告' : '')),
+            h('progress', { value: completed, max: total, 'aria-label': 'AI 审校批次进度' })) : null,
+          active && !total ? h('progress', { 'aria-label': 'AI 审校准备进度' }) : null,
+          active && batches?.phase === 'local' ? h('p', null, '本地规则检查 · 已检查 ' + (batches.checkedPairs || 0) + ' 对节点') : null,
+          active && progress.relationParallel ? h('p', null, '审校并发上限 ' + progress.relationParallel.limit + ' 路 · 执行中 ' + progress.relationParallel.active + ' 路') : null,
+          active ? requests.map((request, index) => h('p', { key: index },
+            request.stage + ' · ' + request.state + ' · 本次请求 ' + duration(progress.sampledAt - request.startedAt + Math.max(0, now - progress.receivedAt)) +
+            ' · 已接收正文 ' + request.outputChars + ' 字符 / 思考 ' + request.reasoningChars + ' 字符')) : null,
+          active && !requests.length && progress.status === 'running' && !Array.isArray(progress.requests) ? h('p', null, '已接收 ' + (progress.charsReceived || 0) + ' 字符') : null,
+          progress.model ? h('p', null, '模型 ' + progress.model.provider + ' · ' + progress.model.model) : null,
+          active && progress.warning ? h('p', { role: 'status' }, progress.warning) : null,
+          progress.summary ? h('p', null, progress.summary) : null)
       }
       function RelationDiscoveryStatus({ coverage }) {
         if (!coverage || !coverage.totalTargets) return null
@@ -536,13 +654,14 @@ export default function clientPlugin() {
         const state = { running: '进行中', pausing: '暂停中', paused: '已暂停', succeeded: '已完成', failed: '失败', cancelled: '已取消', not_found: '已断开' }[task?.status] || '状态未知'
         return h('section', { 'aria-label': '后台 AI 任务', style: { borderTop: '2px solid #2563eb', borderBottom: '1px solid var(--kg-border)', padding: '12px 0', marginBottom: 16, overflowWrap: 'anywhere' } },
           h('h3', { style: { fontSize: 16, margin: '0 0 8px' } }, task ? (task.label || 'AI 任务') + ' · ' + state : (snapshot && !snapshot.busy ? '后台当前没有运行中的 AI 任务' : '后台正在准备 AI 任务')),
-          task ? h('p', { style: { margin: '4px 0', fontSize: 13 } }, (task.title || '未命名资料') + ' · ' + task.taskId) : null,
+          task ? h('p', { style: { margin: '4px 0', fontSize: 13 } }, task.title ? '资料：' + task.title : '资料标题未记录') : null,
+          task ? h('p', { style: { margin: '4px 0', fontSize: 12, color: 'var(--kg-muted)' } }, '任务编号：' + task.taskId) : null,
           connectionError ? h('p', { role: 'status' }, connectionError) : null,
           running || task?.status === 'paused' ? h(GenerationProgress, { progress: task.progress }) : null,
           task ? h(TaskPauseControls, { taskId: task.taskId, status: task.status, progress: task.progress, onChanged: () => setRefresh(value => value + 1) }) : null,
           running && task.kind === 'relation-retry' && onStopTask ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: () => onStopTask(task.taskId) }, '停止补全') : null,
           task?.error ? h('p', { role: 'status' }, task.error.message) : null,
-          !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' ? '查看更新后的知识图' : '查看已保存知识图') : null)
+          !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' && task.kind !== 'verify' ? '查看更新后的知识图' : '查看已保存知识图') : null)
       }
       function rememberPendingTask(taskId, submitted) {
         try { localStorage.setItem(LS_PENDING, JSON.stringify({ taskId, title: submitted.title || '', documentId: submitted.documentId || '', append: submitted.append === true, relationRetry: submitted.relationRetry === true, ts: Date.now() })) } catch (error) {}
@@ -5413,7 +5532,7 @@ export default function clientPlugin() {
         const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
-        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑' },
+        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
               h('h3', { className: 'kg-verify-title' }, '验证与质疑'),
@@ -5434,11 +5553,11 @@ export default function clientPlugin() {
                 }, '一键修复 ' + fixableCount + ' 项')
               : null,
             verifying
-              ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+              ? h('div', { style: { minWidth: 0, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', overflowWrap: 'anywhere' } },
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
                   progress
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0 } },
-                        (progress.stage || '运行中') + ' · ' + Math.round((progress.elapsedMs || 0) / 60000) + ' 分钟 · 已接收 ' + (progress.charsReceived || 0) + ' 字符' + (progress.model ? ' · 模型 ' + progress.model.provider + ' · ' + progress.model.model : ''))
+                        (progress.stage || '运行中') + ' · ' + Math.floor((progress.elapsedMs || 0) / 1000) + ' 秒' + (progress.connectionError ? ' · 正在重连' : ''))
                     : null,
                   progress && progress.warning
                     ? h('span', { className: 'kg-fact-note', style: { margin: 0, color: '#b45309' } }, '⚠ ' + progress.warning)
@@ -6750,6 +6869,7 @@ export default function clientPlugin() {
         const [verification, setVerification] = useState(null) // VerificationReport | null
         const [verifyPhase, setVerifyPhase] = useState('idle') // idle | running
         const [verifyTaskId, setVerifyTaskId] = useState(null)
+        const verifySnapshotRef = useRef(null)
         const [activeIssueId, setActiveIssueId] = useState(null)
         const [issueFilter, setIssueFilter] = useState('all')
         const [questionDraft, setQuestionDraft] = useState('')
@@ -6763,6 +6883,7 @@ export default function clientPlugin() {
         const [factActiveId, setFactActiveId] = useState(null)
         const [factRules, setFactRules] = useState('')
         const [verifyProgress, setVerifyProgress] = useState(null)
+        const [verifyConcurrency, setVerifyConcurrency] = useState(2)
         const [factProgress, setFactProgress] = useState(null)
         const [extractProgress, setExtractProgress] = useState(null)
         const verifyBusyRef = useRef(false)
@@ -6774,6 +6895,7 @@ export default function clientPlugin() {
         useEffect(() => { factReportRef.current = factReport }, [factReport])
         useEffect(() => { imageInputsRef.current = imageInputs }, [imageInputs])
         useEffect(() => () => {
+          verifyGenRef.current += 1
           for (const url of uploadPreviewUrlsRef.current) { try { URL.revokeObjectURL(url) } catch (error) {} }
           for (const url of Object.values(sourceImageUrlRef.current)) { try { URL.revokeObjectURL(url) } catch (error) {} }
           uploadPreviewUrlsRef.current.clear()
@@ -7289,55 +7411,28 @@ export default function clientPlugin() {
         // ---- verification task polling ----
         useEffect(() => {
           if (!verifyTaskId) return
-          let disposed = false
-          let stop = null
-          let delay = 3000
           const myGen = verifyGenRef.current
-          const start = Date.now()
-          const tick = async () => {
-            if (disposed || myGen !== verifyGenRef.current) return
-            let res = null
-            try {
-              res = await host.call('task-status', { taskId: verifyTaskId })
-            } catch (e) {
-              if (disposed || myGen !== verifyGenRef.current) return
-              setVerifyPhase('idle'); setVerifyTaskId(null)
-              setError({ message: '查询验证任务失败：' + (e && e.message ? e.message : '未知错误') })
-              return
-            }
-            if (disposed || myGen !== verifyGenRef.current) return
-            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
-            if (res && res.status === 'succeeded' && res.result) {
-              const report = res.result
-              if (report && Array.isArray(report.issues)) {
-                setVerification(report)
-                if (resultView) {
-                  const g2 = withVerification(resultView.graph, report, false)
-                  setResultView(makeView(g2, resultView.sourceText))
-                  persistGraph(g2)
-                }
-              }
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null)
-              verifyBusyRef.current = false
-              toastStore.show('知识图验证完成')
-              return
-            }
-            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
-              const err = res.error || {}
-              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 审校失败，请稍后重试') })
-              return
-            }
-            if (res && res.status === 'not_found') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
-              setError({ message: '验证任务已过期（服务可能已重启），请重新验证' })
-              return
-            }
-            if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
-            stop = ctx.timeout(tick, delay)
-          }
-          tick()
-          return () => { disposed = true; if (stop) stop() }
+          const reviewedView = verifySnapshotRef.current.view
+          const revision = verifySnapshotRef.current.revision
+          return watchVerificationTask({ ctx, taskId: verifyTaskId,
+            isCurrent: () => myGen === verifyGenRef.current,
+            setProgress: setVerifyProgress,
+            onReport: async report => {
+              if (!reviewedView || currentResultRef.current !== reviewedView) throw new Error('知识图已变化，未附加旧版本的审校报告，请重新审校')
+              const g2 = withVerification(reviewedView.graph, report, false)
+              const saved = await persistGraph(g2, reviewedView.graph, revision)
+              if (documentIdOfGraph(g2) && !saved) throw new Error('AI 审校已结束，但报告保存失败，请检查知识图版本或连接后重试')
+              if (myGen !== verifyGenRef.current) return
+              if (currentResultRef.current !== reviewedView) throw new Error('知识图视图已变化，请重新载入已保存的审校报告')
+              setVerification(report)
+              setResultView(makeView(g2, reviewedView.sourceText))
+            },
+            onFinish: (status, error) => {
+              setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
+              if (error) setError(error)
+              if (status === 'succeeded') toastStore.show('知识图验证完成')
+            },
+          })
         }, [verifyTaskId])
 
         // ---- question task polling ----
@@ -7949,12 +8044,14 @@ export default function clientPlugin() {
         const startQuickVerify = async () => {
           if (!resultView || verifyBusyRef.current) return
           setError(null)
+          setVerifyProgress(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
           try {
             const payload = {
               title, text: fullText || resultView.sourceText || '',
-              graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
+              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
+                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
                ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
               mode: 'quick',
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
@@ -7979,31 +8076,42 @@ export default function clientPlugin() {
         }
         const startDeepVerify = async () => {
           if (!resultView || verifyBusyRef.current) return
+          const myGen = verifyGenRef.current
+          verifySnapshotRef.current = { view: resultView, revision: graphRevisionRef.current }
           setError(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
+          setVerifyProgress({ kind: 'verify', status: 'submitting', stage: '正在提交 AI 深度审校…', startedAt: Date.now(), elapsedMs: 0 })
           try {
             const payload = {
-              title, text: fullText || resultView.sourceText || '',
-              graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
+              title: title || resultView.graph.source?.title || '', text: fullText || resultView.sourceText || '',
+              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
+                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
                ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
-              mode: 'standard',
+              mode: 'standard', concurrency: verifyConcurrency,
+              documentId: documentIdOfGraph(resultView.graph),
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
+            if (myGen !== verifyGenRef.current) return
             if (res && res.error) {
               setVerifyPhase('idle'); verifyBusyRef.current = false
+              setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: res.error.message || '无法提交审校任务' }))
               setError(res.error)
               return
             }
             if (res && res.taskId) {
+              setVerifyProgress(previous => ({ ...previous, status: 'running', taskId: res.taskId, stage: '审校任务已提交，正在获取进度…' }))
               setVerifyTaskId(res.taskId)
             } else {
               setVerifyPhase('idle'); verifyBusyRef.current = false
+              setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: '无法提交审校任务，请重试' }))
               setError({ message: '无法提交验证任务，请重试' })
             }
           } catch (e) {
+            if (myGen !== verifyGenRef.current) return
             setVerifyPhase('idle'); verifyBusyRef.current = false
+            setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: '审校提交未确认，请检查后台任务状态后重试' }))
             setError({ message: '无法提交验证任务：' + (e && e.message ? e.message : '未知错误') })
           }
         }
@@ -8044,6 +8152,11 @@ export default function clientPlugin() {
           }
         }
         const handleCancelVerify = async () => {
+          if (verifyTaskId) {
+            if (verifyProgress?.cancelling) return
+            const myGen = verifyGenRef.current
+            return cancelVerificationTask(verifyTaskId, () => myGen === verifyGenRef.current && verifyBusyRef.current, setVerifyProgress)
+          }
           const id = verifyTaskId || questionTaskId
           if (!id) return
           try {
@@ -8678,6 +8791,7 @@ export default function clientPlugin() {
                      title: generationMeta.sourceAudit === 'full' ? '已完成全文 deterministic invariant 验收' : '旧式追加调用缺少既有正文，只完成新增批次 grounding + 整图结构验收',
                    }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.grounding && generationMeta.grounding.evidenceBackedClaims != null ? ' · 证据声明 ' + generationMeta.grounding.evidenceBackedClaims : '') + (generationMeta.grounding && (generationMeta.grounding.candidateClaims || generationMeta.grounding.unsupportedClaims) ? ' · 待证实声明 ' + ((generationMeta.grounding.candidateClaims || 0) + (generationMeta.grounding.unsupportedClaims || 0)) : '') + (generationMeta.grounding && generationMeta.grounding.entailmentStatus === 'unverified' ? ' · 语义未独立验证' : '') + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '') + (generationMeta.sourceAudit && generationMeta.sourceAudit !== 'full' ? ' · 部分来源复核' : '')) : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
+                    h(VerificationConcurrencyControl, { value: verifyConcurrency, onChange: setVerifyConcurrency, disabled: verifyPhase === 'running' || verifyBusyRef.current }),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
@@ -8690,6 +8804,7 @@ export default function clientPlugin() {
                       }, '已记录 ' + diagCount + ' 条诊断（含无法回链原文的节点）' + (showDiag ? ' ▴' : ' ▾'))
                     : null,
                 ),
+                h(VerificationTaskStatus, { progress: verifyProgress, taskId: verifyTaskId, onCancel: handleCancelVerify, panelId: 'kg-verify-panel-workbench', ctx }),
                 h(ModelUsageStatus, { usage: generationMeta?.modelUsage, label: '最近一次运行用量' }),
                 windowMeta
                   ? h('div', { className: 'kg-window-nav', 'aria-label': '大图窗口导航与子图查询' },
@@ -8984,7 +9099,7 @@ export default function clientPlugin() {
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-workbench',
                         progress: verifyProgress,
-                        onCancel: handleCancelVerify,
+                        onCancel: (verifyTaskId || questionTaskId) && !verifyProgress?.cancelling && verifyProgress?.status !== 'saving' ? handleCancelVerify : null,
                       })
                     : null,
                   resultView
@@ -9166,6 +9281,7 @@ export default function clientPlugin() {
         const [verification, setVerification] = useState(null)
         const [verifyPhase, setVerifyPhase] = useState('idle')
         const [verifyTaskId, setVerifyTaskId] = useState(null)
+        const verifySnapshotRef = useRef(null)
         const [questionTaskId, setQuestionTaskId] = useState(null)
         const [activeIssueId, setActiveIssueId] = useState(null)
         const [issueFilter, setIssueFilter] = useState('all')
@@ -9179,6 +9295,7 @@ export default function clientPlugin() {
         const [factActiveId, setFactActiveId] = useState(null)
         const [factRules, setFactRules] = useState('')
         const [verifyProgress, setVerifyProgress] = useState(null)
+        const [verifyConcurrency, setVerifyConcurrency] = useState(2)
         const [factProgress, setFactProgress] = useState(null)
         const [extractProgress, setExtractProgress] = useState(null)
         const verifyBusyRef = useRef(false)
@@ -9186,6 +9303,8 @@ export default function clientPlugin() {
         const verifyGenRef = useRef(0)
         const factGenRef = useRef(0)
         const factReportRef = useRef(null)
+        const currentViewRef = useRef(view)
+        currentViewRef.current = view
         useEffect(() => { verificationRef.current = verification }, [verification])
         useEffect(() => { factReportRef.current = factReport }, [factReport])
         const cancelTrajVerifyTasks = () => {
@@ -9259,6 +9378,7 @@ export default function clientPlugin() {
           setAppendCount(0)
           appendModeRef.current = false
           setVerification(null); setVerifyPhase('idle'); setVerifyTaskId(null); setQuestionTaskId(null)
+          setVerifyProgress(null)
           setFactReport(null); setFactPhase('idle'); setFactTaskId(null); setFactActiveId(null); setFactRules('')
           setActiveIssueId(null); setIssueFilter('all'); setQuestionDraft(''); setQuestionTarget(null); setQuestionResult(null); setQuestionPhase('idle')
           verifyBusyRef.current = false
@@ -9315,6 +9435,7 @@ export default function clientPlugin() {
 
         // Clear the toast timer on unmount.
         useEffect(() => () => {
+          verifyGenRef.current += 1
           if (toastTimer.current) { toastTimer.current(); toastTimer.current = null }
         }, [])
 
@@ -9443,53 +9564,29 @@ export default function clientPlugin() {
         // ---- verification / question task polling (trajectory tab) ----
         useEffect(() => {
           if (!verifyTaskId) return
-          let disposed = false
-          let stop = null
-          let delay = 3000
           const mySeq = sessionSeq.current
           const myGen = verifyGenRef.current
-          const start = Date.now()
-          const tick = async () => {
-            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
-            let res = null
-            try { res = await host.call('task-status', { taskId: verifyTaskId }) }
-            catch (e) {
-              if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
+          const reviewedView = verifySnapshotRef.current.view
+          const revision = verifySnapshotRef.current.revision
+          return watchVerificationTask({ ctx, taskId: verifyTaskId,
+            isCurrent: () => mySeq === sessionSeq.current && myGen === verifyGenRef.current,
+            setProgress: setVerifyProgress,
+            onReport: async report => {
+              if (!reviewedView || currentViewRef.current !== reviewedView) throw new Error('知识图已变化，未附加旧版本的审校报告，请重新审校')
+              const g2 = withVerification(reviewedView.graph, report, false)
+              const saved = await persistTrajGraph(g2, reviewedView.graph, revision)
+              if (documentIdOfGraph(g2) && !saved) throw new Error('AI 审校已结束，但报告保存失败，请检查知识图版本或连接后重试')
+              if (mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
+              if (currentViewRef.current !== reviewedView) throw new Error('知识图视图已变化，请重新载入已保存的审校报告')
+              setVerification(report)
+              setView(makeView(g2, reviewedView.sourceText))
+            },
+            onFinish: (status, error) => {
               setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
-              setError({ message: '查询验证任务失败：' + (e && e.message ? e.message : '未知错误') })
-              return
-            }
-            if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
-            if (res && res.status === 'running') setVerifyProgress(res.progress || null)
-            if (res && res.status === 'succeeded' && res.result) {
-              const report = res.result
-              if (report && Array.isArray(report.issues) && view) {
-                setVerification(report)
-                const baseline = view.graph
-                const g2 = withVerification(baseline, report, false)
-                setView(makeView(g2, view.sourceText))
-                persistTrajGraph(g2, baseline)
-              }
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
-              showToast('轨迹知识图验证完成')
-              return
-            }
-            if (res && res.status === 'failed' || res && res.status === 'cancelled') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
-              const err = res.error || {}
-              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 审校失败，请稍后重试') })
-              return
-            }
-            if (res && res.status === 'not_found') {
-              setVerifyPhase('idle'); setVerifyTaskId(null); setVerifyProgress(null); verifyBusyRef.current = false
-              setError({ message: '验证任务已过期（服务可能已重启），请重新验证' })
-              return
-            }
-            if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
-            stop = ctx.timeout(tick, delay)
-          }
-          tick()
-          return () => { disposed = true; if (stop) stop() }
+              if (error) setError(error)
+              if (status === 'succeeded') showToast('轨迹知识图验证完成')
+            },
+          })
         }, [verifyTaskId])
         useEffect(() => {
           if (!questionTaskId) return
@@ -9657,7 +9754,7 @@ export default function clientPlugin() {
         // Trajectory edits share the same canonical revision protocol as the
         // document workbench. localStorage only remembers the document ref;
         // reports and repairs are durable only after graph-commit succeeds.
-        const persistTrajGraph = (g, baseGraph) => {
+        const persistTrajGraph = (g, baseGraph, pinnedRevision) => {
           const documentId = documentIdOfGraph(g)
           if (!documentId) return Promise.resolve(null)
           const baseline = baseGraph && typeof baseGraph === 'object' ? baseGraph : (view && view.graph ? view.graph : g)
@@ -9676,7 +9773,7 @@ export default function clientPlugin() {
           const queued = trajCommitQueueRef.current.catch(() => {}).then(async () => {
             const response = await host.call('graph-commit', {
               documentId,
-              expectedRevision: trajRevisionRef.current,
+              expectedRevision: Number.isSafeInteger(pinnedRevision) ? pinnedRevision : trajRevisionRef.current,
               graph: graphPayload,
               operations,
               baseNodeIds: (Array.isArray(baseline.nodes) ? baseline.nodes : []).map((node) => node && node.id).filter(Boolean),
@@ -9687,11 +9784,16 @@ export default function clientPlugin() {
               failure.details = response.error
               throw failure
             }
+            if (!response || response.documentId !== documentId || !Number.isSafeInteger(response.revision) || !response.graph) {
+              throw new Error('保存结果未确认，请重新载入知识图后核对')
+            }
+            if (Number.isSafeInteger(pinnedRevision) && currentViewRef.current !== view) return response
             if (response && Number.isInteger(response.revision)) trajRevisionRef.current = response.revision
             graphSemanticOperations.delete(g)
             writeTrajResult(sessionId, { graph: g, traceText: sourceText, traceEvents, revision: trajRevisionRef.current, ts: Date.now() })
             return response
           }).catch((error) => {
+            if (Number.isSafeInteger(pinnedRevision) && currentViewRef.current !== view) return null
             const details = error && error.details && typeof error.details === 'object' ? error.details : error
             graphSemanticOperations.delete(g)
             setError({ ...(details && typeof details === 'object' ? details : {}), message: details && details.message ? details.message : '轨迹知识图提交失败' })
@@ -9717,12 +9819,14 @@ export default function clientPlugin() {
         const startQuickVerify = async () => {
           if (!view || verifyBusyRef.current) return
           setError(null)
+          setVerifyProgress(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
           try {
             const res = await host.call('verify-graph', {
               title: '', text: view.sourceText || '',
-              graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
+              graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
+                summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'quick',
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
@@ -9743,25 +9847,40 @@ export default function clientPlugin() {
         }
         const startDeepVerify = async () => {
           if (!view || verifyBusyRef.current) return
+          const myGen = verifyGenRef.current
+          verifySnapshotRef.current = { view, revision: trajRevisionRef.current }
           setError(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
+          setVerifyProgress({ kind: 'verify', status: 'submitting', stage: '正在提交 AI 深度审校…', startedAt: Date.now(), elapsedMs: 0 })
           try {
             const res = await host.call('verify-graph', {
-              title: '', text: view.sourceText || '',
-              graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
-              mode: 'standard',
+              title: view.graph.source?.title || '轨迹知识图', text: view.sourceText || '',
+              graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
+                summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
+              mode: 'standard', concurrency: verifyConcurrency,
+              documentId: documentIdOfGraph(view.graph),
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
+            if (myGen !== verifyGenRef.current) return
             if (res && res.error) {
               setVerifyPhase('idle'); verifyBusyRef.current = false
+              setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: res.error.message || '无法提交审校任务' }))
               setError(res.error)
               return
             }
-            if (res && res.taskId) setVerifyTaskId(res.taskId)
-            else { setVerifyPhase('idle'); verifyBusyRef.current = false; setError({ message: '无法提交验证任务，请重试' }) }
+            if (res && res.taskId) {
+              setVerifyProgress(previous => ({ ...previous, status: 'running', taskId: res.taskId, stage: '审校任务已提交，正在获取进度…' }))
+              setVerifyTaskId(res.taskId)
+            } else {
+              setVerifyPhase('idle'); verifyBusyRef.current = false
+              setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: '无法提交审校任务，请重试' }))
+              setError({ message: '无法提交验证任务，请重试' })
+            }
           } catch (e) {
+            if (myGen !== verifyGenRef.current) return
             setVerifyPhase('idle'); verifyBusyRef.current = false
+            setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: '审校提交未确认，请检查后台任务状态后重试' }))
             setError({ message: '无法提交验证任务：' + (e && e.message ? e.message : '未知错误') })
           }
         }
@@ -9796,6 +9915,11 @@ export default function clientPlugin() {
           }
         }
         const handleCancelVerify = async () => {
+          if (verifyTaskId) {
+            if (verifyProgress?.cancelling) return
+            const myGen = verifyGenRef.current
+            return cancelVerificationTask(verifyTaskId, () => myGen === verifyGenRef.current && verifyBusyRef.current, setVerifyProgress)
+          }
           const id = verifyTaskId || questionTaskId
           if (!id) return
           try {
@@ -10174,6 +10298,7 @@ export default function clientPlugin() {
                    appendCount > 0 ? h('span', null, '已追加 ' + appendCount + ' 次') : null,
                    generationMeta ? h('span', { style: { color: generationMeta.invariantErrors === 0 ? '#059669' : '#dc2626' } }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.grounding && generationMeta.grounding.evidenceBackedClaims != null ? ' · 证据声明 ' + generationMeta.grounding.evidenceBackedClaims : '') + (generationMeta.grounding && (generationMeta.grounding.candidateClaims || generationMeta.grounding.unsupportedClaims) ? ' · 待证实声明 ' + ((generationMeta.grounding.candidateClaims || 0) + (generationMeta.grounding.unsupportedClaims || 0)) : '') + (generationMeta.grounding && generationMeta.grounding.entailmentStatus === 'unverified' ? ' · 语义未独立验证' : '') + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '')) : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
+                    h(VerificationConcurrencyControl, { value: verifyConcurrency, onChange: setVerifyConcurrency, disabled: verifyPhase === 'running' || verifyBusyRef.current }),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
@@ -10186,6 +10311,7 @@ export default function clientPlugin() {
                       }, '诊断 ' + diagCount + ' 条（含无法回链的节点）' + (showDiag ? ' ▴' : ' ▾'))
                     : null,
                 ),
+                h(VerificationTaskStatus, { progress: verifyProgress, taskId: verifyTaskId, onCancel: handleCancelVerify, panelId: 'kg-verify-panel-traj', ctx }),
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
                 h(ModelUsageStatus, { usage: generationMeta?.modelUsage, label: '最近一次运行用量' }),
                 h('p', { className: 'kg-hint' }, '点击轨迹事件 → 图中聚焦该事件节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应事件；右上角可切换布局形态（力导向 / 圆形 / 放射 / 分层），长按节点查看轨迹摘录。拖拽中间竖条调整两列宽度，拖拽下方横条调整结果区高度。'),
@@ -10308,7 +10434,7 @@ export default function clientPlugin() {
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-traj',
                         progress: verifyProgress,
-                        onCancel: handleCancelVerify,
+                        onCancel: (verifyTaskId || questionTaskId) && !verifyProgress?.cancelling && verifyProgress?.status !== 'saving' ? handleCancelVerify : null,
                       })
                     : null,
                   h(FactCheckPanel, {

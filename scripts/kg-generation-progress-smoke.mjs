@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'u
 const marker = '      async function callModel('
 assert.equal(source.split(marker).length, 2)
 const instrumented = source.replace(marker, `      harness.progressTest = { callModel, cancellableTaskDelayHost, addTaskCancelHookHost, attach(task) { activeTask = task; tasks.set(task.id, task) } }
-${marker}`)
+${marker}`) + '\n//# sourceURL=kg-generation-progress-host.js'
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const handlers = new Map()
 const harness = { handle(name, fn) { handlers.set(name, fn) } }
@@ -14,11 +14,12 @@ globalThis.harness = harness
 const streams = []
 plugin().apply({ get(name) { return name === 'llm' ? { stream() {
   const queue = [], readers = []
+  let closed = false
   const stream = {
     [Symbol.asyncIterator]() { return this },
-    next() { return queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => readers.push(resolve)) },
+    next() { return queue.length ? Promise.resolve(queue.shift()) : closed ? Promise.resolve({ done: true }) : new Promise(resolve => readers.push(resolve)) },
     push(value) { const item = { done: false, value }; if (readers.length) readers.shift()(item); else queue.push(item) },
-    return() { while (readers.length) readers.shift()({ done: true }); return Promise.resolve({ done: true }) },
+    return() { closed = true; while (readers.length) readers.shift()({ done: true }); return Promise.resolve({ done: true }) },
   }
   streams.push(stream)
   return stream
@@ -75,6 +76,33 @@ await streams[1].return()
 await b
 assert.equal((await status()).progress.requests.length, 0)
 assert.equal((await status()).progress.lastRequest.state, '已完成')
+// Simulate an old poisoned display value and many subsequent default requests.
+// The stable label must not depend on previous completion or streaming states.
+task.progress.stage = 'old' + '：返回完成，正在处理结果'.repeat(80)
+for (const [kind, label] of [['verify', 'AI 深度审校'], ['question', '节点答疑'], ['fact-check', '外部核查'], ['answer', '知识图答疑']]) {
+  task.kind = kind
+  for (let i = 0; i < 20; i++) {
+    const pending = call()
+    await tick()
+    let current = (await status()).progress
+    assert.equal(current.requests[0].stage, label)
+    streams.at(-1).push({ type: 'reasoning-delta', index: 0, text: 'thinking' })
+    await tick()
+    assert.equal((await status()).progress.stage, label + '：模型思考中')
+    streams.at(-1).push({ type: 'text-delta', index: 0, text: '{}' })
+    await streams.at(-1).return()
+    await pending
+    current = (await status()).progress
+    assert.equal(current.stage, label + '：返回完成，正在处理结果')
+    assert.equal(current.lastRequest.stage, label)
+  }
+}
+const fallback = call(), explicit = call('独立复核（第 2/3 批）')
+await tick()
+assert.deepEqual((await status()).progress.requests.map(request => request.stage), ['知识图答疑', '独立复核（第 2/3 批）'])
+for (const stream of streams.slice(-2)) { stream.push({ type: 'text-delta', index: 0, text: '{}' }); await stream.return() }
+await Promise.all([fallback, explicit])
+assert.equal((await status()).progress.stage, '独立复核（第 2/3 批）：返回完成，正在处理结果')
 const c = call('摘要汇总')
 const d = call('关系审校')
 const delay = harness.progressTest.cancellableTaskDelayHost(task, 60000)
