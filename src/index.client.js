@@ -702,6 +702,7 @@ export default function clientPlugin() {
        const MAX_PDF_INPUT_BYTES = 15 * 1024 * 1024
        const PDF_ACCEPT = 'application/pdf,.pdf'
        const MAX_VERIFY_SCOPE_CHARS = 240000
+       const MAX_VERIFY_SCOPE_UNITS = 2000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'
       const LS_DRAFT = 'dsh-kg-draft-v1'
@@ -8098,10 +8099,36 @@ export default function clientPlugin() {
           setResultView(makeView(g2, resultView.sourceText))
           persistGraph(g2, baseline)
         }
-        const verificationSourcePayload = (source, graph) => {
+        const verificationSourcePayload = (source, graph, question = '') => {
           if (typeof source !== 'string' || source.length <= MAX_VERIFY_SCOPE_CHARS) return {}
           const paragraphs = splitParagraphs(source)
           const wanted = new Set()
+          const priority = []
+          if (question) {
+            for (const match of question.matchAll(/\bP(\d+)(?:\s*[-–—~至到]\s*P?(\d+))?/gi)) {
+              const start = Number(match[1])
+              const end = match[2] == null ? start : Number(match[2])
+              if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || end - start > 80) continue
+              for (let p = start; p <= end; p++) if (p < paragraphs.length) priority.push(p)
+            }
+            const terms = new Set()
+            for (const match of question.replace(/\bP\d+\b/gi, ' ').matchAll(/[\p{Script=Han}]{2,}|[A-Za-z][A-Za-z0-9_-]{2,}/gu)) {
+              const phrase = match[0]
+              if (phrase.length <= 12) terms.add(phrase)
+              if (/^[\p{Script=Han}]+$/u.test(phrase)) {
+                for (let i = 0; i < phrase.length - 1; i++) {
+                  terms.add(phrase.slice(i, i + 2))
+                  if (i + 3 <= phrase.length) terms.add(phrase.slice(i, i + 3))
+                }
+              }
+            }
+            const scored = paragraphs.map((para, index) => {
+              let score = 0
+              for (const term of terms) if (para.text.includes(term)) score += Math.min(term.length, 5)
+              return { index, score }
+            }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
+            priority.push(...scored.slice(0, 30).map((item) => item.index))
+          }
           for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
             if (!node || !Number.isInteger(node.paragraph) || node.paragraph < 0 || node.paragraph >= paragraphs.length) continue
             wanted.add(node.paragraph)
@@ -8109,11 +8136,14 @@ export default function clientPlugin() {
             if (node.paragraph + 1 < paragraphs.length) wanted.add(node.paragraph + 1)
           }
           const sourceUnits = []
+          const selected = new Set()
           let chars = 0
-          for (const paragraph of Array.from(wanted).sort((a, b) => a - b)) {
+          for (const paragraph of [...new Set(priority), ...Array.from(wanted).sort((a, b) => a - b)]) {
+            if (sourceUnits.length >= MAX_VERIFY_SCOPE_UNITS) break
             const text = paragraphs[paragraph] && typeof paragraphs[paragraph].text === 'string' ? paragraphs[paragraph].text.trim() : ''
-            if (!text || chars + text.length > MAX_VERIFY_SCOPE_CHARS) continue
+            if (!text || selected.has(paragraph) || chars + text.length > MAX_VERIFY_SCOPE_CHARS) continue
             sourceUnits.push({ paragraph, text })
+            selected.add(paragraph)
             chars += text.length
           }
           // Override the caller's full `text` field when a scoped payload is
@@ -8292,7 +8322,7 @@ export default function clientPlugin() {
             const payload = {
               title, text: fullText || resultView.sourceText || '',
               graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
-               ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
+               ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph, q),
               target: targetOverride || questionTarget || { kind: 'graph', id: null },
               question: q,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),

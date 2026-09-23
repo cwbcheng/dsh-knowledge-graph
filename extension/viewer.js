@@ -27,6 +27,7 @@
        const MAX_PDF_INPUT_BYTES = 15 * 1024 * 1024
        const PDF_ACCEPT = 'application/pdf,.pdf'
        const MAX_VERIFY_SCOPE_CHARS = 240000
+       const MAX_VERIFY_SCOPE_UNITS = 2000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'
       const LS_DRAFT = 'dsh-kg-draft-v1'

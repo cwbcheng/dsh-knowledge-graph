@@ -9962,7 +9962,7 @@ function createHostPlugin(graphContractOnly) {
         return s
       }
 
-      function buildQuestionContext(graph, sourceText, target) {
+      function buildQuestionContext(graph, sourceText, target, question = '', paragraphMap = null) {
         const paras = splitParagraphsOffsetsHost(sourceText || '')
         const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
         const nodeById = new Map(nodes.map((n) => [n.id, n]))
@@ -9982,14 +9982,46 @@ function createHostPlugin(graphContractOnly) {
             if (n && Number.isInteger(n.paragraph) && n.paragraph >= 0 && n.paragraph < paras.length) pSet.add(n.paragraph)
           }
         } else {
-          // Graph-level question: include as many paragraphs as fit.
-          let len = 0
-          for (let i = 0; i < paras.length && len < 5000; i++) {
-            pSet.add(i)
-            len += paras[i].text.length + 1
+          // A whole-graph challenge must retrieve from the whole source, not
+          // silently answer from the opening pages of a book.
+          const references = []
+          const localBySource = Array.isArray(paragraphMap)
+            ? new Map(paragraphMap.map((source, local) => [source, local])) : null
+          for (const match of String(question).matchAll(/\bP(\d+)(?:\s*[-–—~至到]\s*P?(\d+))?/gi)) {
+            const start = Number(match[1])
+            const end = match[2] == null ? start : Number(match[2])
+            if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || end - start > 80) continue
+            for (let p = start; p <= end; p++) {
+              const local = localBySource ? localBySource.get(p) : p
+              if (local != null && local < paras.length) references.push(local)
+            }
+          }
+          const terms = new Set()
+          for (const match of String(question).replace(/\bP\d+\b/gi, ' ').matchAll(/[\p{Script=Han}]{2,}|[A-Za-z][A-Za-z0-9_-]{2,}/gu)) {
+            const phrase = match[0]
+            if (phrase.length <= 12) terms.add(phrase)
+            if (/^[\p{Script=Han}]+$/u.test(phrase)) {
+              for (let i = 0; i < phrase.length - 1; i++) {
+                terms.add(phrase.slice(i, i + 2))
+                if (i + 3 <= phrase.length) terms.add(phrase.slice(i, i + 3))
+              }
+            }
+          }
+          const scored = paras.map((para, index) => {
+            let score = 0
+            for (const term of terms) if (para.text.includes(term)) score += Math.min(term.length, 5)
+            return { index, score }
+          }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
+          const candidates = [...new Set(references), ...scored.map((item) => item.index)]
+          let chars = 0
+          for (const p of candidates) {
+            const size = paras[p].text.length + 16
+            if (chars + size > 12000) continue
+            pSet.add(p)
+            chars += size
           }
         }
-        const subNodes = nodes.filter((n) => n && (nodeById.get(n.id) && (n.paragraph == null || pSet.has(n.paragraph) || (target && (n.id === target.id || (target.kind === 'edge' && target.id && target.id.split('>').includes(n.id)))))))
+        const subNodes = nodes.filter((n) => n && (pSet.has(n.paragraph) || (target && (n.id === target.id || (target.kind === 'edge' && target.id && target.id.split('>').includes(n.id))))))
         const subIds = new Set(subNodes.map((n) => n.id))
         const sub = {
           summary: graph.summary || '',
@@ -10031,7 +10063,7 @@ function createHostPlugin(graphContractOnly) {
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
           if (model) announceModel(task, model)
-          const ctx2 = buildQuestionContext(task.graph, task.text, task.target)
+          const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question, task.paragraphMap)
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
           for (const p of sorted) {
@@ -10040,7 +10072,7 @@ function createHostPlugin(graphContractOnly) {
           let userText = '用户质疑/问题：' + task.question + NL
           userText += NL + '目标：' + (task.target && task.target.kind === 'node' ? '节点 ' + task.target.id : task.target && task.target.kind === 'edge' ? '关系 ' + task.target.id : '整张图') + NL
           userText += NL + '相关原文段落：' + NL
-          for (const u of units) userText += '[P' + u.num + '] ' + u.text + NL
+          for (const u of units) userText += '[P' + u.num + ']' + (task.paragraphMap ? '（原文 P' + task.paragraphMap[u.num] + '；evidence.paragraph 请使用前面的局部编号）' : '') + ' ' + u.text + NL
           userText += NL + '相关知识图子图（JSON）：' + NL + JSON.stringify(ctx2.sub)
           let norm = null
           let lastErr = ''
