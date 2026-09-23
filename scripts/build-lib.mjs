@@ -382,6 +382,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 preserveEntailmentAuthorityHost(current, incomingGraph)
                 authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '')
                 const preview = mergeGraphViewHost(operated, incomingGraph, a.baseNodeIds, a.baseEdgeKeys)
+                const ontologyConflicts = newlyInvalidOntologyEdgesHost(current, preview)
+                if (ontologyConflicts.length > 0) {
+                  return writeJson(res, 200, { error: { code: 'ontology_relation_conflict',
+                    message: '修复会使现有关系违反本体类型约束，canonical graph 未更新',
+                    edges: ontologyConflicts.slice(0, 20) } })
+                }
                 authenticateGraphEvidenceHost(preview, current.sourceText || '')
                 const gate = validateGraphInvariantsHost(preview, current.sourceText || '', { includeQuality: false })
                 if (gate.blockingIssues.length > 0) {

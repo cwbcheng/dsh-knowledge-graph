@@ -186,6 +186,7 @@ export default function clientPlugin() {
 .kg-question-error { margin: 9px 0 0; padding: 8px 10px; color: #b91c1c; background: rgba(220,38,38,0.07); border-left: 3px solid #dc2626; font-size: 12.5px; overflow-wrap: anywhere; }
 .kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; }
 .kg-question-asked { margin: 0 0 6px; color: var(--kg-text-dim); overflow-wrap: anywhere; }
+.kg-fix-preview { margin: 7px 0 2px; padding: 6px 8px; border-left: 3px solid #2563eb; background: rgba(59,130,246,0.07); font-size: 12px; overflow-wrap: anywhere; }
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
@@ -1423,21 +1424,21 @@ export default function clientPlugin() {
           }
         })
       }
-      function GraphExportActions({ graph, title, ctx }) {
+      function GraphExportActions({ graph, title, ctx, loadCanonical }) {
         const runExport = async (kind) => {
           try {
             let exportGraph = graph
             const documentId = documentIdOfGraph(graph)
             const truncated = graph && graph.view && graph.view.truncated === true
-            const canLoadCanonical = typeof host !== 'undefined' && host && typeof host.call === 'function'
-            if (truncated && documentId && canLoadCanonical) {
-              const loaded = await host.call('document-export', { documentId })
+            if (truncated) {
+              if (!documentId || typeof loadCanonical !== 'function') {
+                throw new Error('无法读取完整 canonical graph，已取消导出以避免生成不完整备份')
+              }
+              const loaded = await loadCanonical(documentId)
               if (!loaded || loaded.error || !loaded.graph || !Array.isArray(loaded.graph.nodes)) {
                 throw new Error(loaded && loaded.error && loaded.error.message ? loaded.error.message : '无法读取完整 canonical graph')
               }
               exportGraph = loaded.graph
-            } else if (truncated && documentId) {
-              throw new Error('当前是截断工作窗口，请在知识库工作台中导出完整 canonical graph')
             }
             const filename = exportGraphFile(exportGraph, title, kind, ctx)
             if (filename) toastStore.show('已导出 ' + filename)
@@ -2323,6 +2324,36 @@ export default function clientPlugin() {
          if (merged.entailmentStatus !== 'verified') merged.entailmentStatus = source.entailmentStatus || merged.entailmentStatus || 'unverified'
          return merged
        }
+      function introducedOntologyConflicts(graph, nextNodes, nextEdges, action) {
+        const profile = graph && graph.graphOntology
+        if (!profile || !Array.isArray(profile.relationTypes)) {
+          if (graph?.ontology === 'learning-view-v1' && !['delete_node', 'delete_edge', 'update_summary'].includes(action)) {
+            return ['本体关系规则尚未加载']
+          }
+          return []
+        }
+        const relations = new Map(profile.relationTypes.map((r) => [r.id, r]))
+        const valid = (edge, nodes) => {
+          const rule = relations.get(edge.relation)
+          const from = nodes.get(edge.fromNodeId)
+          const to = nodes.get(edge.toNodeId)
+          if (!rule || !from || !to) return false
+          return (!Array.isArray(rule.from) || rule.from.includes(from.type))
+            && (!Array.isArray(rule.to) || rule.to.includes(to.type))
+        }
+        const beforeNodes = new Map((graph.nodes || []).map((n) => [n.id, n]))
+        const afterNodes = new Map((nextNodes || []).map((n) => [n.id, n]))
+        const key = (edge) => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
+        const previouslyInvalid = new Set((graph.edges || []).filter((edge) => !valid(edge, beforeNodes)).map(key))
+        return (nextEdges || []).filter((edge) => !valid(edge, afterNodes) && !previouslyInvalid.has(key(edge)))
+          .map((edge) => key(edge))
+      }
+      function nodeTypeFixConflicts(graph, fix) {
+        if (fix?.action !== 'update_node' || !fix.nodePatch?.patch?.type || !graph) return []
+        const nodes = (graph.nodes || []).map((n) => n.id === fix.nodePatch.id
+          ? { ...n, type: fix.nodePatch.patch.type } : n)
+        return introducedOntologyConflicts(graph, nodes, graph.edges || [], fix.action)
+      }
        // graph (original untouched). Structural fixes are deterministic; text
       // patches come from the AI and are still a user-confirmed action.
       function applyPatch(graph, issue) {
@@ -2380,12 +2411,25 @@ export default function clientPlugin() {
         } else if ((fix.action === 'update_edge' || fix.action === 'delete_edge' || fix.action === 'add_edge') && fix.edgePatch) {
           const p = fix.edgePatch
           let idx = Number.isInteger(p.index) && p.index >= 0 && p.index < edges.length ? p.index : -1
-          if (idx < 0) idx = edges.findIndex((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId && (!p.relation || e.relation === p.relation))
+          if (idx >= 0 && (edges[idx].fromNodeId !== p.fromNodeId || edges[idx].toNodeId !== p.toNodeId
+            || (p.oldRelation && edges[idx].relation !== p.oldRelation))) idx = -1
+          if (idx < 0) {
+            const candidates = edges.flatMap((e, i) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId
+              && (!p.oldRelation || e.relation === p.oldRelation) ? [i] : [])
+            if (candidates.length === 1) idx = candidates[0]
+          }
           if (fix.action === 'update_edge' && idx >= 0) {
             if (p.relation && REL_LABEL[p.relation] && Array.isArray(p.evidence) && p.evidence.length > 0) {
-              edges[idx] = { ...edges[idx], relation: p.relation, evidence: mergeEvidenceRecords([], p.evidence) }
-              changed = true
-              auditDetail = 'update_edge:' + edgeKeyOf(edges[idx])
+              const fromNodeId = p.newFromNodeId || p.fromNodeId
+              const toNodeId = p.newToNodeId || p.toNodeId
+              const duplicate = edges.some((e, i) => i !== idx && e.fromNodeId === fromNodeId
+                && e.toNodeId === toNodeId && e.relation === p.relation)
+              if (ids.has(fromNodeId) && ids.has(toNodeId) && fromNodeId !== toNodeId && !duplicate) {
+                edges[idx] = { ...edges[idx], fromNodeId, toNodeId, relation: p.relation,
+                  evidence: mergeEvidenceRecords([], p.evidence) }
+                changed = true
+                auditDetail = 'update_edge:' + p.fromNodeId + '>' + p.toNodeId + ' to ' + edgeKeyOf(edges[idx])
+              }
             }
           } else if (fix.action === 'delete_edge' && idx >= 0) {
             const key = edgeKeyOf(edges[idx])
@@ -2419,6 +2463,7 @@ export default function clientPlugin() {
           if (prev === graph.summary) changed = false
         }
         if (!changed) return graph
+        if (introducedOntologyConflicts(originalGraph, nodes, edges, fix.action).length > 0) return originalGraph
         let next = { ...graph, nodes, edges }
         const compact = compactAuditSnapshots(graph, next, 6, 12)
         next = appendAudit(next, fix.action, issue.targetId || null, auditDetail, issue.reportId || null,
@@ -2454,8 +2499,14 @@ export default function clientPlugin() {
           return !edges.some((e) => e.fromNodeId === fix.edgePatch.fromNodeId && e.toNodeId === fix.edgePatch.toNodeId && (!fix.edgePatch.relation || e.relation === fix.edgePatch.relation))
         }
         if (fix.action === 'update_edge' && fix.edgePatch) {
-          const target = edges.find((e) => e.fromNodeId === fix.edgePatch.fromNodeId && e.toNodeId === fix.edgePatch.toNodeId)
-          return !target || (fix.edgePatch.relation ? target.relation === fix.edgePatch.relation : true)
+          const p = fix.edgePatch
+          const oldEdge = edges.find((e) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId
+            && (!p.oldRelation || e.relation === p.oldRelation))
+          if (oldEdge && (p.newFromNodeId || p.newToNodeId)) return false
+          if (oldEdge && oldEdge.relation === p.relation) return true
+          const target = edges.find((e) => e.fromNodeId === (p.newFromNodeId || p.fromNodeId)
+            && e.toNodeId === (p.newToNodeId || p.toNodeId) && e.relation === p.relation)
+          return !oldEdge && !!target
         }
         return false
       }
@@ -5549,8 +5600,47 @@ export default function clientPlugin() {
               : '目标：整张图')
           : ''
         const qFix = questionResult && questionResult.proposedFix ? questionResult.proposedFix : null
+        const qFixConflicts = nodeTypeFixConflicts(graph, qFix)
         const qAction = qFix ? qFix.action : 'none'
         const qVerdict = questionResult ? questionResult.verdict : ''
+        const recheckedIssue = questionTarget?.sourceIssueId
+          ? issues.find((issue) => issue.id === questionTarget.sourceIssueId && issue.status === 'open') : null
+        const fixLabel = (fix) => {
+          if (!fix || !fix.action || fix.action === 'none') return ''
+          const nodeId = fix.nodePatch?.id || ''
+          const node = graph?.nodes?.find((item) => item.id === nodeId)
+          const patch = fix.nodePatch?.patch || {}
+          const typeLabel = (type) => (TYPE_META[type] || {}).label || type
+          const edge = fix.edgePatch || {}
+          const relationLabel = (relation) => REL_LABEL[relation] || relation || ''
+          if (fix.action === 'update_node') {
+            const changes = []
+            if (patch.type && patch.type !== node?.type) changes.push('类型 ' + typeLabel(node?.type || '?') + ' → ' + typeLabel(patch.type))
+            if (patch.text && patch.text !== node?.text) changes.push('文字 → ' + patch.text.slice(0, 120))
+            if (patch.quote != null && patch.quote !== node?.quote) changes.push('原文摘录 → ' + patch.quote.slice(0, 80))
+            if (patch.paragraph != null && patch.paragraph !== node?.paragraph) changes.push('段落 → P' + (patch.paragraph + 1))
+            return '更新节点 ' + nodeId + '：' + (changes.join('；') || '无可见变化')
+          }
+          if (fix.action === 'add_node') return '新增' + typeLabel(patch.type || '节点') + '：' + String(patch.text || '').slice(0, 120)
+          if (fix.action === 'delete_node') return '删除节点 ' + nodeId + ' 及其全部关系'
+          if (fix.action === 'merge_nodes') return '合并节点 ' + nodeId + ' → ' + fix.mergeIntoId
+          if (fix.action === 'add_edge') return '新增关系 ' + edge.fromNodeId + ' → ' + edge.toNodeId + '（' + relationLabel(edge.relation) + '）'
+          if (fix.action === 'update_edge') {
+            const oldTarget = edge.fromNodeId + ' → ' + edge.toNodeId
+            const newTarget = (edge.newFromNodeId || edge.fromNodeId) + ' → ' + (edge.newToNodeId || edge.toNodeId)
+            return '修改关系 ' + oldTarget + (oldTarget !== newTarget ? ' 改指向 ' + newTarget : '') + ' 为「' + relationLabel(edge.relation) + '」'
+          }
+          if (fix.action === 'delete_edge') return '删除关系 ' + edge.fromNodeId + ' → ' + edge.toNodeId + '（' + relationLabel(edge.relation) + '）'
+          if (fix.action === 'update_summary') return '更新图总结：' + String(fix.summaryPatch || '').slice(0, 120)
+          return '修复操作：' + fix.action
+        }
+        const applyReviewedIssue = (issue) => {
+          const action = issue?.proposedFix?.action
+          if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
+          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)
+            && !window.confirm(fixLabel(issue.proposedFix) + '。这可能影响其它节点或关系，确定采纳吗？')) return
+          onApplyIssue(issue)
+        }
         // A contradicted/insufficient answer without a structured fix is not a
         // deletion instruction. Never synthesize delete_node/delete_edge from
         // the target kind: the answer may be pointing out a missing relation
@@ -5565,6 +5655,7 @@ export default function clientPlugin() {
               placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
               value: questionDraft,
               maxLength: 600,
+              disabled: questionPhase === 'running',
               onChange: (e) => setQuestionDraft(e.target.value),
               onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
               'aria-label': '质疑或提问输入框',
@@ -5576,7 +5667,7 @@ export default function clientPlugin() {
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
           targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
-            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running', onClick: clearQuestionTarget }, '清除目标')) : null,
           questionPhase === 'running'
             ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
                 h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
@@ -5595,23 +5686,33 @@ export default function clientPlugin() {
                   ? h('div', { className: 'kg-issue-ev' },
                       questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
                   : null,
-                qFix && qFix.action !== 'none'
+                qVerdict === 'supported' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
+                      h('button', { type: 'button', className: 'kg-secondary',
+                        onClick: () => onRejectIssue(recheckedIssue, '复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持')) },
+                        '标记原问题为误报')) : null,
+                qFix && qFix.action !== 'none'
+                  ? h('div', null,
+                      h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(qFix)),
+                      qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
+                        '暂不可采纳：会使 ' + qFixConflicts.length + ' 条关系违反本体类型约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先复核这些关系。') : null,
+                      h('div', { className: 'kg-issue-actions' },
                       h('button', {
-                        type: 'button', className: 'kg-primary',
-                        onClick: () => onApplyIssue({
-                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
+                        type: 'button', className: 'kg-primary', disabled: qFixConflicts.length > 0,
+                        onClick: () => applyReviewedIssue({
+                          id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
                           targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
                           title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
                           evidence: questionResult.evidence || [], confidence: 1,
                           proposedFix: qFix, status: 'open',
                         }),
                       }, '采纳修复建议'),
+                      ),
                     )
                   : null,
                 qNeedsManualRepair
                   ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
-                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
+                    ? '质疑成立，但当前没有可安全单步应用的修复。可能需要协同修改节点与关系；原图保持不变，请根据上方证据分步复核。'
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
               )
@@ -5704,6 +5805,7 @@ export default function clientPlugin() {
                     ),
                     h('div', { className: 'kg-issue-title' }, it.title),
                     it.detail ? h('div', { className: 'kg-issue-detail' }, it.detail) : null,
+                    it.userNote ? h('div', { className: 'kg-issue-detail' }, '处理说明：' + it.userNote) : null,
                     (Array.isArray(it.evidence) && it.evidence.length > 0)
                       ? h('div', { className: 'kg-issue-ev' },
                           it.evidence.map((ev, k) => {
@@ -5711,6 +5813,9 @@ export default function clientPlugin() {
                             return h('div', { key: k }, '原文第 ' + (pi == null ? '?' : pi + 1) + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))
                           }))
                       : null,
+                    hasFix ? h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(it.proposedFix)) : null,
+                    hasFix && nodeTypeFixConflicts(graph, it.proposedFix).length > 0
+                      ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点改型会使现有关系违反本体类型约束。') : null,
                     h('div', { className: 'kg-issue-actions' },
                       it.status === 'open' && relationTypeFix
                         ? h('button', { type: 'button', className: 'kg-primary', title: '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
@@ -5719,13 +5824,13 @@ export default function clientPlugin() {
                         ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', onClick: (e) => { e.stopPropagation(); onApplyIssue(it) } }, '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, '采纳修复')
                         : null,
                       it.status === 'open'
                         ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, '复核并提交')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running', onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, '复核并提交')
                         : null,
                       h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
                     ),
@@ -8013,6 +8118,8 @@ export default function clientPlugin() {
               toastStore.show('知识图版本已变化，已恢复未提交状态，请重新载入后再编辑')
             } else if (details && details.code === 'invariant_violation') {
               toastStore.show('确定性验收未通过，未更新 canonical graph，已恢复未提交状态')
+            } else if (details && details.code === 'ontology_relation_conflict') {
+              toastStore.show('修复会破坏现有关系的类型约束，已恢复未提交状态')
             }
             graphSemanticOperations.delete(g)
             if (baseline && baseline !== g) {
@@ -8258,7 +8365,8 @@ export default function clientPlugin() {
           try {
             const payload = {
               title, text: fullText || resultView.sourceText || '',
-              graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
+              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
+                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
                ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
@@ -8349,9 +8457,10 @@ export default function clientPlugin() {
           try {
             const payload = {
               title, text: fullText || resultView.sourceText || '',
-              graph: { summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
+              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
+                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
                ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph, q),
-              target: targetOverride || questionTarget || { kind: 'graph', id: null },
+              target: (() => { const t = targetOverride || questionTarget || { kind: 'graph', id: null }; return { kind: t.kind, id: t.id } })(),
               question: q,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
@@ -8383,6 +8492,7 @@ export default function clientPlugin() {
               const g2 = withVerification(next, report, report ? report.stale === true : false)
               setVerification(report)
               setActiveIssueId(null)
+              setQuestionResult(null)
               commitGraph(g2)
               toastStore.show('修复目标已是最新状态，已标记为已处理')
               return
@@ -8398,6 +8508,7 @@ export default function clientPlugin() {
           const g2 = withVerification(next, report, report ? report.stale === true : false)
           setVerification(report)
           setActiveIssueId(null)
+          setQuestionResult(null)
           if (issue.targetKind === 'node' && next.nodes.some((n) => n.id === issue.targetId)) {
             setSelectedNodeId(issue.targetId)
             setSelectedEdgeId(null)
@@ -8430,15 +8541,17 @@ export default function clientPlugin() {
           commitGraph(g2)
           toastStore.show('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
         }
-        const handleRejectIssue = (issue) => {
+        const handleRejectIssue = (issue, note) => {
           if (!verification) return
-          const report = updateIssueStatus(verification, issue.id, 'rejected')
+          const report = updateIssueStatus(verification, issue.id, 'rejected', note)
           setVerification(report)
           attachReport(report, verification.stale === true)
           toastStore.show('已忽略该问题')
         }
         const handleRecheckIssue = (issue) => {
-          const target = issue.targetKind === 'graph' ? { kind: 'graph', id: null } : { kind: issue.targetKind, id: issue.targetId }
+          const target = issue.targetKind === 'graph'
+            ? { kind: 'graph', id: null, sourceIssueId: issue.id }
+            : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
           const draft = '请复核这个问题：' + issue.title + (issue.detail ? '。' + issue.detail : '')
           setQuestionTarget(target)
           setQuestionDraft(draft)
@@ -8935,7 +9048,8 @@ export default function clientPlugin() {
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
-                  h(GraphExportActions, { graph: resultView.graph, title, ctx }),
+                  h(GraphExportActions, { graph: resultView.graph, title, ctx,
+                    loadCanonical: (documentId) => host.call('document-export', { documentId }) }),
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -9233,7 +9347,11 @@ export default function clientPlugin() {
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
                         onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
-                        questionDraft, setQuestionDraft, questionTarget,
+                        questionDraft, setQuestionDraft: (draft) => {
+                          setQuestionDraft(draft)
+                          setQuestionResult(null)
+                          setQuestionTarget((target) => target?.sourceIssueId ? { kind: target.kind, id: target.id } : target)
+                        }, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
                         questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
@@ -9940,6 +10058,7 @@ export default function clientPlugin() {
             graphSemanticOperations.delete(g)
             setError({ ...(details && typeof details === 'object' ? details : {}), message: details && details.message ? details.message : '轨迹知识图提交失败' })
             if (baseline && baseline !== g) setView(makeView(baseline, sourceText))
+            if (details && details.code === 'ontology_relation_conflict') showToast('修复会破坏现有关系的类型约束，已恢复未提交状态')
             return null
           })
           trajCommitQueueRef.current = queued
@@ -10034,7 +10153,8 @@ export default function clientPlugin() {
           try {
             const res = await host.call('fact-check', {
               title: '', text: view.sourceText || '',
-              graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
+              graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
+                summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
               mode: 'deep',
               sources: factRules.trim() ? ['wikipedia', 'rules'] : ['wikipedia'],
               rules: factRules.trim(),
@@ -10119,8 +10239,9 @@ export default function clientPlugin() {
           try {
             const res = await host.call('question-graph', {
               title: '', text: view.sourceText || '',
-              graph: { summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
-              target: targetOverride || questionTarget || { kind: 'graph', id: null },
+              graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
+                summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
+              target: (() => { const t = targetOverride || questionTarget || { kind: 'graph', id: null }; return { kind: t.kind, id: t.id } })(),
               question: q,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
@@ -10143,6 +10264,7 @@ export default function clientPlugin() {
               const g2 = withVerification(next, report, report ? report.stale === true : false)
               setVerification(report)
               setActiveIssueId(null)
+              setQuestionResult(null)
               commitTrajGraph(g2)
               showToast('修复目标已是最新状态，已标记为已处理')
               return
@@ -10156,6 +10278,7 @@ export default function clientPlugin() {
           const g2 = withVerification(next, report, report ? report.stale === true : false)
           setVerification(report)
           setActiveIssueId(null)
+          setQuestionResult(null)
           if (issue.targetKind === 'node' && next.nodes.some((n) => n.id === issue.targetId)) {
             setSelectedNodeId(issue.targetId)
             setSelectedEdgeId(null)
@@ -10188,15 +10311,17 @@ export default function clientPlugin() {
           commitTrajGraph(g2)
           showToast('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
         }
-        const handleRejectIssue = (issue) => {
+        const handleRejectIssue = (issue, note) => {
           if (!verification) return
-          const report = updateIssueStatus(verification, issue.id, 'rejected')
+          const report = updateIssueStatus(verification, issue.id, 'rejected', note)
           setVerification(report)
           attachTrajReport(report, verification.stale === true)
           showToast('已忽略该问题')
         }
         const handleRecheckIssue = (issue) => {
-          const target = issue.targetKind === 'graph' ? { kind: 'graph', id: null } : { kind: issue.targetKind, id: issue.targetId }
+          const target = issue.targetKind === 'graph'
+            ? { kind: 'graph', id: null, sourceIssueId: issue.id }
+            : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
           const draft = '请复核这个问题：' + issue.title + (issue.detail ? '。' + issue.detail : '')
           setQuestionTarget(target)
           setQuestionDraft(draft)
@@ -10447,7 +10572,8 @@ export default function clientPlugin() {
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
-                  h(GraphExportActions, { graph: view.graph, title: '轨迹知识图', ctx }),
+                  h(GraphExportActions, { graph: view.graph, title: '轨迹知识图', ctx,
+                    loadCanonical: (documentId) => host.call('document-export', { documentId }) }),
                   diagCount > 0
                     ? h('button', {
                         type: 'button', className: 'kg-diag-toggle',
@@ -10573,7 +10699,11 @@ export default function clientPlugin() {
                         onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
                         onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
-                        questionDraft, setQuestionDraft, questionTarget,
+                        questionDraft, setQuestionDraft: (draft) => {
+                          setQuestionDraft(draft)
+                          setQuestionResult(null)
+                          setQuestionTarget((target) => target?.sourceIssueId ? { kind: target.kind, id: target.id } : target)
+                        }, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
                         questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,

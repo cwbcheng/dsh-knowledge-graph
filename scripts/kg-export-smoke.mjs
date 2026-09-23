@@ -61,3 +61,39 @@ try {
 }
 
 console.log(JSON.stringify({ ok: true, formats: ['json', 'nodes.csv', 'edges.csv'], provenance: true }))
+
+const actionStart = source.indexOf('function GraphExportActions')
+const actionEnd = source.indexOf('function GraphIcon', actionStart)
+assert(actionStart >= 0 && actionEnd > actionStart, 'export action block is missing')
+const actionSource = source.slice(actionStart, actionEnd) + '\nreturn GraphExportActions'
+const calls = [], exports = [], toasts = []
+const h = (tag, props, ...children) => ({ tag, props, children })
+const GraphExportActions = new Function('h', 'documentIdOfGraph', 'exportGraphFile', 'toastStore', actionSource)(
+  h,
+  value => value?.source?.documentId || null,
+  (value, title, kind) => { exports.push({ value, title, kind }); return 'complete.json' },
+  { show: value => toasts.push(value) },
+)
+const truncated = { ...graph, nodes: graph.nodes.slice(0, 1), view: { truncated: true } }
+const complete = { ...graph, nodes: [...graph.nodes, { id: 'n3', type: 'fact', text: '完整图中的节点' }] }
+const loadCanonical = async documentId => { calls.push(documentId); return { graph: complete } }
+const button = GraphExportActions({ graph: truncated, title: '', ctx: null, loadCanonical }).children[1]
+await button.props.onClick()
+assert(calls.length === 1 && calls[0] === 'doc-export',
+  'truncated export must fetch the canonical graph through the supplied host')
+assert(exports.length === 1 && exports[0].value.nodes.length === 3, 'truncated export must use the complete graph')
+assert(toasts.at(-1) === '已导出 complete.json', 'successful canonical export must be visible')
+
+const missingLoader = GraphExportActions({ graph: truncated, title: '', ctx: null }).children[1]
+await missingLoader.props.onClick()
+assert(exports.length === 1 && toasts.at(-1).startsWith('导出失败：'),
+  'missing loader must never silently export the truncated window')
+const missingIdentity = GraphExportActions({ graph: { ...truncated, source: {} }, title: '', ctx: null, loadCanonical }).children[1]
+await missingIdentity.props.onClick()
+assert(exports.length === 1 && calls.length === 1,
+  'missing document identity must never create an incomplete backup')
+assert(source.includes("loadCanonical: (documentId) => host.call('document-export', { documentId })"),
+  'both source and persistent clients must pass a build-compatible canonical loader')
+const persistentClient = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+assert(persistentClient.includes("loadCanonical: (documentId) => rpc('document-export', { documentId })"),
+  'the persistent build must use rpc rather than an undefined host object')

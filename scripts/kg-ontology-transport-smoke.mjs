@@ -185,6 +185,33 @@ try {
   assert(reopened.graph.graphOntology && reopened.graph.graphOntology.id === 'learning-view-v1',
     'reopening must restore the presentation record, or the client renders the wrong labels')
 
+  // A browser can edit only a small window; the Host must reject a node retype
+  // that would invalidate a canonical edge even when that edge is offscreen.
+  const ruleNode = { id: 'rule-transport', type: 'rule', text: '掌握一个概念需要判别材料。',
+    quote: '掌握一个概念需要判别材料。', paragraph: 0 }
+  const edge = { fromNodeId: 'x1', toNodeId: ruleNode.id, relation: 'has_rule',
+    evidence: [{ paragraph: 0, quote: '掌握一个概念需要判别材料。' }] }
+  const baseGraph = { summary: reopened.graph.summary || '',
+    nodes: [...reopened.graph.nodes, ruleNode], edges: [...reopened.graph.edges, edge] }
+  const seeded = await call('POST', '/api/dsh-knowledge-graph/graph-commit', {
+    documentId, expectedRevision: reopened.revision, graph: baseGraph,
+    baseNodeIds: reopened.graph.nodes.map(node => node.id), baseEdgeKeys: [],
+  })
+  assert(!seeded.error, 'valid graph fixture failed to commit: ' + JSON.stringify(seeded.error))
+  const invalidGraph = { summary: seeded.graph.summary || '',
+    nodes: [{ ...seeded.graph.nodes.find(node => node.id === ruleNode.id), type: 'data_or_experience' }],
+    edges: [] }
+  const invalid = await call('POST', '/api/dsh-knowledge-graph/graph-commit', {
+    documentId, expectedRevision: seeded.revision, graph: invalidGraph,
+    baseNodeIds: [ruleNode.id], baseEdgeKeys: [],
+  })
+  assert.equal(invalid.error?.code, 'ontology_relation_conflict',
+    'canonical commit must reject a retype that invalidates an offscreen edge')
+  const afterRejection = await call('POST', '/api/dsh-knowledge-graph/document-load', { documentId })
+  assert.equal(afterRejection.revision, seeded.revision, 'rejected commit must not advance revision')
+  assert.equal(afterRejection.graph.nodes.find(node => node.id === ruleNode.id)?.type, 'rule',
+    'rejected commit must preserve the previous canonical node')
+
   // ---- 5. an append cannot switch the ontology -----------------------------
   const conflict = await call('POST', '/api/dsh-knowledge-graph/append-extract', {
     documentId,
@@ -216,6 +243,7 @@ try {
     appendOntologyConflict: true,
     appendInheritsOntology: true,
     diagnosticsOverWire: bare.id,
+    canonicalOntologyGuard: true,
   }))
 } finally {
   await ctx.fiber.dispose()
