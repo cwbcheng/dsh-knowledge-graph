@@ -4835,9 +4835,11 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
+        const questionBarRef = useRef(null)
+        const questionFeedbackRef = useRef(null)
         useEffect(() => {
           if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
           prevActiveIssueRef.current = activeIssueId
@@ -4845,6 +4847,12 @@
           const t = setTimeout(() => setFlashIssueId(null), 1300)
           return () => clearTimeout(t)
         }, [activeIssueId])
+        useEffect(() => {
+          if (questionResult || questionError) questionFeedbackRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }, [questionResult, questionError])
+        useEffect(() => {
+          if (questionPhase === 'running') questionBarRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }, [questionPhase])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
         const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
@@ -4871,6 +4879,65 @@
         const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
+        const questionContent = h('div', { className: 'kg-question-section' },
+          h('div', { className: 'kg-question-bar', ref: questionBarRef },
+            h('input', {
+              className: 'kg-question-input', type: 'text',
+              placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
+              value: questionDraft,
+              maxLength: 600,
+              onChange: (e) => setQuestionDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
+              'aria-label': '质疑或提问输入框',
+            }),
+            h('button', {
+              type: 'button', className: 'kg-primary',
+              disabled: questionPhase === 'running' || !questionDraft.trim(),
+              onClick: onSubmitQuestion,
+            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
+          ),
+          targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
+          questionPhase === 'running'
+            ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
+                h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
+                ' ', progress?.stage || '正在提交质疑…')
+            : null,
+          questionError
+            ? h('p', { className: 'kg-question-error', role: 'alert', ref: questionFeedbackRef }, questionError)
+            : null,
+          questionResult
+            ? h('div', { className: 'kg-question-result', role: 'status', 'aria-live': 'polite', ref: questionFeedbackRef },
+                questionResult.question ? h('p', { className: 'kg-question-asked' }, '复核问题：' + questionResult.question) : null,
+                h('div', null,
+                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
+                  questionResult.answer ? ' ' + questionResult.answer : ''),
+                (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
+                  ? h('div', { className: 'kg-issue-ev' },
+                      questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
+                  : null,
+                qFix && qFix.action !== 'none'
+                  ? h('div', { className: 'kg-issue-actions' },
+                      h('button', {
+                        type: 'button', className: 'kg-primary',
+                        onClick: () => onApplyIssue({
+                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
+                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
+                          title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
+                          evidence: questionResult.evidence || [], confidence: 1,
+                          proposedFix: qFix, status: 'open',
+                        }),
+                      }, '采纳修复建议'),
+                    )
+                  : null,
+                qNeedsManualRepair
+                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
+                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
+                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
+                  : null,
+              )
+            : null,
+        )
         return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
@@ -4919,6 +4986,7 @@
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
             : null,
+          questionContent,
           h('div', { className: 'kg-verify-filters' },
             ['all', ...SEVERITY_ORDER].map((s) => h('button', {
               key: s, type: 'button',
@@ -5002,54 +5070,6 @@
                         : null,
                     )
                   })))
-            : null,
-          h('div', { className: 'kg-question-bar' },
-            h('input', {
-              className: 'kg-question-input', type: 'text',
-              placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
-              value: questionDraft,
-              maxLength: 600,
-              onChange: (e) => setQuestionDraft(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
-              'aria-label': '质疑或提问输入框',
-            }),
-            h('button', {
-              type: 'button', className: 'kg-primary',
-              disabled: questionPhase === 'running' || !questionDraft.trim(),
-              onClick: onSubmitQuestion,
-            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
-          ),
-          targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
-            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
-          questionResult
-            ? h('div', { className: 'kg-question-result' },
-                h('div', null,
-                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
-                  questionResult.answer ? ' ' + questionResult.answer : ''),
-                (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
-                  ? h('div', { className: 'kg-issue-ev' },
-                      questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
-                  : null,
-                qFix && qFix.action !== 'none'
-                  ? h('div', { className: 'kg-issue-actions' },
-                      h('button', {
-                        type: 'button', className: 'kg-primary',
-                        onClick: () => onApplyIssue({
-                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
-                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
-                          title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
-                          evidence: questionResult.evidence || [], confidence: 1,
-                          proposedFix: qFix, status: 'open',
-                        }),
-                      }, '采纳修复建议'),
-                    )
-                  : null,
-                qNeedsManualRepair
-                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
-                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
-                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
-                  : null,
-              )
             : null,
         )
       }

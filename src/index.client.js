@@ -174,6 +174,7 @@ export default function clientPlugin() {
 .kg-audit-more { color: var(--kg-text-dim); font-size: 11px; }
 .kg-audit-action { display: inline-flex; margin-right: 6px; padding: 0 6px; border-radius: 999px; border: 1px solid rgba(16,185,129,0.35); color: #047857; background: rgba(16,185,129,0.08); font-size: 10.5px; line-height: 16px; }
 @media (prefers-color-scheme: dark) { .kg-audit-action { color: #6ee7b7; } }
+.kg-question-section { padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid var(--kg-border); }
 .kg-question-bar { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
 .kg-question-bar .kg-primary { background: rgba(59,130,246,0.10); color: #2563eb; border: 1px solid rgba(59,130,246,0.30); font-weight: 500; }
 .kg-question-bar .kg-primary:hover:not(:disabled) { background: rgba(59,130,246,0.18); }
@@ -181,7 +182,10 @@ export default function clientPlugin() {
 .kg-question-input { flex: 1; min-width: 0; border: 1px solid var(--kg-border); border-radius: 10px; padding: 8px 10px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12.5px; }
 .kg-question-input:focus { outline: 2px solid rgba(59,130,246,0.45); border-color: #3b82f6; }
 .kg-question-target { margin: 8px 0 0; font-size: 11.5px; color: var(--kg-text-dim); }
+.kg-question-progress { display: flex; align-items: center; gap: 7px; margin: 9px 0 0; font-size: 12.5px; color: var(--kg-text-dim); }
+.kg-question-error { margin: 9px 0 0; padding: 8px 10px; color: #b91c1c; background: rgba(220,38,38,0.07); border-left: 3px solid #dc2626; font-size: 12.5px; overflow-wrap: anywhere; }
 .kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; }
+.kg-question-asked { margin: 0 0 6px; color: var(--kg-text-dim); overflow-wrap: anywhere; }
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
@@ -5510,9 +5514,11 @@ export default function clientPlugin() {
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
+        const questionBarRef = useRef(null)
+        const questionFeedbackRef = useRef(null)
         useEffect(() => {
           if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
           prevActiveIssueRef.current = activeIssueId
@@ -5520,6 +5526,12 @@ export default function clientPlugin() {
           const t = setTimeout(() => setFlashIssueId(null), 1300)
           return () => clearTimeout(t)
         }, [activeIssueId])
+        useEffect(() => {
+          if (questionResult || questionError) questionFeedbackRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }, [questionResult, questionError])
+        useEffect(() => {
+          if (questionPhase === 'running') questionBarRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }, [questionPhase])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
         const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
@@ -5546,6 +5558,65 @@ export default function clientPlugin() {
         const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
+        const questionContent = h('div', { className: 'kg-question-section' },
+          h('div', { className: 'kg-question-bar', ref: questionBarRef },
+            h('input', {
+              className: 'kg-question-input', type: 'text',
+              placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
+              value: questionDraft,
+              maxLength: 600,
+              onChange: (e) => setQuestionDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
+              'aria-label': '质疑或提问输入框',
+            }),
+            h('button', {
+              type: 'button', className: 'kg-primary',
+              disabled: questionPhase === 'running' || !questionDraft.trim(),
+              onClick: onSubmitQuestion,
+            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
+          ),
+          targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
+          questionPhase === 'running'
+            ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
+                h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
+                ' ', progress?.stage || '正在提交质疑…')
+            : null,
+          questionError
+            ? h('p', { className: 'kg-question-error', role: 'alert', ref: questionFeedbackRef }, questionError)
+            : null,
+          questionResult
+            ? h('div', { className: 'kg-question-result', role: 'status', 'aria-live': 'polite', ref: questionFeedbackRef },
+                questionResult.question ? h('p', { className: 'kg-question-asked' }, '复核问题：' + questionResult.question) : null,
+                h('div', null,
+                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
+                  questionResult.answer ? ' ' + questionResult.answer : ''),
+                (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
+                  ? h('div', { className: 'kg-issue-ev' },
+                      questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
+                  : null,
+                qFix && qFix.action !== 'none'
+                  ? h('div', { className: 'kg-issue-actions' },
+                      h('button', {
+                        type: 'button', className: 'kg-primary',
+                        onClick: () => onApplyIssue({
+                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
+                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
+                          title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
+                          evidence: questionResult.evidence || [], confidence: 1,
+                          proposedFix: qFix, status: 'open',
+                        }),
+                      }, '采纳修复建议'),
+                    )
+                  : null,
+                qNeedsManualRepair
+                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
+                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
+                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
+                  : null,
+              )
+            : null,
+        )
         return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
@@ -5594,6 +5665,7 @@ export default function clientPlugin() {
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
             : null,
+          questionContent,
           h('div', { className: 'kg-verify-filters' },
             ['all', ...SEVERITY_ORDER].map((s) => h('button', {
               key: s, type: 'button',
@@ -5677,54 +5749,6 @@ export default function clientPlugin() {
                         : null,
                     )
                   })))
-            : null,
-          h('div', { className: 'kg-question-bar' },
-            h('input', {
-              className: 'kg-question-input', type: 'text',
-              placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
-              value: questionDraft,
-              maxLength: 600,
-              onChange: (e) => setQuestionDraft(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
-              'aria-label': '质疑或提问输入框',
-            }),
-            h('button', {
-              type: 'button', className: 'kg-primary',
-              disabled: questionPhase === 'running' || !questionDraft.trim(),
-              onClick: onSubmitQuestion,
-            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
-          ),
-          targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
-            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, onClick: clearQuestionTarget }, '清除目标')) : null,
-          questionResult
-            ? h('div', { className: 'kg-question-result' },
-                h('div', null,
-                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
-                  questionResult.answer ? ' ' + questionResult.answer : ''),
-                (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
-                  ? h('div', { className: 'kg-issue-ev' },
-                      questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
-                  : null,
-                qFix && qFix.action !== 'none'
-                  ? h('div', { className: 'kg-issue-actions' },
-                      h('button', {
-                        type: 'button', className: 'kg-primary',
-                        onClick: () => onApplyIssue({
-                          id: 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
-                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
-                          title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
-                          evidence: questionResult.evidence || [], confidence: 1,
-                          proposedFix: qFix, status: 'open',
-                        }),
-                      }, '采纳修复建议'),
-                    )
-                  : null,
-                qNeedsManualRepair
-                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
-                    ? '质疑成立，但 AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请复核后生成更新节点或新增关系边的修复建议。'
-                    : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
-                  : null,
-              )
             : null,
         )
       }
@@ -6955,6 +6979,7 @@ export default function clientPlugin() {
         const [questionDraft, setQuestionDraft] = useState('')
         const [questionTarget, setQuestionTarget] = useState(null) // {kind,id} | null
         const [questionResult, setQuestionResult] = useState(null)
+        const [questionError, setQuestionError] = useState('')
         const [questionPhase, setQuestionPhase] = useState('idle') // idle | running
         const [questionTaskId, setQuestionTaskId] = useState(null)
         const [factReport, setFactReport] = useState(null)
@@ -7531,13 +7556,14 @@ export default function clientPlugin() {
             } catch (e) {
               if (disposed || myGen !== verifyGenRef.current) return
               setQuestionPhase('idle'); setQuestionTaskId(null)
-              setError({ message: '查询质疑任务失败：' + (e && e.message ? e.message : '未知错误') })
+              setQuestionError('查询质疑任务失败：' + (e && e.message ? e.message : '未知错误'))
               return
             }
             if (disposed || myGen !== verifyGenRef.current) return
             if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
+              setQuestionError('')
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               toastStore.show('质疑判定完成')
               return
@@ -7545,12 +7571,12 @@ export default function clientPlugin() {
             if (res && res.status === 'failed' || res && res.status === 'cancelled') {
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试') })
+              setQuestionError(err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试'))
               return
             }
             if (res && res.status === 'not_found') {
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
-              setError({ message: '质疑任务已过期（服务可能已重启），请重新提问' })
+              setQuestionError('质疑任务已过期（服务可能已重启），请重新提问')
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -8316,6 +8342,8 @@ export default function clientPlugin() {
           const q = (typeof draftOverride === 'string' ? draftOverride : questionDraft).trim()
           if (!q || !resultView || questionPhase === 'running') return
           setError(null)
+          setQuestionError('')
+          setVerifyProgress(null)
           setQuestionPhase('running')
           setQuestionResult(null)
           try {
@@ -8330,18 +8358,18 @@ export default function clientPlugin() {
             const res = await host.call('question-graph', payload)
             if (res && res.error) {
               setQuestionPhase('idle')
-              setError(res.error)
+              setQuestionError(res.error.message || '无法提交质疑任务，请重试')
               return
             }
             if (res && res.taskId) {
               setQuestionTaskId(res.taskId)
             } else {
               setQuestionPhase('idle')
-              setError({ message: '无法提交质疑任务，请重试' })
+              setQuestionError('无法提交质疑任务，请重试')
             }
           } catch (e) {
             setQuestionPhase('idle')
-            setError({ message: '无法提交质疑任务：' + (e && e.message ? e.message : '未知错误') })
+            setQuestionError('无法提交质疑任务：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleApplyIssue = (issue) => {
@@ -9197,7 +9225,7 @@ export default function clientPlugin() {
                         onLocate: handleCandidateLocate,
                       })
                     : null,
-                  resultView && (verification || verifyPhase === 'running' || questionResult || questionTarget)
+                  resultView && (verification || verifyPhase === 'running' || questionPhase === 'running' || questionResult || questionError || questionTarget)
                     ? h(VerificationPanel, {
                         report: verification, graph: resultView.graph,
                         verifying: verifyPhase === 'running' || questionPhase === 'running',
@@ -9206,8 +9234,8 @@ export default function clientPlugin() {
                         onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
                         questionDraft, setQuestionDraft, questionTarget,
-                        clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null) },
-                        questionResult, questionPhase, onSubmitQuestion: submitQuestion,
+                        clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
+                        questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-workbench',
                         progress: verifyProgress,
@@ -9400,6 +9428,7 @@ export default function clientPlugin() {
         const [questionDraft, setQuestionDraft] = useState('')
         const [questionTarget, setQuestionTarget] = useState(null)
         const [questionResult, setQuestionResult] = useState(null)
+        const [questionError, setQuestionError] = useState('')
         const [questionPhase, setQuestionPhase] = useState('idle')
         const [factReport, setFactReport] = useState(null)
         const [factPhase, setFactPhase] = useState('idle')
@@ -9715,13 +9744,14 @@ export default function clientPlugin() {
             catch (e) {
               if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
               setQuestionPhase('idle'); setQuestionTaskId(null)
-              setError({ message: '查询质疑任务失败：' + (e && e.message ? e.message : '未知错误') })
+              setQuestionError('查询质疑任务失败：' + (e && e.message ? e.message : '未知错误'))
               return
             }
             if (disposed || mySeq !== sessionSeq.current || myGen !== verifyGenRef.current) return
             if (res && res.status === 'running') setVerifyProgress(res.progress || null)
             if (res && res.status === 'succeeded' && res.result) {
               setQuestionResult(res.result)
+              setQuestionError('')
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               showToast('质疑判定完成')
               return
@@ -9729,12 +9759,12 @@ export default function clientPlugin() {
             if (res && res.status === 'failed' || res && res.status === 'cancelled') {
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
               const err = res.error || {}
-              setError({ code: err.code, message: err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试') })
+              setQuestionError(err.message || (res.status === 'cancelled' ? '任务已取消' : 'AI 质疑判定失败，请稍后重试'))
               return
             }
             if (res && res.status === 'not_found') {
               setQuestionPhase('idle'); setQuestionTaskId(null); setVerifyProgress(null)
-              setError({ message: '质疑任务已过期（服务可能已重启），请重新提问' })
+              setQuestionError('质疑任务已过期（服务可能已重启），请重新提问')
               return
             }
             if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -10082,6 +10112,8 @@ export default function clientPlugin() {
           const q = (typeof draftOverride === 'string' ? draftOverride : questionDraft).trim()
           if (!q || !view || questionPhase === 'running') return
           setError(null)
+          setQuestionError('')
+          setVerifyProgress(null)
           setQuestionPhase('running')
           setQuestionResult(null)
           try {
@@ -10092,12 +10124,12 @@ export default function clientPlugin() {
               question: q,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
-            if (res && res.error) { setQuestionPhase('idle'); setError(res.error); return }
+            if (res && res.error) { setQuestionPhase('idle'); setQuestionError(res.error.message || '无法提交质疑任务，请重试'); return }
             if (res && res.taskId) setQuestionTaskId(res.taskId)
-            else { setQuestionPhase('idle'); setError({ message: '无法提交质疑任务，请重试' }) }
+            else { setQuestionPhase('idle'); setQuestionError('无法提交质疑任务，请重试') }
           } catch (e) {
             setQuestionPhase('idle')
-            setError({ message: '无法提交质疑任务：' + (e && e.message ? e.message : '未知错误') })
+            setQuestionError('无法提交质疑任务：' + (e && e.message ? e.message : '未知错误'))
           }
         }
         const handleApplyIssue = (issue) => {
@@ -10533,7 +10565,7 @@ export default function clientPlugin() {
                     onLocateReference: locateTrajectoryConsumptionReference,
                     onNotify: showToast,
                   }),
-                  (verification || verifyPhase === 'running' || questionResult || questionTarget)
+                  (verification || verifyPhase === 'running' || questionPhase === 'running' || questionResult || questionError || questionTarget)
                     ? h(VerificationPanel, {
                         report: verification, graph: view.graph,
                         verifying: verifyPhase === 'running' || questionPhase === 'running',
@@ -10542,8 +10574,8 @@ export default function clientPlugin() {
                         onApplyAll: handleApplyAll,
                         issueFilter, setIssueFilter,
                         questionDraft, setQuestionDraft, questionTarget,
-                        clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null) },
-                        questionResult, questionPhase, onSubmitQuestion: submitQuestion,
+                        clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
+                        questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-traj',
                         progress: verifyProgress,
