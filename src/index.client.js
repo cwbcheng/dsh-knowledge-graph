@@ -5566,9 +5566,14 @@ export default function clientPlugin() {
 
       // --------------------- verification panel ---------------------
       function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+        const [issueLimit, setIssueLimit] = useState(40)
+        const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         const questionBarRef = useRef(null)
+        const reportStale = report?.stale === true || graph?.verification?.stale === true
+          || (Number.isFinite(report?.createdAt) && graph?.verification?.auditLog?.some(
+            entry => Number.isFinite(entry?.ts) && entry.ts > report.createdAt))
         const questionFeedbackRef = useRef(null)
         useEffect(() => {
           if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
@@ -5590,6 +5595,12 @@ export default function clientPlugin() {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
         })
+        useEffect(() => { setIssueLimit(40) }, [report?.reportId, issueFilter])
+        useEffect(() => { setPendingDestructiveFix(null) }, [questionResult, activeIssueId])
+        useEffect(() => {
+          const index = shown.findIndex(issue => issue.id === activeIssueId)
+          if (index >= 40) setIssueLimit(limit => Math.max(limit, Math.ceil((index + 1) / 40) * 40))
+        }, [activeIssueId, report?.reportId, issueFilter])
         const qNode = questionTarget && questionTarget.kind === 'node' && graph && Array.isArray(graph.nodes)
           ? graph.nodes.find((n) => n && n.id === questionTarget.id) : null
         const targetLabel = questionTarget
@@ -5637,8 +5648,11 @@ export default function clientPlugin() {
         const applyReviewedIssue = (issue) => {
           const action = issue?.proposedFix?.action
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
-          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)
-            && !window.confirm(fixLabel(issue.proposedFix) + '。这可能影响其它节点或关系，确定采纳吗？')) return
+          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)) {
+            const key = JSON.stringify(issue.proposedFix)
+            if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
+          }
+          setPendingDestructiveFix(null)
           onApplyIssue(issue)
         }
         // A contradicted/insufficient answer without a structured fix is not a
@@ -5694,6 +5708,8 @@ export default function clientPlugin() {
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
                       h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(qFix)),
+                      pendingDestructiveFix === JSON.stringify(qFix)
+                        ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
                         '暂不可采纳：会使 ' + qFixConflicts.length + ' 条关系违反本体类型约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先复核这些关系。') : null,
                       h('div', { className: 'kg-issue-actions' },
@@ -5706,7 +5722,7 @@ export default function clientPlugin() {
                           evidence: questionResult.evidence || [], confidence: 1,
                           proposedFix: qFix, status: 'open',
                         }),
-                      }, '采纳修复建议'),
+                      }, pendingDestructiveFix === JSON.stringify(qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复') : '采纳修复建议'),
                       ),
                     )
                   : null,
@@ -5725,8 +5741,8 @@ export default function clientPlugin() {
               report && typeof report.summary === 'string'
                 ? h('p', { className: 'kg-verify-summary' }, report.summary)
                 : null,
-              report && report.stale
-                ? h('p', { className: 'kg-verify-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新验证。')
+              report && reportStale
+                ? h('p', { className: 'kg-verify-stale' }, '图已修改：下方保留原审校记录，统计仍基于旧版本，请重新验证。')
                 : null,
             ),
             typeof onApplyAll === 'function' && fixableCount > 0
@@ -5777,7 +5793,7 @@ export default function clientPlugin() {
           shown.length === 0
             ? h('p', { className: 'kg-hint' }, verifying ? '正在审校…' : '没有符合筛选条件的问题。')
             : h('div', { className: 'kg-issue-list' },
-                shown.map((it) => {
+                shown.slice(0, issueLimit).map((it) => {
                   const nodeTarget = it.targetKind === 'node' && graph ? graph.nodes.find((n) => n.id === it.targetId) : null
                   const edgeIndex = it.targetKind === 'edge' ? edgeIndexForIssue(graph, it) : null
                   const edgeTarget = edgeIndex != null && graph && Array.isArray(graph.edges) ? graph.edges[edgeIndex] : null
@@ -5824,7 +5840,7 @@ export default function clientPlugin() {
                         ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === JSON.stringify(it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
                         ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
@@ -5836,6 +5852,11 @@ export default function clientPlugin() {
                     ),
                   )
                 }),
+                shown.length > issueLimit
+                  ? h('button', { type: 'button', className: 'kg-secondary',
+                      onClick: () => setIssueLimit(limit => Math.min(shown.length, limit + 40)) },
+                    '显示更多问题（已显示 ' + issueLimit + ' / ' + shown.length + '）')
+                  : null,
               ),
           recentAudits.length > 0
             ? h('div', { className: 'kg-audit' },
@@ -8283,6 +8304,25 @@ export default function clientPlugin() {
           // available. This bounds browser→Host wire size for book-scale text.
           return sourceUnits.length > 0 ? { text: '', sourceUnits } : {}
         }
+        const questionNeighborhoodGraph = (graph, question, target) => {
+          const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
+          const edges = Array.isArray(graph?.edges) ? graph.edges : []
+          const ids = new Set(Array.from(String(question).matchAll(/\b(?:n|m)\d+\b/gi), match => match[0]).slice(0, 24))
+          if (target?.kind === 'node' && target.id) ids.add(target.id)
+          if (target?.kind === 'edge' && target.id) for (const id of target.id.split('>')) ids.add(id)
+          if (ids.size === 0) return graph
+          const known = new Set(nodes.map(node => node?.id).filter(Boolean))
+          const selected = new Set([...ids].filter(id => known.has(id)))
+          if (selected.size === 0) return { ...graph, nodes: [], edges: [] }
+          const seeds = new Set(selected)
+          for (const edge of edges) {
+            if (selected.size >= 96) break
+            if (selected.size < 96 && seeds.has(edge?.fromNodeId) && known.has(edge.toNodeId)) selected.add(edge.toNodeId)
+            if (selected.size < 96 && seeds.has(edge?.toNodeId) && known.has(edge.fromNodeId)) selected.add(edge.fromNodeId)
+          }
+          return { ...graph, nodes: nodes.filter(node => selected.has(node.id)),
+            edges: edges.filter(edge => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId)) }
+        }
         const startQuickVerify = async () => {
           if (!resultView || verifyBusyRef.current) return
           setError(null)
@@ -8455,12 +8495,28 @@ export default function clientPlugin() {
           setQuestionPhase('running')
           setQuestionResult(null)
           try {
+            const target = targetOverride || questionTarget || { kind: 'graph', id: null }
+            let questionGraph = resultView.graph
+            const hasNodeReference = /\b(?:n|m)\d+\b/i.test(q) || (target.kind !== 'graph' && target.id)
+            if (questionGraph.view?.truncated === true && hasNodeReference) {
+              const documentId = documentIdOfGraph(questionGraph)
+              if (!documentId) throw new Error('当前是部分知识图，且无法定位完整图；请先载入目标子图')
+              const loaded = await host.call('document-export', { documentId })
+              if (!loaded?.graph || !Array.isArray(loaded.graph.nodes)) {
+                throw new Error(loaded?.error?.message || '读取完整知识图失败，无法安全复核窗口外关系')
+              }
+              questionGraph = loaded.graph
+            }
+            questionGraph = questionNeighborhoodGraph(questionGraph, q, target)
+            if (hasNodeReference && questionGraph.nodes.length === 0) {
+              throw new Error('引用的节点或关系端点不在当前 canonical graph 中，请核对审校报告中的 ID')
+            }
             const payload = {
               title, text: fullText || resultView.sourceText || '',
-              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
-                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
-               ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph, q),
-              target: (() => { const t = targetOverride || questionTarget || { kind: 'graph', id: null }; return { kind: t.kind, id: t.id } })(),
+              graph: { ontology: questionGraph.ontology || questionGraph.source?.ontology || questionGraph.graphMeta?.ontology,
+                summary: questionGraph.summary || '', nodes: questionGraph.nodes, edges: questionGraph.edges },
+               ...verificationSourcePayload(fullText || resultView.sourceText || '', questionGraph, q),
+              target: { kind: target.kind, id: target.id },
               question: q,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
@@ -8504,8 +8560,8 @@ export default function clientPlugin() {
           if (report && Array.isArray(report.issues) && !report.issues.some((it) => it.id === issue.id)) {
             report = { ...report, issues: [...report.issues, issue] }
           }
-          if (report) report = updateIssueStatus(report, issue.id, 'applied')
-          const g2 = withVerification(next, report, report ? report.stale === true : false)
+          if (report) report = { ...updateIssueStatus(report, issue.id, 'applied'), stale: true }
+          const g2 = withVerification(next, report, true)
           setVerification(report)
           setActiveIssueId(null)
           setQuestionResult(null)
@@ -8533,8 +8589,9 @@ export default function clientPlugin() {
           }
           if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
           const res = applyAllFixable(resultView.graph, verificationRef.current || verification)
-          const g2 = withVerification(res.graph, res.report, res.report ? res.report.stale === true : false)
-          setVerification(res.report)
+          const nextReport = res.report && res.applied > 0 ? { ...res.report, stale: true } : res.report
+          const g2 = withVerification(res.graph, nextReport, nextReport ? nextReport.stale === true : false)
+          setVerification(nextReport)
           setActiveIssueId(null)
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
@@ -8549,9 +8606,13 @@ export default function clientPlugin() {
           toastStore.show('已忽略该问题')
         }
         const handleRecheckIssue = (issue) => {
-          const target = issue.targetKind === 'graph'
-            ? { kind: 'graph', id: null, sourceIssueId: issue.id }
-            : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
+          const titleIds = issue.targetKind === 'graph'
+            ? [...new Set(String(issue.title || '').match(/\b(?:n|m)\d+\b/gi) || [])] : []
+          const target = issue.targetKind === 'graph' && titleIds.length === 1
+            ? { kind: 'node', id: titleIds[0], sourceIssueId: issue.id }
+            : issue.targetKind === 'graph'
+              ? { kind: 'graph', id: null, sourceIssueId: issue.id }
+              : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
           const draft = '请复核这个问题：' + issue.title + (issue.detail ? '。' + issue.detail : '')
           setQuestionTarget(target)
           setQuestionDraft(draft)
@@ -10274,8 +10335,8 @@ export default function clientPlugin() {
           }
           let report = verification
           if (report && Array.isArray(report.issues) && !report.issues.some((it) => it.id === issue.id)) report = { ...report, issues: [...report.issues, issue] }
-          if (report) report = updateIssueStatus(report, issue.id, 'applied')
-          const g2 = withVerification(next, report, report ? report.stale === true : false)
+          if (report) report = { ...updateIssueStatus(report, issue.id, 'applied'), stale: true }
+          const g2 = withVerification(next, report, true)
           setVerification(report)
           setActiveIssueId(null)
           setQuestionResult(null)
@@ -10303,8 +10364,9 @@ export default function clientPlugin() {
           }
           if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
           const res = applyAllFixable(view.graph, verificationRef.current || verification)
-          const g2 = withVerification(res.graph, res.report, res.report ? res.report.stale === true : false)
-          setVerification(res.report)
+          const nextReport = res.report && res.applied > 0 ? { ...res.report, stale: true } : res.report
+          const g2 = withVerification(res.graph, nextReport, nextReport ? nextReport.stale === true : false)
+          setVerification(nextReport)
           setActiveIssueId(null)
           setSelectedNodeId(null)
           setSelectedEdgeId(null)
@@ -10319,9 +10381,13 @@ export default function clientPlugin() {
           showToast('已忽略该问题')
         }
         const handleRecheckIssue = (issue) => {
-          const target = issue.targetKind === 'graph'
-            ? { kind: 'graph', id: null, sourceIssueId: issue.id }
-            : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
+          const titleIds = issue.targetKind === 'graph'
+            ? [...new Set(String(issue.title || '').match(/\b(?:n|m)\d+\b/gi) || [])] : []
+          const target = issue.targetKind === 'graph' && titleIds.length === 1
+            ? { kind: 'node', id: titleIds[0], sourceIssueId: issue.id }
+            : issue.targetKind === 'graph'
+              ? { kind: 'graph', id: null, sourceIssueId: issue.id }
+              : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id }
           const draft = '请复核这个问题：' + issue.title + (issue.detail ? '。' + issue.detail : '')
           setQuestionTarget(target)
           setQuestionDraft(draft)

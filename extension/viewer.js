@@ -4886,9 +4886,14 @@
 
       // --------------------- verification panel ---------------------
       function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+        const [issueLimit, setIssueLimit] = useState(40)
+        const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         const questionBarRef = useRef(null)
+        const reportStale = report?.stale === true || graph?.verification?.stale === true
+          || (Number.isFinite(report?.createdAt) && graph?.verification?.auditLog?.some(
+            entry => Number.isFinite(entry?.ts) && entry.ts > report.createdAt))
         const questionFeedbackRef = useRef(null)
         useEffect(() => {
           if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
@@ -4910,6 +4915,12 @@
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
         })
+        useEffect(() => { setIssueLimit(40) }, [report?.reportId, issueFilter])
+        useEffect(() => { setPendingDestructiveFix(null) }, [questionResult, activeIssueId])
+        useEffect(() => {
+          const index = shown.findIndex(issue => issue.id === activeIssueId)
+          if (index >= 40) setIssueLimit(limit => Math.max(limit, Math.ceil((index + 1) / 40) * 40))
+        }, [activeIssueId, report?.reportId, issueFilter])
         const qNode = questionTarget && questionTarget.kind === 'node' && graph && Array.isArray(graph.nodes)
           ? graph.nodes.find((n) => n && n.id === questionTarget.id) : null
         const targetLabel = questionTarget
@@ -4957,8 +4968,11 @@
         const applyReviewedIssue = (issue) => {
           const action = issue?.proposedFix?.action
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
-          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)
-            && !window.confirm(fixLabel(issue.proposedFix) + '。这可能影响其它节点或关系，确定采纳吗？')) return
+          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)) {
+            const key = JSON.stringify(issue.proposedFix)
+            if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
+          }
+          setPendingDestructiveFix(null)
           onApplyIssue(issue)
         }
         // A contradicted/insufficient answer without a structured fix is not a
@@ -5014,6 +5028,8 @@
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
                       h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(qFix)),
+                      pendingDestructiveFix === JSON.stringify(qFix)
+                        ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
                         '暂不可采纳：会使 ' + qFixConflicts.length + ' 条关系违反本体类型约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先复核这些关系。') : null,
                       h('div', { className: 'kg-issue-actions' },
@@ -5026,7 +5042,7 @@
                           evidence: questionResult.evidence || [], confidence: 1,
                           proposedFix: qFix, status: 'open',
                         }),
-                      }, '采纳修复建议'),
+                      }, pendingDestructiveFix === JSON.stringify(qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复') : '采纳修复建议'),
                       ),
                     )
                   : null,
@@ -5045,8 +5061,8 @@
               report && typeof report.summary === 'string'
                 ? h('p', { className: 'kg-verify-summary' }, report.summary)
                 : null,
-              report && report.stale
-                ? h('p', { className: 'kg-verify-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新验证。')
+              report && reportStale
+                ? h('p', { className: 'kg-verify-stale' }, '图已修改：下方保留原审校记录，统计仍基于旧版本，请重新验证。')
                 : null,
             ),
             typeof onApplyAll === 'function' && fixableCount > 0
@@ -5097,7 +5113,7 @@
           shown.length === 0
             ? h('p', { className: 'kg-hint' }, verifying ? '正在审校…' : '没有符合筛选条件的问题。')
             : h('div', { className: 'kg-issue-list' },
-                shown.map((it) => {
+                shown.slice(0, issueLimit).map((it) => {
                   const nodeTarget = it.targetKind === 'node' && graph ? graph.nodes.find((n) => n.id === it.targetId) : null
                   const edgeIndex = it.targetKind === 'edge' ? edgeIndexForIssue(graph, it) : null
                   const edgeTarget = edgeIndex != null && graph && Array.isArray(graph.edges) ? graph.edges[edgeIndex] : null
@@ -5144,7 +5160,7 @@
                         ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === JSON.stringify(it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
                         ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
@@ -5156,6 +5172,11 @@
                     ),
                   )
                 }),
+                shown.length > issueLimit
+                  ? h('button', { type: 'button', className: 'kg-secondary',
+                      onClick: () => setIssueLimit(limit => Math.min(shown.length, limit + 40)) },
+                    '显示更多问题（已显示 ' + issueLimit + ' / ' + shown.length + '）')
+                  : null,
               ),
           recentAudits.length > 0
             ? h('div', { className: 'kg-audit' },
