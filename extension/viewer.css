@@ -58,6 +58,13 @@
 .kg-body-toolbar-text { flex: 1 1 260px; min-width: 0; }
 .kg-body-toolbar .kg-subtitle { margin: 4px 0 0; }
 .kg-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 84px 20px; }
+.kg-relation-progress { margin: 0 0 14px; padding: 12px 16px; border-bottom: 1px solid var(--kg-border); background: var(--kg-panel); }
+.kg-relation-progress-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.kg-relation-progress-head strong { font-size: 14px; }
+.kg-relation-progress-head span { flex: 1 1 180px; min-width: 0; font-size: 12px; color: var(--kg-text-dim); overflow-wrap: anywhere; }
+.kg-relation-progress details { margin-top: 6px; font-size: 12px; }
+.kg-relation-progress summary { cursor: pointer; color: var(--kg-text-dim); }
+.kg-relation-progress .kg-empty-sub { margin-top: 6px; }
 .kg-spinner { width: 38px; height: 38px; border-radius: 50%; border: 3px solid rgba(59,130,246,0.22); border-top-color: #3b82f6; animation: kg-spin 0.9s linear infinite; }
 @keyframes kg-spin { to { transform: rotate(360deg); } }
 .kg-empty p { margin: 0; font-size: 15px; color: var(--kg-text); }

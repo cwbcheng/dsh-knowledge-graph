@@ -25,7 +25,7 @@ apply({ get(name) {
   if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
   return name === 'kgExtractor' ? { async weaveRelations() {
     calls++
-    await new Promise(resolve => setTimeout(resolve, 2500))
+    await new Promise(resolve => setTimeout(resolve, Number(process.env.FIXTURE_WEAVE_DELAY_MS) || 2500))
     return { edges: [] }
   } } : null
 }, effect(fn) { const cleanup = fn(); if (cleanup) cleanups.push(cleanup); return cleanup }, interval() { return () => {} } })
