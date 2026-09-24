@@ -184,6 +184,9 @@ try {
   assert.equal(reopened.graph.ontology, 'learning-view-v1', 'the document must remember its ontology')
   assert(reopened.graph.graphOntology && reopened.graph.graphOntology.id === 'learning-view-v1',
     'reopening must restore the presentation record, or the client renders the wrong labels')
+  const exported = await call('POST', '/api/dsh-knowledge-graph/document-export', { documentId })
+  assert(exported.graph?.graphOntology?.id === reopened.graph.graphOntology.id,
+    'complete graph export must preserve the work-window ontology for full-view labels')
 
   // A browser can edit only a small window; the Host must reject a node retype
   // that would invalidate a canonical edge even when that edge is offscreen.

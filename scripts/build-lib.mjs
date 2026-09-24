@@ -348,6 +348,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const revision = Number.isInteger(saved.revision) ? saved.revision : 0
               const graph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
               delete graph.sourceText
+              graph.graphOntology = ontDescribe(graph)
+              graph.graphDiagnostics = ontDiagnose(graph)
               return writeJson(res, 200, { documentId, revision, graph })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-commit') {

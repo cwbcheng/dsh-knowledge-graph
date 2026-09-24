@@ -4043,57 +4043,6 @@
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭更新提示', onClick: () => setNotice(null) }, '×')) : null)
       }
 
-      function AllNodeSearch({ nodes, onFocus }) {
-        const [query, setQuery] = useState('')
-        const term = query.trim().toLocaleLowerCase()
-        const matches = useMemo(() => term ? nodes.filter(node => [node.id, node.text, node.type, TYPE_META[node.type]?.label, node.sectionTitle]
-          .some(value => String(value || '').toLocaleLowerCase().includes(term))) : [], [nodes, term])
-        return h('div', { className: 'kg-all-nodes-search' },
-          h('input', { type: 'search', value: query, 'aria-label': '查找全部节点', placeholder: '查找节点 ID、内容或类型',
-            onChange: event => setQuery(event.target.value) }),
-          term ? h('div', { className: 'kg-all-nodes-results', 'aria-label': '节点匹配结果' },
-            matches.length ? matches.slice(0, 30).map(node => h('button', { key: node.id, type: 'button',
-              onClick: () => onFocus(node.id) }, node.id + ' · ' + String(node.text || '').slice(0, 100)))
-              : h('p', { className: 'kg-hint', style: { margin: 8 } }, '没有匹配的节点'),
-            matches.length > 30 ? h('p', { className: 'kg-hint', style: { margin: 8 } }, '匹配 ' + matches.length + ' 个节点，请缩小查询范围') : null)
-            : null)
-      }
-
-      function AllNodesDialog({ graph, sourceText, title, ctx, onClose, onLocate, loadNeighborhood }) {
-        const [selectedNodeId, setSelectedNodeId] = useState(null)
-        const [selectedEdgeId, setSelectedEdgeId] = useState(null)
-        const [focusReq, setFocusReq] = useState({ nodeId: null, seq: 0 })
-        const anchors = useMemo(() => {
-          const paragraphs = splitParagraphs(sourceText || '')
-          const offsets = {}
-          for (const node of graph.nodes) {
-            offsets[node.id] = Number.isInteger(node.paragraph) ? paragraphs[node.paragraph]?.start ?? null : null
-          }
-          return offsets
-        }, [graph, sourceText])
-        const focusNode = id => {
-          setSelectedNodeId(id)
-          setSelectedEdgeId(null)
-          setFocusReq(value => ({ nodeId: id, seq: value.seq + 1 }))
-        }
-        const height = Math.max(260, Math.min(760, window.innerHeight - 200))
-        return h('dialog', { className: 'kg-all-nodes-dialog',
-          ref: element => { if (element && !element.open) element.showModal() },
-          onCancel: event => { event.preventDefault(); onClose() },
-          'aria-label': '全部节点' },
-          h('div', { className: 'kg-all-nodes-head' },
-            h('strong', null, '全部节点 · ' + graph.nodes.length + ' 节点 · ' + graph.edges.length + ' 关系'),
-            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭全部节点', title: '返回工作窗口', onClick: onClose }, '×')),
-          h(AllNodeSearch, { nodes: graph.nodes, onFocus: focusNode }),
-          h(GraphViewer, { nodes: graph.nodes, edges: graph.edges, anchors,
-            documentId: documentIdOfGraph(graph), revision: graph.revision ?? graph.source?.revision,
-            sourceText, loadNeighborhood, selectedNodeId, selectedEdgeId, focusReq,
-            onSelectNode: id => { setSelectedNodeId(id); setSelectedEdgeId(null) },
-            onSelectEdge: index => { setSelectedEdgeId(index); setSelectedNodeId(null) },
-            onLocateNode: onLocate, ctx, height, layoutMode: 'overview', issueReport: null, exportTitle: title,
-          }))
-      }
-
       function GraphCanvas(props) {
         const { nodes, edges, layoutMode, height, loading } = props
         const [state, setState] = useState(null)

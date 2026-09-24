@@ -118,16 +118,6 @@ export default function clientPlugin() {
 .kg-window-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 10px; padding: 8px 10px; border: 1px solid var(--kg-border); border-radius: 10px; background: var(--kg-panel); font-size: 12px; color: var(--kg-text-dim); }
 .kg-window-nav strong { color: var(--kg-text); font-weight: 600; }
 .kg-window-nav .kg-secondary { padding: 4px 9px; font-size: 11.5px; }
-.kg-all-nodes-dialog { width: min(1500px, 96vw); max-width: 96vw; max-height: 94vh; box-sizing: border-box; padding: 12px; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-edge-label-bg); color: var(--kg-text); overflow: auto; }
-.kg-all-nodes-dialog::backdrop { background: rgba(15, 23, 42, .58); }
-.kg-all-nodes-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.kg-all-nodes-head strong { font-size: 16px; }
-.kg-all-nodes-head button { flex: none; }
-.kg-all-nodes-search { margin: 8px 0; }
-.kg-all-nodes-search input { width: 100%; min-height: 34px; box-sizing: border-box; }
-.kg-all-nodes-results { max-height: 160px; overflow: auto; border: 1px solid var(--kg-border); border-radius: 6px; }
-.kg-all-nodes-results button { display: block; width: 100%; padding: 7px 9px; border: 0; border-bottom: 1px solid var(--kg-border); border-radius: 0; background: transparent; color: var(--kg-text); text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
-.kg-all-nodes-results button:hover, .kg-all-nodes-results button:focus-visible { background: rgba(59,130,246,.12); }
 .kg-window-page { width: 58px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; text-align: center; }
 .kg-window-query { min-width: 160px; flex: 1 1 220px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 5px 8px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; }
 .kg-window-query:focus, .kg-window-page:focus { outline: 2px solid rgba(59,130,246,0.35); border-color: #3b82f6; }
@@ -4733,57 +4723,6 @@ export default function clientPlugin() {
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭更新提示', onClick: () => setNotice(null) }, '×')) : null)
       }
 
-      function AllNodeSearch({ nodes, onFocus }) {
-        const [query, setQuery] = useState('')
-        const term = query.trim().toLocaleLowerCase()
-        const matches = useMemo(() => term ? nodes.filter(node => [node.id, node.text, node.type, TYPE_META[node.type]?.label, node.sectionTitle]
-          .some(value => String(value || '').toLocaleLowerCase().includes(term))) : [], [nodes, term])
-        return h('div', { className: 'kg-all-nodes-search' },
-          h('input', { type: 'search', value: query, 'aria-label': '查找全部节点', placeholder: '查找节点 ID、内容或类型',
-            onChange: event => setQuery(event.target.value) }),
-          term ? h('div', { className: 'kg-all-nodes-results', 'aria-label': '节点匹配结果' },
-            matches.length ? matches.slice(0, 30).map(node => h('button', { key: node.id, type: 'button',
-              onClick: () => onFocus(node.id) }, node.id + ' · ' + String(node.text || '').slice(0, 100)))
-              : h('p', { className: 'kg-hint', style: { margin: 8 } }, '没有匹配的节点'),
-            matches.length > 30 ? h('p', { className: 'kg-hint', style: { margin: 8 } }, '匹配 ' + matches.length + ' 个节点，请缩小查询范围') : null)
-            : null)
-      }
-
-      function AllNodesDialog({ graph, sourceText, title, ctx, onClose, onLocate, loadNeighborhood }) {
-        const [selectedNodeId, setSelectedNodeId] = useState(null)
-        const [selectedEdgeId, setSelectedEdgeId] = useState(null)
-        const [focusReq, setFocusReq] = useState({ nodeId: null, seq: 0 })
-        const anchors = useMemo(() => {
-          const paragraphs = splitParagraphs(sourceText || '')
-          const offsets = {}
-          for (const node of graph.nodes) {
-            offsets[node.id] = Number.isInteger(node.paragraph) ? paragraphs[node.paragraph]?.start ?? null : null
-          }
-          return offsets
-        }, [graph, sourceText])
-        const focusNode = id => {
-          setSelectedNodeId(id)
-          setSelectedEdgeId(null)
-          setFocusReq(value => ({ nodeId: id, seq: value.seq + 1 }))
-        }
-        const height = Math.max(260, Math.min(760, window.innerHeight - 200))
-        return h('dialog', { className: 'kg-all-nodes-dialog',
-          ref: element => { if (element && !element.open) element.showModal() },
-          onCancel: event => { event.preventDefault(); onClose() },
-          'aria-label': '全部节点' },
-          h('div', { className: 'kg-all-nodes-head' },
-            h('strong', null, '全部节点 · ' + graph.nodes.length + ' 节点 · ' + graph.edges.length + ' 关系'),
-            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭全部节点', title: '返回工作窗口', onClick: onClose }, '×')),
-          h(AllNodeSearch, { nodes: graph.nodes, onFocus: focusNode }),
-          h(GraphViewer, { nodes: graph.nodes, edges: graph.edges, anchors,
-            documentId: documentIdOfGraph(graph), revision: graph.revision ?? graph.source?.revision,
-            sourceText, loadNeighborhood, selectedNodeId, selectedEdgeId, focusReq,
-            onSelectNode: id => { setSelectedNodeId(id); setSelectedEdgeId(null) },
-            onSelectEdge: index => { setSelectedEdgeId(index); setSelectedNodeId(null) },
-            onLocateNode: onLocate, ctx, height, layoutMode: 'overview', issueReport: null, exportTitle: title,
-          }))
-      }
-
       function GraphCanvas(props) {
         const { nodes, edges, layoutMode, height, loading } = props
         const [state, setState] = useState(null)
@@ -7466,10 +7405,22 @@ export default function clientPlugin() {
              : Math.max(1, Math.min(pageCount, Number.isInteger(page) ? page : Math.floor(currentMeta.nodeOffset / limit) + 1))
            const nodeOffset = queryText ? 0 : (targetPage - 1) * limit
            if (!queryText && currentMeta.kind === 'window' && currentMeta.nodeOffset === nodeOffset && currentMeta.nodeLimit === limit) {
+             setAllNodesGraph(null)
+             if (allNodesGraph) {
+               setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+               setFocusReq((value) => ({ nodeId: null, seq: value.seq + 1 }))
+             }
              setGraphPageDraft(String(targetPage))
              return true
            }
-           if (queryText && currentMeta.kind === 'query' && currentMeta.query === queryText && currentMeta.nodeLimit === limit) return true
+           if (queryText && currentMeta.kind === 'query' && currentMeta.query === queryText && currentMeta.nodeLimit === limit) {
+             setAllNodesGraph(null)
+             if (allNodesGraph) {
+               setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1)
+               setFocusReq((value) => ({ nodeId: null, seq: value.seq + 1 }))
+             }
+             return true
+           }
            setGraphWindowLoading(true)
            setError(null)
            try {
@@ -7496,6 +7447,7 @@ export default function clientPlugin() {
                ? loaded.revision
                : (nextGraph.source && Number.isInteger(nextGraph.source.revision) ? nextGraph.source.revision : graphRevisionRef.current)
              setResultView(makeView(nextGraph, sourceText))
+             setAllNodesGraph(null)
              setText(sourceText)
              setFullText(sourceText)
              setChapterFilter('all')
@@ -7544,7 +7496,7 @@ export default function clientPlugin() {
            loadGraphWindow({ page: 1, query: '' })
          }
          const openAllNodes = async () => {
-           if (!resultView || allNodesLoading) return
+           if (!resultView || allNodesGraph || allNodesLoading) return
            const documentId = documentIdOfGraph(resultView.graph)
            if (!documentId) { setError({ message: '请先保存知识图，再显示全部节点' }); return }
            setAllNodesLoading(true)
@@ -7559,7 +7511,10 @@ export default function clientPlugin() {
              if (response.documentId !== documentId || response.revision !== expectedRevision) {
                throw new Error('知识图版本已更新，请重新载入工作窗口后查看全部节点')
              }
-             setAllNodesGraph(response.graph)
+             setChapterFilter('all')
+             setSelectedEdgeId(null)
+             setAllNodesGraph({ ...response.graph,
+               graphOntology: resultView.graph.graphOntology || response.graph.graphOntology })
            } catch (error) {
              setError({ message: error?.message || '读取全部节点失败' })
            } finally {
@@ -7569,8 +7524,8 @@ export default function clientPlugin() {
          const locateAllNode = async id => {
            const graph = allNodesGraph
            if (!graph) return
-           setAllNodesGraph(null)
            if (graph.revision !== graphRevisionRef.current) {
+             setAllNodesGraph(null)
              setError({ message: '知识图版本已更新，请重新载入工作窗口后定位节点' })
              return
            }
@@ -8902,12 +8857,12 @@ export default function clientPlugin() {
         const handleSelectNode = (nodeId, projectedAnchor) => {
           if (projectedAnchor === undefined) { setSelectedNodeId(nodeId); setSelectedEdgeId(null) }
           if (!nodeId) return
-          const off = projectedAnchor === undefined ? resultView.anchors[nodeId] : projectedAnchor
+          const off = projectedAnchor === undefined ? displayView.anchors[nodeId] : projectedAnchor
           if (off == null) {
             toastStore.show('该节点无法回链原文，已记入诊断列表')
             return
           }
-          const pi = resultView.paragraphs.findIndex((p) => off >= p.start && off < p.end)
+          const pi = displayView.paragraphs.findIndex((p) => off >= p.start && off < p.end)
           if (pi < 0) {
             toastStore.show('未找到对应原文段落')
             return
@@ -9021,11 +8976,11 @@ export default function clientPlugin() {
         }
         const handleParagraphClick = (pi) => {
           setActivePara(pi)
-          const paragraph = resultView.paragraphs[pi]
+          const paragraph = displayView.paragraphs[pi]
           const ids = gatherProjection && paragraph ? gatherProjection.nodes.filter(n => {
             const offset = gatherProjection.anchors[n.id]
             return offset != null && offset >= paragraph.start && offset < paragraph.end
-          }).map(n => n.id) : resultView.paraNodes[pi] || []
+          }).map(n => n.id) : displayView.paraNodes[pi] || []
           if (ids.length === 0) {
             toastStore.show('该段没有可定位的节点')
             return
@@ -9105,12 +9060,17 @@ export default function clientPlugin() {
         })
 
         // ---- view constructors ----
-        const chapterSections = resultView ? chapterSectionsOf(resultView.graph) : []
+        const allNodesActive = !!(allNodesGraph && resultView && documentIdOfGraph(allNodesGraph) === documentIdOfGraph(resultView.graph)
+          && allNodesGraph.revision === (resultView.graph.revision ?? resultView.graph.source?.revision))
+        useEffect(() => { if (allNodesGraph && !allNodesActive) setAllNodesGraph(null) }, [allNodesGraph, allNodesActive])
+        const displayView = useMemo(() => allNodesActive ? makeView(allNodesGraph, resultView.sourceText) : resultView,
+          [allNodesActive, allNodesGraph, resultView])
+        const chapterSections = displayView ? chapterSectionsOf(displayView.graph) : []
         const activeChapter = chapterFilter !== 'all' ? chapterSections.find((section) => section.id === chapterFilter) : null
         const activeChapterId = activeChapter ? activeChapter.id : 'all'
-        const visibleGraph = useMemo(() => resultView ? filterGraphByChapter(resultView.graph, activeChapterId) : null, [resultView && resultView.graph, activeChapterId])
-        const visibleParagraphs = resultView
-          ? resultView.paragraphs.map((paragraph, index) => ({ paragraph, index })).filter(({ index }) => {
+        const visibleGraph = useMemo(() => displayView ? filterGraphByChapter(displayView.graph, activeChapterId) : null, [displayView && displayView.graph, activeChapterId])
+        const visibleParagraphs = displayView
+          ? displayView.paragraphs.map((paragraph, index) => ({ paragraph, index })).filter(({ index }) => {
               if (!activeChapter || (gatherProjection && index === activePara)) return true
               const start = Number(activeChapter.startParagraph)
               const end = Number(activeChapter.endParagraph)
@@ -9118,24 +9078,24 @@ export default function clientPlugin() {
             })
           : []
         const paraEl = (p, i) => {
-          const badges = resultView.paraTypes[i] || []
+          const badges = displayView.paraTypes[i] || []
           return h('div', {
             key: i, id: 'kg-para-' + i,
             className: 'kg-para' + (activePara === i ? ' kg-active' : '') + (flashPara === i ? ' kg-flash' : ''),
             role: 'group',
-            'aria-label': '原文第 ' + (i + 1) + ' 段' + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t].label).join('、') : '') + '，点击可在图中聚焦对应节点',
+            'aria-label': '原文第 ' + (i + 1) + ' 段' + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t]?.label || t).join('、') : '') + '，点击可在图中聚焦对应节点',
             onClick: () => handleParagraphClick(i),
           },
             h('div', { className: 'kg-para-badges' },
               h('button', { type: 'button', className: 'kg-para-num', title: '定位 P' + (i + 1) + ' 对应节点', 'aria-label': '定位 P' + (i + 1) + ' 对应节点' }, 'P' + (i + 1)),
               badges.map((t) => h('span', { key: t, className: 'kg-para-tag' },
-                h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t].label),
-                h('button', { type: 'button', className: 'kg-para-tag-remove',
-                  title: '移除本段“' + TYPE_META[t].label + '”标签及对应节点（当前窗口），保留原文',
-                  'aria-label': '移除 P' + (i + 1) + ' 的' + TYPE_META[t].label + '标签和对应节点',
+                h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t]?.label || t),
+                !allNodesActive ? h('button', { type: 'button', className: 'kg-para-tag-remove',
+                  title: '移除本段“' + (TYPE_META[t]?.label || t) + '”标签及对应节点（当前窗口），保留原文',
+                  'aria-label': '移除 P' + (i + 1) + ' 的' + (TYPE_META[t]?.label || t) + '标签和对应节点',
                   disabled: removingParagraphType || Boolean(taskId) || phase === 'extracting' || graphWindowLoading || Boolean(documentLoading) || !documentIdOfGraph(resultView.graph),
                   onClick: (event) => { event.stopPropagation(); handleRemoveParagraphType(i, t) },
-                }, h('span', { 'aria-hidden': true }, '×'))))),
+                }, h('span', { 'aria-hidden': true }, '×')) : null))),
             h('p', null, p.text),
             ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).includes(i)).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
           )
@@ -9210,8 +9170,8 @@ export default function clientPlugin() {
               const windowMeta = graphViewMetadata(resultView.graph)
               const visualMeta = graph.source && graph.source.visualSource && typeof graph.source.visualSource === 'object' ? graph.source.visualSource : null
               const visualImages = visualMeta && Array.isArray(visualMeta.images) ? visualMeta.images : []
-              const resolvedCount = graph.nodes.filter((node) => resultView.anchors[node.id] != null).length
-              const diagCount = (graph.warnings ? graph.warnings.length : 0) + resultView.unresolved.length
+              const resolvedCount = graph.nodes.filter((node) => displayView.anchors[node.id] != null).length
+              const diagCount = (graph.warnings ? graph.warnings.length : 0) + displayView.unresolved.length
                const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
                const stagingMeta = graph.staging && typeof graph.staging === 'object' ? graph.staging : null
                const generationMeta = graph.generation && typeof graph.generation === 'object' ? graph.generation : null
@@ -9220,7 +9180,7 @@ export default function clientPlugin() {
               const netEdges = relationNetChange(connectivityMeta)
               const diagLines = []
               for (const w of graph.warnings || []) diagLines.push('warning: ' + w)
-              for (const u of resultView.unresolved) {
+              for (const u of displayView.unresolved) {
                 diagLines.push('anchor_unresolved:node:' + u.id + (u.quote ? '（摘录：' + u.quote + '…）' : '（无摘录）'))
               }
               return h('section', { className: 'kg-card kg-result', 'aria-label': '原文 ⇄ 知识图结果' },
@@ -9271,10 +9231,15 @@ export default function clientPlugin() {
                 windowMeta
                   ? h('div', { className: 'kg-window-nav', 'aria-label': '大图窗口导航与子图查询' },
                       h('label', null, '每窗节点数 ', h('select', {
-                        'aria-label': '每窗节点数', value: windowMeta.nodeLimit, disabled: graphWindowLoading,
-                        onChange: (e) => loadGraphWindow({ nodeLimit: Number(e.target.value), query: windowMeta.kind === 'query' ? windowMeta.query : '' }),
-                      }, [200, 500, 800, 1200, 2000].map((limit) => h('option', { key: limit, value: limit }, String(limit))))),
-                      windowMeta.kind === 'query'
+                        'aria-label': '每窗节点数', value: allNodesActive ? 'all' : windowMeta.nodeLimit,
+                        disabled: graphWindowLoading || allNodesLoading,
+                        onChange: (e) => e.target.value === 'all' ? openAllNodes()
+                          : loadGraphWindow({ nodeLimit: Number(e.target.value), query: windowMeta.kind === 'query' ? windowMeta.query : '' }),
+                      }, [200, 500, 800, 1200, 2000].map((limit) => h('option', { key: limit, value: limit }, String(limit))),
+                        h('option', { value: 'all' }, '全部节点'))),
+                      allNodesActive
+                        ? h('strong', null, '全部节点 · ' + displayView.graph.nodes.length + ' / ' + windowMeta.totalNodes + ' · 只读总览')
+                        : windowMeta.kind === 'query'
                         ? h(React.Fragment, null,
                             h('strong', null, '子图查询'),
                             h('span', null, '“' + windowMeta.query + '” · 匹配 ' + (windowMeta.matchedNodes || 0) + ' 个节点 · 当前显示 ' + windowMeta.visibleNodes + ' 个（含一跳邻居） · 全图 ' + windowMeta.totalNodes + ' 个'),
@@ -9309,8 +9274,7 @@ export default function clientPlugin() {
                         onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runGraphQuery() } },
                       }),
                       h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || !graphQueryDraft.trim(), onClick: runGraphQuery }, graphWindowLoading ? '加载中…' : '查询子图'),
-                      h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || allNodesLoading,
-                        onClick: openAllNodes, 'aria-label': '显示全部节点' }, allNodesLoading ? '正在读取全部节点…' : '显示全部节点'))
+                      allNodesLoading ? h('span', { role: 'status' }, '正在读取全部节点…') : null)
                   : null,
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
                 h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，长按节点查看原文摘录。'),
@@ -9353,10 +9317,10 @@ export default function clientPlugin() {
                     visualMeta?.kind === 'markdown-assets' && activePara >= 0 ? h('div', { 'aria-label': '原文邻近插图', style: { display: 'flex', gap: 8, maxHeight: 150, overflow: 'auto' } },
                       visualImages.filter(image => (image.paragraphs || []).some(p => Math.abs(p - activePara) <= 1)).map(image => h('div', { key: image.id, style: { flex: '0 0 140px' } }, h(SourceFigure, { image, documentId: graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })))) : null,
                     h(GraphViewer, {
-                      nodes: graph.nodes, edges: graph.edges, anchors: resultView.anchors,
+                      nodes: graph.nodes, edges: graph.edges, anchors: displayView.anchors,
                       documentId: documentIdOfGraph(resultView.graph), revision: resultView.graph.revision ?? resultView.graph.source?.revision,
-                      sourceText: resultView.sourceText,
-                      loadNeighborhood: async (args, signal) => {
+                      sourceText: displayView.sourceText,
+                      loadNeighborhood: allNodesActive ? undefined : async (args, signal) => {
                         await graphCommitQueueRef.current.catch(() => {})
                         signal.throwIfAborted()
                         return host.call('graph-neighborhood', args, { signal })
@@ -9366,12 +9330,15 @@ export default function clientPlugin() {
                       selectedNodeId, selectedEdgeId, focusReq,
                       onSelectNode: handleSelectNode, onSelectEdge: handleSelectEdge, ctx,
                       height: resultHeight,
-                      loading: graphWindowLoading,
-                      layoutMode, onLayoutModeChange: changeLayoutMode,
-                      issueReport: verification,
-                      onQuestionNode: handleQuestionNode, onQuestionEdge: handleQuestionEdge,
-                      onDeleteEdge: handleDeleteEdge,
-                      onOpenNodeIssues: handleOpenNodeIssues,
+                      loading: graphWindowLoading || allNodesLoading,
+                      layoutMode: allNodesActive ? 'overview' : layoutMode,
+                      onLayoutModeChange: allNodesActive ? undefined : changeLayoutMode,
+                      issueReport: allNodesActive ? null : verification,
+                      onQuestionNode: allNodesActive ? undefined : handleQuestionNode,
+                      onQuestionEdge: allNodesActive ? undefined : handleQuestionEdge,
+                      onDeleteEdge: allNodesActive ? undefined : handleDeleteEdge,
+                      onOpenNodeIssues: allNodesActive ? undefined : handleOpenNodeIssues,
+                      onLocateNode: allNodesActive ? locateAllNode : undefined,
                       exportTitle: title,
                     }),
                     ontologyModeBadge(resultView),
@@ -9500,13 +9467,6 @@ export default function clientPlugin() {
             h(SourceFigure, { image: openFigure, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, large: true }),
             h('button', { type: 'button', className: 'kg-secondary', onClick: () => { const paragraph = openFigure.startParagraph; setOpenFigure(null); setActivePara(paragraph); const element = document.getElementById('kg-para-' + paragraph); if (element) scrollElIntoCenter(element) } }, '定位原文'),
           ) : null,
-          allNodesGraph ? h(AllNodesDialog, { graph: allNodesGraph, sourceText: fullText || resultView?.sourceText || '', title, ctx,
-            onClose: () => setAllNodesGraph(null), onLocate: locateAllNode,
-            loadNeighborhood: async (args, signal) => {
-              signal.throwIfAborted()
-              return host.call('graph-neighborhood', args, { signal })
-            },
-          }) : null,
           error
             ? h('div', { className: 'kg-banner', role: 'alert' },
                 h('span', null, error.message || '出错了，请重试'),

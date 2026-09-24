@@ -10617,7 +10617,13 @@ function createHostPlugin(graphContractOnly) {
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
          const saved = loadCanonicalDocumentHost(documentId)
          if (!saved) return { error: { code: 'not_found', message: '找不到要导出的 canonical graph' } }
-         return { documentId, revision: saved.revision, graph: { ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } } }
+         return { documentId, revision: saved.revision, graph: {
+           ...saved.graph,
+           graphOntology: ontDescribe(saved.graph),
+           graphDiagnostics: ontDiagnose(saved.graph),
+           revision: saved.revision,
+           source: { ...(saved.graph.source || {}), revision: saved.revision },
+         } }
        })
 
        harness.handle('graph-commit', async (args) => {
