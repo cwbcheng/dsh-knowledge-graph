@@ -260,6 +260,16 @@ export default function clientPlugin() {
 .kg-para { flex-shrink: 0; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 12px; background: var(--kg-panel); cursor: pointer; transition: border-color 0.15s; }
 .kg-para:hover { border-color: rgba(59,130,246,0.6); }
 .kg-para p { margin: 6px 0 2px; white-space: pre-wrap; font-size: 13.5px; word-break: break-word; }
+.kg-source-refs { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.kg-source-ref { display: inline-flex; align-items: center; gap: 6px; scroll-margin: 20px; }
+.kg-source-ref.kg-active .kg-para-num { background: #3b82f6; color: #fff; }
+.kg-source-ref.kg-flash { animation: kg-para-glow 1.4s ease; }
+.kg-source-table-label { margin: 8px 0 4px; color: var(--kg-text-dim); font-size: 12px; }
+.kg-source-table-scroll { max-width: 100%; overflow-x: auto; margin-top: 7px; }
+.kg-source-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; line-height: 1.5; }
+.kg-source-table th, .kg-source-table td { border: 1px solid var(--kg-border); padding: 7px 9px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.kg-source-table th { background: rgba(59,130,246,0.08); font-weight: 650; }
+.kg-source-table tbody tr:nth-child(even) { background: rgba(127,127,127,0.045); }
 .kg-para:focus-visible { outline: 2px solid rgba(59,130,246,0.55); outline-offset: 1px; }
 .kg-para.kg-active { border-color: #3b82f6; box-shadow: inset 3px 0 0 #3b82f6; }
 .kg-para-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -1879,6 +1889,39 @@ export default function clientPlugin() {
           }
         }
         return out
+      }
+
+      function sourceTableGroups(source, paragraphs) {
+        const byParagraph = new Map()
+        // Paragraphs are evidence anchors, so only change their presentation.
+        // The complete source span is parsed before any row is rendered.
+        for (const match of source.matchAll(/<table\b[^>]*>[\s\S]*?<\/table\s*>/gi)) {
+          if (match[0].length > 100000) continue
+          const start = match.index
+          const end = start + match[0].length
+          const first = paragraphs.findIndex((p) => p.start < end && p.end > start)
+          if (first < 0 || byParagraph.has(first)) continue
+          let last = first
+          while (last + 1 < paragraphs.length && paragraphs[last + 1].start < end) last++
+          if (paragraphs[first].start > start || paragraphs[last].end < end) continue
+          if (Array.from({ length: last - first + 1 }, (_, n) => first + n).some((i) => byParagraph.has(i))) continue
+          const parsed = new DOMParser().parseFromString(match[0], 'text/html').querySelector('table')
+          if (!parsed) continue
+          const rows = Array.from(parsed.rows, (row) => Array.from(row.cells, (cell) => ({
+            text: cell.textContent.trim(),
+            colspan: Math.min(20, Math.max(1, cell.colSpan)),
+            rowspan: Math.min(20, Math.max(1, cell.rowSpan)),
+          }))).filter((row) => row.length > 0)
+          if (rows.length === 0) continue
+          const group = {
+            first, last, rows,
+            caption: parsed.caption?.textContent.trim() || '',
+            prefix: source.slice(paragraphs[first].start, start).trim(),
+            suffix: source.slice(end, paragraphs[last].end).trim(),
+          }
+          for (let i = first; i <= last; i++) byParagraph.set(i, group)
+        }
+        return byParagraph
       }
 
       // Build the view model: anchor every node to a paragraph offset and work
@@ -9101,27 +9144,51 @@ export default function clientPlugin() {
               return Number.isInteger(start) && Number.isInteger(end) && index >= start && index <= end
             })
           : []
-        const paraEl = (p, i) => {
+        const sourceTables = useMemo(() => displayView ? sourceTableGroups(displayView.sourceText, displayView.paragraphs) : new Map(), [displayView?.sourceText, displayView?.paragraphs])
+        const visibleParagraphIds = new Set(visibleParagraphs.map(({ index }) => index))
+        const paragraphRef = (i, grouped) => {
           const badges = displayView.paraTypes[i] || []
+          return h('span', {
+            key: i,
+            id: grouped ? 'kg-para-' + i : undefined,
+            className: 'kg-source-ref' + (activePara === i ? ' kg-active' : '') + (flashPara === i ? ' kg-flash' : ''),
+            onClick: grouped ? (event) => { event.stopPropagation(); handleParagraphClick(i) } : undefined,
+          },
+            h('button', { type: 'button', className: 'kg-para-num', title: '定位 P' + (i + 1) + ' 对应节点', 'aria-label': '定位 P' + (i + 1) + ' 对应节点' }, 'P' + (i + 1)),
+            badges.map((t) => h('span', { key: t, className: 'kg-para-tag' },
+              h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t]?.label || t),
+              h('button', { type: 'button', className: 'kg-para-tag-remove',
+                title: '移除本段“' + (TYPE_META[t]?.label || t) + '”标签及对应节点，保留原文',
+                'aria-label': '移除 P' + (i + 1) + ' 的' + (TYPE_META[t]?.label || t) + '标签和对应节点',
+                disabled: removingParagraphType || Boolean(taskId) || phase === 'extracting' || graphWindowLoading || Boolean(documentLoading) || !documentIdOfGraph(resultView.graph),
+                onClick: (event) => { event.stopPropagation(); handleRemoveParagraphType(i, t) },
+              }, h('span', { 'aria-hidden': true }, '×'))))
+          )
+        }
+        const paraEl = (p, i) => {
+          const table = sourceTables.get(i)
+          if (table && i !== table.first && visibleParagraphIds.has(table.first)) return null
+          const indices = table ? Array.from({ length: table.last - table.first + 1 }, (_, n) => table.first + n) : [i]
+          const badges = indices.flatMap((index) => displayView.paraTypes[index] || [])
           return h('div', {
-            key: i, id: 'kg-para-' + i,
-            className: 'kg-para' + (activePara === i ? ' kg-active' : '') + (flashPara === i ? ' kg-flash' : ''),
+            key: i, id: table ? undefined : 'kg-para-' + i,
+            className: 'kg-para' + (indices.includes(activePara) ? ' kg-active' : '') + (indices.includes(flashPara) ? ' kg-flash' : ''),
             role: 'group',
-            'aria-label': '原文第 ' + (i + 1) + ' 段' + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t]?.label || t).join('、') : '') + '，点击可在图中聚焦对应节点',
+            'aria-label': '原文第 ' + (i + 1) + (table && table.last > i ? ' 至 ' + (table.last + 1) : '') + ' 段' + (table ? '的表格' : '') + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t]?.label || t).join('、') : '') + '，点击段落编号可在图中聚焦对应节点',
             onClick: () => handleParagraphClick(i),
           },
-            h('div', { className: 'kg-para-badges' },
-              h('button', { type: 'button', className: 'kg-para-num', title: '定位 P' + (i + 1) + ' 对应节点', 'aria-label': '定位 P' + (i + 1) + ' 对应节点' }, 'P' + (i + 1)),
-              badges.map((t) => h('span', { key: t, className: 'kg-para-tag' },
-                h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t]?.label || t),
-                h('button', { type: 'button', className: 'kg-para-tag-remove',
-                  title: '移除本段“' + (TYPE_META[t]?.label || t) + '”标签及对应节点，保留原文',
-                  'aria-label': '移除 P' + (i + 1) + ' 的' + (TYPE_META[t]?.label || t) + '标签和对应节点',
-                  disabled: removingParagraphType || Boolean(taskId) || phase === 'extracting' || graphWindowLoading || Boolean(documentLoading) || !documentIdOfGraph(resultView.graph),
-                  onClick: (event) => { event.stopPropagation(); handleRemoveParagraphType(i, t) },
-                }, h('span', { 'aria-hidden': true }, '×'))))),
-            h('p', null, p.text),
-            ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).includes(i)).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
+            h('div', { className: table ? 'kg-source-refs' : 'kg-para-badges' }, indices.map((index) => paragraphRef(index, Boolean(table)))),
+            table
+              ? h(React.Fragment, null,
+                  table.prefix ? h('p', null, table.prefix) : null,
+                  h('div', { className: 'kg-source-table-label' }, table.caption || '原文表格 · P' + (table.first + 1) + (table.last > table.first ? '–P' + (table.last + 1) : '')),
+                  h('div', { className: 'kg-source-table-scroll' },
+                    h('table', { className: 'kg-source-table', style: { minWidth: Math.min(Math.max(table.rows[0].length * 130, 260), 900) + 'px' } },
+                      h('thead', null, h('tr', null, table.rows[0].map((cell, column) => h('th', { key: column, scope: 'col', colSpan: cell.colspan, rowSpan: cell.rowspan }, cell.text)))),
+                      h('tbody', null, table.rows.slice(1).map((row, rowIndex) => h('tr', { key: rowIndex }, row.map((cell, column) => h('td', { key: column, colSpan: cell.colspan, rowSpan: cell.rowspan }, cell.text))))))),
+                  table.suffix ? h('p', null, table.suffix) : null)
+              : h('p', null, p.text),
+            ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).some((index) => indices.includes(index))).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
           )
         }
 

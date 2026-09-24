@@ -1201,6 +1201,39 @@
         return out
       }
 
+      function sourceTableGroups(source, paragraphs) {
+        const byParagraph = new Map()
+        // Paragraphs are evidence anchors, so only change their presentation.
+        // The complete source span is parsed before any row is rendered.
+        for (const match of source.matchAll(/<table\b[^>]*>[\s\S]*?<\/table\s*>/gi)) {
+          if (match[0].length > 100000) continue
+          const start = match.index
+          const end = start + match[0].length
+          const first = paragraphs.findIndex((p) => p.start < end && p.end > start)
+          if (first < 0 || byParagraph.has(first)) continue
+          let last = first
+          while (last + 1 < paragraphs.length && paragraphs[last + 1].start < end) last++
+          if (paragraphs[first].start > start || paragraphs[last].end < end) continue
+          if (Array.from({ length: last - first + 1 }, (_, n) => first + n).some((i) => byParagraph.has(i))) continue
+          const parsed = new DOMParser().parseFromString(match[0], 'text/html').querySelector('table')
+          if (!parsed) continue
+          const rows = Array.from(parsed.rows, (row) => Array.from(row.cells, (cell) => ({
+            text: cell.textContent.trim(),
+            colspan: Math.min(20, Math.max(1, cell.colSpan)),
+            rowspan: Math.min(20, Math.max(1, cell.rowSpan)),
+          }))).filter((row) => row.length > 0)
+          if (rows.length === 0) continue
+          const group = {
+            first, last, rows,
+            caption: parsed.caption?.textContent.trim() || '',
+            prefix: source.slice(paragraphs[first].start, start).trim(),
+            suffix: source.slice(end, paragraphs[last].end).trim(),
+          }
+          for (let i = first; i <= last; i++) byParagraph.set(i, group)
+        }
+        return byParagraph
+      }
+
       // Build the view model: anchor every node to a paragraph offset and work
       // out each paragraph's node types (for badges) and node ids (for focus).
       /**
