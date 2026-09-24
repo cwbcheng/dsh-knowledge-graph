@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,7 +12,12 @@ const dir = mkdtempSync(join(tmpdir(), 'kg-continuous-live-'))
 process.env.DSH_KG_DB = join(dir, 'fixture.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 const paragraphs = Array.from({ length: 137 }, (_, i) => '独立观察记录 ' + i + '，仅描述此项观察，不蕴含其他命题。')
-store.saveGraph({ source: { id: 'fixture-source', documentId: 'fixture-document', title: '持续补全测试资料' }, summary: '独立观察记录', warnings: [],
+const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64')
+const fixtureImage = { id: 'fixture-figure', caption: '测试插图', paragraphs: [0],
+  attachment: { attachmentId: 'sha256:' + createHash('sha256').update(imageBytes).digest('hex'), mediaType: 'image/png', bytes: imageBytes.length } }
+const source = { id: 'fixture-source', documentId: 'fixture-document', title: '持续补全测试资料',
+  ...(process.env.FIXTURE_IMAGE === '1' ? { visualSource: { kind: 'markdown-assets', images: [fixtureImage] } } : {}) }
+store.saveGraph({ source, summary: '独立观察记录', warnings: [],
   nodes: paragraphs.map((text, i) => ({ id: 'n' + i, type: 'claim', text, quote: text, paragraph: i, evidence: [{ paragraph: i, quote: text }] })), edges: [] },
 { sourceText: paragraphs.join('\n\n') })
 if (process.env.FIXTURE_RUN_DELETE === '1') {
@@ -23,6 +29,7 @@ let handler, calls = 0
 const cleanups = []
 apply({ get(name) {
   if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
+  if (name === 'attachments' && process.env.FIXTURE_IMAGE === '1') return { async readImage() { return { data: imageBytes, ref: { mediaType: 'image/png' } } } }
   return name === 'kgExtractor' ? { async weaveRelations() {
     calls++
     await new Promise(resolve => setTimeout(resolve, Number(process.env.FIXTURE_WEAVE_DELAY_MS) || 2500))
@@ -44,6 +51,11 @@ const server = createServer((req, res) => {
   res.setHeader('cache-control', 'no-store')
   if (path.startsWith('/api/dsh-knowledge-graph/')) { Promise.resolve(handler(req, res)).catch(error => { console.error(error); res.writeHead(500).end() }); return }
   if (path === '/fixture-state') { const doc = store.getDocument('fixture-document'); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ calls, revision: doc.revision, coverage: doc.generation?.relationDiscovery?.searchedTargets || 0 })); return }
+  if (path === '/fixture-advance' && process.env.FIXTURE_IMAGE === '1') {
+    const doc = store.getDocument('fixture-document')
+    store.saveGraph({ ...doc, summary: doc.summary + ' updated' }, { sourceText: doc.sourceText, expectedRevision: doc.revision })
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ revision: store.getDocument('fixture-document').revision })); return
+  }
   if (path === '/') {
     res.setHeader('content-type', 'text/html; charset=utf-8')
     const narrow = new URL(req.url, 'http://localhost').searchParams.has('narrow')

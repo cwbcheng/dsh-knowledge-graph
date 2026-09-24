@@ -6833,12 +6833,28 @@ export default function clientPlugin() {
           previewUrl: URL.createObjectURL(file),
         }
       }
-      function base64ImageUrlClient(mediaType, data) {
-        try {
-          const binary = atob(data)
-          const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
-          return URL.createObjectURL(new Blob([bytes], { type: mediaType }))
-        } catch (error) { return '' }
+      async function loadCanonicalImageUrlClient(image, documentId, revision, requestImage) {
+        const attachmentId = image?.attachment?.attachmentId
+        const verifyDigest = typeof attachmentId === 'string' && /^sha256:[0-9a-f]{64}$/i.test(attachmentId)
+          && typeof globalThis.crypto?.subtle?.digest === 'function'
+        const response = await requestImage({
+          documentId, imageId: image.id,
+          ...(!verifyDigest && Number.isInteger(revision) ? { expectedRevision: revision } : {}),
+        })
+        if (!response || response.error) throw new Error(response?.error?.message || '图片读取失败')
+        if (response.documentId !== documentId || response.imageId !== image.id || typeof response.data !== 'string') {
+          throw new Error('图片响应与当前资料不一致')
+        }
+        let bytes
+        try { bytes = Uint8Array.from(atob(response.data), char => char.charCodeAt(0)) }
+        catch (error) { throw new Error('图片数据无效') }
+        if (bytes.length === 0) throw new Error('图片数据无效')
+        if (verifyDigest) {
+          const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
+          const actualId = 'sha256:' + Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+          if (actualId !== attachmentId.toLowerCase()) throw new Error('图片内容已更新，请刷新知识图后重试')
+        }
+        return URL.createObjectURL(new Blob([bytes], { type: response.mediaType }))
       }
 
       // ---- manual model selection (拆分 / 追加 / 审校 / 质疑 / 外部核查共用) ----
@@ -6973,6 +6989,8 @@ export default function clientPlugin() {
         const [url, setUrl] = useState('')
         const [error, setError] = useState('')
         const [retry, setRetry] = useState(0)
+        const attachmentId = image?.attachment?.attachmentId || ''
+        const digestPinned = /^sha256:[0-9a-f]{64}$/i.test(attachmentId) && typeof globalThis.crypto?.subtle?.digest === 'function'
         useEffect(() => {
           if (large || !ref.current) return
           const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { setVisible(true); observer.disconnect() } }, { rootMargin: '200px' })
@@ -6983,15 +7001,13 @@ export default function clientPlugin() {
           if (!visible) return
           let disposed = false, objectUrl = ''
           setError(''); setUrl('')
-          host.call('image-load', { documentId, imageId: image.id, expectedRevision: revision }).then(response => {
-            if (disposed) return
-            if (!response || response.error) throw new Error(response?.error?.message || '图片读取失败')
-            objectUrl = base64ImageUrlClient(response.mediaType, response.data)
-            if (!objectUrl) throw new Error('图片数据无效')
-            setUrl(objectUrl)
+          loadCanonicalImageUrlClient(image, documentId, revision, args => host.call('image-load', args)).then(nextUrl => {
+            if (disposed) { URL.revokeObjectURL(nextUrl); return }
+            objectUrl = nextUrl
+            setUrl(nextUrl)
           }).catch(error => { if (!disposed) setError(error.message) })
           return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-        }, [visible, documentId, revision, image.id, retry])
+        }, [visible, documentId, image.id, digestPinned ? attachmentId : revision, retry])
         return h('figure', { ref, className: 'kg-book-figure' + (large ? ' large' : ''), style: { margin: '8px 0', maxWidth: '100%' } },
           error ? h('button', { type: 'button', onClick: e => { e.stopPropagation(); setRetry(retry + 1) } }, error + ' · 重试')
             : h(large ? 'div' : 'button', { type: large ? undefined : 'button', onClick: large ? undefined : e => { e.stopPropagation(); onOpen(image) }, title: '查看原图', style: { border: 0, padding: 0, background: 'transparent', width: '100%', minHeight: large ? 120 : 110, cursor: large ? 'default' : 'zoom-in' } },
@@ -7323,10 +7339,7 @@ export default function clientPlugin() {
             for (const image of images) {
               if (disposed || !image || !image.id) break
               try {
-                const response = await host.call('image-load', { documentId, imageId: image.id, ...(Number.isInteger(revision) ? { expectedRevision: revision } : {}) })
-                if (!response || response.error || !response.data || !response.mediaType) continue
-                const url = base64ImageUrlClient(response.mediaType, response.data)
-                if (!url) continue
+                const url = await loadCanonicalImageUrlClient(image, documentId, revision, args => host.call('image-load', args))
                 if (disposed) { URL.revokeObjectURL(url); break }
                 next[image.id] = url
               } catch (error) { /* transcript remains usable without preview bytes */ }
