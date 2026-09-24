@@ -1891,14 +1891,55 @@ export default function clientPlugin() {
         return out
       }
 
+      function sourceCodeRanges(source) {
+        const ranges = []
+        let fence = null
+        let inlineStart = -1
+        let inlineWidth = 0
+        let offset = 0
+        for (const rawLine of source.split(NL)) {
+          const line = rawLine.replace(/\r$/, '')
+          if (!line.trim()) { inlineStart = -1; inlineWidth = 0 }
+          const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+          if (fence) {
+            ranges.push([offset, offset + rawLine.length])
+            const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+            if (close && close[1][0] === fence.char && close[1].length >= fence.width) fence = null
+          } else if (marker) {
+            fence = { char: marker[1][0], width: marker[1].length }
+            ranges.push([offset, offset + rawLine.length])
+          } else if (/^(?: {4}|\t)/.test(line)) {
+            ranges.push([offset, offset + rawLine.length])
+          } else {
+            for (const ticks of line.matchAll(/`+/g)) {
+              const escapes = /\\+$/.exec(line.slice(0, ticks.index))?.[0].length || 0
+              if (escapes % 2 === 1) continue
+              const position = offset + ticks.index
+              if (inlineStart < 0) {
+                inlineStart = position
+                inlineWidth = ticks[0].length
+              } else if (ticks[0].length === inlineWidth) {
+                ranges.push([inlineStart, position + ticks[0].length])
+                inlineStart = -1
+                inlineWidth = 0
+              }
+            }
+          }
+          offset += rawLine.length + 1
+        }
+        return ranges
+      }
+
       function sourceTableGroups(source, paragraphs) {
         const byParagraph = new Map()
+        const codeRanges = sourceCodeRanges(source)
         // Paragraphs are evidence anchors, so only change their presentation.
         // The complete source span is parsed before any row is rendered.
         for (const match of source.matchAll(/<table\b[^>]*>[\s\S]*?<\/table\s*>/gi)) {
           if (match[0].length > 100000) continue
           const start = match.index
           const end = start + match[0].length
+          if (codeRanges.some(([from, to]) => from <= start && start < to)) continue
           const first = paragraphs.findIndex((p) => p.start < end && p.end > start)
           if (first < 0 || byParagraph.has(first)) continue
           let last = first
@@ -7210,6 +7251,7 @@ export default function clientPlugin() {
         }
         const graphRevisionRef = useRef(0)
         const graphCommitQueueRef = useRef(Promise.resolve())
+        const graphCommitEpochRef = useRef(0)
         // ---- 追加拆分（incremental merge）----
         const [fullText, setFullText] = useState('') // accumulated source across appends
         const [currentHistoryId, setCurrentHistoryId] = useState(null)
@@ -8285,8 +8327,10 @@ export default function clientPlugin() {
           }
           const restoreAfterCommitFailure = (error) => {
             if (Number.isSafeInteger(pinnedRevision) && currentResultRef.current !== resultView) return
+            if (documentIdOfGraph(currentResultRef.current?.graph) !== documentId) return
             const details = error && error.details && typeof error.details === 'object' ? error.details : error
-            setError({ ...(details && typeof details === 'object' ? details : {}), message: describeCommitError(error) })
+            setError({ ...(details && typeof details === 'object' ? details : {}),
+              message: describeCommitError(error) + '；后续排队的编辑不会提交，请核对当前知识图' })
             if (details && details.code === 'revision_conflict') {
               toastStore.show('知识图版本已变化，已恢复未提交状态，请重新载入后再编辑')
             } else if (details && details.code === 'invariant_violation') {
@@ -8303,7 +8347,12 @@ export default function clientPlugin() {
               setFactReport(previousFactReport)
             }
           }
+          const commitEpoch = graphCommitEpochRef.current
           const queued = graphCommitQueueRef.current.catch(() => {}).then(async () => {
+            if (commitEpoch !== graphCommitEpochRef.current) {
+              graphSemanticOperations.delete(g)
+              return null
+            }
             const expectedRevision = Number.isSafeInteger(pinnedRevision) ? pinnedRevision : graphRevisionRef.current
             const response = await host.call('graph-commit', {
               documentId,
@@ -8321,6 +8370,7 @@ export default function clientPlugin() {
             if (!response || response.documentId !== documentId || !Number.isSafeInteger(response.revision) || !response.graph) {
               throw new Error('保存结果未确认，请重新载入知识图后核对')
             }
+            if (documentIdOfGraph(currentResultRef.current?.graph) !== documentId) return response
             if (Number.isSafeInteger(pinnedRevision) && currentResultRef.current !== resultView) return response
             if (response && Number.isInteger(response.revision)) graphRevisionRef.current = response.revision
             graphSemanticOperations.delete(g)
@@ -8333,6 +8383,7 @@ export default function clientPlugin() {
             rememberLocalGraph()
             return response
           }).catch((error) => {
+            graphCommitEpochRef.current += 1
             restoreAfterCommitFailure(error)
             return null
           })

@@ -19,6 +19,16 @@ try {
   if (expanded.edges.length !== 1) throw new Error('Expanded window lost its newly visible relationship')
   const last = store.getDocumentWindow('window-2001', { limit: 2000, offset: 2000 })
   if (last.nodes.length !== 1 || last.nodes[0].id !== 'w2000') throw new Error('2000-node tail window failed')
+  const edgeWindowNodes = Array.from({ length: 152 }, (_, i) => ({ id: 's' + String(i).padStart(3, '0'), text: 'edge window ' + i, type: 'fact', paragraph: i }))
+  const offscreenEdges = Array.from({ length: 130 }, (_, i) => ({ fromNodeId: 's000', toNodeId: 's' + String(i + 20).padStart(3, '0'), relation: 'supports' }))
+  store.saveGraph({ source: { documentId: 'window-edge-starvation', id: 'edge-source' }, nodes: edgeWindowNodes,
+    edges: [...offscreenEdges, { fromNodeId: 's019', toNodeId: 's001', relation: 'supports' }] }, { sourceText: 'edge window fixture' })
+  for (const options of [{ limit: 20 }, { limit: 20, query: 'edge window' }]) {
+    const window = store.getDocumentWindow('window-edge-starvation', options)
+    if (window.edges.length !== 1 || window.edges[0].fromNodeId !== 's019' || window.edges[0].toNodeId !== 's001') {
+      throw new Error('offscreen edges starved an internal window relation: ' + JSON.stringify({ options, edges: window.edges }))
+    }
+  }
   const graph = {
     summary: '书级 fixture',
     traceText: 'trace persistence smoke',

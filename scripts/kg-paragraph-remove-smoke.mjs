@@ -142,7 +142,7 @@ function persistHarness(response, overrides = {}) {
   const env = {
     ...helpers, resultView: view, currentResultRef: { current: view }, fullText: sourceText, title: 'test', currentHistoryId: 'test',
     semanticOperationsOf: () => [], graphSemanticOperations: new WeakMap(),
-    graphRevisionRef: { current: 12 }, graphCommitQueueRef: { current: Promise.resolve() },
+    graphRevisionRef: { current: 12 }, graphCommitQueueRef: { current: Promise.resolve() }, graphCommitEpochRef: { current: 0 },
     localStorage: { setItem: (...args) => saved.push(args) }, LS_RESULT: 'test-result', setHistory() {}, appendHistory: value => value,
     setError: e => errors.push(e), setResultView: value => views.push(value), setVerification() {}, setFactReport() {}, toastStore: { show() {} },
     host: { call: async (method, body) => { requests.push(body); return response } }, ...overrides,
