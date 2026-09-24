@@ -69,7 +69,7 @@
     "test:kg-security": "node scripts/kg-security-smoke.mjs",
     "test:kg-verification": "node scripts/kg-verification-smoke.mjs && node scripts/kg-question-retrieval-smoke.mjs && node scripts/kg-verification-progress-smoke.mjs && node scripts/kg-verification-speed-smoke.mjs && node scripts/kg-verification-transport-smoke.mjs && node scripts/kg-verification-pause-smoke.mjs && node scripts/kg-verification-recovery-ui-smoke.mjs && node scripts/kg-question-feedback-ui-smoke.mjs",
     "test:kg-export": "node scripts/kg-export-smoke.mjs",
-    "test:kg-large": "node scripts/kg-large-graph-smoke.mjs",
+    "test:kg-large": "node scripts/kg-large-graph-smoke.mjs && node scripts/kg-all-nodes-ui-smoke.mjs",
     "test:kg-identity": "node scripts/kg-identity-smoke.mjs && node scripts/kg-native-hash-smoke.mjs",
     "test:kg-append-revision": "node scripts/kg-append-revision-smoke.mjs",
     "test:kg-append-recovery": "node scripts/kg-append-recovery-smoke.mjs && node scripts/kg-run-delete-smoke.mjs",

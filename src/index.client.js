@@ -118,6 +118,16 @@ export default function clientPlugin() {
 .kg-window-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 10px; padding: 8px 10px; border: 1px solid var(--kg-border); border-radius: 10px; background: var(--kg-panel); font-size: 12px; color: var(--kg-text-dim); }
 .kg-window-nav strong { color: var(--kg-text); font-weight: 600; }
 .kg-window-nav .kg-secondary { padding: 4px 9px; font-size: 11.5px; }
+.kg-all-nodes-dialog { width: min(1500px, 96vw); max-width: 96vw; max-height: 94vh; box-sizing: border-box; padding: 12px; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-edge-label-bg); color: var(--kg-text); overflow: auto; }
+.kg-all-nodes-dialog::backdrop { background: rgba(15, 23, 42, .58); }
+.kg-all-nodes-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.kg-all-nodes-head strong { font-size: 16px; }
+.kg-all-nodes-head button { flex: none; }
+.kg-all-nodes-search { margin: 8px 0; }
+.kg-all-nodes-search input { width: 100%; min-height: 34px; box-sizing: border-box; }
+.kg-all-nodes-results { max-height: 160px; overflow: auto; border: 1px solid var(--kg-border); border-radius: 6px; }
+.kg-all-nodes-results button { display: block; width: 100%; padding: 7px 9px; border: 0; border-bottom: 1px solid var(--kg-border); border-radius: 0; background: transparent; color: var(--kg-text); text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.kg-all-nodes-results button:hover, .kg-all-nodes-results button:focus-visible { background: rgba(59,130,246,.12); }
 .kg-window-page { width: 58px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; text-align: center; }
 .kg-window-query { min-width: 160px; flex: 1 1 220px; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 8px; padding: 5px 8px; background: transparent; color: var(--kg-text); font: inherit; font-size: 12px; }
 .kg-window-query:focus, .kg-window-page:focus { outline: 2px solid rgba(59,130,246,0.35); border-color: #3b82f6; }
@@ -4220,8 +4230,26 @@ export default function clientPlugin() {
         return { pos }
       }
 
+      function layoutOverview(nodes, sizes) {
+        const pos = new Map()
+        if (nodes.length === 0) return { pos }
+        let width = 0, height = 0
+        for (const node of nodes) {
+          const size = sizes.get(node.id)
+          if (size) { width = Math.max(width, size.w); height = Math.max(height, size.h) }
+        }
+        const stepX = width + 24, stepY = height + 24
+        const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * 1.8 * stepY / stepX)))
+        nodes.forEach((node, index) => pos.set(node.id, {
+          x: (index % columns) * stepX,
+          y: Math.floor(index / columns) * stepY,
+        }))
+        return { pos }
+      }
+
       function layoutGraph(nodes, edges, sizes, mode, onProgress) {
         if (mode === 'neighborhood') return layoutNeighborhood(nodes, sizes)
+        if (mode === 'overview') return layoutOverview(nodes, sizes)
         if (mode === 'circular') {
           const pos = layoutCircular(nodes, edges, sizes)
           posOf.clear()
@@ -4311,10 +4339,10 @@ export default function clientPlugin() {
         return { x1, y1, x2, y2, cx, cy, ex: (x2 - x1) / chordLen, ey: (y2 - y1) / chordLen }
       }
       const GRAPH_MIN_SCALE = 0.3
-      function zoomAround(v, factor, px, py) {
+      function zoomAround(v, factor, px, py, minScale = GRAPH_MIN_SCALE) {
         const wx = (px - v.tx) / v.k
         const wy = (py - v.ty) / v.k
-        const k2 = clamp(v.k * factor, GRAPH_MIN_SCALE, 2)
+        const k2 = clamp(v.k * factor, minScale, 2)
         return { k: k2, tx: px - wx * k2, ty: py - wy * k2 }
       }
 
@@ -4391,7 +4419,7 @@ export default function clientPlugin() {
         const functions = [clamp, intersectDist, bezierGeometry, fanRankOf, buildFanRanks,
           layoutForce, layoutCircular, layoutRadial, layoutLayered, resolveLayeredOverlaps,
           packDisconnectedComponents, layoutLayeredComponents, resolveNodeOverlaps,
-          resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutNeighborhood, layoutGraph]
+          resolveAngleOverlaps, applyEdgeNodeRepulsion, bezierSegmentsOf, layoutNeighborhood, layoutOverview, layoutGraph]
         return [D3_TIMER_SRC, D3_DISPATCH_SRC, D3_QUADTREE_SRC, D3_FORCE_SRC,
           'const d3force = globalThis.d3; const fanRank = new Map(); const posOf = new Map();',
           'const LAYER_Y_GAP=' + LAYER_Y_GAP + ',LAYER_X_GAP=' + LAYER_X_GAP + ',LAYER_COL_GAP=' + LAYER_COL_GAP + ',LAYER_MAX_ROW_WIDTH=' + LAYER_MAX_ROW_WIDTH + ';',
@@ -4705,6 +4733,57 @@ export default function clientPlugin() {
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭更新提示', onClick: () => setNotice(null) }, '×')) : null)
       }
 
+      function AllNodeSearch({ nodes, onFocus }) {
+        const [query, setQuery] = useState('')
+        const term = query.trim().toLocaleLowerCase()
+        const matches = useMemo(() => term ? nodes.filter(node => [node.id, node.text, node.type, TYPE_META[node.type]?.label, node.sectionTitle]
+          .some(value => String(value || '').toLocaleLowerCase().includes(term))) : [], [nodes, term])
+        return h('div', { className: 'kg-all-nodes-search' },
+          h('input', { type: 'search', value: query, 'aria-label': '查找全部节点', placeholder: '查找节点 ID、内容或类型',
+            onChange: event => setQuery(event.target.value) }),
+          term ? h('div', { className: 'kg-all-nodes-results', 'aria-label': '节点匹配结果' },
+            matches.length ? matches.slice(0, 30).map(node => h('button', { key: node.id, type: 'button',
+              onClick: () => onFocus(node.id) }, node.id + ' · ' + String(node.text || '').slice(0, 100)))
+              : h('p', { className: 'kg-hint', style: { margin: 8 } }, '没有匹配的节点'),
+            matches.length > 30 ? h('p', { className: 'kg-hint', style: { margin: 8 } }, '匹配 ' + matches.length + ' 个节点，请缩小查询范围') : null)
+            : null)
+      }
+
+      function AllNodesDialog({ graph, sourceText, title, ctx, onClose, onLocate, loadNeighborhood }) {
+        const [selectedNodeId, setSelectedNodeId] = useState(null)
+        const [selectedEdgeId, setSelectedEdgeId] = useState(null)
+        const [focusReq, setFocusReq] = useState({ nodeId: null, seq: 0 })
+        const anchors = useMemo(() => {
+          const paragraphs = splitParagraphs(sourceText || '')
+          const offsets = {}
+          for (const node of graph.nodes) {
+            offsets[node.id] = Number.isInteger(node.paragraph) ? paragraphs[node.paragraph]?.start ?? null : null
+          }
+          return offsets
+        }, [graph, sourceText])
+        const focusNode = id => {
+          setSelectedNodeId(id)
+          setSelectedEdgeId(null)
+          setFocusReq(value => ({ nodeId: id, seq: value.seq + 1 }))
+        }
+        const height = Math.max(260, Math.min(760, window.innerHeight - 200))
+        return h('dialog', { className: 'kg-all-nodes-dialog',
+          ref: element => { if (element && !element.open) element.showModal() },
+          onCancel: event => { event.preventDefault(); onClose() },
+          'aria-label': '全部节点' },
+          h('div', { className: 'kg-all-nodes-head' },
+            h('strong', null, '全部节点 · ' + graph.nodes.length + ' 节点 · ' + graph.edges.length + ' 关系'),
+            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '关闭全部节点', title: '返回工作窗口', onClick: onClose }, '×')),
+          h(AllNodeSearch, { nodes: graph.nodes, onFocus: focusNode }),
+          h(GraphViewer, { nodes: graph.nodes, edges: graph.edges, anchors,
+            documentId: documentIdOfGraph(graph), revision: graph.revision ?? graph.source?.revision,
+            sourceText, loadNeighborhood, selectedNodeId, selectedEdgeId, focusReq,
+            onSelectNode: id => { setSelectedNodeId(id); setSelectedEdgeId(null) },
+            onSelectEdge: index => { setSelectedEdgeId(index); setSelectedNodeId(null) },
+            onLocateNode: onLocate, ctx, height, layoutMode: 'overview', issueReport: null, exportTitle: title,
+          }))
+      }
+
       function GraphCanvas(props) {
         const { nodes, edges, layoutMode, height, loading } = props
         const [state, setState] = useState(null)
@@ -4743,14 +4822,14 @@ export default function clientPlugin() {
         })
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, onLocateNode, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
           return () => controller.abort()
         }, [prepared, onReady])
         const containerRef = useRef(null)
-        const [view, commitView] = useState({ k: 1, tx: 0, ty: 0 })
+        const [view, commitView] = useState({ k: layoutMode === 'overview' ? 0.02 : 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)
         if (!viewScheduler.current) viewScheduler.current = createGraphViewScheduler(view, commitView, requestAnimationFrame, cancelAnimationFrame)
         const setView = useCallback((next) => { if (viewScheduler.current) viewScheduler.current.set(next) }, [])
@@ -4772,6 +4851,8 @@ export default function clientPlugin() {
         if (!markerIdRef.current) markerIdRef.current = 'kg-arrow-' + Math.random().toString(36).slice(2, 9)
 
         const { sizes, layout, bbox, layeredEdgeGeometry } = prepared
+        const overview = layoutMode === 'overview'
+        const minScale = overview ? 0.02 : GRAPH_MIN_SCALE
         useEffect(() => {
           if (layoutMode !== 'neighborhood' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
           const animations = [], old = transitionFrom?.layout.pos, oldCenter = old?.get(nodes[0]?.id)
@@ -4794,6 +4875,20 @@ export default function clientPlugin() {
           }
           return degree
         }, [nodes, edges])
+        const visibleOverviewIds = useMemo(() => {
+          if (!overview) return null
+          const el = containerRef.current
+          if (!el || !el.clientWidth || !el.clientHeight) return new Set(nodes.map(node => node.id))
+          const visible = new Set()
+          for (const node of nodes) {
+            const point = layout.pos.get(node.id), size = sizes.get(node.id)
+            if (!point || !size) continue
+            const x = point.x * view.k + view.tx, y = point.y * view.k + view.ty
+            const margin = Math.max(size.w, size.h) * view.k / 2 + 20
+            if (x >= -margin && x <= el.clientWidth + margin && y >= -margin && y <= el.clientHeight + margin) visible.add(node.id)
+          }
+          return visible
+        }, [overview, nodes, layout, sizes, view.k, view.tx, view.ty])
 
         // Selection focus: selecting a node highlights it, its neighbours and
         // its incident edges; selecting an edge highlights it and its two
@@ -4889,9 +4984,9 @@ export default function clientPlugin() {
           const cw = el.clientWidth
           const ch = el.clientHeight
           if (cw <= 0 || ch <= 0) return
-          const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), GRAPH_MIN_SCALE, 1)
+          const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), minScale, 1)
           setView({ k, tx: cw / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cx * k), ty: ch / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cy * k) })
-        }, [bbox])
+        }, [bbox, layoutMode, minScale])
 
         useEffect(() => { fitView() }, [fitView])
 
@@ -4940,7 +5035,11 @@ export default function clientPlugin() {
           if (!el || !p) return
           const cw = el.clientWidth
           const ch = el.clientHeight
-          setView((v) => ({ ...v, tx: cw / 2 - p.x * v.k, ty: ch / 2 - p.y * v.k }))
+          setView((v) => {
+            const k = overview ? Math.max(v.k, 0.7) : v.k
+            return { ...v, k, tx: cw / 2 - p.x * k, ty: ch / 2 - p.y * k }
+          })
+          if (overview) setDetail(nodes.find(node => node.id === focusReq.nodeId) || null)
           setFlashId(focusReq.nodeId)
           return ctx.timeout(() => setFlashId(null), 2000)
         }, [focusReq.seq])
@@ -4952,11 +5051,11 @@ export default function clientPlugin() {
             if (!e.ctrlKey && !e.metaKey) return
             e.preventDefault()
             const rect = el.getBoundingClientRect()
-            setView((v) => zoomAround(v, e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top))
+            setView((v) => zoomAround(v, e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top, minScale))
           }
           el.addEventListener('wheel', onWheel, { passive: false })
           return () => el.removeEventListener('wheel', onWheel)
-        }, [])
+        }, [minScale])
 
         useEffect(() => () => {
           if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
@@ -5024,12 +5123,12 @@ export default function clientPlugin() {
         const zoomBy = (f) => {
           const el = containerRef.current
           if (!el) return
-          setView((v) => zoomAround(v, 1 + f, el.clientWidth / 2, el.clientHeight / 2))
+          setView((v) => zoomAround(v, 1 + f, el.clientWidth / 2, el.clientHeight / 2, minScale))
         }
         const zoomReset = () => {
           const el = containerRef.current
           if (!el) return
-          setView((v) => zoomAround(v, 1 / v.k, el.clientWidth / 2, el.clientHeight / 2))
+          setView((v) => zoomAround(v, 1 / v.k, el.clientWidth / 2, el.clientHeight / 2, minScale))
         }
         const exportImage = async () => {
           try {
@@ -5092,6 +5191,7 @@ export default function clientPlugin() {
           return { parallelLeaders, parallelGroup, edgeIndexes }
         }, [edges])
         const edgeEls = useMemo(() => (edges || []).map((edge, i) => {
+          if (overview && !related.edgeIdx.has(i)) return null
           const a = layout.pos.get(edge.fromNodeId)
           const b = layout.pos.get(edge.toNodeId)
           const sa = sizes.get(edge.fromNodeId)
@@ -5209,7 +5309,7 @@ export default function clientPlugin() {
             lblX = bx - geometry.ey * 11
             lblY = by + geometry.ex * 11
           }
-          if (layoutMode === 'neighborhood' && edges.length > 12) labelHidden = true
+          if ((layoutMode === 'neighborhood' && edges.length > 12) || overview) labelHidden = true
           return h(GraphEdgeInteraction, { key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i, render: (hover, interaction) => h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: 'button', tabIndex: 0,
@@ -5286,11 +5386,12 @@ export default function clientPlugin() {
               )
             })() : null,
           ) })
-        }), [edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, focus, related, issueMaps, layoutMode, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
+        }), [edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
 
         // Selection changes borders/opacity, not thousands of text/tspan
         // subtrees. Reuse those elements so React also skips reconciling them.
         const nodeLabels = useMemo(() => new Map((nodes || []).map((node) => {
+          if (overview && (view.k < 0.35 || !visibleOverviewIds.has(node.id))) return [node.id, null]
           const p = layout.pos.get(node.id), s = sizes.get(node.id)
           if (!p || !s) return [node.id, null]
           const meta = TYPE_META[node.type] || { label: '未知', color: '#6b7280' }
@@ -5300,9 +5401,10 @@ export default function clientPlugin() {
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
           ]]
-        })), [nodes, layout, sizes, nodeDegree])
+        })), [nodes, layout, sizes, nodeDegree, overview, visibleOverviewIds, view.k])
 
         const nodeEls = useMemo(() => (nodes || []).map((node) => {
+          if (overview && !visibleOverviewIds.has(node.id)) return null
           const p = layout.pos.get(node.id)
           const s = sizes.get(node.id)
           if (!p || !s) return null
@@ -5355,7 +5457,7 @@ export default function clientPlugin() {
               : null,
             nodeLabels.get(node.id),
           )
-        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, startPress, cancelPress, onSelectNode, onOpenNodeIssues])
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -5389,9 +5491,9 @@ export default function clientPlugin() {
                   onClick: () => { setDetail(null); onGather(detail.id) } }, layoutMode === 'neighborhood' ? '以此为中心' : '聚拢相关') : null,
                 h('button', {
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
-                  disabled: anchors[detail.id] == null,
-                  onClick: () => { onSelectNode(detail.id) },
-                }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                  disabled: anchors[detail.id] == null && !onLocateNode,
+                  onClick: () => { if (onLocateNode) onLocateNode(detail.id); else onSelectNode(detail.id) },
+                }, onLocateNode ? '在工作窗口查看' : anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
@@ -5466,14 +5568,15 @@ export default function clientPlugin() {
           h('div', { className: 'kg-graph-toolbar' },
             onGather ? h('button', { type: 'button', title: '聚拢选中节点的关系', 'aria-label': '聚拢选中节点的关系',
               disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
-            layoutMode !== 'neighborhood' ? h('select', {
+            layoutMode !== 'neighborhood' && !overview ? h('select', {
               className: 'kg-layout-select',
               value: layoutMode || 'layered',
               'aria-label': '布局形态',
               title: '切换布局形态',
               onChange: (e) => onLayoutModeChange(e.target.value),
             }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))) : null,
-            h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG'),
+            !overview ? h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG') : null,
+            overview ? h('button', { type: 'button', 'aria-label': '适合画布', title: '显示全部节点', onClick: fitView }, '适合画布') : null,
             h('button', { type: 'button', 'aria-label': '缩小（10%）', onClick: () => zoomBy(-0.1) }, '−'),
             h('button', { type: 'button', 'aria-label': '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),
             h('button', { type: 'button', 'aria-label': '放大（10%）', onClick: () => zoomBy(0.1) }, '+'),
@@ -6941,6 +7044,8 @@ export default function clientPlugin() {
         const [documentLoading, loadGraphDocument] = useGraphDocumentLoading()
         const [graphPageDraft, setGraphPageDraft] = useState('1')
         const [graphQueryDraft, setGraphQueryDraft] = useState('')
+        const [allNodesGraph, setAllNodesGraph] = useState(null)
+        const [allNodesLoading, setAllNodesLoading] = useState(false)
         const [candidateReviews, setCandidateReviews] = useState(() => loadCandidateReviews())
         const [candidateRemote, setCandidateRemote] = useState(null)
         const changeLayoutMode = (id) => {
@@ -7437,6 +7542,48 @@ export default function clientPlugin() {
          const clearGraphQuery = () => {
            setGraphQueryDraft('')
            loadGraphWindow({ page: 1, query: '' })
+         }
+         const openAllNodes = async () => {
+           if (!resultView || allNodesLoading) return
+           const documentId = documentIdOfGraph(resultView.graph)
+           if (!documentId) { setError({ message: '请先保存知识图，再显示全部节点' }); return }
+           setAllNodesLoading(true)
+           setError(null)
+           try {
+             await graphCommitQueueRef.current.catch(() => {})
+             const expectedRevision = graphRevisionRef.current
+             const response = await host.call('document-export', { documentId })
+             if (response?.error || !Array.isArray(response?.graph?.nodes) || !Array.isArray(response.graph.edges)) {
+               throw new Error(response?.error?.message || '读取完整知识图失败')
+             }
+             if (response.documentId !== documentId || response.revision !== expectedRevision) {
+               throw new Error('知识图版本已更新，请重新载入工作窗口后查看全部节点')
+             }
+             setAllNodesGraph(response.graph)
+           } catch (error) {
+             setError({ message: error?.message || '读取全部节点失败' })
+           } finally {
+             setAllNodesLoading(false)
+           }
+         }
+         const locateAllNode = async id => {
+           const graph = allNodesGraph
+           if (!graph) return
+           setAllNodesGraph(null)
+           if (graph.revision !== graphRevisionRef.current) {
+             setError({ message: '知识图版本已更新，请重新载入工作窗口后定位节点' })
+             return
+           }
+           const index = graph.nodes.findIndex(node => node.id === id)
+           const meta = graphViewMetadata(resultView?.graph)
+           if (index < 0 || !meta) return
+           const page = Math.floor(index / meta.nodeLimit) + 1
+           const loaded = await loadGraphWindow({ page, nodeLimit: meta.nodeLimit, query: '' })
+           if (loaded) {
+             setSelectedNodeId(id)
+             setSelectedEdgeId(null)
+             setFocusReq(value => ({ nodeId: id, seq: value.seq + 1 }))
+           }
          }
 
          const resumeLostTask = async () => {
@@ -9161,7 +9308,9 @@ export default function clientPlugin() {
                         onChange: (e) => setGraphQueryDraft(e.target.value),
                         onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runGraphQuery() } },
                       }),
-                      h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || !graphQueryDraft.trim(), onClick: runGraphQuery }, graphWindowLoading ? '加载中…' : '查询子图'))
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || !graphQueryDraft.trim(), onClick: runGraphQuery }, graphWindowLoading ? '加载中…' : '查询子图'),
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || allNodesLoading,
+                        onClick: openAllNodes, 'aria-label': '显示全部节点' }, allNodesLoading ? '正在读取全部节点…' : '显示全部节点'))
                   : null,
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
                 h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，长按节点查看原文摘录。'),
@@ -9351,6 +9500,13 @@ export default function clientPlugin() {
             h(SourceFigure, { image: openFigure, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, large: true }),
             h('button', { type: 'button', className: 'kg-secondary', onClick: () => { const paragraph = openFigure.startParagraph; setOpenFigure(null); setActivePara(paragraph); const element = document.getElementById('kg-para-' + paragraph); if (element) scrollElIntoCenter(element) } }, '定位原文'),
           ) : null,
+          allNodesGraph ? h(AllNodesDialog, { graph: allNodesGraph, sourceText: fullText || resultView?.sourceText || '', title, ctx,
+            onClose: () => setAllNodesGraph(null), onLocate: locateAllNode,
+            loadNeighborhood: async (args, signal) => {
+              signal.throwIfAborted()
+              return host.call('graph-neighborhood', args, { signal })
+            },
+          }) : null,
           error
             ? h('div', { className: 'kg-banner', role: 'alert' },
                 h('span', null, error.message || '出错了，请重试'),

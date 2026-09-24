@@ -24,8 +24,8 @@ const React = {
 const context = { window: { React }, console, requestAnimationFrame: () => 0, cancelAnimationFrame() {},
   document: { createElement: () => ({ getContext: () => ({ measureText: text => ({ width: text.length * 10 }) }) }) } }
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
-runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { GraphScene, GraphEdgeInteraction,'), context)
-const { GraphScene, GraphEdgeInteraction } = context.window.KGViewer
+runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { GraphScene, GraphEdgeInteraction, layoutOverview,'), context)
+const { GraphScene, GraphEdgeInteraction, layoutOverview } = context.window.KGViewer
 const owner = () => ({ slots: [], updates: 0 })
 const render = (component, props, hooks) => { current = hooks; cursor = 0; return component(props) }
 const all = (element, predicate) => {
@@ -103,4 +103,23 @@ assert.equal(all(scene, byClass('kg-node-name'))[20].props.x, 123, 'new layout i
 const newNodes = nodes.map((node, i) => i === 20 ? { ...node, type: 'concept' } : node)
 scene = render(GraphScene, { ...props, nodes: newNodes }, root)
 assert.notEqual(all(scene, byClass('kg-node-name'))[20], labels[20], 'new node metadata invalidates cached text')
-console.log(JSON.stringify({ nodes: count, edges: edges.length, hoverElements, selectionElements, localFocus: true, hiddenLabels: true, parallelSelection: true, cachedTextInvalidation: true }))
+
+const allNodes = Array.from({ length: 5000 }, (_, i) => ({ id: 'full-' + i, type: 'claim', text: 'Node ' + i }))
+const allEdges = allNodes.slice(1).map((node, i) => ({ fromNodeId: node.id, toNodeId: 'full-' + i, relation: 'supports' }))
+const allSizes = new Map(allNodes.map(node => [node.id, { w: 200, h: 120, lines: ['name'] }]))
+const overviewLayout = layoutOverview(allNodes, allSizes)
+assert.equal(overviewLayout.pos.size, allNodes.length, 'the complete overview must position every node')
+assert.equal(new Set([...overviewLayout.pos.values()].map(point => point.x + ':' + point.y)).size, allNodes.length,
+  'large overview positions must not collide')
+const overviewProps = { ...props, nodes: allNodes, edges: allEdges, layoutMode: 'overview',
+  prepared: { sizes: allSizes, layout: overviewLayout, bbox: { w: 20000, h: 12000, cx: 0, cy: 0 },
+    edgeLanes: new Map(), layeredEdgeGeometry: new Map() } }
+let overview = render(GraphScene, overviewProps, owner())
+assert.equal(all(overview, byClass('kg-node')).length, allNodes.length, 'fit view must represent every node')
+assert.equal(all(overview, byClass('kg-node-name')).length, 0, 'fit view must not create thousands of unreadable labels')
+assert.equal(all(overview, element => element.type === GraphEdgeInteraction).length, 0,
+  'overview must not draw the entire relation tangle before a node is selected')
+overview = render(GraphScene, { ...overviewProps, selectedNodeId: 'full-2500' }, owner())
+assert.equal(all(overview, element => element.type === GraphEdgeInteraction).length, 2,
+  'overview selection must expose just the incident relations')
+console.log(JSON.stringify({ nodes: count, edges: edges.length, hoverElements, selectionElements, localFocus: true, hiddenLabels: true, parallelSelection: true, cachedTextInvalidation: true, overviewNodes: allNodes.length }))
