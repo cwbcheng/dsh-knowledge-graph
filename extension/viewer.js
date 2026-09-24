@@ -473,7 +473,7 @@
         const page = Math.min(pageCount, Math.floor(nodeOffset / view.nodeLimit) + 1)
         const visibleNodes = graph && Array.isArray(graph.nodes) ? graph.nodes.length : 0
         return {
-          kind: view.kind === 'query' ? 'query' : 'window',
+          kind: view.kind === 'all' ? 'all' : view.kind === 'query' ? 'query' : 'window',
           query: typeof view.query === 'string' ? view.query : '',
           matchedNodes: Number.isInteger(view.matchedNodes) ? view.matchedNodes : null,
           nodeOffset,
@@ -486,6 +486,38 @@
           endNode: totalNodes > 0 && visibleNodes > 0 ? Math.min(totalNodes, nodeOffset + visibleNodes) : 0,
           visibleNodes,
           truncated: view.truncated === true,
+        }
+      }
+      function asAllNodesGraph(graph) {
+        const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
+        const edges = Array.isArray(graph.edges) ? graph.edges : []
+        return { ...graph, view: {
+          kind: 'all', totalNodes: nodes.length, totalEdges: edges.length,
+          nodeOffset: 0, nodeLimit: Math.max(1, nodes.length), truncated: false,
+        } }
+      }
+      function graphCommitViewPatch(next, baseline) {
+        const edgeKey = (edge) => edge && edge.fromNodeId && edge.toNodeId
+          ? edge.fromNodeId + '>' + edge.toNodeId + ':' + String(edge.relation || '') : ''
+        const previousNodes = Array.isArray(baseline.nodes) ? baseline.nodes : []
+        const previousEdges = Array.isArray(baseline.edges) ? baseline.edges : []
+        if (baseline.view?.kind !== 'all') return {
+          nodes: Array.isArray(next.nodes) ? next.nodes : [], edges: Array.isArray(next.edges) ? next.edges : [],
+          baseNodeIds: previousNodes.map(node => node && node.id).filter(Boolean),
+          baseEdgeKeys: previousEdges.map(edgeKey).filter(Boolean),
+        }
+        // A complete graph can exceed the HTTP commit limit. Merge only the
+        // changed identities against the revision-fenced canonical document.
+        const oldNodes = new Map(previousNodes.map(node => [node.id, node]))
+        const newNodes = new Map((next.nodes || []).map(node => [node.id, node]))
+        const oldEdges = new Map(previousEdges.map(edge => [edgeKey(edge), edge]))
+        const newEdges = new Map((next.edges || []).map(edge => [edgeKey(edge), edge]))
+        const changed = (before, after) => before !== after && JSON.stringify(before) !== JSON.stringify(after)
+        return {
+          nodes: [...newNodes].filter(([id, node]) => !oldNodes.has(id) || changed(oldNodes.get(id), node)).map(([, node]) => node),
+          edges: [...newEdges].filter(([key, edge]) => !oldEdges.has(key) || changed(oldEdges.get(key), edge)).map(([, edge]) => edge),
+          baseNodeIds: [...oldNodes].filter(([id, node]) => !newNodes.has(id) || changed(node, newNodes.get(id))).map(([id]) => id),
+          baseEdgeKeys: [...oldEdges].filter(([key, edge]) => !newEdges.has(key) || changed(edge, newEdges.get(key))).map(([key]) => key),
         }
       }
       function historyMetadata(entry) {
@@ -4081,7 +4113,7 @@
         })
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, onLocateNode, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -4750,9 +4782,9 @@
                   onClick: () => { setDetail(null); onGather(detail.id) } }, layoutMode === 'neighborhood' ? '以此为中心' : '聚拢相关') : null,
                 h('button', {
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
-                  disabled: anchors[detail.id] == null && !onLocateNode,
-                  onClick: () => { if (onLocateNode) onLocateNode(detail.id); else onSelectNode(detail.id) },
-                }, onLocateNode ? '在工作窗口查看' : anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                  disabled: anchors[detail.id] == null,
+                  onClick: () => onSelectNode(detail.id),
+                }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',

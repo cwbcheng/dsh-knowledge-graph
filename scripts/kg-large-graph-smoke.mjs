@@ -126,6 +126,30 @@ const afterTailCommit = await handlers.get('document-export')({ documentId })
 assert(afterTailCommit.graph.nodes.length === 799 && !afterTailCommit.graph.nodes.some((node) => node.id === 'n801'), 'tail-window node deletion did not update the canonical graph')
 assert(!afterTailCommit.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n801'), 'tail-window node deletion left a dangling cross-window edge')
 
+// The all-node workbench sends a changed-identity patch, not the full graph.
+// Prove that a compact off-window edit preserves every untouched identity.
+const editedTail = { ...afterTailCommit.graph.nodes.find((node) => node.id === 'n800'), text: '已修改的末尾节点' }
+const fullViewCommit = await handlers.get('graph-commit')({
+  documentId, expectedRevision: tailCommit.revision,
+  graph: { summary: afterTailCommit.graph.summary, nodes: [editedTail], edges: [] },
+  baseNodeIds: ['n800'], baseEdgeKeys: [],
+})
+assert(fullViewCommit && !fullViewCommit.error, 'compact all-node workbench edit was rejected')
+const afterFullViewCommit = await handlers.get('document-export')({ documentId })
+assert(afterFullViewCommit.graph.nodes.length === 799, 'compact all-node edit deleted untouched nodes')
+assert(afterFullViewCommit.graph.nodes.find((node) => node.id === 'n800')?.text === '已修改的末尾节点',
+  'compact all-node edit did not persist the off-window node')
+const metadataCommit = await handlers.get('graph-commit')({
+  documentId, expectedRevision: fullViewCommit.revision,
+  graph: { summary: afterFullViewCommit.graph.summary, nodes: [], edges: [],
+    verification: { ...(afterFullViewCommit.graph.verification || {}), stale: true } },
+  baseNodeIds: [], baseEdgeKeys: [],
+})
+assert(metadataCommit && !metadataCommit.error, 'metadata-only all-node commit was rejected')
+const afterMetadataCommit = await handlers.get('document-export')({ documentId })
+assert(afterMetadataCommit.graph.nodes.length === 799 && afterMetadataCommit.graph.nodes.find((node) => node.id === 'n800')?.text === '已修改的末尾节点',
+  'metadata-only all-node commit rewrote graph nodes')
+
 const relationStarted = await handlers.get('extract')({ title: 'relation evidence', text: 'A 发生了\n\nB 也发生了' })
 let relationResult = null
 for (let i = 0; i < 100; i++) {

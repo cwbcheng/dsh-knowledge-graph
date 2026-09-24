@@ -12,7 +12,7 @@ import * as persistentHost from '../lib/index.js'
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const sandbox = { window: { React: {} }, console }
-runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { paragraphTypeNodes, removeParagraphType, graphViewMetadata, documentIdOfGraph,'), sandbox)
+runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { paragraphTypeNodes, removeParagraphType, graphViewMetadata, documentIdOfGraph, asAllNodesGraph, graphCommitViewPatch,'), sandbox)
 const helpers = sandbox.window.KGViewer
 const sourceText = '# Sample book\n\n# Contents and learning reuse Learning concept\n\nExample Author reuses Learning concept\n\nLearning concept'
 const documentId = 'document-paragraph-remove-test'
@@ -122,6 +122,19 @@ for (const reloadFails of [false, true]) {
   assert.equal(ui.errors.length, reloadFails ? 1 : 0, 'a failed refresh must still display the acknowledged saved graph')
 }
 
+const allView = helpers.makeView(helpers.asAllNodesGraph(graph), sourceText)
+const allNext = helpers.removeParagraphType(allView, 1, 'memory_material')
+ui = actionHarness({ resultView: allView, currentResultRef: { current: allView },
+  host: { call: async method => method === 'task-active' ? { busy: false }
+    : method === 'document-export' ? { documentId, revision: 8, graph: allNext }
+      : { error: { message: 'unexpected request' } } },
+  loadGraphDocument: async () => { throw new Error('all-node mode must not reload a bounded window') },
+})
+await ui.action(1, 'memory_material')
+assert.equal(ui.views.length, 1)
+assert.equal(ui.views[0].graph.view.kind, 'all', 'deletion must preserve the complete working view')
+assert.deepEqual(ids(ui.views[0].graph.nodes), ['concept', 'author'])
+
 const persistStart = source.indexOf('        const persistGraph = (g, baseGraph, pinnedRevision)')
 assert(persistStart >= 0 && persistStart < actionStart)
 function persistHarness(response, overrides = {}) {
@@ -149,6 +162,21 @@ let commit = persistHarness(ack)
 assert.equal(await commit.persist(next, view.graph, 7), ack)
 assert.equal(commit.requests[0].expectedRevision, 7, 'do not silently rebase the confirmed deletion onto another revision')
 assert.equal(commit.saved.length, 1)
+commit = persistHarness(ack, { resultView: allView, currentResultRef: { current: allView } })
+assert.equal(await commit.persist(allNext, allView.graph, 7), ack)
+assert.deepEqual(Array.from(commit.requests[0].graph.nodes), [], 'complete-view deletion must not upload unchanged nodes')
+assert.deepEqual(Array.from(commit.requests[0].baseNodeIds), ['toc-a', 'toc-b'])
+assert.equal(commit.requests[0].graph.edges.length, 0)
+assert.deepEqual(Array.from(commit.requests[0].baseEdgeKeys), ['toc-a>concept:transfers_from'])
+let editedView = helpers.makeView(helpers.asAllNodesGraph(allNext), sourceText)
+commit = persistHarness(ack, { resultView: allView, currentResultRef: { current: editedView },
+  graphRevisionRef: { current: 7 },
+  setResultView: updater => { editedView = typeof updater === 'function' ? updater(editedView) : updater },
+})
+await commit.persist(allNext, allView.graph)
+assert.equal(editedView.graph.view.kind, 'all')
+assert.equal(editedView.graph.view.totalNodes, 2, 'complete view count must follow a saved deletion')
+assert.equal(editedView.graph.revision, 8, 'complete view must carry the acknowledged revision')
 commit = persistHarness(ack, { currentResultRef: { current: null } })
 await commit.persist(next, view.graph, 7)
 assert.equal(commit.env.graphRevisionRef.current, 12, 'a late reply must not overwrite the newly selected document revision')
