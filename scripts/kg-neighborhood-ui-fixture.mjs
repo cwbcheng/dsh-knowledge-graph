@@ -14,10 +14,15 @@ process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 const nodes = Array.from({ length: 4800 }, (_, i) => ({ id: 'n' + i, type: i % 3 ? 'fact' : 'concept', text: 'Knowledge ' + i, quote: 'Source paragraph ' + i + '.', paragraph: i }))
 const edges = Array.from({ length: 501 }, (_, i) => ({ fromNodeId: 'n0', toNodeId: 'n' + (4299 + i), relation: i % 2 ? 'supports' : 'analogy' }))
-edges.push({ fromNodeId: 'n4299', toNodeId: 'n4799', relation: 'supports' }, { fromNodeId: 'n4799', toNodeId: 'n0', relation: 'contradicts' })
+edges.push({ fromNodeId: 'n4299', toNodeId: 'n4799', relation: 'supports' }, { fromNodeId: 'n4799', toNodeId: 'n0', relation: 'contradicts' },
+  { fromNodeId: 'n4799', toNodeId: 'n100', relation: 'supports' }, { fromNodeId: 'n100', toNodeId: 'n101', relation: 'supports' })
 const graph = { source: { documentId: 'ui-fixture', id: 'ui-fixture', title: 'Neighborhood fixture' }, nodes, edges }
 const sourceText = nodes.map(n => n.quote).join('\n\n')
 store.saveGraph(graph, { sourceText })
+store.saveGraph({ source: { documentId: 'hop-fixture', id: 'hop-fixture' },
+  nodes: ['a', 'b', 'c', 'd'].map((id, paragraph) => ({ id, type: 'fact', text: id, paragraph })),
+  edges: [['a', 'b'], ['b', 'c'], ['c', 'd']].map(([fromNodeId, toNodeId]) => ({ fromNodeId, toNodeId, relation: 'supports' })) },
+{ sourceText: 'hop fixture' })
 const routes = new Map(), ctx = new Context()
 class Timer extends Service {
   constructor(context) { super(context, 'timer'); context.mixin('timer', ['interval']) }
@@ -101,6 +106,14 @@ server.listen(0, '127.0.0.1', async () => {
       offset = page.nextOffset; requests++
     }
     assert.equal(ids.size, 502); assert.equal(keys.size, 503)
+    const expanded = await call({ documentId: 'ui-fixture', expectedRevision: revision, centerId: 'n0', hops: 3, offset: 500, limit: 80 })
+    assert.equal(expanded.neighborsTotal, 503)
+    assert.deepEqual(expanded.nodes.slice(-2).map(node => [node.id, node.gatherDepth]), [['n100', 2], ['n101', 3]])
+    const hopRevision = store.getDocumentRevision('hop-fixture')
+    const threeHops = await call({ documentId: 'hop-fixture', expectedRevision: hopRevision, centerId: 'a', direction: 'out', hops: 3 })
+    assert.deepEqual(threeHops.nodes.map(node => [node.id, node.gatherDepth]), [['a', 0], ['b', 1], ['c', 2], ['d', 3]])
+    assert.equal(threeHops.edges.length, 3)
+    assert.equal((await call({ documentId: 'hop-fixture', expectedRevision: hopRevision, centerId: 'a', hops: 6 })).error.code, 'invalid_input')
     assert.equal((await call({ documentId: 'ui-fixture', expectedRevision: revision - 1, centerId: 'n0' })).error.code, 'revision_conflict')
     assert.equal((await call({ documentId: 'ui-fixture', centerId: 'n0' })).error.code, 'invalid_input')
     assert.equal((await call({ documentId: 'ui-fixture', expectedRevision: revision, centerId: 'missing' })).error.code, 'not_found')

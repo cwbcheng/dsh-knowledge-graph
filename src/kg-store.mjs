@@ -1292,38 +1292,58 @@ export class SqliteKnowledgeStore {
         typeof options.centerId !== 'string' || !options.centerId || options.centerId.length > 160 ||
         !['both', 'in', 'out'].includes(options.direction || 'both') ||
         (options.relation != null && (typeof options.relation !== 'string' || options.relation.length > 160)) ||
+        !Number.isSafeInteger(options.hops ?? 1) || (options.hops ?? 1) < 1 || (options.hops ?? 1) > 5 ||
         !Number.isSafeInteger(options.offset ?? 0) || (options.offset ?? 0) < 0 ||
         !Number.isSafeInteger(options.limit ?? 80) || (options.limit ?? 80) < 1 || (options.limit ?? 80) > 200) {
       return { error: { code: 'invalid_input', message: '无效的关系聚拢查询' } }
     }
     if (options.expectedRevision !== revision) return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后聚拢', currentRevision: revision } }
-    const centerId = options.centerId, direction = options.direction || 'both', relation = options.relation || ''
+    const centerId = options.centerId, direction = options.direction || 'both', relation = options.relation || '', hops = options.hops ?? 1
     const center = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id = ?').get(documentId, centerId)
     if (!center) return { error: { code: 'not_found', message: '中心节点已不存在，请重新载入知识图' } }
-    const incident = this.db.prepare(`SELECT from_node_id, to_node_id, relation FROM graph_edges
-      WHERE document_id = ? AND (from_node_id = ? OR to_node_id = ?)` ).all(documentId, centerId, centerId)
-      .filter(e => direction === 'both' || (direction === 'in' ? e.to_node_id === centerId : e.from_node_id === centerId))
-    const relationTypes = [...new Set(incident.map(e => e.relation))].sort()
-    const neighborRelations = new Map()
-    for (const edge of incident) {
-      if (relation && edge.relation !== relation) continue
-      const id = edge.from_node_id === centerId ? edge.to_node_id : edge.from_node_id
-      if (id === centerId) continue
-      const previous = neighborRelations.get(id)
-      if (previous === undefined || edge.relation < previous) neighborRelations.set(id, edge.relation)
+    // Walk only the current frontier through indexed edge lookups. A one-hop
+    // query stays cheap even when the canonical document is much larger than
+    // the rendering window; text and evidence are hydrated for one page only.
+    const depthById = new Map([[centerId, 0]]), neighborRelations = new Map(), relationTypesSet = new Set()
+    let frontier = [centerId]
+    for (let depth = 1; depth <= hops && frontier.length; depth++) {
+      const next = []
+      const ids = JSON.stringify(frontier)
+      const outSql = `SELECT from_node_id, to_node_id, relation FROM graph_edges
+        WHERE document_id = ? AND from_node_id IN (SELECT value FROM json_each(?))`
+      const inSql = `SELECT from_node_id, to_node_id, relation FROM graph_edges
+        WHERE document_id = ? AND to_node_id IN (SELECT value FROM json_each(?))`
+      const edges = direction === 'out' ? this.db.prepare(outSql).all(documentId, ids)
+        : direction === 'in' ? this.db.prepare(inSql).all(documentId, ids)
+          : this.db.prepare(outSql + ' UNION ' + inSql).all(documentId, ids, documentId, ids)
+      const fromFrontier = new Set(frontier)
+      for (const edge of edges) {
+        const candidates = []
+        if (direction !== 'in' && fromFrontier.has(edge.from_node_id)) candidates.push(edge.to_node_id)
+        if (direction !== 'out' && fromFrontier.has(edge.to_node_id)) candidates.push(edge.from_node_id)
+        for (const id of candidates) {
+          relationTypesSet.add(edge.relation)
+          if (relation && edge.relation !== relation) continue
+          if (!depthById.has(id)) { depthById.set(id, depth); next.push(id) }
+          if (depthById.get(id) === depth) {
+            const previous = neighborRelations.get(id)
+            if (previous === undefined || edge.relation < previous) neighborRelations.set(id, edge.relation)
+          }
+        }
+      }
+      frontier = next
     }
-    // Read only ordering metadata for the full neighborhood; hydrate evidence
-    // and node text only for this page, never the entire document.
-    const neighbors = this.db.prepare(`SELECT node_id, paragraph FROM graph_nodes
+    const metadata = new Map(this.db.prepare(`SELECT node_id, paragraph FROM graph_nodes
       WHERE document_id = ? AND node_id IN (SELECT value FROM json_each(?))`)
-      .all(documentId, JSON.stringify([...neighborRelations.keys()]))
+      .all(documentId, JSON.stringify([...neighborRelations.keys()])).map(node => [node.node_id, node]))
     const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0
-    neighbors.sort((a, b) => cmp(neighborRelations.get(a.node_id), neighborRelations.get(b.node_id)) ||
-      (a.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.paragraph ?? Number.MAX_SAFE_INTEGER) || cmp(a.node_id, b.node_id))
-    const offset = Math.min(options.offset ?? 0, neighbors.length), limit = options.limit ?? 80
-    const pageIds = neighbors.slice(offset, offset + limit).map(n => n.node_id)
+    const neighbors = [...neighborRelations.keys()].filter(id => metadata.has(id)).sort((a, b) => depthById.get(a) - depthById.get(b) || cmp(neighborRelations.get(a), neighborRelations.get(b)) ||
+      (metadata.get(a).paragraph ?? Number.MAX_SAFE_INTEGER) - (metadata.get(b).paragraph ?? Number.MAX_SAFE_INTEGER) || cmp(a, b))
+    const visibleTotal = Math.min(neighbors.length, 600)
+    const offset = Math.min(options.offset ?? 0, visibleTotal), limit = options.limit ?? 80
+    const pageIds = neighbors.slice(offset, Math.min(visibleTotal, offset + limit))
     const nextOffset = offset + pageIds.length
-    const selected = [centerId, ...neighbors.slice(0, nextOffset).map(n => n.node_id)]
+    const selected = [centerId, ...neighbors.slice(0, nextOffset)]
     const added = offset === 0 ? [centerId, ...pageIds] : pageIds
     const nodes = this.db.prepare(`SELECT * FROM graph_nodes WHERE document_id = ?
       AND node_id IN (SELECT value FROM json_each(?))`).all(documentId, JSON.stringify(pageIds)).map(nodeFromRow)
@@ -1340,9 +1360,11 @@ export class SqliteKnowledgeStore {
           (direction === 'in' ? e.to_node_id === centerId : e.from_node_id === centerId)))
     edgeRows.sort((a, b) => cmp(a.from_node_id, b.from_node_id) || cmp(a.to_node_id, b.to_node_id) || cmp(a.relation, b.relation))
     if (this.getDocumentRevision(documentId) !== revision) return { error: { code: 'revision_conflict', message: '知识图在查询期间已更新，请重新载入后聚拢' } }
-    return { documentId, revision, centerId, direction, relation, relationTypes, offset, nextOffset,
-      neighborsTotal: neighbors.length, hasMore: nextOffset < neighbors.length,
-      nodes: [nodeFromRow(center), ...pageIds.map(id => byId.get(id))], edges: edgeRows.map(edgeFromRow) }
+    return { documentId, revision, centerId, direction, relation, hops,
+      relationTypes: [...relationTypesSet].sort(), offset, nextOffset, neighborsTotal: neighbors.length,
+      visibleTotal, truncated: visibleTotal < neighbors.length, hasMore: nextOffset < visibleTotal,
+      nodes: [nodeFromRow(center), ...pageIds.map(id => byId.get(id))].map(node => ({ ...node, gatherDepth: depthById.get(node.id) })),
+      edges: edgeRows.map(edgeFromRow) }
   }
 
   queryDocumentGraph(documentId, options = {}) {

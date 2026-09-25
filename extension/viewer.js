@@ -3642,20 +3642,29 @@
         const center = nodes[0], centerSize = sizes.get(center.id)
         pos.set(center.id, { x: 0, y: 0 })
         if (nodes.length === 1) return { pos }
-        // Circumscribed circles guarantee rectangle separation, including long
-        // labels. Fixed ring spacing avoids an iterative all-pairs simulation.
+        // Keep each hop on its own ring group. Circumscribed circles separate
+        // even long labels without a costly force simulation.
         const radiusOf = node => { const s = sizes.get(node.id); return Math.hypot(s.w, s.h) / 2 }
-        const nodeRadius = nodes.slice(1).reduce((radius, node) => Math.max(radius, radiusOf(node)), 0)
-        let radius = Math.hypot(centerSize.w, centerSize.h) / 2 + nodeRadius + 48
-        let index = 1
-        while (index < nodes.length) {
-          const capacity = Math.max(1, Math.floor(Math.PI / Math.asin(Math.min(1, (nodeRadius + 14) / radius))))
-          const count = Math.min(capacity, nodes.length - index)
-          for (let i = 0; i < count; i++) {
-            const angle = -Math.PI / 2 + 2 * Math.PI * i / count
-            pos.set(nodes[index++].id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
+        const layers = new Map()
+        for (const node of nodes.slice(1)) {
+          const depth = Number.isInteger(node.gatherDepth) && node.gatherDepth > 0 ? node.gatherDepth : 1
+          if (!layers.has(depth)) layers.set(depth, [])
+          layers.get(depth).push(node)
+        }
+        let outerRadius = Math.hypot(centerSize.w, centerSize.h) / 2
+        for (const depth of [...layers.keys()].sort((a, b) => a - b)) {
+          const layer = layers.get(depth), nodeRadius = layer.reduce((radius, node) => Math.max(radius, radiusOf(node)), 0)
+          let index = 0
+          while (index < layer.length) {
+            const radius = outerRadius + nodeRadius + (index === 0 ? 64 : 32)
+            const capacity = Math.max(1, Math.floor(Math.PI / Math.asin(Math.min(1, (nodeRadius + 14) / radius))))
+            const count = Math.min(capacity, layer.length - index)
+            for (let i = 0; i < count; i++) {
+              const angle = -Math.PI / 2 + 2 * Math.PI * i / count
+              pos.set(layer[index++].id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
+            }
+            outerRadius = radius + nodeRadius
           }
-          radius += 2 * nodeRadius + 32
         }
         return { pos }
       }
@@ -4016,11 +4025,13 @@
 
       function mergeNeighborhoodPage(previous, page) {
         if (!page || !Array.isArray(page.nodes) || !Array.isArray(page.edges) || page.nodes[0]?.id !== page.centerId ||
-            !Number.isSafeInteger(page.neighborsTotal) || !Number.isSafeInteger(page.offset) || !Number.isSafeInteger(page.nextOffset) ||
-            page.offset < 0 || page.nextOffset < page.offset || page.neighborsTotal < page.nextOffset) throw new Error('关系聚拢返回的数据不完整')
+            !Number.isSafeInteger(page.hops) || page.hops < 1 || page.hops > 5 ||
+            !Number.isSafeInteger(page.neighborsTotal) || !Number.isSafeInteger(page.visibleTotal) ||
+            page.visibleTotal > page.neighborsTotal || !Number.isSafeInteger(page.offset) || !Number.isSafeInteger(page.nextOffset) ||
+            page.offset < 0 || page.nextOffset < page.offset || page.visibleTotal < page.nextOffset) throw new Error('关系聚拢返回的数据不完整')
         if (previous && (page.documentId !== previous.documentId || page.revision !== previous.revision ||
-            page.centerId !== previous.centerId || page.direction !== previous.direction || page.relation !== previous.relation ||
-            page.neighborsTotal !== previous.neighborsTotal || page.offset !== previous.nextOffset)) {
+            page.centerId !== previous.centerId || page.direction !== previous.direction || page.relation !== previous.relation || page.hops !== previous.hops ||
+            page.neighborsTotal !== previous.neighborsTotal || page.visibleTotal !== previous.visibleTotal || page.offset !== previous.nextOffset)) {
           throw new Error('关系聚拢分页已失效，请重新载入')
         }
         if (!previous && page.offset !== 0) throw new Error('关系聚拢缺少第一页')
@@ -4029,7 +4040,8 @@
         for (const node of page.nodes) nodes.set(node.id, node)
         for (const edge of page.edges) edges.set(neighborhoodEdgeKey(edge), edge)
         if ([...edges.values()].some(e => !nodes.has(e.fromNodeId) || !nodes.has(e.toNodeId)) || nodes.size - 1 !== page.nextOffset ||
-            page.hasMore !== (page.nextOffset < page.neighborsTotal) || (previous && page.hasMore && page.nextOffset <= previous.nextOffset)) {
+            page.truncated !== (page.visibleTotal < page.neighborsTotal) || page.hasMore !== (page.nextOffset < page.visibleTotal) ||
+            (previous && page.hasMore && page.nextOffset <= previous.nextOffset)) {
           throw new Error('关系聚拢分页不完整，请重新载入')
         }
         return { ...page, nodes: [...nodes.values()], edges: [...edges.values()] }
@@ -4068,14 +4080,19 @@
         }
         const gather = (centerId, options = {}) => {
           setNotice(null)
+          const nextQuery = { centerId, direction: 'both', relation: '', hops: request?.hops || 1, ...options }
           if (!request) {
             const element = shell.current?.closest('.kg-cols, .kg-traj-cols')?.querySelector('.kg-original, .kg-traj-original')
             restore.current = { element, top: element?.scrollTop || 0, callback: props.onGatherEnd, baseProps: props,
               selection: { selectedNodeId: props.selectedNodeId, selectedEdgeId: props.selectedEdgeId, focusReq: props.focusReq } }
           } else if (centerId !== request.centerId) {
-            setHistory(value => [...value, { centerId: request.centerId, direction: request.direction, relation: request.relation }])
+            setHistory(value => [...value, { centerId: request.centerId, direction: request.direction, relation: request.relation, hops: request.hops }])
           }
-          setRequest({ centerId, direction: 'both', relation: '', ...options, offset: 0, nonce: ++sequence.current })
+          if (request && ['centerId', 'direction', 'relation', 'hops'].some(key => nextQuery[key] !== request[key])) {
+            setResult(null)
+            latest.current.onGatherProjection?.(null)
+          }
+          setRequest({ ...nextQuery, offset: 0, nonce: ++sequence.current })
         }
         useEffect(() => {
           if (!request) return
@@ -4086,12 +4103,19 @@
           const p = latest.current
           const previous = request.offset > 0 ? result : null
           p.loadNeighborhood({ documentId: p.documentId, expectedRevision: p.revision, centerId: request.centerId,
-            direction: request.direction, relation: request.relation, offset: request.offset, limit: 80 }, controller.signal)
-            .then(page => {
+            direction: request.direction, relation: request.relation, hops: request.hops, offset: request.offset, limit: 80 }, controller.signal)
+            .then(rawPage => {
               if (!updateAllowed()) return
+              // The live web process can outlive a newly built client bundle.
+              // Keep its one-hop view usable, but never mislabel it as N hops.
+              const page = rawPage && !rawPage.error && rawPage.hops == null && request.hops === 1
+                ? { ...rawPage, hops: 1, visibleTotal: rawPage.neighborsTotal, truncated: false,
+                    nodes: rawPage.nodes?.map((node, index) => ({ ...node, gatherDepth: index === 0 ? 0 : 1 })) }
+                : rawPage
+              if (page && !page.error && page.hops == null) throw new Error('服务尚未更新，暂不能查询多层关系；请重启知识图服务')
               if (page?.error) throw new Error(page.error.message || '无法读取相关节点')
               if (page.documentId !== p.documentId || page.revision !== p.revision || page.centerId !== request.centerId ||
-                  page.direction !== request.direction || page.relation !== request.relation) throw new Error('关系聚拢结果与当前查询不一致')
+                  page.direction !== request.direction || page.relation !== request.relation || page.hops !== request.hops) throw new Error('关系聚拢结果与当前查询不一致')
               const next = mergeNeighborhoodPage(previous, page)
               next.anchors = neighborhoodAnchors(next.nodes, p.sourceText, previous ? { ...p.anchors, ...previous.anchors } : p.anchors)
               setResult(next); setStatus(null)
@@ -4131,9 +4155,11 @@
           focused ? h('div', { className: 'kg-gather-layer', 'aria-label': '关系聚拢视图' },
             h('div', { className: 'kg-gather-bar' },
               h('button', { type: 'button', className: 'kg-secondary', disabled: !history.length, title: '返回上个中心', 'aria-label': '返回上个中心',
-                onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
+                onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setResult(null); latest.current.onGatherProjection?.(null); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
               h('strong', null, '关系聚拢 · ' + (result?.centerId || request.centerId)),
-              result ? h('span', { role: 'status' }, '已显示 ' + (result.nodes.length - 1) + '/' + result.neighborsTotal + ' 个直接相关节点 · ' + result.edges.length + ' 条关系') : null,
+              result ? h('span', { role: 'status' }, '已显示 ' + (result.nodes.length - 1) + '/' + result.neighborsTotal + ' 个 ' + request.hops + ' 层内节点 · ' + result.edges.length + ' 条关系' + (result.truncated ? ' · 最多显示 ' + result.visibleTotal + ' 个' : '')) : null,
+              h('label', { className: 'kg-gather-depth' }, '层数 ', h('select', { value: request.hops, 'aria-label': '聚拢层数', onChange: event => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: Number(event.target.value) }) },
+                [1, 2, 3, 4, 5].map(value => h('option', { key: value, value }, value + ' 层')))),
               h('div', { className: 'kg-gather-directions', role: 'group', 'aria-label': '关系方向' },
                 [['both', '全部'], ['in', '指向它'], ['out', '由它指向']].map(([value, label]) => h('button', {
                   key: value, type: 'button', className: 'kg-secondary', 'aria-pressed': request.direction === value,
@@ -4141,9 +4167,9 @@
                 }, label))),
               h('select', { value: request.relation, 'aria-label': '聚拢关系类型', onChange: event => gather(request.centerId, { direction: request.direction, relation: event.target.value }) },
                 h('option', { value: '' }, '全部关系类型'), [...new Set([...(result?.relationTypes || []), ...(request.relation ? [request.relation] : [])])].map(value => h('option', { key: value, value }, REL_LABEL[value] || value))),
-              result?.hasMore ? h('button', { type: 'button', className: 'kg-secondary', disabled: !!status || result.centerId !== request.centerId || result.direction !== request.direction || result.relation !== request.relation,
+              result?.hasMore ? h('button', { type: 'button', className: 'kg-secondary', disabled: !!status || result.centerId !== request.centerId || result.direction !== request.direction || result.relation !== request.relation || result.hops !== request.hops,
                 onClick: () => setRequest({ ...request, offset: result.nextOffset, nonce: ++sequence.current }) }, '继续展开') : null,
-              h('button', { type: 'button', className: 'kg-secondary', title: '重新读取相关节点', 'aria-label': '重新读取相关节点', onClick: () => gather(request.centerId, { direction: request.direction, relation: request.relation }) }, '↻'),
+              h('button', { type: 'button', className: 'kg-secondary', title: '重新读取相关节点', 'aria-label': '重新读取相关节点', onClick: () => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: request.hops }) }, '↻'),
               h('button', { type: 'button', className: 'kg-secondary', title: '退出聚拢', 'aria-label': '退出聚拢', onClick: () => exit() }, '×')),
             status ? h('div', { className: 'kg-gather-notice', role: status.error ? 'alert' : 'status' },
               status.error || ('正在查询相关节点：' + request.centerId),

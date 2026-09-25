@@ -57,7 +57,7 @@ try {
   assert.equal(isolated.nodes.length, 1)
   assert.equal(isolated.hasMore, false)
   assert.equal(store.getGraphNeighborhood(documentId, { ...baseArgs, centerId: 'n' }).error.code, 'not_found', 'exact ID, never fuzzy matching')
-  for (const args of [{ expectedRevision: undefined }, { expectedRevision: -1 }, { limit: 201 }, { offset: -1 }, { offset: NaN }, { limit: 2.5 }, { direction: 'sideways' }, { relation: [] }]) {
+  for (const args of [{ expectedRevision: undefined }, { expectedRevision: -1 }, { limit: 201 }, { offset: -1 }, { offset: NaN }, { limit: 2.5 }, { direction: 'sideways' }, { relation: [] }, { hops: 0 }, { hops: 6 }, { hops: 1.5 }]) {
     assert.equal(store.getGraphNeighborhood(documentId, { ...baseArgs, ...args }).error.code, 'invalid_input')
     assert.equal(hostQuery(documentId, { graph: saved, revision }, { ...baseArgs, ...args }).error.code, 'invalid_input')
   }
@@ -72,6 +72,56 @@ try {
   const loopGraph = { nodes: [nodes[0]], edges: [{ fromNodeId: 'n0', toNodeId: 'n0', relation: 'analogy' }] }
   const loop = hostQuery(documentId, { graph: loopGraph, revision }, baseArgs)
   assert.equal(loop.neighborsTotal, 0); assert.equal(loop.edges.length, 1)
+
+  const chainId = 'neighborhood-chain'
+  const chainNodes = 'abcdef'.split('').map((id, paragraph) => ({ id, text: id, type: 'fact', paragraph }))
+  const chainEdges = [
+    ['a', 'b', 'supports'], ['b', 'c', 'supports'], ['c', 'd', 'supports'],
+    ['d', 'e', 'supports'], ['e', 'f', 'supports'], ['c', 'a', 'analogy'],
+  ].map(([fromNodeId, toNodeId, relation]) => ({ fromNodeId, toNodeId, relation }))
+  store.saveGraph({ source: { documentId: chainId, id: 'chain' }, nodes: chainNodes, edges: chainEdges }, { sourceText: 'chain' })
+  const chain = store.getDocument(chainId), chainRevision = chain.revision
+  for (const direction of ['both', 'in', 'out']) for (const hops of [1, 2, 3, 5]) for (const relation of ['', 'supports', 'analogy']) {
+    const args = { centerId: direction === 'in' ? 'f' : 'a', direction, hops, relation, expectedRevision: chainRevision, limit: 2 }
+    let merged = null
+    do {
+      const query = { ...args, offset: merged?.nextOffset || 0 }
+      const page = store.getGraphNeighborhood(chainId, query)
+      assert.deepEqual(plain(page), plain(hostQuery(chainId, { graph: chain, revision: chainRevision }, query)))
+      merged = engine.mergeNeighborhoodPage(merged, page)
+    } while (merged.hasMore)
+    assert(merged.nodes.every(node => Number.isInteger(node.gatherDepth) && node.gatherDepth <= hops))
+  }
+  const five = store.getGraphNeighborhood(chainId, { centerId: 'a', direction: 'out', hops: 5, expectedRevision: chainRevision })
+  assert.deepEqual(five.nodes.map(node => [node.id, node.gatherDepth]), [['a', 0], ['b', 1], ['c', 2], ['d', 3], ['e', 4], ['f', 5]])
+  assert.deepEqual(store.getGraphNeighborhood(chainId, { centerId: 'a', direction: 'out', hops: 2, expectedRevision: chainRevision }).nodes.map(node => node.id), ['a', 'b', 'c'])
+  assert.equal(store.getGraphNeighborhood(chainId, { centerId: 'a', direction: 'out', hops: 5, relation: 'analogy', expectedRevision: chainRevision }).neighborsTotal, 0)
+  const layeredSizes = new Map(five.nodes.map(node => [node.id, { w: 100, h: 60 }]))
+  const layeredLayout = engine.layoutNeighborhood(five.nodes, layeredSizes)
+  let priorRadius = 0
+  for (const node of five.nodes.slice(1)) {
+    const point = layeredLayout.pos.get(node.id), radius = Math.hypot(point.x, point.y)
+    assert(radius > priorRadius, 'successive hop layers must be visually farther from the center')
+    priorRadius = radius
+  }
+  assert.equal(store.getDocumentRevision(chainId), chainRevision)
+
+  const cappedId = 'neighborhood-cap'
+  const cappedNodes = Array.from({ length: 702 }, (_, i) => ({ id: 'c' + i, text: 'Node ' + i, type: 'fact', paragraph: i }))
+  const cappedEdges = cappedNodes.slice(1).map(node => ({ fromNodeId: 'c0', toNodeId: node.id, relation: 'supports' }))
+  store.saveGraph({ source: { documentId: cappedId, id: 'cap' }, nodes: cappedNodes, edges: cappedEdges }, { sourceText: 'cap' })
+  const cappedRevision = store.getDocumentRevision(cappedId)
+  let capped = null
+  do {
+    const page = store.getGraphNeighborhood(cappedId, { centerId: 'c0', expectedRevision: cappedRevision, hops: 5, offset: capped?.nextOffset || 0 })
+    capped = engine.mergeNeighborhoodPage(capped, page)
+  } while (capped.hasMore)
+  assert.equal(capped.neighborsTotal, 701)
+  assert.equal(capped.visibleTotal, 600)
+  assert.equal(capped.nodes.length, 601)
+  assert.equal(capped.truncated, true)
+  assert.equal(capped.hasMore, false)
+  assert.equal(store.getDocumentRevision(cappedId), cappedRevision)
 
   for (const count of [1, 2, 8, 81, 502]) {
     const local = nodes.slice(0, count), sizes = new Map(local.map((n, i) => [n.id, { w: 80 + i % 5 * 53, h: 50 + i % 4 * 31 }]))
@@ -122,7 +172,8 @@ const base = tree => tree.children[0].children[0]
 const local = tree => find(tree.children[1], n => n.type === Canvas)
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }
 const reply = (id, extras = {}) => ({ documentId: 'ui', revision: 1, centerId: id, direction: 'both', relation: '', relationTypes: ['supports'], offset: 0, nextOffset: 1,
-  neighborsTotal: 1, hasMore: false, nodes: [{ id }, { id: 'neighbor' }], edges: [{ fromNodeId: id, toNodeId: 'neighbor', relation: 'supports' }], ...extras })
+  hops: 1, neighborsTotal: 1, visibleTotal: 1, truncated: false, hasMore: false, nodes: [{ id, gatherDepth: 0 }, { id: 'neighbor', gatherDepth: 1 }],
+  edges: [{ fromNodeId: id, toNodeId: 'neighbor', relation: 'supports' }], ...extras })
 let tree = controller.render(props)
 base(tree).props.onGather('a')
 tree = controller.render(props)
@@ -137,7 +188,7 @@ assert.equal(local(tree).props.nodes[0].id, 'a')
 assert.strictEqual(base(tree), frozenBase, 'local requests never rerender the base scene')
 local(tree).props.onGather('neighbor')
 tree = controller.render(props)
-local(tree).props.onGather('a')
+action(tree, '返回上个中心')()
 tree = controller.render(props)
 assert(jobs[2].signal.aborted)
 jobs[3].resolve(reply('a')); await flush()
@@ -181,3 +232,36 @@ local(tree).props.onSelectEdge(0); tree = editing.render(editProps)
 local(tree).props.onDeleteEdge(); assert.deepEqual(edited, { edge: rightEdge, index: 1 })
 editing.dispose()
 console.log(JSON.stringify({ stableEdgeIdentity: true, parallelRelationMappedToCanonicalIndex: true }))
+
+const depthController = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+tree = depthController.render(props); base(tree).props.onGather('a'); tree = depthController.render(props)
+const firstDepthJob = jobs.at(-1)
+find(tree, n => n.props['aria-label'] === '聚拢层数').props.onChange({ target: { value: '3' } })
+tree = depthController.render(props)
+assert(firstDepthJob.signal.aborted, 'changing depth cancels the previous query')
+assert.equal(jobs.at(-1).args.hops, 3)
+jobs.at(-1).resolve(reply('a', { hops: 3, nodes: [{ id: 'a', gatherDepth: 0 }, { id: 'neighbor', gatherDepth: 1 }] }))
+await flush(); tree = depthController.render(props)
+assert.equal(local(tree).props.nodes[1].gatherDepth, 1)
+find(tree, n => n.props['aria-label'] === '聚拢层数').props.onChange({ target: { value: '2' } })
+tree = depthController.render(props)
+assert.equal(jobs.at(-1).args.hops, 2)
+assert.equal(local(tree), undefined, 'old hop projection is hidden during the new query')
+depthController.dispose()
+console.log(JSON.stringify({ depthSelection: true, staleDepthProjectionHidden: true }))
+
+const legacyController = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+const legacyPage = reply('a')
+delete legacyPage.hops; delete legacyPage.visibleTotal; delete legacyPage.truncated
+legacyPage.nodes.forEach(node => { delete node.gatherDepth })
+tree = legacyController.render(props); base(tree).props.onGather('a'); legacyController.render(props)
+jobs.at(-1).resolve(legacyPage); await flush(); tree = legacyController.render(props)
+assert.equal(local(tree).props.nodes[1].gatherDepth, 1, 'old server retains the one-hop view')
+find(tree, n => n.props['aria-label'] === '聚拢层数').props.onChange({ target: { value: '2' } })
+legacyController.render(props); jobs.at(-1).resolve(legacyPage); await flush()
+tree = legacyController.render(props)
+assert.match(find(tree, n => n.props.role === 'alert').children[0], /服务尚未更新/)
+legacyController.dispose()
+console.log(JSON.stringify({ rollingClientServerCompatibility: true }))
