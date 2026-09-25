@@ -641,7 +641,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes) || !checkpoint.model ||
                 !Number.isInteger(checkpoint.totalBatches) || checkpoint.totalBatches < 1 ||
                 checkpoint.inputHash !== verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
-                  mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: checkpoint.model })) {
+                  mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap,
+                  model: checkpoint.model, verificationPlanVersion: checkpoint.verificationPlanVersion })) {
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '审校输入或检查点不完整，禁止续跑' } })
               }
               const documentId = savedRun.documentId || checkpoint.documentId || ''
@@ -653,6 +654,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 text: savedRun.sourceText, graph: checkpoint.graph, mode: checkpoint.mode,
                 scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: checkpoint.model,
                 concurrency: checkpoint.concurrency, baseRevision: checkpoint.baseRevision,
+                verificationPlanVersion: checkpoint.verificationPlanVersion || 1,
                 checkpoint, verificationResults: store.loadVerificationBatches(runId), createdAt: Date.now(),
               }
               const started = startTaskHost(task, runVerifyTask, 'AI 审校恢复失败：内部错误')
@@ -693,6 +695,33 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               abortTaskOperationsHost(t)
               return writeJson(res, 200, { status: 'cancelling' })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verification-plan') {
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (error) { payload = {} }
+              const documentId = typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
+              if (!documentId || !Number.isSafeInteger(payload.expectedRevision)) return writeJson(res, 200, {
+                error: { code: 'invalid_input', message: '全图审校预览需要文档 ID 和当前 revision' },
+              })
+              const saved = (await getSqliteStore()).getDocument(documentId)
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要审校的 canonical graph' } })
+              if (saved.revision !== payload.expectedRevision) return writeJson(res, 200, {
+                error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入后审校' },
+              })
+              if (!saved.sourceText || saved.sourceText.length > MAX_VERIFY_TEXT || !Array.isArray(saved.nodes) || saved.nodes.length === 0) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: 'canonical 图或原文不符合审校输入要求' } })
+              }
+              try {
+                const plan = buildFullVerifyPlanHost(splitParagraphsHost(saved.sourceText), saved)
+                for (let index = 0; index < plan.batches.length; index++) {
+                  buildVerifyUserText2(plan.batches[index], index, plan.batches.length, saved)
+                }
+                return writeJson(res, 200, { documentId, revision: saved.revision, coverage: plan.coverage,
+                  minimumModelRequests: plan.coverage.batchCount })
+              } catch (error) {
+                return writeJson(res, 200, { error: { code: 'verification_plan_invalid', message: error?.message || '无法建立完整审校计划' } })
+              }
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/verify-graph') {
               let raw
               try { raw = await readVerificationBody(req) }
@@ -706,7 +735,22 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const input = prepareVerificationInputHost(a)
+              const canonicalFull = a.canonicalFull === true
+              let input, currentRevision = null
+              if (canonicalFull) {
+                const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+                if (!documentId || !Number.isSafeInteger(a.expectedRevision)) return writeJson(res, 200, {
+                  error: { code: 'invalid_input', message: '全图审校需要文档 ID 和当前 revision' },
+                })
+                const saved = (await getSqliteStore()).getDocument(documentId)
+                if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要审校的 canonical graph' } })
+                currentRevision = saved.revision
+                if (currentRevision !== a.expectedRevision) return writeJson(res, 200, {
+                  error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入后审校' },
+                })
+                const { sourceText, ...graph } = saved
+                input = { text: sourceText, graph, paragraphMap: null, scoped: false }
+              } else input = prepareVerificationInputHost(a)
               const text = input.text
               const graph = input.graph
               if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先提供图对应的原文' } })
@@ -714,7 +758,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可验证的知识图' } })
               }
-              if (graph.nodes.length > MAX_VERIFY_NODES) {
+              if (!canonicalFull && graph.nodes.length > MAX_VERIFY_NODES) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图节点过多（' + graph.nodes.length + ' 个），请缩短内容后重试' } })
               }
               const mode = a.mode === 'standard' ? 'standard' : 'quick'
@@ -726,7 +770,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               const metadata = verificationTaskMetadataHost(a, graph)
-              const currentRevision = metadata.documentId ? (await getSqliteStore()).getDocumentRevision(metadata.documentId) : null
+              if (!canonicalFull) currentRevision = metadata.documentId ? (await getSqliteStore()).getDocumentRevision(metadata.documentId) : null
               if (Number.isInteger(a.expectedRevision) && currentRevision !== a.expectedRevision) {
                 return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入后审校' } })
               }
@@ -735,7 +779,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'verify',
                 ...metadata,
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
-                text, graph, mode, model, baseRevision: currentRevision, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                text, graph, mode, model, baseRevision: currentRevision,
+                verificationPlanVersion: canonicalFull ? 2 : 1,
+                paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))
             }

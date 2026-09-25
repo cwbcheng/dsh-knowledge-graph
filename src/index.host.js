@@ -4422,11 +4422,21 @@ function createHostPlugin(graphContractOnly) {
           const norm = normalizeForHost(node.text, 'both').text
           return { node, norm, tokens: phraseTokensHost(norm) }
         })
-        let issues = [], checkedPairs = 0
+        const posting = new Map()
+        let issues = [], checkedPairs = 0, retained = 0, omittedIssues = 0
         for (let i = 0; i < entries.length; i++) {
-          const a = entries[i]
-          for (let j = i + 1; j < entries.length; j++) {
-            const b = entries[j]
+          const current = entries[i]
+          // Either heuristic needs a shared token. Indexing candidates avoids
+          // comparing every unrelated pair in a book-sized graph.
+          const candidates = new Set()
+          for (const token of current.tokens) {
+            const earlier = posting.get(token)
+            if (earlier) for (const index of earlier) candidates.add(index)
+            else posting.set(token, [])
+            posting.get(token).push(i)
+          }
+          for (const j of Array.from(candidates).sort((x, y) => x - y)) {
+            const a = entries[j], b = current
             const sim = jaccardHost(a.tokens, b.tokens)
             let issue = null
             if (sim >= 0.75 && a.node.type === b.node.type) {
@@ -4440,12 +4450,20 @@ function createHostPlugin(graphContractOnly) {
                 title: '疑似互相矛盾：' + a.node.id + ' / ' + b.node.id,
                 detail: '两个节点主题相近但一正一反，属于启发式风险，需要人工或 AI 深度复核。', proposedFix: { action: 'none' } }
             }
-            if (issue) issues.push({ ...issue, blocking: false, severity: 'warning', targetKind: 'node', targetId: a.node.id, evidence: [],
-              confidence: issue.code === 'node_duplicate_suspected' ? undefined : 1 })
-            if (++checkedPairs === 2048) { yield { issues, checkedPairs }; issues = []; checkedPairs = 0 }
+            if (issue) {
+              if (retained < 1000) {
+                issues.push({ ...issue, blocking: false, severity: 'warning', targetKind: 'node', targetId: a.node.id, evidence: [],
+                  confidence: issue.code === 'node_duplicate_suspected' ? undefined : 1 })
+                retained++
+              } else omittedIssues++
+            }
+            if (++checkedPairs === 8192) {
+              yield { issues, checkedPairs, omittedIssues }
+              issues = []; checkedPairs = 0; omittedIssues = 0
+            }
           }
         }
-        if (checkedPairs) yield { issues, checkedPairs }
+        if (checkedPairs) yield { issues, checkedPairs, omittedIssues }
       }
 
       async function buildLocalReportBatchedHost(graph, sourceText, task) {
@@ -4458,7 +4476,7 @@ function createHostPlugin(graphContractOnly) {
           const accepted = batch.issues.slice(0, Math.max(0, 1000 - reported))
           evaluated.issues.push(...accepted)
           reported += accepted.length
-          omitted += batch.issues.length - accepted.length
+          omitted += (batch.omittedIssues || 0) + batch.issues.length - accepted.length
           if (task?.progress?.verification) task.progress.verification.checkedPairs = checkedPairs
           await new Promise((resolve) => setTimeout(resolve, 0))
         }
@@ -7341,6 +7359,7 @@ function createHostPlugin(graphContractOnly) {
         if (task.status === 'failed' || task.status === 'cancelled') return {
           status: task.status, modelUsage: modelUsageSnapshotHost(task),
           error: { code: task.errorCode, message: task.errorMessage },
+          ...(task.kind === 'verify' ? { progress: taskProgressSnapshotHost(task) } : {}),
           ...(includeCheckpoint && task.checkpoint ? { checkpoint: task.checkpoint } : {}),
         }
         return { status: 'running', progress: {
@@ -9672,6 +9691,109 @@ function createHostPlugin(graphContractOnly) {
         }
         return final
       }
+      function buildFullVerifyPlanHost(paras, graph) {
+        const sourceBatches = buildBatchesByParagraph(paras, 2500)
+        const paragraphBatch = new Map()
+        sourceBatches.forEach((batch, index) => {
+          for (const unit of batch.units) paragraphBatch.set(unit.num, index)
+        })
+        const nodesBySource = sourceBatches.map(() => [])
+        const orphans = []
+        const nodeIds = new Set()
+        for (const node of graph.nodes || []) {
+          if (!node || typeof node.id !== 'string' || nodeIds.has(node.id)) throw new Error('全图审校需要唯一且有效的节点 ID')
+          nodeIds.add(node.id)
+          const index = paragraphBatch.get(node.paragraph)
+          if (index == null) orphans.push(node)
+          else nodesBySource[index].push(node)
+        }
+        const orphanContext = sourceBatches.map(() => [])
+        for (const node of orphans) {
+          const seen = new Set()
+          for (const evidence of node.evidence || []) {
+            const index = paragraphBatch.get(evidence?.paragraph)
+            if (index != null && !seen.has(index)) { orphanContext[index].push(node); seen.add(index) }
+          }
+        }
+        const batches = [], nodeOwner = new Map(), edgeKeys = new Set()
+        for (let index = 0; index < sourceBatches.length; index++) {
+          const units = sourceBatches[index].units
+          const nodes = nodesBySource[index]
+          const separateSourcePass = nodes.length > 12 || orphanContext[index].length > 0 || nodes.length === 0
+          if (separateSourcePass) batches.push({ units, nodes: nodes.concat(orphanContext[index]), edges: [], sourceCoverageOnly: true,
+            sourceUnitIds: units.map(unit => unit.num), primaryNodeIds: [], primaryEdgeKeys: [] })
+          if (!nodes.length) continue
+          for (let offset = 0; offset < nodes.length; offset += 12) {
+            const selected = nodes.slice(offset, offset + 12)
+            const owner = batches.length
+            batches.push({ units, nodes: selected, edges: [], nodeReviewOnly: separateSourcePass,
+              sourceUnitIds: separateSourcePass ? [] : units.map(unit => unit.num),
+              primaryNodeIds: selected.map(node => node.id), primaryEdgeKeys: [] })
+            for (const node of selected) nodeOwner.set(node.id, owner)
+          }
+        }
+        for (let offset = 0; offset < orphans.length; offset += 12) {
+          const nodes = orphans.slice(offset, offset + 12)
+          const sourceUnits = new Set()
+          for (const node of nodes) for (const evidence of node.evidence || []) {
+            if (Number.isInteger(evidence?.paragraph) && evidence.paragraph >= 0 && evidence.paragraph < paras.length) sourceUnits.add(evidence.paragraph)
+          }
+          const units = [...sourceUnits].sort((a, b) => a - b).map(num => ({ num, text: paras[num] }))
+          const owner = batches.length
+          batches.push({ units, nodes, edges: [], nodeReviewOnly: true, sourceUnitIds: [],
+            primaryNodeIds: nodes.map(node => node.id), primaryEdgeKeys: [] })
+          for (const node of nodes) nodeOwner.set(node.id, owner)
+        }
+        const crossEdges = []
+        for (const edge of graph.edges || []) {
+          const key = edgeKeyHost(edge)
+          if (!edge || edgeKeys.has(key) || !nodeOwner.has(edge.fromNodeId) || !nodeOwner.has(edge.toNodeId)) {
+            throw new Error('全图审校需要唯一且端点有效的关系')
+          }
+          edgeKeys.add(key)
+          const fromOwner = nodeOwner.get(edge.fromNodeId)
+          if (fromOwner === nodeOwner.get(edge.toNodeId)) {
+            batches[fromOwner].primaryEdgeKeys.push(key)
+            batches[fromOwner].edges.push(edge)
+          }
+          else crossEdges.push(edge)
+        }
+        const byId = new Map((graph.nodes || []).map(node => [node.id, node]))
+        for (let offset = 0; offset < crossEdges.length; offset += 12) {
+          const edges = crossEdges.slice(offset, offset + 12)
+          const ids = new Set(edges.flatMap(edge => [edge.fromNodeId, edge.toNodeId]))
+          const nodes = [...ids].map(id => byId.get(id))
+          const paragraphs = new Set()
+          for (const item of [...nodes, ...edges]) {
+            if (Number.isInteger(item.paragraph)) paragraphs.add(item.paragraph)
+            for (const evidence of item.evidence || []) paragraphs.add(evidence.paragraph)
+          }
+          const units = [...paragraphs].filter(p => Number.isInteger(p) && p >= 0 && p < paras.length)
+            .sort((a, b) => a - b).map(num => ({ num, text: paras[num] }))
+          batches.push({ units, nodes, edges, relationsOnly: true, sourceUnitIds: [], primaryNodeIds: [],
+            primaryEdgeKeys: edges.map(edgeKeyHost) })
+        }
+        const ownedNodes = new Set(), ownedEdges = new Set(), ownedSource = new Set()
+        for (const batch of batches) {
+          for (const id of batch.primaryNodeIds || []) {
+            if (ownedNodes.has(id)) throw new Error('审校计划重复分配节点：' + id)
+            ownedNodes.add(id)
+          }
+          for (const key of batch.primaryEdgeKeys || []) {
+            if (ownedEdges.has(key)) throw new Error('审校计划重复分配关系：' + key)
+            ownedEdges.add(key)
+          }
+          for (const paragraph of batch.sourceUnitIds || []) {
+            if (ownedSource.has(paragraph)) throw new Error('审校计划重复分配原文单元：' + paragraph)
+            ownedSource.add(paragraph)
+          }
+        }
+        if (ownedNodes.size !== nodeIds.size || ownedEdges.size !== edgeKeys.size || ownedSource.size !== paras.length) {
+          throw new Error('全图审校计划未覆盖全部节点、关系和原文单元')
+        }
+        return { batches, coverage: { nodeCount: ownedNodes.size, edgeCount: ownedEdges.size,
+          sourceUnitCount: ownedSource.size, batchCount: batches.length } }
+      }
       function sanitizeEvidence(rawEvidence, sourceText, totalParagraphs, allowEmpty) {
         const out = []
         for (const ev of Array.isArray(rawEvidence) ? rawEvidence : []) {
@@ -9785,13 +9907,15 @@ function createHostPlugin(graphContractOnly) {
           const category = ISSUE_CATEGORIES.has(raw.category) ? raw.category : 'other'
           const targetKind = raw.targetKind === 'node' || raw.targetKind === 'edge' ? raw.targetKind : 'graph'
           const targetId = targetKind === 'graph' ? null : (typeof raw.targetId === 'string' ? raw.targetId.trim() : '')
+          const targetRelation = targetKind === 'edge' && typeof raw.targetRelation === 'string' ? raw.targetRelation.trim() : null
           const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
           const nodeIds = new Set(nodes.map((n) => n && n.id))
           let edgeExists = false
           if (targetKind === 'edge' && targetId) {
             const parts = targetId.split('>')
             if (parts.length === 2 && nodeIds.has(parts[0]) && nodeIds.has(parts[1])) {
-              edgeExists = (graph.edges || []).some((e) => e && e.fromNodeId === parts[0] && e.toNodeId === parts[1])
+              edgeExists = (graph.edges || []).some((e) => e && e.fromNodeId === parts[0] && e.toNodeId === parts[1] &&
+                (!targetRelation || e.relation === targetRelation))
             } else if (/^\d+$/.test(targetId)) {
               edgeExists = Number(targetId) < (graph.edges || []).length
             }
@@ -9814,6 +9938,7 @@ function createHostPlugin(graphContractOnly) {
             category,
             targetKind,
             targetId,
+            ...(targetRelation ? { targetRelation } : {}),
             title: typeof raw.title === 'string' ? raw.title.trim().slice(0, 120) : '未命名问题',
             detail: typeof raw.detail === 'string' ? raw.detail.trim().slice(0, 1000) : '',
             evidence,
@@ -9865,7 +9990,7 @@ function createHostPlugin(graphContractOnly) {
         const issues = []
         const seen = new Set()
         for (const it of (localReport ? localReport.issues : []).concat(aiIssues || [])) {
-          const key = it.category + '|' + it.targetKind + '|' + it.targetId + '|' + it.title
+          const key = it.category + '|' + it.targetKind + '|' + it.targetId + '|' + (it.targetRelation || '') + '|' + it.title
           if (seen.has(key)) continue
           seen.add(key)
           issues.push(it)
@@ -9874,9 +9999,28 @@ function createHostPlugin(graphContractOnly) {
         issues.sort((x, y) => (order[x.severity] - order[y.severity]) || (y.confidence - x.confidence))
         return issues
       }
+      function assertFullVerifyBatchIssuesHost(batch, issues) {
+        const nodeIds = new Set((batch.nodes || []).map(node => node.id))
+        for (const issue of issues) {
+          const matchingEdges = issue.targetKind === 'edge' ? (batch.edges || []).filter(edge =>
+            edge.fromNodeId + '>' + edge.toNodeId === issue.targetId &&
+            (!issue.targetRelation || issue.targetRelation === edge.relation)) : []
+          if (issue.targetKind === 'edge' && matchingEdges.length === 1) issue.targetRelation = matchingEdges[0].relation
+          const allowed = batch.sourceCoverageOnly
+            ? issue.targetKind === 'graph' && (issue.category === 'completeness' || issue.category === 'summary')
+            : batch.relationsOnly
+              ? issue.targetKind === 'edge' && matchingEdges.length === 1
+              : (issue.targetKind === 'node' && nodeIds.has(issue.targetId)) ||
+                (issue.targetKind === 'edge' && matchingEdges.length === 1) ||
+                (!batch.nodeReviewOnly && issue.targetKind === 'graph' &&
+                  (issue.category === 'completeness' || issue.category === 'summary'))
+          if (!allowed) throw taskOperationErrorHost('verification_scope_violation',
+            'AI 返回了不属于当前审校批次的问题，未保存该批；请续跑重试', 'verification')
+        }
+      }
       function verificationInputHashHost(task) {
         return sha256HexHost(JSON.stringify({
-          version: 1, taskKind: 'verify', text: task.text, graph: task.graph,
+          version: task.verificationPlanVersion === 2 ? 2 : 1, taskKind: 'verify', text: task.text, graph: task.graph,
           mode: task.mode, scope: task.scope, paragraphMap: task.paragraphMap,
           model: task.model,
         }))
@@ -9900,8 +10044,11 @@ function createHostPlugin(graphContractOnly) {
           task.progress.stage = '本地规则检查'
           task.progress.verification.phase = 'local'
           const local = await buildLocalReportBatchedHost(task.graph, task.text, task)
-          const batches = buildVerifyBatches(paras, task.graph)
+          const fullPlan = task.verificationPlanVersion === 2 ? buildFullVerifyPlanHost(paras, task.graph) : null
+          const batches = fullPlan ? fullPlan.batches : buildVerifyBatches(paras, task.graph)
           task.progress.verification.totalBatches = batches.length
+          if (fullPlan) task.progress.verification.coverage = { ...fullPlan.coverage,
+            completedNodes: 0, completedEdges: 0, completedSourceUnits: 0 }
           task.concurrency = [1, 2, 4].includes(task.concurrency) ? task.concurrency : 2
           const results = new Array(batches.length)
           const inputHash = verificationInputHashHost(task)
@@ -9913,7 +10060,8 @@ function createHostPlugin(graphContractOnly) {
               version: 1, taskKind: 'verify', runId: task.id, documentId: task.documentId || '',
               sourceId: task.graph?.source?.sourceId || '', baseRevision: task.baseRevision,
               graph: task.graph, mode: task.mode, scope: task.scope, paragraphMap: task.paragraphMap,
-              model, concurrency: task.concurrency, totalBatches: batches.length, nextBatchIndex: 0, inputHash,
+              model, concurrency: task.concurrency, verificationPlanVersion: task.verificationPlanVersion || 1,
+              totalBatches: batches.length, nextBatchIndex: 0, inputHash,
             }
             await saveTaskCheckpointHost(task, checkpoint, 'running')
           }
@@ -9925,6 +10073,11 @@ function createHostPlugin(graphContractOnly) {
             results[saved.batchIndex] = saved.result
           }
           task.progress.verification.completedBatches = results.filter(Boolean).length
+          if (fullPlan) for (let i = 0; i < batches.length; i++) if (results[i]) {
+            task.progress.verification.coverage.completedNodes += (batches[i].primaryNodeIds || []).length
+            task.progress.verification.coverage.completedEdges += (batches[i].primaryEdgeKeys || []).length
+            task.progress.verification.coverage.completedSourceUnits += (batches[i].sourceUnitIds || []).length
+          }
           if (task.checkpoint) task.checkpoint.nextBatchIndex = task.progress.verification.completedBatches
           await runRelationQueueHost(task, batches.map((_, index) => index).filter(index => !results[index]), 'AI 深度审校', async (i, save, check) => {
             const batch = batches[i]
@@ -9939,6 +10092,11 @@ function createHostPlugin(graphContractOnly) {
                 buildVerifyUserText2(batch, i, batches.length, task.graph), 360000,
                 'AI 深度审校（' + batchLabel + '）', 'issues', batchProgress, check)
               let kept = normalizeIssues(obj, task.graph, task.text, totalParagraphs, warnings, 'b' + (i + 1) + ':').issues
+              if (fullPlan) {
+                if (warnings.some(warning => warning.startsWith('verify_issue_dropped:missing_'))) throw taskOperationErrorHost(
+                  'verification_scope_violation', 'AI 返回了不存在或不属于当前图的问题，未保存该批；请续跑重试', 'verification')
+                assertFullVerifyBatchIssuesHost(batch, kept)
+              }
               if (task.mode === 'standard' && kept.length > 0) {
                 batchProgress.phase = 'confirm'
                 progress.phase = 'confirm'
@@ -9953,6 +10111,11 @@ function createHostPlugin(graphContractOnly) {
                 if (typeof persistVerificationBatch === 'function') await persistVerificationBatch(task, i, result)
                 results[i] = result
                 progress.completedBatches++
+                if (fullPlan) {
+                  progress.coverage.completedNodes += (batch.primaryNodeIds || []).length
+                  progress.coverage.completedEdges += (batch.primaryEdgeKeys || []).length
+                  progress.coverage.completedSourceUnits += (batch.sourceUnitIds || []).length
+                }
                 if (task.checkpoint) task.checkpoint.nextBatchIndex = progress.completedBatches
               })
             } finally {
@@ -9961,12 +10124,20 @@ function createHostPlugin(graphContractOnly) {
             }
           })
           throwIfTaskCancelledHost(task)
+          if (fullPlan && (results.some(result => !result) ||
+            task.progress.verification.coverage.completedNodes !== fullPlan.coverage.nodeCount ||
+            task.progress.verification.coverage.completedEdges !== fullPlan.coverage.edgeCount ||
+            task.progress.verification.coverage.completedSourceUnits !== fullPlan.coverage.sourceUnitCount)) {
+            throw taskOperationErrorHost('checkpoint_invalid', '审校批次不完整，不能发布全图报告', 'verification')
+          }
           task.finalizing = true
           task.progress.stage = '正在汇总审校报告'
           task.progress.verification.phase = 'merge'
           // Arrival order must not affect report ordering, deduplication or issue ids.
           const issues = mergeReportIssues(local, results.flatMap(result => result.issues))
           const warnings = results.flatMap(result => result.warnings)
+          const omittedPairIssues = local.metrics.omittedPairIssues || 0
+          if (omittedPairIssues) warnings.push('本地相似性提示超过展示上限，另有 ' + omittedPairIssues + ' 条未展开；AI 批次覆盖不等于相似性提示全部展示。')
           const counts = { error: 0, warning: 0, suggestion: 0 }
           for (const it of issues) counts[it.severity] += 1
           task.status = 'succeeded'
@@ -9977,7 +10148,11 @@ function createHostPlugin(graphContractOnly) {
             createdAt: Date.now(),
             model,
             scope: task.scope || { kind: 'full', ids: [] },
-            summary: 'AI 深度审校完成：' + counts.error + ' 个错误、' + counts.warning + ' 个警告、' + counts.suggestion + ' 条建议（已叠加本地规则检查）。',
+            ...(fullPlan ? { coverage: { ...fullPlan.coverage, completedNodes: fullPlan.coverage.nodeCount,
+              completedEdges: fullPlan.coverage.edgeCount, completedSourceUnits: fullPlan.coverage.sourceUnitCount,
+              status: 'complete', documentId: task.documentId || '', revision: task.baseRevision } } : {}),
+            summary: 'AI 深度审校完成：' + counts.error + ' 个错误、' + counts.warning + ' 个警告、' + counts.suggestion +
+              ' 条建议（已叠加本地规则检查）' + (omittedPairIssues ? '；另有 ' + omittedPairIssues + ' 条本地相似性提示未展开。' : '。'),
             metrics: { ...local.metrics, errorCount: counts.error, warningCount: counts.warning, suggestionCount: counts.suggestion },
             warnings,
             issues,
@@ -10017,12 +10192,25 @@ function createHostPlugin(graphContractOnly) {
       // Cross-batch edges have explicit relation-only batches with both endpoints.
       function buildVerifyUserText2(batch, index, total, graph) {
         const ids = new Set((batch.nodes || []).map((n) => n.id))
-        const sub = serializeGraphForVerify(graph, ids)
+        const fullPlanBatch = Array.isArray(batch.primaryNodeIds)
+        const sub = fullPlanBatch
+          ? batch.sourceCoverageOnly
+            ? { summary: graph.summary || '', nodes: batch.nodes.map(node => ({ id: node.id, type: node.type,
+              text: String(node.text || '').slice(0, 120) })), edges: [] }
+            : serializeGraphForVerify({ summary: batch.nodeReviewOnly || batch.relationsOnly ? '' : (graph.summary || ''),
+              nodes: batch.nodes, edges: batch.edges || [] })
+          : serializeGraphForVerify(graph, ids)
         if (batch.relationsOnly) sub.edges = batch.edges.map(cloneGraphEdgeHost)
-        let s = '资料原文（已按内容切分并编号，[P数字] 为该内容单元编号）' + (total > 1 ? '（第 ' + (index + 1) + '/' + total + ' 批，只审校本批涉及的节点与边）' : '') + '：' + NL
+        const focus = batch.sourceCoverageOnly ? '只核对本批原文遗漏' : '只审校本批涉及的节点与边'
+        let s = '资料原文（已按内容切分并编号，[P数字] 为该内容单元编号）' + (total > 1 ? '（第 ' + (index + 1) + '/' + total + ' 批，' + focus + '）' : '') + '：' + NL
         for (const u of batch.units) s += '[P' + u.num + '] ' + u.text + NL
         if (batch.relationsOnly) s += '本批只审校指定的跨批关系，节点仅作为上下文。逐条检查原文是否证明该关系、方向和条件；端点共现不等于因果。' + NL
-        s += NL + '待审校知识图子图（JSON，包含本批节点及它们与图中其他节点的边）：' + NL + JSON.stringify(sub)
+        else if (batch.sourceCoverageOnly) s += '本批只核对这些原文单元是否遗漏重要知识，或是否直接反驳图的总结。节点列表是本范围已有内容的索引；不要因局部原文没有涵盖全文就判定总结有误。没有确定问题时返回空 issues。' + NL
+        else if (batch.nodeReviewOnly) s += '本批只审校列出的节点和关系；其他节点可能在别的批次，不要据此提出遗漏或全书总结问题。' + NL
+        if (fullPlanBatch && !batch.sourceCoverageOnly) s += '报告关系问题时，targetId 使用 fromNodeId>toNodeId，并同时填写 targetRelation 为该关系的 relation 值。' + NL
+        s += NL + '待审校知识图子图（JSON，仅包含本批所需的节点和关系）：' + NL + JSON.stringify(sub)
+        if (fullPlanBatch && s.length > 64000) throw taskOperationErrorHost('verification_batch_too_large',
+          '全图审校批次上下文超过模型安全预算，请检查过长原文单元或过密节点段落；未将该批标记为完成', 'verification')
         return s
       }
 
@@ -10437,6 +10625,7 @@ function createHostPlugin(graphContractOnly) {
         normalizeGraph, renumberNewIds, mergeBatch,
         splitParagraphs: splitParagraphsHost,
         splitParagraphsOffsets: splitParagraphsOffsetsHost,
+        buildFullVerifyPlan: (text, graph) => buildFullVerifyPlanHost(splitParagraphsHost(text), graph),
         buildSourceManifest: buildSourceManifestHost,
         authenticateGraphEvidence: authenticateGraphEvidenceHost,
         validateGraphInvariants: validateGraphInvariantsHost,
@@ -10822,6 +11011,9 @@ function createHostPlugin(graphContractOnly) {
       harness.handle('task-pause', async (args) => pauseTaskHost(args?.taskId))
       harness.handle('task-status', async (args) => taskStatusHost(args?.taskId, args?.includeCheckpoint === true))
 
+      harness.handle('verification-plan', async () => ({ error: {
+        code: 'unsupported', message: '全图审校需要持久化服务中的 canonical 文档',
+      } }))
       harness.handle('verify-graph', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
         const input = prepareVerificationInputHost(a)

@@ -28,6 +28,7 @@
        const PDF_ACCEPT = 'application/pdf,.pdf'
        const MAX_VERIFY_SCOPE_CHARS = 240000
        const MAX_VERIFY_SCOPE_UNITS = 2000
+       const MAX_VERIFY_NODES = 2000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'
       const LS_DRAFT = 'dsh-kg-draft-v1'
@@ -1490,7 +1491,7 @@
         if (/^\d+$/.test(issue.targetId) && Number(issue.targetId) < edges.length) return Number(issue.targetId)
         const key = String(issue.targetId)
         for (let i = 0; i < edges.length; i++) {
-          if (edgeKeyOf(edges[i]) === key) return i
+          if (edgeKeyOf(edges[i]) === key && (!issue.targetRelation || edges[i].relation === issue.targetRelation)) return i
         }
         return null
       }
@@ -5256,6 +5257,10 @@
           ),
           report
             ? h('div', { className: 'kg-verify-metrics' },
+                report.coverage ? h('span', null, '全图批次覆盖 ' + report.coverage.completedNodes + '/' + report.coverage.nodeCount + ' 节点 · ' +
+                  report.coverage.completedEdges + '/' + report.coverage.edgeCount + ' 关系 · ' +
+                  report.coverage.completedSourceUnits + '/' + report.coverage.sourceUnitCount + ' 原文单元' +
+                  (Number.isInteger(report.coverage.revision) ? ' · 基于 revision ' + report.coverage.revision : '')) : null,
                 h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
                 report.metrics && report.metrics.connectedComponents != null ? h('span', null, '连通分量 ' + report.metrics.connectedComponents + ' · 孤立节点 ' + (report.metrics.isolatedNodes || 0)) : null,
                 h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),

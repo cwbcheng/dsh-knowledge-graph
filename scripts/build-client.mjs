@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -180,6 +180,7 @@ if (!c.includes("host.call('trajectory-status'")) throw new Error('trajectory-st
 if (!c.includes("host.call('append-extract', payload)")) throw new Error('append-extract call not found')
 if (!c.includes("host.call('trajectory-append-extract'")) throw new Error('trajectory-append-extract call not found')
 if (!c.includes("host.call('verify-graph'")) throw new Error('verify-graph call not found')
+if (!c.includes("host.call('verification-plan'")) throw new Error('verification-plan call not found')
 if (!c.includes("host.call('question-graph'")) throw new Error('question-graph call not found')
 if (!c.includes("host.call('fact-check'")) throw new Error('fact-check call not found')
 if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call not found')
@@ -205,6 +206,7 @@ c = c.split("host.call('trajectory-status'").join("rpc('trajectory-status'")
 c = c.split("host.call('append-extract', payload)").join("rpc('append-extract', payload)")
 c = c.split("host.call('trajectory-append-extract'").join("rpc('trajectory-append-extract'")
 c = c.split("host.call('verify-graph'").join("rpc('verify-graph'")
+c = c.split("host.call('verification-plan'").join("rpc('verification-plan'")
 c = c.split("host.call('question-graph'").join("rpc('question-graph'")
 c = c.split("host.call('fact-check'").join("rpc('fact-check'")
 c = c.split("host.call('task-cancel'").join("rpc('task-cancel'")

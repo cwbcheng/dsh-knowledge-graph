@@ -199,6 +199,8 @@ for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no
     resultView: { graph: { ...graph, ontology: 'learning-view-v1', source: { title: 'Reviewed material' } }, sourceText: text },
     view: { graph: { ...graph, source: { title: 'Reviewed material', ontology: 'learning-view-v1' } }, sourceText: text }, title: '', fullText: text,
     verifyConcurrency: 4,
+    MAX_VERIFY_NODES: 2000, graphViewMetadata: () => null,
+    window: { confirm: () => true }, graphCommitQueueRef: { current: Promise.resolve() },
     documentIdOfGraph: () => 'reviewed-document',
     effectiveModelArg: null, verificationSourcePayload: () => ({}), verifyBusyRef: busy, verifyGenRef: generation,
     verifySnapshotRef: { current: null }, graphRevisionRef: { current: 1 }, trajRevisionRef: { current: 1 },
@@ -207,12 +209,16 @@ for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no
       assert.equal(payload.title, 'Reviewed material')
       assert.equal(payload.documentId, 'reviewed-document')
       assert.equal(payload.concurrency, 4)
-      assert.equal(payload.graph.ontology, 'learning-view-v1')
+      if (code.includes('graphCommitQueueRef')) {
+        assert.equal(payload.canonicalFull, true)
+        assert.equal(payload.graph, undefined, 'full review must read canonical data on the server')
+      } else assert.equal(payload.graph.ontology, 'learning-view-v1')
       calls++; return admission.promise
     } }, setError() {},
     setVerifyPhase: value => { values.phase = value }, setVerifyTaskId: value => { values.taskId = value },
     setVerifyProgress: value => { values.progress = typeof value === 'function' ? value(values.progress) : value },
   }
+  env.currentResultRef = { current: env.resultView }
   const start = new Function(...Object.keys(env), code)(...Object.values(env))
   const run = start()
   assert.equal(values.progress.status, 'submitting', 'the click must render status before admission returns')
@@ -231,6 +237,38 @@ for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no
     assert.equal(busy.current, mode === 'accepted')
     assert.equal(values.phase, mode === 'accepted' ? 'running' : 'idle')
   }
+}
+
+const fullHandler = handlersCode.find(code => code.includes('graphCommitQueueRef'))
+for (const approved of [false, true, 'plan-error']) {
+  const view = { graph: { ...graph, source: { title: 'Large graph' } }, sourceText: text }
+  const busy = { current: false }, progress = { current: null }, calls = [], confirmations = []
+  const env = {
+    resultView: view, currentResultRef: { current: view }, graphCommitQueueRef: { current: Promise.resolve() },
+    graphRevisionRef: { current: 242 }, verifySnapshotRef: { current: null }, verifyBusyRef: busy,
+    verifyGenRef: { current: 0 }, graphViewMetadata: () => ({ totalNodes: 4645 }), MAX_VERIFY_NODES: 2000,
+    documentIdOfGraph: () => 'large-document', title: '', fullText: text, verifyConcurrency: 2,
+    effectiveModelArg: null, verificationSourcePayload: () => ({}),
+    window: { confirm(message) { confirmations.push(message); return approved } },
+    host: { async call(method, payload) {
+      calls.push({ method, payload })
+      if (method === 'verification-plan') return approved === 'plan-error' ? { error: { message: '批次上下文过大' } }
+        : { revision: 242, coverage: { nodeCount: 4645, edgeCount: 8539,
+        sourceUnitCount: 5413, batchCount: 1200 }, minimumModelRequests: 1200 }
+      assert.equal(method, 'verify-graph')
+      assert.equal(payload.canonicalFull, true)
+      assert.equal(payload.graph, undefined)
+      return { taskId: 'large-review' }
+    } },
+    setError() {}, setVerifyPhase() {}, setVerifyTaskId() {},
+    setVerifyProgress(value) { progress.current = typeof value === 'function' ? value(progress.current) : value },
+  }
+  await new Function(...Object.keys(env), fullHandler)(...Object.values(env))()
+  assert.deepEqual(calls.map(call => call.method), approved === true ? ['verification-plan', 'verify-graph'] : ['verification-plan'])
+  if (approved !== 'plan-error') assert.match(confirmations[0], /4645.*8539.*5413.*1200/)
+  else assert.equal(confirmations.length, 0)
+  assert.equal(busy.current, approved === true)
+  assert.equal(progress.current?.status || null, approved === true ? 'running' : approved === 'plan-error' ? 'failed' : null)
 }
 
 const h = (tag, attrs, ...children) => ({ tag, attrs, children })

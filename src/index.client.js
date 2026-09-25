@@ -505,7 +505,7 @@ export default function clientPlugin() {
           if (!current()) return
           if (status === 'not_found') error = { message: '审校任务已过期或服务已重启；不会自动重新提交，请确认后重试。' }
           const stage = status === 'succeeded' ? 'AI 深度审校已完成' : status === 'cancelled' ? 'AI 深度审校已取消' : error?.message || 'AI 深度审校失败'
-          setProgress(previous => ({ ...previous, status, stage, connectionError: '', cancelError: '',
+          setProgress(previous => ({ ...previous, ...(response.progress || {}), status, stage, connectionError: '', cancelError: '',
             elapsedMs: Date.now() - (previous?.startedAt || Date.now()),
             summary: status === 'succeeded' ? response.result.summary : '', modelUsage: response.modelUsage || previous?.modelUsage }))
           onFinish(status, status === 'succeeded' || status === 'cancelled' ? null : { ...error, message: stage })
@@ -567,6 +567,9 @@ export default function clientPlugin() {
           (active || progress.status === 'paused') && total ? h('div', null,
             h('p', null, '已审校 ' + completed + '/' + total + ' 批' + (batches.phase === 'confirm' ? ' · 正在独立复核候选问题' : '') + (completed === total ? ' · 正在整理报告' : '')),
             h('progress', { value: completed, max: total, 'aria-label': 'AI 审校批次进度' })) : null,
+          batches?.coverage ? h('p', { role: 'status' }, '全图覆盖：节点 ' + batches.coverage.completedNodes + '/' + batches.coverage.nodeCount +
+            ' · 关系 ' + batches.coverage.completedEdges + '/' + batches.coverage.edgeCount +
+            ' · 原文单元 ' + batches.coverage.completedSourceUnits + '/' + batches.coverage.sourceUnitCount) : null,
           active && !total ? h('progress', { 'aria-label': 'AI 审校准备进度' }) : null,
           active && batches?.phase === 'local' ? h('p', null, '本地规则检查 · 已检查 ' + (batches.checkedPairs || 0) + ' 对节点') : null,
           active && progress.relationParallel ? h('p', null, '审校并发上限 ' + progress.relationParallel.limit + ' 路 · 执行中 ' + progress.relationParallel.active + ' 路') : null,
@@ -725,6 +728,7 @@ export default function clientPlugin() {
        const PDF_ACCEPT = 'application/pdf,.pdf'
        const MAX_VERIFY_SCOPE_CHARS = 240000
        const MAX_VERIFY_SCOPE_UNITS = 2000
+       const MAX_VERIFY_NODES = 2000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'
       const LS_DRAFT = 'dsh-kg-draft-v1'
@@ -2187,7 +2191,7 @@ export default function clientPlugin() {
         if (/^\d+$/.test(issue.targetId) && Number(issue.targetId) < edges.length) return Number(issue.targetId)
         const key = String(issue.targetId)
         for (let i = 0; i < edges.length; i++) {
-          if (edgeKeyOf(edges[i]) === key) return i
+          if (edgeKeyOf(edges[i]) === key && (!issue.targetRelation || edges[i].relation === issue.targetRelation)) return i
         }
         return null
       }
@@ -5953,6 +5957,10 @@ export default function clientPlugin() {
           ),
           report
             ? h('div', { className: 'kg-verify-metrics' },
+                report.coverage ? h('span', null, '全图批次覆盖 ' + report.coverage.completedNodes + '/' + report.coverage.nodeCount + ' 节点 · ' +
+                  report.coverage.completedEdges + '/' + report.coverage.edgeCount + ' 关系 · ' +
+                  report.coverage.completedSourceUnits + '/' + report.coverage.sourceUnitCount + ' 原文单元' +
+                  (Number.isInteger(report.coverage.revision) ? ' · 基于 revision ' + report.coverage.revision : '')) : null,
                 h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
                 report.metrics && report.metrics.connectedComponents != null ? h('span', null, '连通分量 ' + report.metrics.connectedComponents + ' · 孤立节点 ' + (report.metrics.isolatedNodes || 0)) : null,
                 h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
@@ -7905,14 +7913,18 @@ export default function clientPlugin() {
             isCurrent: () => myGen === verifyGenRef.current,
             setProgress: setVerifyProgress,
             onReport: async report => {
-              if (!reviewedView || currentResultRef.current !== reviewedView) throw new Error('知识图已变化，未附加旧版本的审校报告，请重新审校')
-              const g2 = withVerification(reviewedView.graph, report, false)
-              const saved = await persistGraph(g2, reviewedView.graph, revision)
+              const current = currentResultRef.current
+              if (!reviewedView || !current || documentIdOfGraph(current.graph) !== documentIdOfGraph(reviewedView.graph) ||
+                graphRevisionRef.current !== revision) throw new Error('知识图版本已变化，旧报告未附加；可从未完成任务中找回报告')
+              const g2 = withVerification(current.graph, report, false)
+              const saved = await persistGraph(g2, current.graph, revision)
               if (documentIdOfGraph(g2) && !saved) throw new Error('AI 审校已结束，但报告保存失败，请检查知识图版本或连接后重试')
               if (myGen !== verifyGenRef.current) return
-              if (currentResultRef.current !== reviewedView) throw new Error('知识图视图已变化，请重新载入已保存的审校报告')
+              if (documentIdOfGraph(currentResultRef.current?.graph) !== documentIdOfGraph(current.graph)) return
+              if (Number.isInteger(saved?.revision)) graphRevisionRef.current = saved.revision
               setVerification(report)
-              setResultView(makeView(g2, reviewedView.sourceText))
+              if (currentResultRef.current === current) setResultView(makeView({ ...g2, revision: saved?.revision,
+                source: { ...(g2.source || {}), revision: saved?.revision } }, current.sourceText))
             },
             onFinish: (status, error) => {
               setVerifyPhase('idle'); setVerifyTaskId(null); verifyBusyRef.current = false
@@ -8649,23 +8661,51 @@ export default function clientPlugin() {
         }
         const startDeepVerify = async () => {
           if (!resultView || verifyBusyRef.current) return
+          const selectedDocumentId = documentIdOfGraph(resultView.graph)
+          const totalNodes = graphViewMetadata(resultView.graph)?.totalNodes || resultView.graph.nodes.length
           const myGen = verifyGenRef.current
-          verifySnapshotRef.current = { view: resultView, revision: graphRevisionRef.current }
           setError(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
-          setVerifyProgress({ kind: 'verify', status: 'submitting', stage: '正在提交 AI 深度审校…', startedAt: Date.now(), elapsedMs: 0 })
+          setVerifyProgress({ kind: 'verify', status: 'submitting', stage: totalNodes > MAX_VERIFY_NODES ? '正在计算全图审校计划…' : '正在提交 AI 深度审校…',
+            startedAt: Date.now(), elapsedMs: 0 })
+          let admissionRequested = false
           try {
+            await graphCommitQueueRef.current
+            const reviewedView = currentResultRef.current
+            if (!reviewedView || documentIdOfGraph(reviewedView.graph) !== selectedDocumentId) throw new Error('知识图已切换，请重新发起审校')
+            const revision = graphRevisionRef.current
+            const canonicalFull = !!selectedDocumentId && Number.isSafeInteger(revision) && revision > 0
+            if (canonicalFull && totalNodes > MAX_VERIFY_NODES) {
+              const preview = await host.call('verification-plan', { documentId: selectedDocumentId, expectedRevision: revision })
+              if (myGen !== verifyGenRef.current) return
+              if (!preview || preview.error || preview.revision !== revision || !Number.isInteger(preview.coverage?.batchCount)) {
+                throw new Error(preview?.error?.message || '未能确认完整审校计划')
+              }
+              const coverage = preview.coverage
+              if (!window.confirm('将审校 canonical 图的 ' + coverage.nodeCount + ' 个节点、' + coverage.edgeCount +
+                ' 条关系和 ' + coverage.sourceUnitCount + ' 个原文单元。计划共 ' + coverage.batchCount +
+                ' 批，至少需要 ' + preview.minimumModelRequests + ' 次模型请求；发现问题还需独立复核，失败重试也会增加请求。任务可暂停续跑。是否开始？')) {
+                setVerifyPhase('idle'); verifyBusyRef.current = false; setVerifyProgress(null)
+                return
+              }
+            }
+            verifySnapshotRef.current = { view: reviewedView, revision }
+            setVerifyProgress(previous => ({ ...previous, stage: '正在提交 AI 深度审校…' }))
             const payload = {
-              title: title || resultView.graph.source?.title || '', text: fullText || resultView.sourceText || '',
-              graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
-                summary: resultView.graph.summary || '', nodes: resultView.graph.nodes, edges: resultView.graph.edges },
-               ...verificationSourcePayload(fullText || resultView.sourceText || '', resultView.graph),
+              title: title || reviewedView.graph.source?.title || '',
+              ...(canonicalFull ? { canonicalFull: true } : {
+                text: fullText || reviewedView.sourceText || '',
+                graph: { ontology: reviewedView.graph.ontology || reviewedView.graph.source?.ontology || reviewedView.graph.graphMeta?.ontology,
+                  summary: reviewedView.graph.summary || '', nodes: reviewedView.graph.nodes, edges: reviewedView.graph.edges },
+                ...verificationSourcePayload(fullText || reviewedView.sourceText || '', reviewedView.graph),
+              }),
               mode: 'standard', concurrency: verifyConcurrency,
-              documentId: documentIdOfGraph(resultView.graph),
-              expectedRevision: graphRevisionRef.current,
+              documentId: selectedDocumentId,
+              expectedRevision: revision,
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
+            admissionRequested = true
             const res = await host.call('verify-graph', payload)
             if (myGen !== verifyGenRef.current) return
             if (res && res.error) {
@@ -8685,8 +8725,10 @@ export default function clientPlugin() {
           } catch (e) {
             if (myGen !== verifyGenRef.current) return
             setVerifyPhase('idle'); verifyBusyRef.current = false
-            setVerifyProgress(previous => ({ ...previous, status: 'failed', stage: '审校提交未确认，请检查后台任务状态后重试' }))
-            setError({ message: '无法提交验证任务：' + (e && e.message ? e.message : '未知错误') })
+            const stage = admissionRequested ? '审校提交未确认，请检查后台任务状态后重试' :
+              '无法开始审校：' + (e && e.message ? e.message : '未知错误')
+            setVerifyProgress(previous => ({ ...previous, status: 'failed', stage }))
+            setError({ message: stage })
           }
         }
         const startFactCheck = async () => {
@@ -9434,8 +9476,13 @@ export default function clientPlugin() {
                    }, '生成验收：确定性错误 ' + (generationMeta.invariantErrors || 0) + (generationMeta.grounding && generationMeta.grounding.evidenceBackedClaims != null ? ' · 证据声明 ' + generationMeta.grounding.evidenceBackedClaims : '') + (generationMeta.grounding && (generationMeta.grounding.candidateClaims || generationMeta.grounding.unsupportedClaims) ? ' · 待证实声明 ' + ((generationMeta.grounding.candidateClaims || 0) + (generationMeta.grounding.unsupportedClaims || 0)) : '') + (generationMeta.grounding && generationMeta.grounding.entailmentStatus === 'unverified' ? ' · 语义未独立验证' : '') + (generationMeta.retryCount ? ' · 重试 ' + generationMeta.retryCount : '') + (generationMeta.autoRepairCount ? ' · 自动修复 ' + generationMeta.autoRepairCount : '') + (generationMeta.sourceAudit && generationMeta.sourceAudit !== 'full' ? ' · 部分来源复核' : '')) : null,
                   h('span', { className: 'kg-verify-actions', style: { margin: '-6px 0 0' } },
                     h(VerificationConcurrencyControl, { value: verifyConcurrency, onChange: setVerifyConcurrency, disabled: verifyPhase === 'running' || verifyBusyRef.current }),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify, disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 快速体检'),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify, disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' : '🤖 AI 深度审校'),
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify,
+                      title: '检查当前显示的节点窗口；全图检查请使用 AI 全图深度审校',
+                      disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current }, '⚡ 当前窗口体检'),
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify,
+                      title: documentIdOfGraph(graph) ? '从 canonical 文档审校全部节点、关系和原文；支持暂停续跑' : '审校当前知识图',
+                      disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current }, verifyPhase === 'running' ? '审校中…' :
+                        (documentIdOfGraph(graph) ? '🤖 AI 全图深度审校' : '🤖 AI 深度审校')),
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: relationTaskActive || factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
                   h(GraphExportActions, { graph: resultView.graph, title, ctx,
                     loadCanonical: (documentId) => host.call('document-export', { documentId }) }),
