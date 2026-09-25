@@ -2263,10 +2263,17 @@ export default function clientPlugin() {
           },
         }
       }
-      // One-click fix: apply every OPEN issue that has an applicable patch, in
-      // report order. Each successful patch writes its own audit entry. Issues
-      // without a patch (or whose target was already removed by an earlier
-      // patch) are counted as skipped and left open for manual review.
+      function bulkFixEligible(issue) {
+        const action = issue?.proposedFix?.action
+        if (issue?.status !== 'open' || issue.source !== 'local' || issue.safeRepairable !== true) return false
+        if (action === 'update_node') return true
+        const edge = issue.proposedFix.edgePatch
+        return action === 'delete_edge' && typeof edge?.fromNodeId === 'string' && !!edge.fromNodeId
+          && typeof edge?.toNodeId === 'string' && !!edge.toNodeId
+          && typeof (edge.oldRelation || edge.relation) === 'string'
+      }
+      // Bulk repair is only for deterministic local fixes explicitly marked
+      // safe by the validator. Similarity and AI proposals need individual review.
       function applyAllFixable(graph, report) {
         let g = graph
         let r = report
@@ -2274,8 +2281,7 @@ export default function clientPlugin() {
         let skipped = 0
         for (const issue of (report && Array.isArray(report.issues) ? report.issues : [])) {
           if (!issue || issue.status !== 'open') continue
-          const hasFix = issue.proposedFix && issue.proposedFix.action && issue.proposedFix.action !== 'none'
-          if (!hasFix) { skipped += 1; continue }
+          if (!bulkFixEligible(issue)) { skipped += 1; continue }
           const next = applyPatch(g, issue)
           if (next !== g) {
             g = next
@@ -2472,6 +2478,11 @@ export default function clientPlugin() {
           .map((edge) => key(edge))
       }
       function nodeTypeFixConflicts(graph, fix) {
+        if (fix?.action === 'merge_nodes' && graph) {
+          const from = (graph.nodes || []).find((node) => node.id === fix.nodePatch?.id)
+          const into = (graph.nodes || []).find((node) => node.id === fix.mergeIntoId)
+          if (from && into && from.type !== into.type) return [from.id + ':' + from.type + ' → ' + into.id + ':' + into.type]
+        }
         if (fix?.action !== 'update_node' || !fix.nodePatch?.patch?.type || !graph) return []
         const nodes = (graph.nodes || []).map((n) => n.id === fix.nodePatch.id
           ? { ...n, type: fix.nodePatch.patch.type } : n)
@@ -2507,7 +2518,8 @@ export default function clientPlugin() {
           edges = edges.filter((e) => e.fromNodeId !== id && e.toNodeId !== id)
           const idx = nodes.findIndex((x) => x.id === id)
           if (idx >= 0) { nodes.splice(idx, 1); changed = true; auditDetail = 'delete_node:' + id }
-        } else if (fix.action === 'merge_nodes' && fix.nodePatch && fix.mergeIntoId && ids.has(fix.nodePatch.id) && ids.has(fix.mergeIntoId) && fix.nodePatch.id !== fix.mergeIntoId) {
+        } else if (fix.action === 'merge_nodes' && fix.nodePatch && fix.mergeIntoId && ids.has(fix.nodePatch.id) && ids.has(fix.mergeIntoId) && fix.nodePatch.id !== fix.mergeIntoId
+          && nodes.find((node) => node.id === fix.nodePatch.id)?.type === nodes.find((node) => node.id === fix.mergeIntoId)?.type) {
           const from = fix.nodePatch.id
           const into = fix.mergeIntoId
           const redirected = []
@@ -2533,12 +2545,13 @@ export default function clientPlugin() {
           }
         } else if ((fix.action === 'update_edge' || fix.action === 'delete_edge' || fix.action === 'add_edge') && fix.edgePatch) {
           const p = fix.edgePatch
+          const oldRelation = p.oldRelation || (fix.action === 'delete_edge' ? p.relation : null)
           let idx = Number.isInteger(p.index) && p.index >= 0 && p.index < edges.length ? p.index : -1
           if (idx >= 0 && (edges[idx].fromNodeId !== p.fromNodeId || edges[idx].toNodeId !== p.toNodeId
-            || (p.oldRelation && edges[idx].relation !== p.oldRelation))) idx = -1
+            || (oldRelation && edges[idx].relation !== oldRelation))) idx = -1
           if (idx < 0) {
             const candidates = edges.flatMap((e, i) => e.fromNodeId === p.fromNodeId && e.toNodeId === p.toNodeId
-              && (!p.oldRelation || e.relation === p.oldRelation) ? [i] : [])
+              && (!oldRelation || e.relation === oldRelation) ? [i] : [])
             if (candidates.length === 1) idx = candidates[0]
           }
           if (fix.action === 'update_edge' && idx >= 0) {
@@ -5755,7 +5768,9 @@ export default function clientPlugin() {
         }, [questionPhase])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
-        const fixableCount = openIssues.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none').length
+        const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
+        const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
+          && (reportStale || !bulkFixEligible(it))).length
         const shown = issues.filter((it) => {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
           return true
@@ -5876,7 +5891,7 @@ export default function clientPlugin() {
                       pendingDestructiveFix === JSON.stringify(qFix)
                         ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
-                        '暂不可采纳：会使 ' + qFixConflicts.length + ' 条关系违反本体类型约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先复核这些关系。') : null,
+                        '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
                       h('button', {
                         type: 'button', className: 'kg-primary', disabled: qFixConflicts.length > 0,
@@ -5919,6 +5934,8 @@ export default function clientPlugin() {
                   title: '应用所有可自动修复的问题（' + fixableCount + ' 项）',
                 }, '一键修复 ' + fixableCount + ' 项')
               : null,
+            manualFixCount > 0
+              ? h('span', { className: 'kg-fact-note' }, manualFixCount + ' 项拟议修改需逐条复核') : null,
             verifying
               ? h('div', { style: { minWidth: 0, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', overflowWrap: 'anywhere' } },
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
@@ -5996,7 +6013,7 @@ export default function clientPlugin() {
                       : null,
                     hasFix ? h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(it.proposedFix)) : null,
                     hasFix && nodeTypeFixConflicts(graph, it.proposedFix).length > 0
-                      ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点改型会使现有关系违反本体类型约束。') : null,
+                      ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点类型或关联关系不符合本体约束。') : null,
                     h('div', { className: 'kg-issue-actions' },
                       it.status === 'open' && relationTypeFix
                         ? h('button', { type: 'button', className: 'kg-primary', title: '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
@@ -7167,6 +7184,7 @@ export default function clientPlugin() {
         const colsRef = useRef(null)
         const submittedRef = useRef(null)
         const submissionBusyRef = useRef(false)
+        const bulkFixBusyRef = useRef(false)
         const resumeAttemptRef = useRef(false)
         const [incompleteRuns, setIncompleteRuns] = useState([])
         const [runsError, setRunsError] = useState('')
@@ -8362,7 +8380,10 @@ export default function clientPlugin() {
           const describeCommitError = (error) => {
             const details = error && error.details && typeof error.details === 'object' ? error.details : error
             const issues = details && Array.isArray(details.issues) ? details.issues : []
-            const suffix = issues.length > 0
+            const edges = details && Array.isArray(details.edges) ? details.edges : []
+            const suffix = edges.length > 0
+              ? '：冲突关系 ' + edges.slice(0, 5).join('、')
+              : issues.length > 0
               ? '：' + issues.slice(0, 5).map((issue) => [issue.code, issue.title, issue.targetId].filter(Boolean).join(' / ')).join('；')
               : ''
             return (details && details.message ? details.message : '知识图提交失败') + suffix
@@ -8509,7 +8530,7 @@ export default function clientPlugin() {
           const src = fullText || resultView.sourceText || ''
           const baseline = resultView.graph
           setResultView(makeView(baseline.view?.kind === 'all' ? asAllNodesGraph(g) : g, src))
-          persistGraph(g, baseline)
+          return persistGraph(g, baseline)
         }
         const attachReport = (report, stale) => {
           if (!resultView) return
@@ -8849,24 +8870,33 @@ export default function clientPlugin() {
           commitGraph(g2)
           toastStore.show('已应用修复：' + (issue.title || ''))
         }
-        const handleApplyAll = () => {
-          if (!resultView || !verification) return
-          const open = (verification.issues || []).filter((it) => it.status === 'open')
-          const fixable = open.filter((it) => it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none')
-          if (fixable.length === 0) {
-            toastStore.show('没有可自动修复的待处理问题')
+        const handleApplyAll = async () => {
+          if (!resultView || !verification || bulkFixBusyRef.current) return
+          if (verification.stale === true || resultView.graph.verification?.stale === true) {
+            toastStore.show('审校报告基于旧图，请重新体检后再批量修复')
             return
           }
-          if (!window.confirm('将一键应用 ' + fixable.length + ' 个可自动修复的问题' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
-          const res = applyAllFixable(resultView.graph, verificationRef.current || verification)
-          const nextReport = res.report && res.applied > 0 ? { ...res.report, stale: true } : res.report
-          const g2 = withVerification(res.graph, nextReport, nextReport ? nextReport.stale === true : false)
-          setVerification(nextReport)
-          setActiveIssueId(null)
-          setSelectedNodeId(null)
-          setSelectedEdgeId(null)
-          commitGraph(g2)
-          toastStore.show('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
+          const open = (verification.issues || []).filter((it) => it.status === 'open')
+          const fixable = open.filter(bulkFixEligible)
+          if (fixable.length === 0) {
+            toastStore.show('没有可安全批量修复的问题；疑似重复节点需逐条复核')
+            return
+          }
+          if (!window.confirm('将一键应用 ' + fixable.length + ' 个确定性安全修复' + (open.length > fixable.length ? '，另有 ' + (open.length - fixable.length) + ' 个需要人工复核' : '') + '。继续吗？')) return
+          bulkFixBusyRef.current = true
+          try {
+            const res = applyAllFixable(resultView.graph, verificationRef.current || verification)
+            if (res.applied === 0) { toastStore.show('没有可应用的安全修复，请重新体检'); return }
+            const nextReport = { ...res.report, stale: true }
+            const g2 = withVerification(res.graph, nextReport, true)
+            setVerification(nextReport)
+            setActiveIssueId(null)
+            setSelectedNodeId(null)
+            setSelectedEdgeId(null)
+            if (await commitGraph(g2)) toastStore.show('一键修复已保存：应用 ' + res.applied + ' 项，其余请逐条复核')
+          } finally {
+            bulkFixBusyRef.current = false
+          }
         }
         const handleRejectIssue = (issue, note) => {
           if (!verification) return
