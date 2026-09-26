@@ -1023,6 +1023,170 @@ temporary outputs, browser state, dependencies and signing material are not
 part of the commit. New audit work after this publication still requires new
 authorization before committing, pushing, merging or restarting production.
 
+## Round 17: Non-Modal Workbench Keyboard Ownership
+
+This follow-up starts from local `39812f2255cb26440a764bd2ada40acafb614983`
+on `codex/kg-audit-continuation-20260926`. The earlier global-entry release
+was already deployed under explicit authorization. This round does not commit,
+push, merge or restart production. Only the isolated 3119 `kg-entry` profile
+and synthetic data were used; no production data or configuration was read.
+
+### Reproduced Failures
+
+- On the empty home page, focusing the global launcher and pressing Enter
+  opened the workbench but left `document.activeElement` on the launcher.
+  The next Tab focused the background Settings button, not a workbench control.
+- With Settings focused outside the non-modal window, Escape still unmounted
+  the workbench. `WindowInner` installed a document-wide keydown handler and
+  did not check event ownership, child cancellation or composition state.
+- The new regression failed against the unchanged source with
+  `opening must move keyboard focus into the workbench` before the fix.
+
+### Fix And Boundaries
+
+- Initial opening focuses the existing close control without scrolling.
+  Explicitly reopening an existing window from outside focuses it as well;
+  requesting it while editing inside preserves the current editor focus.
+- The window handles only its own unclaimed Escape events. Other panels,
+  nested dialogs, child-handled keys and IME composition retain their keys.
+  A handled Escape stops propagation rather than also dismissing the app.
+- Explicit close restores the last connected opener only if the workbench
+  still owns focus. A removed/disabled opener falls back to the global entry.
+  Navigation and effect disposal do not force focus back to an old element.
+- No focus trap, hidden mounted workbench, task lifecycle change or draft
+  persistence change was introduced. The existing nested figure dialog keeps
+  its native cancellation and propagation handling.
+
+### Verification
+
+- `kg-workbench-entry-smoke.mjs` now mounts the actual window effects in both
+  source and generated-client modes. It covers initial/repeated focus,
+  inside/outside and child-handled Escape, native-event composition, legacy
+  IME key code, nested dialog ownership, opener removal and effect disposal.
+- Fresh entry, resize-performance and trajectory-client smoke tests passed.
+- Real Playwright checks against 3119 passed on expanded/collapsed sidebars:
+  Enter focuses Close, then Tab reaches the model selector. Native select
+  popup Escape cancels only the popup; the next Escape closes the workbench
+  and restores the launcher. Outside Escape leaves the workbench open.
+  Reopening from outside and closing by click both restore the expected focus.
+- Browser negative cases passed for a synthetic composing key, a child that
+  prevents the key, and an injected native nested-dialog probe. The nested
+  probe is not claimed as an end-to-end figure-image test or an OS IME test.
+- At 390 x 844, the focused close control stayed within the viewport at
+  x=347, y=17, width=26, height=26. The inspected screenshot is
+  `output/playwright/workbench-keyboard-mobile.png`.
+- The isolated browser allowed only read-only knowledge-graph endpoints.
+  Its request log showed no model, task-start or graph-write calls and its
+  console had zero errors/warnings. The synthetic stored document remained
+  revision 1, two nodes, one relation, with loaded-document SHA-256
+  `64a7b5d1347c97ebddab87318a510dc1a578f1f8b9ea784d52e78626efb9c123`.
+  The owned browser was closed; the existing 3119 preview was left running.
+- Source and generated client/viewer were rebuilt. The shared store is also
+  included in the standalone viewer, so its CRX was repacked with the existing
+  external identity. Payload parity and stale-payload rejection passed.
+- Fresh full Node 24 `npm test` passed, exit 0, including entry, task/review
+  lifecycle, source/generated parity, ontology and signed extension checks.
+  `git diff --check` passed. Existing npm `allow-scripts` and experimental
+  SQLite warnings remain; no analyzer or test gate was suppressed.
+  The local receipt and tested artifact hashes are in
+  `output/round17-keyboard-verification.json`.
+
+Next: reproduce close/reopen with unsubmitted text beyond the small localStorage
+draft limit and with image bytes, including quota failures. The earlier small
+text draft test does not prove those cases. Then check coexistence with other
+sidebar footer actions. Existing graph/review and navigation risks below remain
+separate work items, not implicitly cleared by this keyboard fix.
+
+## Round 18: Unsubmitted Input Survives Closing The Workbench
+
+Continued on the same isolated branch, preserving the uncommitted round 17
+focus fix. Production remains outside this round: no commit, push, merge,
+production restart, production graph/report/configuration/credential access,
+paid model call or user task action was performed.
+
+### Reproduced Failures
+
+- On 3119, entering 75,000 characters and closing/reopening the window restored
+  zero characters. `LS_DRAFT` was null because the old persistence effect deleted
+  text beyond 64 * 1024 JavaScript characters, despite the input allowing a
+  million characters. The window then destroyed its only remaining copy.
+- Selecting a real PNG produced a decoded thumbnail; after close/reopen its
+  count changed from one to zero. Image input and prepared Markdown bundle
+  state lived only in `WorkbenchBody`; mount-owned preview URLs were revoked.
+- The small-draft storage effect also ignored quota failures, allowing an old
+  stored value to replace newer in-memory input on reopening.
+
+### Fix And Boundaries
+
+- A single page-lifetime input draft retains new-document title, complete text,
+  prepared image bytes/immutable Blob and prepared Markdown bundle identity.
+  It does not retain a canonical graph, review snapshot or running controller.
+- Small text still uses the existing bounded localStorage format. Large text,
+  images and bundle payloads are never serialized there. Readiness gating keeps
+  the initial empty render from overwriting the draft before restoration ends.
+  An explicit empty draft takes precedence over stale stored input; clearing
+  removes the old storage entry even when setItem is over quota.
+- Each reopen allocates new preview URLs from retained Blobs. Existing unmount
+  cleanup revokes the previous mount's URLs. A preview allocation failure
+  reports the problem without deleting image bytes.
+- The always-mounted overlay retains only a beforeunload warning for input that
+  cannot be recovered from storage, including when the floating window is
+  closed. Clearing input, accepting an existing task ID or restoring a
+  canonical document releases the warning. The workbench still unmounts.
+- Existing pending-task references retain priority. Canonical documents still
+  reload from Host/SQLite; a successfully loaded graph clears the temporary
+  new-document draft instead of being cached as a browser graph.
+
+### Verification
+
+- New `scripts/kg-workbench-draft-smoke.mjs` executes the actual source and
+  generated draft store, restoration/persistence effects and closed overlay.
+  It covers 64 * 1024 boundaries, one million characters, storage quota failure,
+  stale stored values, explicit clear, image bytes/preview ownership, preview
+  allocation failure, bundle identity, canonical/pending references, and unload
+  listener disposal without mounting hidden task controllers. It runs in the
+  standard `test:kg-entry` command, alongside the focus/entry regression.
+- Browser checks restored 75,000 characters exactly as entered, while
+  localStorage remained empty for that large draft. A real
+  PNG restored with a new URL and the prior URL was observed being revoked.
+  Its before/after SHA-256 was
+  `9c48e9227657b5b4d84f136d22392b0139a7b949a387913c96073979fa6062aa`;
+  both images decoded to 390 x 844 pixels.
+- An actual beforeunload dialog appeared for a closed large draft. Dismissing
+  the refresh left all 84,000 characters intact. The CLI reload waiter timed
+  out waiting for a deliberately cancelled navigation; this was not treated as
+  a successful page load. After clearing, the warning was absent, and a small
+  draft survived a genuine successful page reload.
+- Injecting a real browser `Storage.setItem` quota error preserved the latest
+  small draft across close/reopen, rather than restoring its stale stored
+  predecessor. Explicit clear stayed empty. The browser prototype was restored
+  after the check.
+- Mobile 390 x 844 close/reopen preserved both text and a decoded thumbnail.
+  Inspected screenshot: `output/playwright/workbench-draft-mobile.png`.
+- Loading the synthetic two-node/one-relation document and retained review from
+  History still worked after close/reopen, without an unload warning. Its
+  revision stayed 1 and its loaded-document SHA-256 stayed
+  `64a7b5d1347c97ebddab87318a510dc1a578f1f8b9ea784d52e78626efb9c123`.
+  Only read-only graph endpoints were allowed in the browser; model/task-start
+  and graph-write routes were blocked. The owned browser/draft were cleared
+  and closed; the isolated preview service was left running.
+- Fresh full Node 24 `npm test` passed, exit 0. Complete output is in
+  `output/round18-npm-test.log`. Source/generated client parity, existing
+  signed extension payload parity and stale-payload rejection passed. No new
+  signing operation or identity was required in this round. Existing npm,
+  SQLite and synthetic PDF/OCR diagnostic output was not suppressed.
+  Tested artifact hashes and the browser receipt are recorded in
+  `output/round18-draft-verification.json`; `git diff --check` passed.
+
+Remaining boundaries: this is page-memory retention, not durable large-draft
+storage. Forced navigation, a browser crash, mobile process eviction or plugin
+hot replacement can still discard it; beforeunload is only a best-effort guard.
+Already-read new-document inputs are covered, not an in-progress file read or
+PDF/Markdown import, nor unsubmitted append text in an existing graph. Next
+trace those asynchronous close/import paths with controlled delayed fixtures,
+then check other sidebar footer actions. Delayed initial document restoration
+versus new typing remains a separate navigation race to prove.
+
 ## Next Checks
 
 1. Intrinsically oversized whole-graph issue review now fails explicitly; a

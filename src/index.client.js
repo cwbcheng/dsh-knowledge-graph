@@ -1116,11 +1116,16 @@ export default function clientPlugin() {
 
       // ------------------------ cross-component stores ------------------------
       const winListeners = new Set()
+      const winFocusListeners = new Set()
       let winOpen = false
       const winStore = {
-        setOpen(v) { if (winOpen !== v) { winOpen = v; for (const fn of winListeners) fn() } },
+        setOpen(v) {
+          if (winOpen !== v) { winOpen = v; for (const fn of winListeners) fn() }
+          if (v) for (const fn of winFocusListeners) fn()
+        },
         getOpen() { return winOpen },
         subscribe(fn) { winListeners.add(fn); return () => winListeners.delete(fn) },
+        subscribeFocus(fn) { winFocusListeners.add(fn); return () => winFocusListeners.delete(fn) },
       }
 
       const toastListeners = new Set()
@@ -6885,16 +6890,41 @@ export default function clientPlugin() {
 
       function WindowInner({ ctx }) {
         const winRef = useRef(null)
+        const openerRef = useRef(null)
         const geometryDrag = useGeometryDrag()
         const [rect, setRect] = useState(() => loadWinRect())
         const toastMsg = useSyncExternalStore(toastStore.subscribe, toastStore.get)
         const body = useMemo(() => h(WorkbenchBody, { ctx }), [ctx])
 
         useEffect(() => {
-          const onKey = (e) => { if (e.key === 'Escape') winStore.setOpen(false) }
-          document.addEventListener('keydown', onKey)
-          return () => document.removeEventListener('keydown', onKey)
+          const focusWindow = () => {
+            const surface = winRef.current
+            if (!surface?.isConnected || surface.contains(document.activeElement)) return
+            openerRef.current = document.activeElement
+            surface.querySelector('.kg-win-close')?.focus({ preventScroll: true })
+          }
+          focusWindow()
+          return winStore.subscribeFocus(focusWindow)
         }, [])
+
+        const closeWindow = () => {
+          // This window is non-modal: closing must not steal focus from another
+          // panel, and unmounting during navigation must not restore old focus.
+          if (winRef.current?.contains(document.activeElement)) {
+            const opener = openerRef.current
+            const target = opener?.isConnected && !opener.disabled && opener !== document.body
+              ? opener : document.querySelector('.kg-sidebar-btn')
+            target?.focus({ preventScroll: true })
+          }
+          winStore.setOpen(false)
+        }
+        const onWindowKeyDown = e => {
+          if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229) return
+          if (e.target?.closest('dialog, [role="dialog"]') !== e.currentTarget) return
+          e.preventDefault()
+          e.stopPropagation()
+          closeWindow()
+        }
 
         const saveRect = (r) => {
           try { localStorage.setItem(LS_WIN, JSON.stringify({ x: r.x, y: r.y, w: r.w, h: r.h })) } catch (e) {}
@@ -6924,12 +6954,13 @@ export default function clientPlugin() {
         return h('div', {
           className: 'kg-win', ref: winRef,
           role: 'dialog', 'aria-label': '资料 ⇄ 知识图 浮动工作台',
+          onKeyDown: onWindowKeyDown,
           style: { left: rect.x, top: rect.y, width: rect.w, height: rect.h },
         },
           h('div', { className: 'kg-win-bar', onPointerDown: event => startWindowDrag(event, false), title: '拖动移动窗口' },
             h('span', { className: 'kg-win-dot', 'aria-hidden': 'true' }),
             h('span', { className: 'kg-win-title' }, '知识库 · 资料 ⇄ 知识图'),
-            h('button', { type: 'button', className: 'kg-win-close', 'aria-label': '关闭工作台', onClick: () => winStore.setOpen(false) }, '×'),
+            h('button', { type: 'button', className: 'kg-win-close', 'aria-label': '关闭工作台', onClick: closeWindow }, '×'),
           ),
           h('div', { className: 'kg-win-body' }, body),
           toastMsg ? h('div', { className: 'kg-toast', role: 'status' }, toastMsg) : null,
@@ -6939,6 +6970,13 @@ export default function clientPlugin() {
 
       function FloatingWindow({ ctx }) {
         const open = useSyncExternalStore(winStore.subscribe, winStore.getOpen)
+        const unsavedDraft = useSyncExternalStore(workbenchDraftStore.subscribe, workbenchDraftStore.needsUnloadWarning)
+        useEffect(() => {
+          if (!unsavedDraft) return
+          const warn = event => { event.preventDefault(); event.returnValue = '' }
+          window.addEventListener('beforeunload', warn)
+          return () => window.removeEventListener('beforeunload', warn)
+        }, [unsavedDraft])
         if (!open) return null
         return h(WindowInner, { ctx })
       }
@@ -7130,6 +7168,7 @@ export default function clientPlugin() {
           mediaType: file.type,
           bytes: bytes.length,
           data: bytesToBase64(bytes),
+          previewBlob: file,
           previewUrl: URL.createObjectURL(file),
         }
       }
@@ -7500,6 +7539,45 @@ export default function clientPlugin() {
       }
       const { questionNeighborhoodGraph, verificationSourcePayload } = questionContextTools()
 
+      // Closing the window unmounts task controllers, but must not discard input
+      // that has never reached the Host. Keep one in-memory draft, not a graph.
+      function createWorkbenchDraftStore() {
+        let draft = null, volatile = false
+        const listeners = new Set()
+        const warnOnUnload = value => {
+          if (volatile === value) return
+          volatile = value
+          for (const listener of listeners) listener()
+        }
+        return {
+          get() { return draft },
+          needsUnloadWarning() { return volatile },
+          subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+          save({ title, text, imageInputs, markdownBundle }) {
+            draft = { title, text, markdownBundle,
+              imageInputs: imageInputs.map(({ previewUrl, ...image }) => image) }
+            let persisted = false
+            try {
+              if (!title && !text && imageInputs.length === 0 && !markdownBundle) {
+                localStorage.removeItem(LS_DRAFT)
+                persisted = true
+              } else if (text.length <= 64 * 1024) {
+                localStorage.setItem(LS_DRAFT, JSON.stringify({ title, text }))
+                persisted = imageInputs.length === 0 && !markdownBundle
+              } else localStorage.removeItem(LS_DRAFT)
+            } catch (error) {}
+            warnOnUnload(Boolean(title || text || imageInputs.length || markdownBundle) && !persisted)
+          },
+          submitted() { warnOnUnload(false) },
+          clear() {
+            draft = null
+            try { localStorage.removeItem(LS_DRAFT) } catch (error) {}
+            warnOnUnload(false)
+          },
+        }
+      }
+      const workbenchDraftStore = createWorkbenchDraftStore()
+
       function WorkbenchBody({ ctx }) {
         const [title, setTitle] = useState('')
         const [text, setText] = useState('')
@@ -7510,6 +7588,7 @@ export default function clientPlugin() {
         const imageInputRef = useRef(null)
         const folderInputRef = useRef(null)
         const [markdownBundle, setMarkdownBundle] = useState(null)
+        const [draftRestored, setDraftRestored] = useState(false)
         const [folderPreparing, setFolderPreparing] = useState(false)
         const [openFigure, setOpenFigure] = useState(null)
         const pdfInputRef = useRef(null)
@@ -7854,7 +7933,7 @@ export default function clientPlugin() {
           setExtractProgress(null)
         }
 
-        // ---- restore pending task / saved document reference / small draft ----
+        // ---- restore pending task / saved document reference / input draft ----
         useEffect(() => {
           let disposed = false
           try { for (const key of LEGACY_LARGE_STORAGE_KEYS) localStorage.removeItem(key) } catch (e) {}
@@ -7870,6 +7949,7 @@ export default function clientPlugin() {
             try { pending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null') } catch (e) {}
             try { saved = JSON.parse(localStorage.getItem(LS_RESULT) || 'null') } catch (e) {}
             try { draft = JSON.parse(localStorage.getItem(LS_DRAFT) || 'null') } catch (e) {}
+            const memoryDraft = workbenchDraftStore.get()
             const restoreDocument = async (documentId, savedTitle) => {
               try {
                 const loaded = await loadGraphDocument({ documentId })
@@ -7912,6 +7992,24 @@ export default function clientPlugin() {
               setTaskId(pending.taskId)
               return
             }
+            if (memoryDraft) {
+              let previewFailures = 0
+              const restoredImages = memoryDraft.imageInputs.map(image => {
+                let previewUrl
+                try {
+                  previewUrl = URL.createObjectURL(image.previewBlob)
+                  uploadPreviewUrlsRef.current.add(previewUrl)
+                } catch (error) { previewFailures++ }
+                return { ...image, previewUrl }
+              })
+              setTitle(memoryDraft.title)
+              setText(memoryDraft.text)
+              setImageInputs(restoredImages)
+              imageInputsRef.current = restoredImages
+              setMarkdownBundle(memoryDraft.markdownBundle)
+              if (previewFailures) setError({ message: '部分图片预览暂不可用，已保留原始图片数据。' })
+              return
+            }
             if (saved && typeof saved.documentId === 'string' && saved.documentId) {
               if (await restoreDocument(saved.documentId, saved.title)) { setPhase('done'); return }
               if (disposed) return
@@ -7920,18 +8018,18 @@ export default function clientPlugin() {
               setTitle(typeof draft.title === 'string' ? draft.title : '')
               setText(typeof draft.text === 'string' ? draft.text : '')
             }
-          })()
+          })().catch(error => {
+            if (!disposed) setError({ message: '恢复输入资料失败：' + (error?.message || error) })
+          }).finally(() => { if (!disposed) setDraftRestored(true) })
           return () => { disposed = true }
         }, [])
 
         useEffect(() => {
-          // localStorage is UI state, not the book store. Keep only a modest
-          // pre-submit draft; large sources live in Host/SQLite after submit.
-          try {
-            if (text.length <= 64 * 1024) localStorage.setItem(LS_DRAFT, JSON.stringify({ title, text }))
-            else localStorage.removeItem(LS_DRAFT)
-          } catch (e) {}
-        }, [title, text])
+          if (!draftRestored) return
+          if (resultView) { workbenchDraftStore.clear(); return }
+          if (phase === 'idle') workbenchDraftStore.save({ title, text, imageInputs, markdownBundle })
+          else if (taskId) workbenchDraftStore.submitted()
+        }, [draftRestored, title, text, imageInputs, markdownBundle, resultView, phase, taskId])
 
         // ---- consume page-selection inbox (chat 划线 -> knowledge graph) ----
         const selIn = useSyncExternalStore(selStore.subscribe, selStore.get)

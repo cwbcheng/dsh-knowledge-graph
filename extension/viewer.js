@@ -402,11 +402,16 @@
 
       // ------------------------ cross-component stores ------------------------
       const winListeners = new Set()
+      const winFocusListeners = new Set()
       let winOpen = false
       const winStore = {
-        setOpen(v) { if (winOpen !== v) { winOpen = v; for (const fn of winListeners) fn() } },
+        setOpen(v) {
+          if (winOpen !== v) { winOpen = v; for (const fn of winListeners) fn() }
+          if (v) for (const fn of winFocusListeners) fn()
+        },
         getOpen() { return winOpen },
         subscribe(fn) { winListeners.add(fn); return () => winListeners.delete(fn) },
+        subscribeFocus(fn) { winFocusListeners.add(fn); return () => winFocusListeners.delete(fn) },
       }
 
       const toastListeners = new Set()
