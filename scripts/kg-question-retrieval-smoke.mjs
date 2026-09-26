@@ -5,14 +5,16 @@ function assert(condition, message) {
 }
 
 const requests = []
+let queuedReplies = []
 let reply = {
   verdict: 'insufficient', answer: '需要复核。', evidence: [], proposedFix: { action: 'none' },
 }
 const llm = {
   stream(request) {
     requests.push(request)
+    const response = queuedReplies.length > 0 ? queuedReplies.shift() : reply
     return (async function* () {
-      yield { type: 'text-delta', index: 0, text: JSON.stringify(reply) }
+      yield { type: 'text-delta', index: 0, text: JSON.stringify(response) }
       yield { type: 'finish', reason: { kind: 'stop' } }
     })()
   },
@@ -133,4 +135,100 @@ const nonexistentOldEdge = await askRelation({ action: 'update_edge', edgePatch:
 } })
 assert(nonexistentOldEdge.proposedFix.action === 'none',
   'a proposed update must not silently target an edge that does not exist')
-console.log(JSON.stringify({ ok: true, referenced: true, searched: true, scoped: true, ontologyRepair: true, retarget: true }))
+
+const reviewText = '原文仅说明第一特征。'
+const reviewGraph = { nodes: [
+  { id: 'n1', type: 'concept', text: '第一特征和第二特征', quote: reviewText, paragraph: 0 },
+  { id: 'n2', type: 'concept', text: '相关概念', quote: reviewText, paragraph: 0 },
+], edges: [{ fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports' }] }
+const candidate = { id: 'review-1', targetKind: 'node', targetId: 'n1', category: 'grounding',
+  title: '节点编造了原文没有的第二特征', detail: '应删除第二特征',
+  evidence: [{ paragraph: 0, quote: reviewText }],
+  proposedFix: { action: 'delete_node', nodePatch: { id: 'n1' } } }
+async function reviewIssue(issue = candidate, target = { kind: 'node', id: 'n1' }, currentGraph = reviewGraph) {
+  const start = await handlers.get('question-graph')({ graph: currentGraph, text: reviewText,
+    question: '请独立核实问题是否成立', target, reviewIssue: issue,
+    model: { provider: 'fake', model: 'fake' } })
+  if (start.error) return start
+  assert(start.taskId, 'issue review did not start')
+  for (let i = 0; i < 100; i++) {
+    const status = await handlers.get('task-status')({ taskId: start.taskId })
+    if (status.status !== 'running') return status
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error('issue review did not finish')
+}
+reply = { verdict: 'confirmed', answer: '原文没有第二特征，应收窄节点。',
+  evidence: [{ paragraph: 0, quote: reviewText }],
+  proposedFix: { action: 'update_node', nodePatch: { id: 'n1', patch: { text: '第一特征' } } } }
+const confirmed = await reviewIssue()
+assert(confirmed.status === 'succeeded' && confirmed.result.mode === 'issue_review'
+  && confirmed.result.reviewedIssueId === candidate.id && confirmed.result.verdict === 'confirmed',
+  'a source-backed issue must receive an issue-specific verdict')
+assert(confirmed.result.proposedFix.action === 'update_node'
+  && confirmed.result.proposedFix.nodePatch.patch.text === '第一特征',
+  'a confirmed issue must carry a sanitized repair rather than the original deletion suggestion')
+const reviewPrompt = requests.at(-1).messages[0].content[0].text
+assert(reviewPrompt.includes('待复核问题') && reviewPrompt.includes('不是事实')
+  && reviewPrompt.includes('"fromNodeId":"n1"') && reviewPrompt.includes('"toNodeId":"n2"'),
+  'issue review must send the allegation and complete incident relation context')
+queuedReplies = [
+  { verdict: 'confirmed', answer: '节点结尾的第二特征没有原文依据，应删除这一句。',
+    evidence: [{ paragraph: 0, quote: reviewText }], proposedFix: { action: 'none' } },
+  { proposedFix: { action: 'update_node', nodePatch: { id: 'n1', patch: { text: '第一特征' } } },
+    reason: '保留有据部分，不改变类型或关系。' },
+]
+const beforeRepairCalls = requests.length
+const planned = await reviewIssue()
+assert(planned.result.verdict === 'confirmed' && planned.result.repairStatus === 'ready'
+  && planned.result.proposedFix.action === 'update_node'
+  && planned.result.proposedFix.nodePatch.patch.text === '第一特征',
+  'a confirmed overclaim with no initial patch must receive a second structured repair attempt')
+assert(requests.length === beforeRepairCalls + 2 &&
+  requests.at(-1).messages[0].content[0].text.includes('独立核实结论'),
+  'the repair planner must use the verified conclusion instead of treating the allegation as fact')
+assert(reviewGraph.nodes[0].text === '第一特征和第二特征' && reviewGraph.edges.length === 1,
+  'planning a repair must not mutate the graph before user confirmation')
+queuedReplies = [
+  { verdict: 'confirmed', answer: '第二特征无据。', evidence: [{ paragraph: 0, quote: reviewText }],
+    proposedFix: { action: 'none' } },
+  { proposedFix: { action: 'update_node', nodePatch: { id: 'n2', patch: { text: '错误修改' } } } },
+]
+const invalidPlan = await reviewIssue()
+assert(invalidPlan.result.verdict === 'confirmed' && invalidPlan.result.repairStatus === 'not_generated'
+  && invalidPlan.result.proposedFix.action === 'none',
+  'a second model call cannot repair a different node or expose a misleading apply button')
+reply = { verdict: 'false_positive', answer: '原图有依据。',
+  evidence: [{ paragraph: 0, quote: reviewText }],
+  proposedFix: { action: 'delete_node', nodePatch: { id: 'n1' } } }
+const falsePositive = await reviewIssue()
+assert(falsePositive.result.verdict === 'false_positive' && falsePositive.result.proposedFix.action === 'none',
+  'a false positive must never expose a graph mutation')
+reply = { verdict: 'false_positive', answer: '没有提供证据但声称原图有依据。',
+  evidence: [{ paragraph: 0, quote: '原文没有这段内容' }], proposedFix: { action: 'none' } }
+const unsupportedDismissal = await reviewIssue()
+assert(unsupportedDismissal.result.verdict === 'uncertain',
+  'an ungrounded false-positive verdict must not allow dismissing an existing issue')
+reply = { verdict: 'confirmed', answer: '编造了特征。',
+  evidence: [{ paragraph: 0, quote: '不存在的原文引文' }],
+  proposedFix: { action: 'delete_node', nodePatch: { id: 'n1' } } }
+const ungrounded = await reviewIssue()
+assert(ungrounded.result.verdict === 'uncertain' && ungrounded.result.proposedFix.action === 'none',
+  'a grounding issue without a validated paragraph quote must not be confirmed or repaired')
+reply = { verdict: 'confirmed', answer: '目标节点有误。',
+  evidence: [{ paragraph: 0, quote: reviewText }],
+  proposedFix: { action: 'update_node', nodePatch: { id: 'n2', patch: { text: '错误修改' } } } }
+const unrelated = await reviewIssue()
+assert(unrelated.result.verdict === 'confirmed' && unrelated.result.proposedFix.action === 'none',
+  'a repair aimed at a different node must be rejected')
+const mismatched = await reviewIssue({ ...candidate, targetId: 'n2' })
+assert(mismatched.error?.code === 'invalid_input', 'a candidate cannot be rechecked against a different target')
+const hub = { nodes: [reviewGraph.nodes[0], ...Array.from({ length: 96 }, (_, i) => ({
+  id: 'h' + i, type: 'concept', text: '邻居 ' + i, quote: reviewText, paragraph: 0,
+}))], edges: Array.from({ length: 96 }, (_, i) => ({ fromNodeId: 'n1', toNodeId: 'h' + i, relation: 'supports' })) }
+const callsBeforeHub = requests.length
+const oversized = await reviewIssue(candidate, { kind: 'node', id: 'n1' }, hub)
+assert(oversized.status === 'failed' && oversized.error?.code === 'review_context_incomplete'
+  && requests.length === callsBeforeHub, 'an oversized hub must fail closed before querying the model')
+console.log(JSON.stringify({ ok: true, referenced: true, searched: true, scoped: true,
+  ontologyRepair: true, retarget: true, issueReview: true }))

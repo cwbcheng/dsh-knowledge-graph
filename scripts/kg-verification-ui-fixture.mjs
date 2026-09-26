@@ -12,6 +12,7 @@ const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
+const reviewMode = process.argv.includes('--review')
 const paragraphs = Array.from({ length: 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 const sourceText = paragraphs.join('\n\n')
 const graph = {
@@ -22,6 +23,17 @@ const graph = {
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
 }
+if (reviewMode) {
+  for (const node of graph.nodes.slice(0, 2)) { node.quote = ''; node.evidence = []; node.groundingStatus = 'unverified' }
+  graph.verification = { stale: true, lastReport: {
+    reportId: 'fixture-review', mode: 'deep', summary: 'Isolated batch review fixture', stale: true,
+    metrics: { errorCount: 2, warningCount: 2, suggestionCount: 0 },
+    issues: graph.nodes.slice(0, 4).map((node, i) => ({ id: 'review-' + node.id, targetKind: 'node', targetId: node.id,
+      title: i < 2 ? 'Missing source quote' : 'Check source support', detail: 'Check only this node against its source paragraph.',
+      severity: i < 2 ? 'error' : 'warning', source: 'ai', status: 'open', evidence: [{ paragraph: i, quote: paragraphs[i] }],
+      proposedFix: { action: 'none' } })),
+  } }
+}
 store.saveGraph(graph, { sourceText })
 const routes = new Map(), ctx = new Context(), pending = new Set()
 const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0 }
@@ -31,8 +43,16 @@ class Timer extends Service {
   interval(fn, ms) { return this.ctx.effect(() => { const id = setInterval(fn, ms); return () => clearInterval(id) }) }
 }
 await ctx.plugin(Timer)
-ctx.provide('llm', { stream() {
+ctx.provide('llm', { stream(request) {
   stats.modelCalls++
+  const reviewedIndex = Number(JSON.stringify(request).match(/review-n(\d+)/)?.[1])
+  const reply = reviewMode && Number.isInteger(reviewedIndex) ? {
+    verdict: reviewedIndex < 2 ? 'confirmed' : reviewedIndex === 2 ? 'false_positive' : 'uncertain',
+    answer: 'Fixture evidence decision for n' + reviewedIndex,
+    evidence: [{ paragraph: reviewedIndex, quote: paragraphs[reviewedIndex] }],
+    proposedFix: reviewedIndex < 2 ? { action: 'update_node', nodePatch: { id: 'n' + reviewedIndex,
+      patch: { quote: paragraphs[reviewedIndex] } } } : { action: 'none' },
+  } : { issues: [] }
   let closed = false
   const values = [{ done: false, value: { type: 'reasoning-delta', index: 0, text: 'fixture' } }], readers = []
   const stream = {
@@ -41,7 +61,7 @@ ctx.provide('llm', { stream() {
     return() { closed = true; pending.delete(stream); while (readers.length) readers.shift()({ done: true }); return Promise.resolve({ done: true }) },
     finish() {
       if (closed) return
-      const item = { done: false, value: { type: 'text-delta', index: 0, text: '{"issues":[]}' } }
+      const item = { done: false, value: { type: 'text-delta', index: 0, text: JSON.stringify(reply) } }
       if (readers.length) readers.shift()(item); else values.push(item)
       this.return()
     },
@@ -53,7 +73,7 @@ ctx.provide('llm', { stream() {
 ctx.provide('webServer', { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } })
 await ctx.plugin(plugin).await()
 const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Isolated verification fixture</title><style>body{margin:0;font:14px system-ui}main{max-width:1280px;margin:auto;padding:12px;box-sizing:border-box}nav{display:flex;gap:8px;padding:8px;flex-wrap:wrap;background:#e5e7eb;color:#111}#fixture-state{overflow-wrap:anywhere}</style>
+<title>Isolated verification fixture</title><style>body{margin:0;font:14px system-ui}main{max-width:1280px;margin:auto;padding:12px;box-sizing:border-box}nav{display:flex;gap:8px;padding:8px;flex-wrap:wrap;background:#e5e7eb;color:#111}#fixture-state{white-space:pre-wrap;overflow-wrap:anywhere}</style>
 <script src="/react.js"></script><script src="/react-dom.js"></script></head><body>
 <nav aria-label="Fixture controls"><a href="/">Workbench fixture</a><a href="/?trajectory=1">Trajectory fixture</a>
 <button onclick="control('next')">Finish one batch</button><button onclick="control('complete')">Complete fixture task</button>
@@ -80,7 +100,8 @@ const server = createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store')
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
-    if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId) }); return }
+    if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      issueStatuses: store.getDocument(documentId).verification?.lastReport?.issues?.map(issue => issue.status) }); return }
     if (url.pathname.startsWith('/fixture/') && req.method === 'POST') {
       if (url.pathname.endsWith('/offline')) dropStatus = 2
       if (url.pathname.endsWith('/reject-save')) rejectSave = true
@@ -88,7 +109,8 @@ const server = createServer(async (req, res) => {
       if (url.pathname.endsWith('/next')) pending.values().next().value?.finish()
       json({ ok: true }); return
     }
-    if (url.pathname.endsWith('/list-models')) { json({ providers: [], current: { provider: 'fixture', model: 'controlled-model-with-long-name-for-wrapping-check' } }); return }
+    if (url.pathname.endsWith('/list-models')) { json({ providers: [], issueReview: true,
+      current: { provider: 'fixture', model: 'controlled-model-with-long-name-for-wrapping-check' } }); return }
     if (url.pathname.endsWith('/verify-graph')) {
       stats.submissions++; finishAutomatically = false
       // Delay only response delivery: the real route must still consume the body.

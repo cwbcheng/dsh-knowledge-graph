@@ -3132,6 +3132,35 @@ function createHostPlugin(graphContractOnly) {
         return ontIdOf(graph) === DEFAULT_ONTOLOGY ? QUESTION_SYSTEM_PROMPT : LEARNING_VIEW_QUESTION_SYSTEM_PROMPT
       }
 
+      function issueReviewPromptFor(graph) {
+        const profile = ontProfile(graph)
+        return [
+          '你是知识图审校问题的独立复核员。输入中的“待复核问题”只是指控，不是事实；必须重新对照原文和当前子图，不要迎合原审校结论。只输出合法 JSON。',
+          'verdict 只能是 confirmed（问题确实成立）、false_positive（问题不成立）、uncertain（给出的原文或子图不足以裁决）。不能把“尚未找到反证”当成 confirmed。',
+          'answer 解释判断依据和修复取舍。evidence 用本次输入的 [P数字] 段落编号与原文逐字摘录；无法定位直接证据时给空数组。',
+          '只有 confirmed 才可给 proposedFix；false_positive 和 uncertain 必须给 {"action":"none"}。不得照抄待复核问题中的拟议修改，必须独立检查它。',
+          '优先提出一个有原文依据、非破坏性的结构化修复。节点文字仅在末尾混入无据内容时，应保留有据部分，用 update_node 只修改 text；不要因为节点仍有关系或类型正确就改用 none，更不得删除整个节点。',
+          'update_node 格式：{"action":"update_node","nodePatch":{"id":"现有节点ID","patch":{"text":"删去无据部分后的完整节点文字"}}}。只改 text 时不要改 type、quote、paragraph，已有关系保持不变。',
+          '若无法确定安全的单步修复，返回 none 并说明具体阻碍；不得靠删除仍有依据的节点或关系消除警告。',
+          '修改节点类型前核对该节点所有入边和出边；新增或修改关系要有直接关系证据，且满足 from/to 节点类型约束。',
+          '节点类型：' + profile.nodeTypes.map(type => type.id + ' ' + type.zh).join(' / '),
+          '关系类型：' + profile.relationTypes.map(type => type.id + ' ' + type.zh).join(' / '),
+          'JSON 结构：{"verdict":"confirmed|false_positive|uncertain","answer":"判断与原因","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"proposedFix":{"action":"none"}}。',
+        ].join(NL)
+      }
+
+      function issueRepairPromptFor(graph) {
+        const profile = ontProfile(graph)
+        return [
+          '你是知识图结构化修复规划员。上一步 AI 裁决问题成立；请重新对照原文、当前子图和裁决依据，提出一个可执行的 JSON 补丁。只输出合法 JSON：{"proposedFix":{"action":"..."},"reason":"为何该补丁安全"}。',
+          '必须修复已确认的问题，不能只在 reason 里描述修改却返回 none。只有不能确定修改后的具体内容或违反本体约束时才返回 {"action":"none"}，并说明障碍。',
+          '若节点 text 末尾夹杂原文没有的陈述，保留有据部分，返回 {"action":"update_node","nodePatch":{"id":"现有节点ID","patch":{"text":"修正后的完整节点文字"}}}。这不会删除节点或其关系；不要顺带改 type、quote、paragraph。',
+          '关系修复用 add_edge/update_edge/delete_edge 和 edgePatch，必须准确指向已有节点；新增或修改关系要给出直接关系证据 evidence。节点完全无据且无法收窄时才可 delete_node。',
+          '节点类型：' + profile.nodeTypes.map(type => type.id).join('、') + '；关系类型：' + profile.relationTypes.map(type => type.id).join('、') + '。修改类型或关系必须满足全部相关边的类型约束。',
+          '不要照抄原问题的拟议修改；不要添加原文之外的知识；只做一个最确定的修复。',
+        ].join(NL)
+      }
+
       const CONSUMPTION_ANSWER_SYSTEM_PROMPT = [
         '你是「知识图证据问答引擎」。用户会给你一个问题，以及从 canonical knowledge graph 检索出的有限子图和原文证据。',
         '你的目标是直接回答问题，不是审校或修改知识图。只能使用给定的节点、关系和原文证据，禁止引入外部知识。',
@@ -9792,6 +9821,15 @@ function createHostPlugin(graphContractOnly) {
           batches.push({ units, nodes, edges, relationsOnly: true, sourceUnitIds: [], primaryNodeIds: [],
             primaryEdgeKeys: edges.map(edgeKeyHost) })
         }
+        for (const batch of batches) if (batch.nodeReviewOnly) {
+          const paragraphs = new Set()
+          for (const item of [...batch.nodes, ...batch.edges]) {
+            if (Number.isInteger(item.paragraph)) paragraphs.add(item.paragraph)
+            for (const evidence of item.evidence || []) paragraphs.add(evidence?.paragraph)
+          }
+          batch.units = [...paragraphs].filter(p => Number.isInteger(p) && p >= 0 && p < paras.length)
+            .sort((a, b) => a - b).map(num => ({ num, text: paras[num] }))
+        }
         const ownedNodes = new Set(), ownedEdges = new Set(), ownedSource = new Set()
         for (const batch of batches) {
           for (const id of batch.primaryNodeIds || []) {
@@ -10018,24 +10056,46 @@ function createHostPlugin(graphContractOnly) {
         issues.sort((x, y) => (order[x.severity] - order[y.severity]) || (y.confidence - x.confidence))
         return issues
       }
-      function assertFullVerifyBatchIssuesHost(batch, issues) {
+      function assertFullVerifyBatchIssuesHost(batch, issues, batchIndex) {
         const nodeIds = new Set((batch.nodes || []).map(node => node.id))
         for (const issue of issues) {
+          if (!issue || typeof issue !== 'object') throw taskOperationErrorHost('verification_scope_violation',
+            'AI 返回了不属于当前审校批次的问题（第 ' + (batchIndex + 1) + ' 批，格式无效），未保存该批；请续跑重试', 'verification')
           const matchingEdges = issue.targetKind === 'edge' ? (batch.edges || []).filter(edge =>
             edge.fromNodeId + '>' + edge.toNodeId === issue.targetId &&
             (!issue.targetRelation || issue.targetRelation === edge.relation)) : []
           if (issue.targetKind === 'edge' && matchingEdges.length === 1) issue.targetRelation = matchingEdges[0].relation
           const allowed = batch.sourceCoverageOnly
-            ? issue.targetKind === 'graph' && (issue.category === 'completeness' || issue.category === 'summary')
+            ? issue.targetKind === 'graph' && issue.targetId == null &&
+              (issue.category === 'completeness' || issue.category === 'summary')
             : batch.relationsOnly
               ? issue.targetKind === 'edge' && matchingEdges.length === 1
               : (issue.targetKind === 'node' && nodeIds.has(issue.targetId)) ||
                 (issue.targetKind === 'edge' && matchingEdges.length === 1) ||
-                (!batch.nodeReviewOnly && issue.targetKind === 'graph' &&
+                (!batch.nodeReviewOnly && issue.targetKind === 'graph' && issue.targetId == null &&
                   (issue.category === 'completeness' || issue.category === 'summary'))
-          if (!allowed) throw taskOperationErrorHost('verification_scope_violation',
-            'AI 返回了不属于当前审校批次的问题，未保存该批；请续跑重试', 'verification')
+          if (!allowed) {
+            const kind = typeof issue.targetKind === 'string' ? issue.targetKind.replace(/[^a-z_-]/gi, '').slice(0, 24) : 'unknown'
+            const id = typeof issue.targetId === 'string' ? issue.targetId.replace(/[^\w.>:/-]/g, '').slice(0, 60) : ''
+            const label = Number.isInteger(batchIndex) ? '第 ' + (batchIndex + 1) + ' 批，' : ''
+            throw taskOperationErrorHost('verification_scope_violation',
+              'AI 返回了不属于当前审校批次的问题（' + label + kind + (id ? ':' + id : '') + '），未保存该批；请续跑重试', 'verification')
+          }
         }
+      }
+      function verifySystemPromptForBatchHost(task, batch) {
+        const base = verifyPromptFor(task)
+        if (!Array.isArray(batch.primaryNodeIds)) return base
+        const edges = (batch.edges || []).map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation)
+        if (batch.sourceCoverageOnly) return base + NL + NL +
+          '本次是原文覆盖批。只能报告 targetKind="graph"、targetId=null 且 category 为 completeness/summary 的问题。节点索引仅用于辨认已覆盖内容，不得审校节点或关系。'
+        if (batch.relationsOnly) return base + NL + NL +
+          '本次是已有关系批。只能报告以下已有关系的 edge 问题：' + JSON.stringify(edges) +
+          '。节点只作上下文；不得报告 node/graph 问题，也不得将不存在的关系当成已有边。'
+        return base + NL + NL + '本次是节点批。只能报告这些节点：' + JSON.stringify(batch.primaryNodeIds) +
+          '；以及这些已有关系：' + JSON.stringify(edges) + '。' +
+          (batch.nodeReviewOnly ? '原文遗漏和全文总结已由另一批负责，不得报告 graph 问题。' : 'graph 问题仅限 completeness/summary。') +
+          '不得把不存在的关系当作已有边；没有本批合法问题时输出 {"issues":[]}。'
       }
       function verificationInputHashHost(task) {
         return sha256HexHost(JSON.stringify({
@@ -10043,6 +10103,34 @@ function createHostPlugin(graphContractOnly) {
           mode: task.mode, scope: task.scope, paragraphMap: task.paragraphMap,
           model: task.model,
         }))
+      }
+      function verifiedBatchModelsHost(checkpoint, savedResults) {
+        const assignments = checkpoint?.batchModels || {}
+        if (!assignments || typeof assignments !== 'object' || Array.isArray(assignments)) {
+          throw taskOperationErrorHost('checkpoint_invalid', '审校批次模型记录损坏，禁止续跑', 'verification')
+        }
+        const savedIndices = new Set(savedResults.map(item => item.batchIndex))
+        for (const [key, model] of Object.entries(assignments)) {
+          if (!/^(0|[1-9]\d*)$/.test(key) || !savedIndices.has(Number(key)) ||
+            !model || typeof model.provider !== 'string' || !model.provider ||
+            typeof model.model !== 'string' || !model.model) {
+            throw taskOperationErrorHost('checkpoint_invalid', '审校批次模型记录与已保存批次不匹配，禁止续跑', 'verification')
+          }
+        }
+        return { ...assignments }
+      }
+      function verificationModelsUsedHost(results, checkpoint, currentModel) {
+        const assigned = verifiedBatchModelsHost(checkpoint, results.map((result, batchIndex) => result && { batchIndex }).filter(Boolean))
+        const used = new Map()
+        for (let i = 0; i < results.length; i++) {
+          if (!results[i]) continue
+          const model = assigned[i] || currentModel
+          const key = model.provider + '\u0000' + model.model
+          const entry = used.get(key) || { provider: model.provider, model: model.model, batches: 0 }
+          entry.batches++
+          used.set(key, entry)
+        }
+        return [...used.values()]
       }
       async function runVerifyTask(task) {
         if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
@@ -10091,6 +10179,7 @@ function createHostPlugin(graphContractOnly) {
             }
             results[saved.batchIndex] = saved.result
           }
+          verifiedBatchModelsHost(task.checkpoint, (task.verificationResults || []))
           task.progress.verification.completedBatches = results.filter(Boolean).length
           if (fullPlan) for (let i = 0; i < batches.length; i++) if (results[i]) {
             task.progress.verification.coverage.completedNodes += (batches[i].primaryNodeIds || []).length
@@ -10105,16 +10194,33 @@ function createHostPlugin(graphContractOnly) {
             const progress = task.progress.verification
             progress.activeBatches.push(batchProgress)
             progress.phase = progress.activeBatches.some(item => item.phase === 'confirm') ? 'confirm' : 'review'
-            const warnings = []
+            let warnings = []
             try {
-              const obj = await callVerificationJsonHost(task, model, verifyPromptFor(task),
-                buildVerifyUserText2(batch, i, batches.length, task.graph), 360000,
-                'AI 深度审校（' + batchLabel + '）', 'issues', batchProgress, check)
-              let kept = normalizeIssues(obj, task.graph, task.text, totalParagraphs, warnings, 'b' + (i + 1) + ':').issues
-              if (fullPlan) {
-                if (warnings.some(warning => warning.startsWith('verify_issue_dropped:missing_'))) throw taskOperationErrorHost(
-                  'verification_scope_violation', 'AI 返回了不存在或不属于当前图的问题，未保存该批；请续跑重试', 'verification')
-                assertFullVerifyBatchIssuesHost(batch, kept)
+              const userText = buildVerifyUserText2(batch, i, batches.length, task.graph)
+              let kept
+              for (let scopeAttempt = 0; scopeAttempt < (fullPlan ? 2 : 1); scopeAttempt++) {
+                const retryText = scopeAttempt ? userText + NL + NL +
+                  '前次回答含有不属于本批的目标，整次回答已丢弃。请重新独立审校，只输出上文允许的 targetKind、targetId 和 targetRelation；不能确定时返回 {"issues":[]}，不要把越界问题改写成 graph 问题。' : userText
+                const obj = await callVerificationJsonHost(task, model, verifySystemPromptForBatchHost(task, batch), retryText, 360000,
+                  'AI 深度审校（' + batchLabel + '）', 'issues', batchProgress, check)
+                const candidateWarnings = []
+                try {
+                  if (fullPlan) assertFullVerifyBatchIssuesHost(batch, obj.issues, i)
+                  const candidateIssues = normalizeIssues(obj, task.graph, task.text, totalParagraphs,
+                    candidateWarnings, 'b' + (i + 1) + ':').issues
+                  if (fullPlan) {
+                    if (candidateWarnings.some(warning => warning.startsWith('verify_issue_dropped:missing_'))) throw taskOperationErrorHost(
+                      'verification_scope_violation', 'AI 返回了不存在或不属于当前图的问题，未保存该批；请续跑重试', 'verification')
+                    assertFullVerifyBatchIssuesHost(batch, candidateIssues, i)
+                  }
+                  kept = candidateIssues
+                  warnings = candidateWarnings
+                  break
+                } catch (error) {
+                  if (error.code !== 'verification_scope_violation' || scopeAttempt || !fullPlan) throw error
+                  batchProgress.scopeRetry = 1
+                  task.progress.warning = '模型返回了批次范围之外的问题，已丢弃并重试该批'
+                }
               }
               if (task.mode === 'standard' && kept.length > 0) {
                 batchProgress.phase = 'confirm'
@@ -10166,6 +10272,7 @@ function createHostPlugin(graphContractOnly) {
             mode: task.mode === 'standard' ? 'standard' : 'quick',
             createdAt: Date.now(),
             model,
+            modelsUsed: verificationModelsUsedHost(results, task.checkpoint, model),
             scope: task.scope || { kind: 'full', ids: [] },
             ...(fullPlan ? { coverage: { ...fullPlan.coverage, completedNodes: fullPlan.coverage.nodeCount,
               completedEdges: fullPlan.coverage.edgeCount, completedSourceUnits: fullPlan.coverage.sourceUnitCount,
@@ -10226,6 +10333,16 @@ function createHostPlugin(graphContractOnly) {
         if (batch.relationsOnly) s += '本批只审校指定的跨批关系，节点仅作为上下文。逐条检查原文是否证明该关系、方向和条件；端点共现不等于因果。' + NL
         else if (batch.sourceCoverageOnly) s += '本批只核对这些原文单元是否遗漏重要知识，或是否直接反驳图的总结。节点列表是本范围已有内容的索引；不要因局部原文没有涵盖全文就判定总结有误。没有确定问题时返回空 issues。' + NL
         else if (batch.nodeReviewOnly) s += '本批只审校列出的节点和关系；其他节点可能在别的批次，不要据此提出遗漏或全书总结问题。' + NL
+        if (fullPlanBatch) {
+          const allowedEdges = (batch.edges || []).map(edge => edge.fromNodeId + '>' + edge.toNodeId + ' (' + edge.relation + ')')
+          s += batch.sourceCoverageOnly
+            ? '本批合法问题仅为 targetKind="graph"、targetId=null，category 仅为 completeness 或 summary；节点是已覆盖内容的只读索引，不得报告任何 node/edge 问题。' + NL
+            : batch.relationsOnly
+              ? '本批合法问题仅为 targetKind="edge"，targetId 与 targetRelation 必须严格对应以下关系：' + JSON.stringify(allowedEdges) + '。节点仅供理解关系，不得报告 node/graph 问题。' + NL
+              : '本批合法 node targetId：' + JSON.stringify(batch.primaryNodeIds) + '；合法 edge targetId 和 targetRelation：' + JSON.stringify(allowedEdges) +
+                (batch.nodeReviewOnly ? '。不得报告 graph 问题。' : '。graph 问题仅限 completeness 或 summary。') + NL
+          s += '不要报告其他批次的目标，也不要把节点或关系问题改写为 graph 问题；若本批无确定问题，返回 {"issues":[]}。' + NL
+        }
         if (fullPlanBatch && !batch.sourceCoverageOnly) s += '报告关系问题时，targetId 使用 fromNodeId>toNodeId，并同时填写 targetRelation 为该关系的 relation 值。' + NL
         s += NL + '待审校知识图子图（JSON，仅包含本批所需的节点和关系）：' + NL + JSON.stringify(sub)
         if (fullPlanBatch && s.length > 64000) throw taskOperationErrorHost('verification_batch_too_large',
@@ -10339,6 +10456,36 @@ function createHostPlugin(graphContractOnly) {
           warnings: warningList,
         }
       }
+      function reviewFixTargetsIssueHost(fix, issue) {
+        if (!fix || fix.action === 'none' || issue.targetKind === 'graph') return true
+        if (issue.targetKind === 'node') {
+          if (['update_node', 'delete_node', 'merge_nodes'].includes(fix.action)) return fix.nodePatch?.id === issue.targetId
+          if (['add_edge', 'update_edge', 'delete_edge'].includes(fix.action)) {
+            const edge = fix.edgePatch || {}
+            return [edge.fromNodeId, edge.toNodeId, edge.newFromNodeId, edge.newToNodeId].includes(issue.targetId)
+          }
+          return false
+        }
+        if (issue.targetKind === 'edge') {
+          const [from, to] = String(issue.targetId || '').split('>')
+          const edge = fix.edgePatch || {}
+          return ['update_edge', 'delete_edge'].includes(fix.action) && edge.fromNodeId === from && edge.toNodeId === to
+        }
+        return false
+      }
+      function normalizeIssueReviewResultHost(obj, task, context) {
+        const rawVerdict = obj && obj.verdict
+        let verdict = ['confirmed', 'false_positive', 'uncertain'].includes(rawVerdict) ? rawVerdict : 'uncertain'
+        const answer = typeof obj?.answer === 'string' ? obj.answer.trim().slice(0, 2000) : ''
+        const evidence = (sanitizeEvidence(obj?.evidence, task.text, context.paras.length, true) || [])
+          .filter(ev => Number.isInteger(ev.paragraph) && context.pSet.has(ev.paragraph) &&
+            ev.quote && context.paras[ev.paragraph]?.text.includes(ev.quote))
+        if (evidence.length === 0) verdict = 'uncertain'
+        let proposedFix = verdict === 'confirmed'
+          ? sanitizeFix(obj?.proposedFix, task.graph, task.text, context.paras.length) : { action: 'none' }
+        if (!reviewFixTargetsIssueHost(proposedFix, task.reviewIssue)) proposedFix = { action: 'none' }
+        return { verdict, answer, evidence, proposedFix }
+      }
       async function runQuestionTask(task) {
         if (task.cancelled) return failTask(task, 'cancelled', '任务已取消')
         task.cancelHooks = []
@@ -10351,7 +10498,31 @@ function createHostPlugin(graphContractOnly) {
             return failTask(task, 'no_model', '当前环境没有可用的 AI 模型，请先设置模型后重试' + warning)
           }
           if (model) announceModel(task, model)
+          const review = task.reviewIssue
           const ctx2 = buildQuestionContext(task.graph, task.text, task.target, task.question, task.paragraphMap)
+          if (review) {
+            const localBySource = Array.isArray(task.paragraphMap)
+              ? new Map(task.paragraphMap.map((source, local) => [source, local])) : null
+            for (const ev of review.evidence) {
+              const local = localBySource ? localBySource.get(ev.paragraph) : ev.paragraph
+              if (Number.isInteger(local) && local >= 0 && local < ctx2.paras.length) ctx2.pSet.add(local)
+            }
+            if (task.target?.kind === 'node') {
+              const incident = (task.graph.edges || []).filter(edge => edge.fromNodeId === task.target.id || edge.toNodeId === task.target.id)
+              if (incident.length > 95) return failTask(task, 'review_context_incomplete',
+                '该节点的关联关系超过单次 AI 复核的完整上下文上限；请缩小目标范围后重试')
+              const ids = new Set([task.target.id])
+              for (const edge of incident) { ids.add(edge.fromNodeId); ids.add(edge.toNodeId) }
+              ctx2.sub.nodes = (task.graph.nodes || []).filter(node => ids.has(node.id)).map(node => ({
+                id: node.id, type: node.type, text: String(node.text || '').slice(0, 200),
+                quote: String(node.quote || '').slice(0, 300), paragraph: node.paragraph,
+              }))
+              ctx2.sub.edges = incident.map(edge => ({ fromNodeId: edge.fromNodeId,
+                toNodeId: edge.toNodeId, relation: edge.relation }))
+              for (const node of task.graph.nodes || []) if (ids.has(node.id) && Number.isInteger(node.paragraph)
+                && node.paragraph >= 0 && node.paragraph < ctx2.paras.length) ctx2.pSet.add(node.paragraph)
+            }
+          }
           const units = []
           const sorted = Array.from(ctx2.pSet).sort((a, b) => a - b)
           for (const p of sorted) {
@@ -10362,13 +10533,15 @@ function createHostPlugin(graphContractOnly) {
           userText += NL + '相关原文段落：' + NL
           for (const u of units) userText += '[P' + u.num + ']' + (task.paragraphMap ? '（原文 P' + task.paragraphMap[u.num] + '；evidence.paragraph 请使用前面的局部编号）' : '') + ' ' + u.text + NL
           userText += NL + '相关知识图子图（JSON）：' + NL + JSON.stringify(ctx2.sub)
+          if (review) userText += NL + '待复核问题（仅为待检验的指控，不是事实）：' + NL + JSON.stringify(review)
           let norm = null
           let lastErr = ''
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
-              const raw = await callModel(model, questionPromptFor(task.graph), userText, 180000)
+              const raw = await callModel(model, review ? issueReviewPromptFor(task.graph) : questionPromptFor(task.graph), userText, 180000)
               const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
-              const r = normalizeQuestionResult(obj, task.graph, task.text, ctx2.paras.length, [])
+              const r = review ? normalizeIssueReviewResultHost(obj, task, ctx2)
+                : normalizeQuestionResult(obj, task.graph, task.text, ctx2.paras.length, [])
               if (r.error) { lastErr = r.error; continue }
               norm = r
               break
@@ -10378,11 +10551,31 @@ function createHostPlugin(graphContractOnly) {
             }
           }
           if (!norm) return failTask(task, 'schema_invalid', 'AI 质疑回答无法解析（已自动重试）：' + lastErr)
+          let repairStatus = null
+          if (review && norm.verdict === 'confirmed') {
+            repairStatus = norm.proposedFix.action === 'none' ? 'not_generated' : 'ready'
+            if (repairStatus === 'not_generated') {
+              task.progress = { ...task.progress, stage: '问题成立，正在生成结构化修复', updatedAt: Date.now() }
+              try {
+                const repairInput = userText + NL + NL + '独立核实结论：' + norm.answer + NL +
+                  '结论证据：' + JSON.stringify(norm.evidence) + NL + '请输出可执行补丁；不要重复裁决。'
+                const raw = await callModel(model, issueRepairPromptFor(task.graph), repairInput, 180000)
+                const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
+                const fix = sanitizeFix(obj?.proposedFix, task.graph, task.text, ctx2.paras.length)
+                if (fix.action !== 'none' && reviewFixTargetsIssueHost(fix, review)) {
+                  norm.proposedFix = fix
+                  repairStatus = 'ready'
+                }
+              } catch (error) {
+                if (isTerminalTaskOperationErrorHost(error)) throw error
+              }
+            }
+          }
           task.status = 'succeeded'
           task.finishedAt = Date.now()
           const result = {
             reportId: 'vq-' + Date.now().toString(36) + '-' + task.id,
-            mode: 'question',
+            mode: review ? 'issue_review' : 'question',
             createdAt: Date.now(),
             model,
             scope: task.scope || { kind: task.target ? task.target.kind : 'graph', ids: task.target ? [task.target.id] : [] },
@@ -10392,6 +10585,7 @@ function createHostPlugin(graphContractOnly) {
             answer: norm.answer,
             evidence: norm.evidence,
             proposedFix: norm.proposedFix,
+            ...(review ? { reviewedIssueId: review.id, repairStatus } : {}),
             summary: norm.answer.slice(0, 80),
           }
           task.result = mapVerificationResultHost(result, task.paragraphMap)
@@ -10760,7 +10954,7 @@ function createHostPlugin(graphContractOnly) {
             if (sel && sel.provider && sel.model) current = { provider: sel.provider, model: sel.model }
           } catch (e) { /* ignore */ }
         }
-        return { providers, current }
+        return { providers, current, resumeModelSwitch: true, issueReview: true }
       })
 
       harness.handle('candidate-list', async (args) => {
@@ -10827,7 +11021,8 @@ function createHostPlugin(graphContractOnly) {
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
          const saved = loadCanonicalDocumentHost(documentId)
          if (!saved) return { error: { code: 'not_found', message: '找不到要导出的 canonical graph' } }
-         return { documentId, revision: saved.revision, graph: {
+         return { documentId, revision: saved.revision,
+           ...(a.includeSourceText === true ? { sourceText: saved.sourceText || '' } : {}), graph: {
            ...saved.graph,
            graphOntology: ontDescribe(saved.graph),
            graphDiagnostics: ontDiagnose(saved.graph),
@@ -11084,12 +11279,39 @@ function createHostPlugin(graphContractOnly) {
           ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
           : { kind: 'graph', id: null }
         if (target.kind !== 'graph' && !target.id) return { error: { code: 'invalid_input', message: '质疑目标缺少 id' } }
+        let reviewIssue = null
+        if (a.reviewIssue !== undefined) {
+          const issue = a.reviewIssue
+          if (!issue || typeof issue !== 'object' || typeof issue.id !== 'string' || !issue.id.trim() ||
+            typeof issue.title !== 'string' || !issue.title.trim() || issue.title.length > 200 ||
+            !['node', 'edge', 'graph'].includes(issue.targetKind) ||
+            (issue.targetKind !== 'graph' && (typeof issue.targetId !== 'string' || !issue.targetId.trim())) ||
+            (issue.targetKind !== 'graph' && (target.kind !== issue.targetKind || target.id !== issue.targetId))) {
+            return { error: { code: 'invalid_input', message: '待复核问题与当前目标不匹配' } }
+          }
+          const nodeIds = new Set(graph.nodes.map(node => node.id))
+          if ((issue.targetKind === 'node' && !nodeIds.has(issue.targetId)) ||
+            (issue.targetKind === 'edge' && !(graph.edges || []).some(edge =>
+              edge.fromNodeId + '>' + edge.toNodeId === issue.targetId))) {
+            return { error: { code: 'invalid_input', message: '待复核目标已不在当前知识图中，请刷新报告' } }
+          }
+          reviewIssue = {
+            id: issue.id.trim().slice(0, 200), title: issue.title.trim(),
+            detail: typeof issue.detail === 'string' ? issue.detail.slice(0, 600) : '',
+            category: typeof issue.category === 'string' ? issue.category.slice(0, 40) : 'other',
+            targetKind: issue.targetKind, targetId: issue.targetKind === 'graph' ? null : issue.targetId,
+            evidence: (Array.isArray(issue.evidence) ? issue.evidence : []).slice(0, 8).filter(ev =>
+              ev && Number.isInteger(ev.paragraph) && ev.paragraph >= 0).map(ev => ({ paragraph: ev.paragraph,
+                quote: typeof ev.quote === 'string' ? ev.quote.slice(0, 300) : '' })),
+            proposedFix: issue.proposedFix && typeof issue.proposedFix === 'object' ? issue.proposedFix : { action: 'none' },
+          }
+        }
         if (busy) return busyTaskResponseHost()
         const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-          text, graph, target, question, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+          text, graph, target, question, model, reviewIssue, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
         }
         return startTaskHost(task, runQuestionTask, 'AI 质疑回答失败：内部错误')
       })

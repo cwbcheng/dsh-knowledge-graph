@@ -11,12 +11,12 @@ const oldDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(dir, 'graph.sqlite')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const store = await openSqliteStore(process.env.DSH_KG_DB)
-function createHost(stream) {
+function createHost(stream, availableModels = []) {
   let handler
   host.apply({
     get(name) {
       if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
-      return name === 'llm' ? { stream } : null
+      return name === 'llm' ? { stream, listModels: async () => availableModels } : null
     },
     effect(fn) { fn() }, interval() { return () => {} },
   })
@@ -58,6 +58,7 @@ try {
   assert.equal(store.loadCheckpoint(id).status, 'paused')
   assert.equal(store.loadVerificationBatches(id).length, 1)
   assert.equal(store.listIncompleteRuns().find(run => run.runId === id).nextBatchIndex, 1)
+  assert.equal(store.listIncompleteRuns().find(run => run.runId === id).modelId, model.model)
   assert.equal((await firstHost('resume-verify', { runId: id, retryFailed: true })).error.code, 'task_paused')
   assert.equal((await firstHost('resume-extract', { runId: id, resumePaused: true })).error.code, 'wrong_task_kind')
 
@@ -67,20 +68,88 @@ try {
   assert.equal(store.loadCheckpoint(id).status, 'paused', 'invalid resume must not consume saved work')
   store.saveCheckpoint(checkpoint, { runId: id, status: 'paused', sourceText: text })
 
+  const selectedModel = { provider: 'fixture', model: 'selected-model' }
   let resumedCalls = 0
   const secondHost = createHost(async function* () {
     resumedCalls++
     yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }
-  })
+  }, [{ id: selectedModel.model }])
   assert.equal((await secondHost('resume-verify', { runId: id })).error.code, 'task_paused')
   assert.equal(resumedCalls, 0, 'restart must not implicitly resume')
-  const resumed = await secondHost('resume-verify', { runId: id, resumePaused: true })
+  assert.equal((await secondHost('resume-verify', { runId: id, resumePaused: true,
+    model: { provider: 'fixture', model: 'unavailable' } })).error.code, 'model_unavailable')
+  assert.deepEqual(store.loadCheckpoint(id).checkpoint.model, model, 'unavailable model must not change the checkpoint')
+  assert.equal(store.loadVerificationBatches(id).length, 1)
+  const resumed = await secondHost('resume-verify', { runId: id, resumePaused: true, model: selectedModel })
   assert.equal(resumed.taskId, id, JSON.stringify(resumed))
   await until(async () => (await status(secondHost, id)).status === 'succeeded', 'Resumed verification did not finish')
   assert.equal(resumedCalls, 2, 'saved first batch must not be requested again')
   assert.equal(store.loadVerificationBatches(id).length, 3)
   assert.equal(store.loadCheckpoint(id).status, 'succeeded')
-  assert.equal((await status(secondHost, id)).result.issues.length >= 0, true)
+  assert.deepEqual(store.loadCheckpoint(id).checkpoint.model, selectedModel)
+  assert.deepEqual(store.loadCheckpoint(id).checkpoint.batchModels['0'], model)
+  const resumedReport = (await status(secondHost, id)).result
+  assert.equal(resumedReport.issues.length >= 0, true)
+  assert.deepEqual(resumedReport.modelsUsed, [
+    { ...model, batches: 1 }, { ...selectedModel, batches: 2 },
+  ])
+  assert.deepEqual(store.loadCheckpoint(id).checkpoint.report.modelsUsed, resumedReport.modelsUsed,
+    'mixed-model provenance must survive report recovery')
+
+  let multiFirstCalls = 0
+  const multiFirst = createHost(async function* ({ signal }) {
+    multiFirstCalls++
+    if (multiFirstCalls === 1) { yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }; return }
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+  })
+  const multiStarted = await multiFirst('verify-graph', { text, graph, mode: 'standard', concurrency: 1, model })
+  const multiId = multiStarted.taskId
+  await until(() => multiFirstCalls === 2 && store.loadVerificationBatches(multiId).length === 1, 'First model did not save a batch')
+  await multiFirst('task-pause', { taskId: multiId })
+  await until(async () => (await status(multiFirst, multiId)).status === 'paused', 'First model did not pause')
+  let multiSecondCalls = 0
+  const multiSecond = createHost(async function* ({ signal }) {
+    multiSecondCalls++
+    if (multiSecondCalls === 1) { yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }; return }
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+  }, [{ id: selectedModel.model }])
+  assert.equal((await multiSecond('resume-verify', { runId: multiId, resumePaused: true, model: selectedModel })).taskId, multiId)
+  await until(() => multiSecondCalls === 2 && store.loadVerificationBatches(multiId).length === 2, 'Second model did not save a batch')
+  await multiSecond('task-pause', { taskId: multiId })
+  await until(async () => (await status(multiSecond, multiId)).status === 'paused', 'Second model did not pause')
+  const twicePaused = store.loadCheckpoint(multiId).checkpoint
+  store.saveCheckpoint({ ...twicePaused, batchModels: { ...twicePaused.batchModels, 2: model } },
+    { runId: multiId, status: 'paused', sourceText: text })
+  const thirdModel = { provider: 'fixture', model: 'third-model' }
+  const multiThird = createHost(async function* () {
+    yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }
+  }, [{ id: thirdModel.model }])
+  assert.equal((await multiThird('resume-verify', { runId: multiId, resumePaused: true, model: thirdModel })).error.code,
+    'checkpoint_invalid', 'provenance for an unsaved batch must be rejected')
+  store.saveCheckpoint(twicePaused, { runId: multiId, status: 'paused', sourceText: text })
+  assert.equal((await multiThird('resume-verify', { runId: multiId, resumePaused: true, model: thirdModel })).taskId, multiId)
+  await until(async () => (await status(multiThird, multiId)).status === 'succeeded', 'Third model did not finish')
+  assert.deepEqual((await status(multiThird, multiId)).result.modelsUsed, [
+    { ...model, batches: 1 }, { ...selectedModel, batches: 1 }, { ...thirdModel, batches: 1 },
+  ])
+
+  let failedCalls = 0
+  const failedHost = createHost(async function* () {
+    failedCalls++
+    yield { type: 'text-delta', index: 0, text: failedCalls === 1 ? '{"issues":[]}' : '{"wrong":[]}' }
+  })
+  const failedRun = await failedHost('verify-graph', { text, graph, mode: 'standard', concurrency: 1, model })
+  await until(async () => (await status(failedHost, failedRun.taskId)).status === 'failed', 'Failure fixture did not settle')
+  assert.equal(store.loadVerificationBatches(failedRun.taskId).length, 1)
+  const failedResumeHost = createHost(async function* () {
+    yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }
+  }, [{ id: selectedModel.model }])
+  assert.equal((await failedResumeHost('resume-verify', { runId: failedRun.taskId,
+    retryFailed: true, model: selectedModel })).taskId, failedRun.taskId)
+  await until(async () => (await status(failedResumeHost, failedRun.taskId)).status === 'succeeded', 'Failed run did not resume')
+  assert.deepEqual((await status(failedResumeHost, failedRun.taskId)).result.modelsUsed, [
+    { ...model, batches: 1 }, { ...selectedModel, batches: 2 },
+  ])
 
   const documentId = 'verification-revision-fixture'
   const canonical = { ...graph, source: { documentId, sourceId: 'source-verification-fixture', title: 'fixture' } }

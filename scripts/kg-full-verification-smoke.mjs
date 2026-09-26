@@ -177,12 +177,52 @@ try {
   assert.equal(parallelStatus.result.issues.find(issue => issue.id === 'b1:e1').targetRelation, 'causes')
   assert.equal(parallelCalls, 2, 'relation issue must receive independent confirmation')
 
+  const recoveredGraph = makeGraph('full-review-scope-retry', 25, 0)
+  const scopedGraph = makeGraph('full-review-scoped-evidence', 25, 0)
+  scopedGraph.graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n1', relation: 'supports',
+    evidence: [{ paragraph: 24, quote: scopedGraph.paragraphs[24] }] })
+  const scopedPlan = contract.buildFullVerifyPlan(scopedGraph.text, scopedGraph.graph)
+  const scopedNodeBatch = scopedPlan.batches.find(batch => batch.nodeReviewOnly && batch.primaryNodeIds.includes('n0'))
+  assert.deepEqual(scopedNodeBatch.units.map(unit => unit.num),
+    [...Array.from({ length: 12 }, (_, i) => i), 24],
+    'node review must include owned node and edge evidence, not unrelated source units')
+  assert(scopedPlan.batches.some(batch => batch.sourceCoverageOnly && batch.sourceUnitIds.includes(27)),
+    'narrowing node context must not reduce source coverage')
+  store.saveGraph(recoveredGraph.graph, { sourceText: recoveredGraph.text })
+  let recoveredCalls = 0
+  const recoveredPrompts = []
+  const recoveredApi = createHost(async function* ({ system, messages }) {
+    recoveredCalls++
+    recoveredPrompts.push(JSON.stringify({ system, messages }))
+    const body = recoveredCalls === 1 ? { issues: [{ id: 'off-scope', severity: 'warning',
+      category: 'grounding', targetKind: 'node', targetId: 'n0', title: 'Wrong target',
+      detail: 'Must not be saved', evidence: [{ paragraph: 0, quote: recoveredGraph.paragraphs[0] }],
+      confidence: 0.9, proposedFix: { action: 'none' } }] } : { issues: [] }
+    yield { type: 'text-delta', index: 0, text: JSON.stringify(body) }
+  })
+  const recovered = await recoveredApi('verify-graph', { documentId: 'full-review-scope-retry', expectedRevision: 1,
+    canonicalFull: true, mode: 'standard', concurrency: 1, model })
+  const recoveredStatus = await until(async () => {
+    const value = await recoveredApi('task-status', { taskId: recovered.taskId }, 'GET')
+    return value.status === 'succeeded' ? value : null
+  }, 'scope retry did not complete')
+  assert.equal(recoveredCalls, recoveredStatus.result.coverage.batchCount + 1)
+  assert.match(recoveredPrompts[0], /本次是原文覆盖批/)
+  assert.match(recoveredPrompts[0], /targetKind=\\"graph\\"/)
+  assert.match(recoveredPrompts[1], /前次回答含有不属于本批的目标/)
+  assert.match(recoveredPrompts[2], /本次是节点批/)
+  assert.equal(recoveredStatus.result.issues.some(issue => issue.title === 'Wrong target'), false)
+  assert.equal(store.loadVerificationBatches(recovered.taskId).length, recoveredStatus.result.coverage.batchCount)
+  assert.equal(store.getDocumentRevision('full-review-scope-retry'), 1)
+
   const invalidGraph = makeGraph('full-review-invalid-target', 25, 0)
   store.saveGraph(invalidGraph.graph, { sourceText: invalidGraph.text })
+  let invalidCalls = 0
   const invalidApi = createHost(async function* () {
+    invalidCalls++
     yield { type: 'text-delta', index: 0, text: JSON.stringify({ issues: [{ id: 'off-scope', severity: 'warning',
       category: 'grounding', targetKind: 'node', targetId: 'n0', title: 'Off-scope issue', detail: 'Not a source omission',
-      evidence: [{ paragraph: 0, quote: invalidGraph.paragraphs[0] }], confidence: 0.9,
+      evidence: [{ paragraph: 0, quote: invalidGraph.paragraphs[0] }], confidence: 0.2,
       proposedFix: { action: 'none' } }] }) }
   })
   const invalid = await invalidApi('verify-graph', { documentId: 'full-review-invalid-target', expectedRevision: 1,
@@ -193,6 +233,7 @@ try {
     return value.status === 'failed' ? value : null
   }, 'out-of-scope AI output was not rejected')
   assert.match(rejected.error.message, /不属于当前审校批次/)
+  assert.equal(invalidCalls, 2, 'repeated scope violations must fail closed after one corrective retry')
   assert.equal(store.loadVerificationBatches(invalid.taskId).length, 0)
   assert.equal(store.getDocumentRevision('full-review-invalid-target'), 1)
 

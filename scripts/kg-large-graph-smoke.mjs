@@ -71,6 +71,10 @@ assert(queried.graph.nodes.some((node) => node.id === 'n1'), 'subgraph query did
 assert(queried.graph.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n801'), 'subgraph query did not restore cross-window relation context')
 const exported = await handlers.get('document-export')({ documentId })
 assert(exported && exported.graph && exported.graph.nodes.length === 801, 'canonical export was truncated to the renderer window')
+assert(exported.sourceText === undefined, 'default exports must not acquire an unnecessary source-text payload')
+const reviewSnapshot = await handlers.get('document-export')({ documentId, includeSourceText: true })
+assert(reviewSnapshot.sourceText === '大型图测试' && reviewSnapshot.revision === exported.revision,
+  'a review snapshot must read its full graph and source at the same canonical revision')
 assert(JSON.stringify(exported.graph.graphOntology) === JSON.stringify(loaded.graph.graphOntology),
   'canonical export must carry the same node-type presentation as the work window')
 

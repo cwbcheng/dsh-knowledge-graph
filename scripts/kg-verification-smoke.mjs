@@ -51,8 +51,10 @@ const clientSource = readFileSync(new URL('../src/index.client.js', import.meta.
 const hostSource = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 assert(!clientSource.includes('j-space') && !clientSource.includes('JSpaceToggle'), 'J-space client integration is still present')
 assert(!hostSource.includes('j-space') && !hostSource.includes('skillContextFor'), 'J-space Host integration is still present')
-assert(clientSource.includes("'复核并提交'"), 'recheck button is not labeled as an immediate submission')
-assert(clientSource.includes('submitQuestion(draft, target)'), 'recheck handler does not submit the targeted question')
+assert(clientSource.includes("'AI 核实问题'") && clientSource.includes("'确认修复并保存'"),
+  'review must separate an AI verdict from the user-confirmed graph commit')
+assert(clientSource.includes('submitQuestion(draft.slice(0, 600), target, issue)'),
+  'recheck handler does not submit the structured candidate issue')
 assert(clientSource.includes('relationTypeFix'), 'relation mismatch repair option is missing')
 assert(clientSource.includes('mergeNodeProvenance'), 'merge fix does not preserve node provenance')
 assert(clientSource.includes('mergeEvidenceRecords(previous.evidence'), 'merge fix does not preserve duplicate edge evidence')

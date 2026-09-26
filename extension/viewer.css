@@ -96,7 +96,13 @@
 .kg-verify-head-text { flex: 1; min-width: 0; }
 .kg-verify-title { margin: 0; font-size: 14px; font-weight: 600; }
 .kg-verify-summary { margin: 4px 0 0; font-size: 12.5px; color: var(--kg-text-dim); line-height: 1.6; }
-.kg-verify-stale { margin: 4px 0 0; font-size: 12px; color: #b45309; }
+      .kg-verify-stale { margin: 4px 0 0; font-size: 12px; color: #b45309; }
+      .kg-bulk-review { padding: 10px 0; border-bottom: 1px solid var(--kg-border); }
+      .kg-bulk-review .kg-issue-actions { margin: 0; align-items: center; }
+      .kg-bulk-review select { min-height: 32px; max-width: 140px; }
+      .kg-bulk-review details { max-height: 360px; overflow: auto; margin: 8px 0; }
+      .kg-bulk-review summary { cursor: pointer; font-size: 12px; }
+      .kg-bulk-review .kg-issue { cursor: default; }
 @media (prefers-color-scheme: dark) { .kg-verify-stale { color: #fbbf24; } }
 .kg-verify-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .kg-filter-chip { border: 1px solid var(--kg-border); background: var(--kg-panel); color: var(--kg-text-dim); border-radius: 999px; padding: 2px 10px; font-size: 11.5px; cursor: pointer; }

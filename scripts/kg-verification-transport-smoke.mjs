@@ -15,12 +15,12 @@ class TestTimer extends Service {
   interval() { return () => {} }
 }
 
-async function post(body, headers = {}) {
+async function post(body, headers = {}, endpoint = 'verify-graph') {
   const bytes = typeof body === 'string' ? Buffer.from(body) : Buffer.from(body)
   const middle = Math.min(bytes.length, 13)
   const req = Readable.from([bytes.subarray(0, middle), bytes.subarray(middle)])
   req.method = 'POST'
-  req.url = '/api/dsh-knowledge-graph/verify-graph'
+  req.url = '/api/dsh-knowledge-graph/' + endpoint
   req.headers = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]))
   let status
   let response
@@ -71,6 +71,13 @@ try {
   const unsupported = await post('{}', { 'content-encoding': 'br' })
   assert.equal(unsupported.status, 415)
   assert.equal(unsupported.response.error.code, 'unsupported_encoding')
+
+  const mismatchedReview = await post(JSON.stringify({
+    ...payload, question: '核实问题', target: { kind: 'node', id: 'n1' },
+    reviewIssue: { id: 'issue-1', title: '错误节点', targetKind: 'node', targetId: 'n2' },
+  }), {}, 'question-graph')
+  assert.equal(mismatchedReview.response.error?.code, 'invalid_input',
+    'persistent question route must reject an issue bound to another target')
 
   console.log(JSON.stringify({ ok: true, rawBytes: Buffer.byteLength(largeJson), gzipBytes: encoded.body.byteLength, guarded: true }))
 } finally {

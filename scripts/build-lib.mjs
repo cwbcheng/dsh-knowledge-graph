@@ -230,7 +230,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   if (sel && sel.provider && sel.model) current = { provider: sel.provider, model: sel.model }
                 } catch (e) { /* ignore */ }
               }
-              return writeJson(res, 200, { providers, current })
+              return writeJson(res, 200, { providers, current, resumeModelSwitch: true, issueReview: true })
             }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/document-list') {
               const store = await getSqliteStore()
@@ -350,7 +350,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               delete graph.sourceText
               graph.graphOntology = ontDescribe(graph)
               graph.graphDiagnostics = ontDiagnose(graph)
-              return writeJson(res, 200, { documentId, revision, graph })
+              return writeJson(res, 200, { documentId, revision, graph,
+                ...(payload.includeSourceText === true ? { sourceText: saved.sourceText || '' } : {}) })
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-commit') {
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -649,13 +650,49 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (documentId && (!Number.isInteger(checkpoint.baseRevision) || store.getDocumentRevision(documentId) !== checkpoint.baseRevision)) {
                 return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已改变，不能把旧审校结果附加到新图' } })
               }
+              const rawModel = a.model
+              if (rawModel !== undefined && (!rawModel || typeof rawModel !== 'object' ||
+                typeof rawModel.provider !== 'string' || !rawModel.provider.trim() ||
+                typeof rawModel.model !== 'string' || !rawModel.model.trim())) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '所选审校模型无效，检查点未改变' } })
+              }
+              const requestedModel = rawModel === undefined ? checkpoint.model :
+                { provider: rawModel.provider.trim(), model: rawModel.model.trim() }
+              const modelChanged = requestedModel.provider !== checkpoint.model.provider ||
+                requestedModel.model !== checkpoint.model.model
+              const selectedModel = modelChanged ? requestedModel : checkpoint.model
+              const savedResults = store.loadVerificationBatches(runId)
+              let batchModels
+              try { batchModels = verifiedBatchModelsHost(checkpoint, savedResults) }
+              catch (error) { return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: error.message } }) }
+              let resumedCheckpoint = checkpoint
+              if (modelChanged) {
+                const llm = ctx.get('llm')
+                let available = []
+                try { if (llm && typeof llm.listModels === 'function') available = await listModelsSoft(llm, selectedModel.provider, 8000) }
+                catch (error) { /* a failed catalog lookup must not change the checkpoint */ }
+                if (!Array.isArray(available) || !available.some(item => item.id === selectedModel.model)) {
+                  return writeJson(res, 200, { error: { code: 'model_unavailable', message: '所选模型当前不可用，原审校检查点未改变' } })
+                }
+                if (busy) return writeJson(res, 200, busyTaskResponseHost())
+                if (store.loadCheckpoint(runId)?.updatedAt !== savedRun.updatedAt) {
+                  return writeJson(res, 200, { error: { code: 'run_conflict', message: '审校任务已变化，请刷新列表后重试' } })
+                }
+                for (const saved of savedResults) if (!batchModels[saved.batchIndex]) batchModels[saved.batchIndex] = checkpoint.model
+                resumedCheckpoint = { ...checkpoint, model: selectedModel, batchModels,
+                  inputHash: verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
+                    mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap,
+                    model: selectedModel, verificationPlanVersion: checkpoint.verificationPlanVersion }) }
+                store.saveCheckpoint(resumedCheckpoint, { runId, status: 'running', title: savedRun.title,
+                  sourceText: savedRun.sourceText })
+              }
               const task = {
                 id: runId, status: 'running', kind: 'verify', title: savedRun.title || '', documentId,
                 text: savedRun.sourceText, graph: checkpoint.graph, mode: checkpoint.mode,
-                scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: checkpoint.model,
+                scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: selectedModel,
                 concurrency: checkpoint.concurrency, baseRevision: checkpoint.baseRevision,
                 verificationPlanVersion: checkpoint.verificationPlanVersion || 1,
-                checkpoint, verificationResults: store.loadVerificationBatches(runId), createdAt: Date.now(),
+                checkpoint: resumedCheckpoint, verificationResults: savedResults, createdAt: Date.now(),
               }
               const started = startTaskHost(task, runVerifyTask, 'AI 审校恢复失败：内部错误')
               return writeJson(res, 200, { ...started, ...(started.taskId ? { resumed: true } : {}) })
@@ -808,12 +845,39 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 ? { kind: a.target.kind === 'edge' ? 'edge' : a.target.kind === 'node' ? 'node' : 'graph', id: typeof a.target.id === 'string' ? a.target.id.trim() : null }
                 : { kind: 'graph', id: null }
               if (target.kind !== 'graph' && !target.id) return writeJson(res, 200, { error: { code: 'invalid_input', message: '质疑目标缺少 id' } })
+              let reviewIssue = null
+              if (a.reviewIssue !== undefined) {
+                const issue = a.reviewIssue
+                if (!issue || typeof issue !== 'object' || typeof issue.id !== 'string' || !issue.id.trim() ||
+                  typeof issue.title !== 'string' || !issue.title.trim() || issue.title.length > 200 ||
+                  !['node', 'edge', 'graph'].includes(issue.targetKind) ||
+                  (issue.targetKind !== 'graph' && (typeof issue.targetId !== 'string' || !issue.targetId.trim())) ||
+                  (issue.targetKind !== 'graph' && (target.kind !== issue.targetKind || target.id !== issue.targetId))) {
+                  return writeJson(res, 200, { error: { code: 'invalid_input', message: '待复核问题与当前目标不匹配' } })
+                }
+                const nodeIds = new Set(graph.nodes.map(node => node.id))
+                if ((issue.targetKind === 'node' && !nodeIds.has(issue.targetId)) ||
+                  (issue.targetKind === 'edge' && !(graph.edges || []).some(edge =>
+                    edge.fromNodeId + '>' + edge.toNodeId === issue.targetId))) {
+                  return writeJson(res, 200, { error: { code: 'invalid_input', message: '待复核目标已不在当前知识图中，请刷新报告' } })
+                }
+                reviewIssue = {
+                  id: issue.id.trim().slice(0, 200), title: issue.title.trim(),
+                  detail: typeof issue.detail === 'string' ? issue.detail.slice(0, 600) : '',
+                  category: typeof issue.category === 'string' ? issue.category.slice(0, 40) : 'other',
+                  targetKind: issue.targetKind, targetId: issue.targetKind === 'graph' ? null : issue.targetId,
+                  evidence: (Array.isArray(issue.evidence) ? issue.evidence : []).slice(0, 8).filter(ev =>
+                    ev && Number.isInteger(ev.paragraph) && ev.paragraph >= 0).map(ev => ({ paragraph: ev.paragraph,
+                      quote: typeof ev.quote === 'string' ? ev.quote.slice(0, 300) : '' })),
+                  proposedFix: issue.proposedFix && typeof issue.proposedFix === 'object' ? issue.proposedFix : { action: 'none' },
+                }
+              }
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-                text, graph, target, question, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                text, graph, target, question, model, reviewIssue, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runQuestionTask, 'AI 质疑回答失败：内部错误'))
             }

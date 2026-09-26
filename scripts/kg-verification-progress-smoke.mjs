@@ -202,7 +202,7 @@ for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no
     MAX_VERIFY_NODES: 2000, graphViewMetadata: () => null,
     window: { confirm: () => true }, graphCommitQueueRef: { current: Promise.resolve() },
     documentIdOfGraph: () => 'reviewed-document',
-    effectiveModelArg: null, verificationSourcePayload: () => ({}), verifyBusyRef: busy, verifyGenRef: generation,
+    effectiveModelArg: null, verificationSourcePayload: () => ({}), verifyBusyRef: busy, bulkRunRef: { current: false }, verifyGenRef: generation,
     verifySnapshotRef: { current: null }, graphRevisionRef: { current: 1 }, trajRevisionRef: { current: 1 },
     host: { call(method, payload) {
       assert.equal(method, 'verify-graph')
@@ -245,7 +245,7 @@ for (const approved of [false, true, 'plan-error']) {
   const busy = { current: false }, progress = { current: null }, calls = [], confirmations = []
   const env = {
     resultView: view, currentResultRef: { current: view }, graphCommitQueueRef: { current: Promise.resolve() },
-    graphRevisionRef: { current: 242 }, verifySnapshotRef: { current: null }, verifyBusyRef: busy,
+    graphRevisionRef: { current: 242 }, verifySnapshotRef: { current: null }, verifyBusyRef: busy, bulkRunRef: { current: false },
     verifyGenRef: { current: 0 }, graphViewMetadata: () => ({ totalNodes: 4645 }), MAX_VERIFY_NODES: 2000,
     documentIdOfGraph: () => 'large-document', title: '', fullText: text, verifyConcurrency: 2,
     effectiveModelArg: null, verificationSourcePayload: () => ({}),
@@ -291,12 +291,14 @@ assert.equal(focused && scrolled, true, 'report navigation must use an in-scope 
 // the workbench, and a delayed save must not overwrite a different session.
 const commitCode = client.slice(client.indexOf('        const persistTrajGraph ='), client.indexOf('        const commitTrajGraph ='))
 for (const mode of ['valid', 'malformed', 'rejected', 'switched']) {
-  const view = { graph, sourceText: text }, currentViewRef = { current: view }, revision = { current: 7 }, writes = [], errors = []
+  const view = { graph, sourceText: text }, currentViewRef = { current: view }, revision = { current: 7 }, writes = [], errors = [], reports = []
   const env = {
     view, currentViewRef, documentIdOfGraph: () => 'fixture', semanticOperationsOf: () => [],
     trajRevisionRef: revision, trajCommitQueueRef: { current: Promise.resolve() }, graphSemanticOperations: new WeakMap(),
     sessionId: 'original-session', traceEvents: [], writeTrajResult: (...args) => writes.push(args),
     setError: value => errors.push(value), setView: value => writes.push(value), makeView: value => value,
+    setVerification: value => reports.push(['verification', value]),
+    setFactReport: value => reports.push(['fact', value]),
     host: { async call(method, payload) {
       assert.equal(method, 'graph-commit')
       assert.equal(payload.expectedRevision, 4, 'report must use the revision that was actually reviewed')
@@ -310,6 +312,8 @@ for (const mode of ['valid', 'malformed', 'rejected', 'switched']) {
   assert.equal(!!result, mode === 'valid')
   assert.equal(writes.length > 0, mode === 'valid' || mode === 'malformed' || mode === 'rejected')
   assert.equal(errors.length, mode === 'malformed' || mode === 'rejected' ? 1 : 0)
+  assert.equal(reports.length, mode === 'malformed' || mode === 'rejected' ? 2 : 0,
+    'failed canonical commit must restore the trajectory report as well as the graph')
   if (mode !== 'valid') assert.equal(revision.current, 7)
 }
 console.log(JSON.stringify({ ok: true, realHostBatches: 3, retryAndIndependentConfirmation: true, reconnectWithoutResubmit: true, terminalStates: 5, lateResponses: 3, admissionScenarios: 10, cancellationRecovery: true, reportPersistenceBeforeCompletion: true }))

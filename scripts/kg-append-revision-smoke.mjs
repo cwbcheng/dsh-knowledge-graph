@@ -120,6 +120,10 @@ assert(terminal.error && terminal.error.code === 'revision_conflict', 'stale app
 
 const exported = await post(api, 'document-export', { documentId })
 assert(exported && exported.revision === 2, 'stale append advanced canonical revision')
+assert(exported.sourceText === undefined, 'default exports must not add a source-text payload')
+const reviewSnapshot = await post(api, 'document-export', { documentId, includeSourceText: true })
+assert(reviewSnapshot.sourceText === sourceText && reviewSnapshot.revision === exported.revision,
+  'persistent review exports must include canonical source text at the graph revision')
 assert(exported.graph.summary === 'manual revision wins', 'stale append overwrote the concurrent manual summary')
 assert(exported.graph.nodes.length === 1 && exported.graph.nodes[0].id === 'n1', 'stale append overwrote canonical nodes')
 

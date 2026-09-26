@@ -31,6 +31,8 @@
        const MAX_VERIFY_NODES = 2000
       const LS_PENDING = 'dsh-kg-pending-v2'
       const LS_RESULT = 'dsh-kg-result-v2'
+      const LS_BULK_REVIEW = 'dsh-kg-bulk-review-v1'
+      const bulkReviewStorageKey = (documentId) => LS_BULK_REVIEW + ':' + documentId
       const LS_DRAFT = 'dsh-kg-draft-v1'
       const LEGACY_LARGE_STORAGE_KEYS = ['dsh-kg-pending-v1', 'dsh-kg-checkpoint-v1', 'dsh-kg-result-v1']
       const LS_WIN = 'dsh-kg-win-v1'
@@ -1517,6 +1519,76 @@
         const prev = graph && graph.verification && typeof graph.verification === 'object' ? graph.verification : {}
         return { ...graph, verification: { ...prev, lastReport: report || prev.lastReport || null, stale: stale === true } }
       }
+      function verificationReportStale(report, graph) {
+        return report?.stale === true || graph?.verification?.stale === true
+          || (Number.isFinite(report?.createdAt) && graph?.verification?.auditLog?.some(
+            entry => Number.isFinite(entry?.ts) && entry.ts > report.createdAt)) || false
+      }
+      function archivedIssueNeedsFreshReview(report, graph, issue) {
+        return verificationReportStale(report, graph) && issue?.source !== 'issue_review'
+          && (Array.isArray(report?.issues) ? report.issues : []).some(item => item.id === issue?.id)
+      }
+      function buildReviewContextIndex(graph) {
+        const nodes = new Map(graph.nodes.map(node => [node.id, node]))
+        const incident = new Map(), pairs = new Map()
+        const append = (map, key, edge) => {
+          if (!map.has(key)) map.set(key, [])
+          map.get(key).push(edge)
+        }
+        for (const edge of graph.edges) {
+          append(incident, edge.fromNodeId, edge)
+          if (edge.toNodeId !== edge.fromNodeId) append(incident, edge.toNodeId, edge)
+          append(pairs, JSON.stringify([edge.fromNodeId, edge.toNodeId]), edge)
+        }
+        return { graph, nodes, incident, pairs }
+      }
+      function reviewContextSignature(graph, target, indexed) {
+        if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) return null
+        const index = indexed?.graph === graph ? indexed : null
+        const scope = target?.reviewScopeKind || target?.kind || 'graph'
+        const ids = new Set()
+        let edges = graph.edges
+        if ((scope === 'node' || scope === 'edge') && target?.id) {
+          const seeds = new Set(target.contextNodeIds || [])
+          if (scope === 'node') seeds.add(target.id)
+          else {
+            const [from, to] = target.id.split('>')
+            if (!from || !to || !(index ? index.pairs.get(JSON.stringify([from, to]))?.length
+              : edges.some(edge => edge.fromNodeId === from && edge.toNodeId === to))) return null
+            seeds.add(from); seeds.add(to)
+          }
+          for (const id of seeds) ids.add(id)
+          const incident = index ? [...new Set([...seeds].flatMap(id => index.incident.get(id) || []))]
+            : edges.filter(edge => seeds.has(edge.fromNodeId) || seeds.has(edge.toNodeId))
+          for (const edge of incident) { ids.add(edge.fromNodeId); ids.add(edge.toNodeId) }
+          // The model also sees relations between neighbors, not only target edges.
+          edges = index ? [...new Set([...ids].flatMap(id => index.incident.get(id) || []))]
+            .filter(edge => ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
+            : edges.filter(edge => ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
+        } else for (const node of graph.nodes) ids.add(node.id)
+        const nodes = index ? [...ids].map(id => index.nodes.get(id)).filter(Boolean)
+          : graph.nodes.filter(node => ids.has(node.id))
+        if ((scope === 'node' && !nodes.some(node => node.id === target.id))
+          || (scope === 'edge' && (nodes.length < 2 || edges.length === 0))) return null
+        return JSON.stringify({ documentId: documentIdOfGraph(graph), source: [graph.source?.id || graph.source?.sourceId || '', graph.source?.chars || 0,
+          graph.source?.paragraphCount || 0],
+          ontology: [graph.ontology || graph.source?.ontology || graph.graphMeta?.ontology || '', graph.graphOntology || null],
+          partialGraphRevision: scope === 'graph' && graph.view?.truncated === true
+            ? graph.revision || graph.source?.revision || 0 : null,
+          summary: graph.summary || '',
+          nodes: nodes.map(node => [node.id, JSON.stringify(node)]).sort((a, b) => a[0].localeCompare(b[0])),
+          edges: edges.map(edge => JSON.stringify(edge)).sort() })
+      }
+      function reviewIssueContextTarget(issue) {
+        return { kind: issue.targetKind, id: issue.targetId,
+          contextNodeIds: [...new Set(String(issue.title || '').concat(' ', issue.detail || '')
+            .match(/\b(?:n|m)\d+\b/gi) || [])].slice(0, 24) }
+      }
+      function reviewContextChanged(before, after, target) {
+        if (before === after) return false
+        const original = typeof before === 'string' ? before : reviewContextSignature(before, target)
+        return !original || original !== reviewContextSignature(after, target)
+      }
       function paragraphTypeNodes(view, paragraph, type) {
         const anchored = new Set(view && view.paraNodes && view.paraNodes[paragraph] || [])
         return (view && view.graph && view.graph.nodes || []).filter(node => anchored.has(node.id) && node.type === type)
@@ -1566,6 +1638,76 @@
             ...(report.mode === 'quick' ? { invariantErrorCount, qualityWarningCount } : {}),
           },
         }
+      }
+      function recordReviewedFix(report, issue) {
+        if (!report || issue?.source !== 'issue_review') return report
+        return { ...report, issues: (report.issues || []).map(item => item.id === issue.id
+          ? { ...item, proposedFix: issue.proposedFix } : item) }
+      }
+      function batchSafeFix(issue, fix, evidence = []) {
+        if (issue?.targetKind !== 'node' || fix?.action !== 'update_node'
+          || fix.nodePatch?.id !== issue.targetId) return false
+        const patch = fix.nodePatch.patch
+        return patch && Object.keys(patch).length > 0 && Object.keys(patch).every(key => key === 'text' || key === 'quote')
+          && (patch.text === undefined || typeof patch.text === 'string' && patch.text.trim().length > 0)
+          && (patch.quote === undefined || typeof patch.quote === 'string' && patch.quote.trim().length > 0
+            && evidence.some(ev => ev.quote === patch.quote))
+      }
+      function batchReviewCounts(rows, report) {
+        const openIds = new Set((report?.issues || []).filter(issue => issue.status === 'open').map(issue => issue.id))
+        const valid = (rows || []).filter(row => openIds.has(row.issueId))
+        const safe = valid.filter(row => row.verdict === 'confirmed'
+          && batchSafeFix(report.issues.find(issue => issue.id === row.issueId), row.proposedFix, row.evidence)).length
+        return { total: valid.length, safe, falsePositive: valid.filter(row => row.verdict === 'false_positive').length,
+          confirmedManual: valid.filter(row => row.verdict === 'confirmed').length - safe,
+          uncertain: valid.filter(row => row.verdict === 'uncertain').length,
+          failed: valid.filter(row => row.error).length }
+      }
+      async function reviewSignatureHash(signature) {
+        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验批量核实的图版本')
+        const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(signature))
+        return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('')
+      }
+      function planBulkReviewedFixes(graph, report, rows, contextMatches) {
+        let current = graph
+        let nextReport = report
+        const modifiedNodes = new Set()
+        const counts = { applied: 0, falsePositive: 0, manual: 0, conflicts: 0, failed: 0 }
+        for (const row of rows || []) {
+          const issue = nextReport?.issues?.find(item => item.id === row.issueId && item.status === 'open')
+          if (!issue) { counts.conflicts++; continue }
+          const scope = reviewIssueContextTarget(issue)
+          if (row.error) {
+            nextReport = { ...nextReport, issues: nextReport.issues.map(item => item.id === issue.id
+              ? { ...item, batchReview: { verdict: 'failed', answer: row.error, reviewedAt: row.reviewedAt || Date.now() } } : item) }
+            counts.failed++
+            continue
+          }
+          if (contextMatches[row.issueId] !== true
+            || (scope.kind === 'node' ? modifiedNodes.has(scope.id) : current !== graph)
+            || reviewContextChanged(graph, current, scope)) {
+            counts.conflicts++
+            continue
+          }
+          nextReport = { ...nextReport, issues: nextReport.issues.map(item => item.id === issue.id
+            ? { ...item, proposedFix: row.verdict === 'confirmed' ? row.proposedFix : { action: 'none' },
+                batchReview: { verdict: row.verdict, answer: row.answer || '', evidence: row.evidence || [],
+                  model: row.model || null, reviewedAt: row.reviewedAt || Date.now() } } : item) }
+          if (row.verdict === 'false_positive') {
+            nextReport = updateIssueStatus(nextReport, issue.id, 'rejected', '批量 AI 核实认为原问题不成立：' + String(row.answer || '').slice(0, 300))
+            counts.falsePositive++
+          } else if (row.verdict === 'confirmed' && batchSafeFix(issue, row.proposedFix, row.evidence)
+            && nodeTypeFixConflicts(current, row.proposedFix).length === 0) {
+            const patched = applyPatch(current, { ...issue, proposedFix: row.proposedFix, reportId: report.reportId })
+            if (patched !== current || patchAlreadySatisfied(current, { ...issue, proposedFix: row.proposedFix })) {
+              current = patched
+              modifiedNodes.add(issue.targetId)
+              nextReport = updateIssueStatus(nextReport, issue.id, 'applied', '批量 AI 核实确认：' + String(row.answer || '').slice(0, 300))
+              counts.applied++
+            } else counts.conflicts++
+          } else counts.manual++
+        }
+        return { graph: current, report: nextReport, counts }
       }
       function bulkFixEligible(issue) {
         const action = issue?.proposedFix?.action
@@ -5073,15 +5215,14 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview }) {
         const [issueLimit, setIssueLimit] = useState(40)
+        const [bulkLimit, setBulkLimit] = useState(50)
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         const questionBarRef = useRef(null)
-        const reportStale = report?.stale === true || graph?.verification?.stale === true
-          || (Number.isFinite(report?.createdAt) && graph?.verification?.auditLog?.some(
-            entry => Number.isFinite(entry?.ts) && entry.ts > report.createdAt))
+        const reportStale = verificationReportStale(report, graph)
         const questionFeedbackRef = useRef(null)
         useEffect(() => {
           if (!activeIssueId || activeIssueId === prevActiveIssueRef.current) return
@@ -5098,6 +5239,11 @@
         }, [questionPhase])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
+        const resolvedIssues = issues.filter((it) => it.status === 'applied').length
+        const bulkCandidates = openIssues.filter(issue => !issue.batchReview
+          && (!issueFilter || issueFilter === 'all' || issue.severity === issueFilter))
+        const bulkCounts = batchReviewCounts(bulkReview?.rows, report)
+        const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying'
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
@@ -5120,11 +5266,16 @@
               ? '目标：关系 ' + questionTarget.id
               : '目标：整张图')
           : ''
-        const qFix = questionResult && questionResult.proposedFix ? questionResult.proposedFix : null
+        const isReviewResult = questionResult?.mode === 'issue_review'
+        const issueReview = isReviewResult &&
+          questionResult.reviewedIssueId === questionTarget?.sourceIssueId
+        const reviewGraphChanged = issueReview && reviewContextChanged(questionTarget.reviewSignature, graph, questionTarget)
+        const qFix = questionResult && questionResult.proposedFix &&
+          (!isReviewResult || (issueReview && questionResult.verdict === 'confirmed')) ? questionResult.proposedFix : null
         const qFixConflicts = nodeTypeFixConflicts(graph, qFix)
         const qAction = qFix ? qFix.action : 'none'
         const qVerdict = questionResult ? questionResult.verdict : ''
-        const recheckedIssue = questionTarget?.sourceIssueId
+        const recheckedIssue = issueReview && questionTarget?.sourceIssueId
           ? issues.find((issue) => issue.id === questionTarget.sourceIssueId && issue.status === 'open') : null
         const fixLabel = (fix) => {
           if (!fix || !fix.action || fix.action === 'none') return ''
@@ -5157,19 +5308,22 @@
         }
         const applyReviewedIssue = (issue) => {
           const action = issue?.proposedFix?.action
+          if (bulkRunning) return
+          if (archivedIssueNeedsFreshReview(report, graph, issue)) return
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
           if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)) {
             const key = JSON.stringify(issue.proposedFix)
             if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
           }
           setPendingDestructiveFix(null)
-          onApplyIssue(issue)
+          onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSignature : undefined)
         }
         // A contradicted/insufficient answer without a structured fix is not a
         // deletion instruction. Never synthesize delete_node/delete_edge from
         // the target kind: the answer may be pointing out a missing relation
         // (for example, a node that should be connected to n2).
-        const qNeedsManualRepair = (qVerdict === 'contradicted' || qVerdict === 'insufficient') && qAction === 'none'
+        const qNeedsManualRepair = (issueReview ? qVerdict === 'confirmed'
+          : (qVerdict === 'contradicted' || qVerdict === 'insufficient')) && qAction === 'none'
         const auditLog = graph && graph.verification && Array.isArray(graph.verification.auditLog) ? graph.verification.auditLog : []
         const recentAudits = auditLog.slice(-5).reverse()
         const questionContent = h('div', { className: 'kg-question-section' },
@@ -5179,14 +5333,14 @@
               placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
               value: questionDraft,
               maxLength: 600,
-              disabled: questionPhase === 'running',
+              disabled: questionPhase === 'running' || bulkRunning,
               onChange: (e) => setQuestionDraft(e.target.value),
               onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
               'aria-label': '质疑或提问输入框',
             }),
             h('button', {
               type: 'button', className: 'kg-primary',
-              disabled: questionPhase === 'running' || !questionDraft.trim(),
+              disabled: questionPhase === 'running' || bulkRunning || !questionDraft.trim(),
               onClick: onSubmitQuestion,
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
@@ -5204,42 +5358,56 @@
             ? h('div', { className: 'kg-question-result', role: 'status', 'aria-live': 'polite', ref: questionFeedbackRef },
                 questionResult.question ? h('p', { className: 'kg-question-asked' }, '复核问题：' + questionResult.question) : null,
                 h('div', null,
-                  h('span', { className: 'kg-verdict kg-verdict-' + questionResult.verdict }, VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
+                  h('span', { className: 'kg-verdict kg-verdict-' + (issueReview
+                    ? ({ confirmed: 'contradicted', false_positive: 'supported', uncertain: 'insufficient' }[qVerdict] || 'out_of_scope')
+                    : questionResult.verdict) }, issueReview
+                    ? ({ confirmed: 'AI 核实：问题成立', false_positive: 'AI 核实：疑似误报', uncertain: 'AI 核实：证据不足，暂不能判断' }[qVerdict] || 'AI 核实未完成')
+                    : VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
                   questionResult.answer ? ' ' + questionResult.answer : ''),
                 (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
                   ? h('div', { className: 'kg-issue-ev' },
                       questionResult.evidence.map((ev, k) => h('div', { key: k }, '原文第 ' + (typeof ev.paragraph === 'number' ? ev.paragraph + 1 : '?') + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))))
                   : null,
-                qVerdict === 'supported' && recheckedIssue
+                issueReview && !reviewGraphChanged && qVerdict === 'false_positive' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
                       h('button', { type: 'button', className: 'kg-secondary',
-                        onClick: () => onRejectIssue(recheckedIssue, '复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持')) },
+                        onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持')) },
                         '标记原问题为误报')) : null,
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
                       h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(qFix)),
                       pendingDestructiveFix === JSON.stringify(qFix)
                         ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
+                      reviewGraphChanged ? h('p', { className: 'kg-question-error' }, '知识图已变化，这项复核不能用于当前图；请重新核实。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
                         '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
                       h('button', {
-                        type: 'button', className: 'kg-primary', disabled: qFixConflicts.length > 0,
+                        type: 'button', className: 'kg-primary', disabled: bulkRunning || reviewGraphChanged || qFixConflicts.length > 0,
                         onClick: () => applyReviewedIssue({
-                          id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: 'question', severity: 'warning', category: 'other',
-                          targetKind: questionTarget ? questionTarget.kind : 'graph', targetId: questionTarget ? questionTarget.id : null,
+                          id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: issueReview ? 'issue_review' : 'question', severity: 'warning', category: 'other',
+                          targetKind: issueReview ? recheckedIssue?.targetKind || 'graph' : questionTarget ? questionTarget.kind : 'graph',
+                          targetId: issueReview ? recheckedIssue?.targetId || null : questionTarget ? questionTarget.id : null,
                           title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
                           evidence: questionResult.evidence || [], confidence: 1,
                           proposedFix: qFix, status: 'open',
                         }),
-                      }, pendingDestructiveFix === JSON.stringify(qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复') : '采纳修复建议'),
+                      }, pendingDestructiveFix === JSON.stringify(qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复')
+                        : issueReview ? '确认修复并保存' : '采纳修复建议'),
                       ),
                     )
                   : null,
                 qNeedsManualRepair
-                  ? h('p', { className: 'kg-hint' }, qVerdict === 'contradicted'
+                  ? h('p', { className: 'kg-hint' }, issueReview
+                    ? questionResult.repairStatus === 'not_generated'
+                      ? '问题成立，但追加生成仍未获得通过结构校验的补丁；知识图未改变。可重试或人工修改。'
+                      : '问题已由 AI 核实，但没有可安全单步执行的修复；知识图未改变，请根据上方证据人工处理。'
+                    : qVerdict === 'contradicted'
                     ? '质疑成立，但当前没有可安全单步应用的修复。可能需要协同修改节点与关系；原图保持不变，请根据上方证据分步复核。'
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
+                  : null,
+                issueReview && qNeedsManualRepair && !reviewGraphChanged && recheckedIssue
+                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
                   : null,
               )
             : null,
@@ -5251,18 +5419,22 @@
               report && typeof report.summary === 'string'
                 ? h('p', { className: 'kg-verify-summary' }, report.summary)
                 : null,
+              report && Array.isArray(report.modelsUsed) && report.modelsUsed.length > 1
+                ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
+                  item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；'))
+                : null,
               report && reportStale
-                ? h('p', { className: 'kg-verify-stale' }, '图已修改：下方保留原审校记录，统计仍基于旧版本，请重新验证。')
+                ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原审校结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 核实，确认后依据当前图修复；无需重新跑完整审校。旧补丁不能直接采纳。')
                 : null,
             ),
             typeof onApplyAll === 'function' && fixableCount > 0
               ? h('button', {
                   type: 'button', className: 'kg-primary',
                   style: { flex: 'none', marginLeft: 'auto' },
-                  disabled: verifying,
+                  disabled: verifying || bulkRunning,
                   onClick: onApplyAll,
-                  title: '应用所有可自动修复的问题（' + fixableCount + ' 项）',
-                }, '一键修复 ' + fixableCount + ' 项')
+                  title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 审校问题',
+                }, '修复本地规则 ' + fixableCount + ' 项')
               : null,
             manualFixCount > 0
               ? h('span', { className: 'kg-fact-note' }, manualFixCount + ' 项拟议修改需逐条复核') : null,
@@ -5297,6 +5469,54 @@
                 report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '语义已验证 ' + report.metrics.entailmentCoverage + '%') : null,
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               )
+            : null,
+          typeof onStartBulkReview === 'function' && report
+            ? h('div', { className: 'kg-bulk-review' },
+                !bulkReview && bulkCandidates.length > 0
+                  ? h('div', { className: 'kg-issue-actions' },
+                      h('select', { value: bulkLimit, disabled: verifying || questionPhase === 'running',
+                        onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
+                        [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每组 ' + count + ' 项'))),
+                      h('button', { type: 'button', className: 'kg-primary',
+                        disabled: verifying || questionPhase === 'running',
+                        onClick: () => onStartBulkReview(bulkLimit, issueFilter) },
+                        '批量 AI 核实下一组（剩余 ' + bulkCandidates.length + ' 项）'))
+                  : null,
+                bulkReview
+                  ? h('div', null,
+                      h('p', { className: 'kg-verify-summary', role: 'status' },
+                        '批量核实 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
+                        (bulkReview.phase === 'running' ? ' · 正在处理 ' + (bulkReview.currentIssueId || '')
+                          : bulkReview.phase === 'applying' ? ' · 正在保存' : bulkReview.phase === 'ready' ? ' · 等待确认' : ' · 已暂停')),
+                      bulkReview.error ? h('p', { className: 'kg-question-error' }, bulkReview.error) : null,
+                      bulkReview.phase === 'ready'
+                        ? h('p', { className: 'kg-verify-summary' }, '待确认：可批量修复 ' + bulkCounts.safe + ' · 疑似误报 ' + bulkCounts.falsePositive +
+                            ' · 成立但需单独处理 ' + bulkCounts.confirmedManual + ' · 证据不足 ' + bulkCounts.uncertain +
+                            ' · 失败 ' + bulkCounts.failed + '。保存时会再次检查冲突，冲突项不修改。') : null,
+                      bulkReview.phase === 'ready' && bulkReview.rows?.length
+                        ? h('details', null, h('summary', null, '查看逐项核实结果'),
+                            h('div', { className: 'kg-issue-list' }, bulkReview.rows.map(row => {
+                              const issue = issues.find(item => item.id === row.issueId)
+                              return h('div', { key: row.issueId, className: 'kg-issue' },
+                                h('strong', null, row.issueId + ' · ' + (issue?.title || '问题')),
+                                h('div', { className: 'kg-issue-detail' }, row.error ||
+                                  (row.verdict === 'confirmed' ? batchSafeFix(issue, row.proposedFix, row.evidence) ? '问题成立 · 可批量修复' : '问题成立 · 需单独处理'
+                                    : row.verdict === 'false_positive' ? '疑似误报' : '证据不足')),
+                                row.answer ? h('div', { className: 'kg-issue-detail' }, row.answer) : null,
+                                batchSafeFix(issue, row.proposedFix, row.evidence)
+                                  ? h('div', { className: 'kg-fix-preview' }, fixLabel(row.proposedFix)) : null)
+                            }))) : null,
+                      h('div', { className: 'kg-issue-actions' },
+                        bulkReview.phase === 'running'
+                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onStopBulkReview }, '暂停批量核实') : null,
+                        bulkReview.phase === 'paused'
+                          ? h('button', { type: 'button', className: 'kg-primary', onClick: onContinueBulkReview }, '继续批量核实') : null,
+                        bulkReview.phase === 'ready'
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
+                              '确认保存核实结果' + (bulkCounts.safe ? '并修复 ' + bulkCounts.safe + ' 项' : '')) : null,
+                        bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
+                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview }, '放弃本组结果') : null))
+                  : null)
             : null,
           questionContent,
           h('div', { className: 'kg-verify-filters' },
@@ -5334,9 +5554,12 @@
                       edgeTarget ? h('span', { className: 'kg-issue-cat' }, '关系 ' + it.targetId) : null,
                       typeof it.confidence === 'number' ? h('span', { className: 'kg-issue-cat' }, '置信 ' + Math.round(it.confidence * 100) + '%') : null,
                       it.source === 'local' ? h('span', { className: 'kg-issue-cat' }, '本地规则') : null,
+                      it.batchReview ? h('span', { className: 'kg-issue-cat' }, '批量核实：' +
+                        ({ confirmed: '问题成立', false_positive: '疑似误报', uncertain: '证据不足' }[it.batchReview.verdict] || '待人工')) : null,
                     ),
                     h('div', { className: 'kg-issue-title' }, it.title),
                     it.detail ? h('div', { className: 'kg-issue-detail' }, it.detail) : null,
+                    it.batchReview?.answer ? h('div', { className: 'kg-issue-detail' }, '批量核实：' + it.batchReview.answer) : null,
                     it.userNote ? h('div', { className: 'kg-issue-detail' }, '处理说明：' + it.userNote) : null,
                     (Array.isArray(it.evidence) && it.evidence.length > 0)
                       ? h('div', { className: 'kg-issue-ev' },
@@ -5345,24 +5568,26 @@
                             return h('div', { key: k }, '原文第 ' + (pi == null ? '?' : pi + 1) + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))
                           }))
                       : null,
-                    hasFix ? h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(it.proposedFix)) : null,
+                    hasFix ? h('p', { className: 'kg-fix-preview' }, (reportStale ? '旧版拟议修改（需重新核实）：' : '拟议修改：') + fixLabel(it.proposedFix)) : null,
                     hasFix && nodeTypeFixConflicts(graph, it.proposedFix).length > 0
                       ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点类型或关联关系不符合本体约束。') : null,
                     h('div', { className: 'kg-issue-actions' },
                       it.status === 'open' && relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', title: '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
                         : null,
                       it.status === 'open' && relationTypeFix && typeof onDeleteTarget === 'function'
-                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
+                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: bulkRunning || reportStale,
+                            title: reportStale ? '旧报告的关系问题需先对当前图重新核实' : undefined,
+                            onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: nodeTypeFixConflicts(graph, it.proposedFix).length > 0, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === JSON.stringify(it.proposedFix) ? '确认执行修复' : '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === JSON.stringify(it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running', onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, '复核并提交')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || bulkRunning, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
                         : null,
                       h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
                     ),

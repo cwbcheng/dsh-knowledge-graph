@@ -15,13 +15,18 @@ const documentId = 'recovery-document'
 const report = { reportId: 'vd-recovered', issues: [], metrics: {} }
 const run = { runId: 'verify-recovery', taskKind: 'verify', documentId, title: 'Recovery fixture', status: 'succeeded' }
 
-function fixture(response, revision = 4, attached = false, commitResult = { revision: revision + 1 }) {
+function fixture(response, revision = 4, attached = false, commitResult = { revision: revision + 1 }, options = {}) {
   const graph = { source: { documentId }, nodes: [], edges: [],
     ...(attached ? { verification: { lastReport: report } } : {}) }
   const view = { graph, sourceText: 'fixture text' }
-  const calls = [], errors = [], commits = [], states = [], refreshes = []
+  const calls = [], errors = [], commits = [], states = [], refreshes = [], confirmations = []
   const env = {
     runActionRef: { current: false }, taskId: null, verifyTaskId: null,
+    effectiveModelArg: options.model || null,
+    modelCatalog: { resumeModelSwitch: options.modelSwitch !== false },
+    verificationModelChanged: (saved, selected) => !!saved && !!selected &&
+      (saved.provider !== selected.provider || saved.model !== selected.model),
+    confirmVerificationModelChange: (...args) => { confirmations.push(args); return options.confirm !== false },
     setRecoveringRun: value => states.push(['recovering', value]),
     loadHistoryEntry: async () => ({ view, revision }), history: [],
     host: { async call(method, payload) { calls.push([method, payload]); return typeof response === 'function' ? response(method) : response } },
@@ -40,6 +45,7 @@ function fixture(response, revision = 4, attached = false, commitResult = { revi
     toastStore: { show(value) { states.push(['toast', value]) } },
   }
   return { action: new Function(...Object.keys(env), source)(...Object.values(env)), calls, errors, commits, states,
+    confirmations,
     refreshes, env }
 }
 
@@ -80,5 +86,43 @@ const interrupted = fixture(method => method === 'task-status' ? { status: 'not_
 await interrupted.action({ ...run, status: 'running' })
 assert.deepEqual(interrupted.calls.map(call => call[0]), ['task-status', 'resume-verify'])
 assert.equal(interrupted.calls[1][1].resumeInterrupted, true)
+
+const oldModel = { provider: 'opencode-go-omen', model: 'deepseek-flash' }
+const selectedModel = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }
+const failed = { ...run, status: 'failed', nextBatchIndex: 262, totalBatches: 857,
+  modelProvider: oldModel.provider, modelId: oldModel.model }
+const switched = fixture(method => method === 'task-status' ? { status: 'not_found' } : { taskId: run.runId },
+  4, false, { revision: 5 }, { model: selectedModel })
+await switched.action(failed)
+assert.deepEqual(switched.confirmations, [[oldModel, selectedModel, 262, 857]])
+assert.deepEqual(switched.calls[1][1].model, selectedModel, 'retry must send the selected model')
+
+const declined = fixture(method => method === 'task-status' ? { status: 'not_found' } : { taskId: run.runId },
+  4, false, { revision: 5 }, { model: selectedModel, confirm: false })
+await declined.action(failed)
+assert.deepEqual(declined.calls.map(call => call[0]), ['task-status'], 'declined switch must not resume')
+
+const oldHost = fixture(method => method === 'task-status' ? { status: 'not_found' } : { taskId: run.runId },
+  4, false, { revision: 5 }, { model: selectedModel, modelSwitch: false })
+await oldHost.action(failed)
+assert.deepEqual(oldHost.calls.map(call => call[0]), ['task-status'], 'old host must not silently ignore selected model')
+assert.match(oldHost.errors[0]?.message || '', /服务端尚未加载/)
+
+const confirmStart = client.indexOf('      function verificationModelChanged(')
+const confirmEnd = client.indexOf('      // ---- shared model catalog store ----', confirmStart)
+assert(confirmStart >= 0 && confirmEnd > confirmStart)
+const prompts = []
+const confirmSwitch = new Function('modelKeyOf', 'modelLabelOf', 'window',
+  client.slice(confirmStart, confirmEnd) + '; return confirmVerificationModelChange')(
+  model => model.provider + '::' + model.model,
+  model => model.provider + ' · ' + model.model,
+  { confirm(message) { prompts.push(message); return true } },
+)
+assert.equal(confirmSwitch(oldModel, oldModel, 262, 857), true)
+assert.equal(prompts.length, 0, 'same model must not ask for a switch')
+assert.equal(confirmSwitch(oldModel, selectedModel, 262, 857), true)
+assert.match(prompts[0], /262\/857/)
+assert.match(prompts[0], /未完成批次/)
+assert.match(prompts[0], /commandcode/)
 
 console.log('verification recovery UI smoke passed')
