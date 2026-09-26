@@ -642,9 +642,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 !checkpoint.graph || !Array.isArray(checkpoint.graph.nodes) || !checkpoint.model ||
                 !Number.isInteger(checkpoint.totalBatches) || checkpoint.totalBatches < 1 ||
                 checkpoint.inputHash !== verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
-                  mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap,
+                  mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths,
                   model: checkpoint.model, verificationPlanVersion: checkpoint.verificationPlanVersion })) {
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '审校输入或检查点不完整，禁止续跑' } })
+              }
+              if (Array.isArray(checkpoint.paragraphMap) && !Array.isArray(checkpoint.sourceUnitLengths)) {
+                return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '旧版局部审校缺少原文段落边界，不能安全续跑；已保存结果保留，请重新启动该范围审校' } })
               }
               const documentId = savedRun.documentId || checkpoint.documentId || ''
               if (documentId && (!Number.isInteger(checkpoint.baseRevision) || store.getDocumentRevision(documentId) !== checkpoint.baseRevision)) {
@@ -681,7 +684,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 for (const saved of savedResults) if (!batchModels[saved.batchIndex]) batchModels[saved.batchIndex] = checkpoint.model
                 resumedCheckpoint = { ...checkpoint, model: selectedModel, batchModels,
                   inputHash: verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
-                    mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap,
+                    mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths,
                     model: selectedModel, verificationPlanVersion: checkpoint.verificationPlanVersion }) }
                 store.saveCheckpoint(resumedCheckpoint, { runId, status: 'running', title: savedRun.title,
                   sourceText: savedRun.sourceText })
@@ -689,7 +692,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const task = {
                 id: runId, status: 'running', kind: 'verify', title: savedRun.title || '', documentId,
                 text: savedRun.sourceText, graph: checkpoint.graph, mode: checkpoint.mode,
-                scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, model: selectedModel,
+                scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths, model: selectedModel,
                 concurrency: checkpoint.concurrency, baseRevision: checkpoint.baseRevision,
                 verificationPlanVersion: checkpoint.verificationPlanVersion || 1,
                 checkpoint: resumedCheckpoint, verificationResults: savedResults, createdAt: Date.now(),
@@ -800,7 +803,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const mode = a.mode === 'standard' ? 'standard' : 'quick'
               if (mode === 'quick') {
-                 const report = await buildLocalReportBatchedHost(graph, text)
+                 const report = await buildLocalReportBatchedHost(graph, text, undefined, input.sourceUnitLengths)
                  report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
                  return writeJson(res, 200, { report: mapVerificationResultHost(report, input.paragraphMap) })
                }
@@ -818,7 +821,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 text, graph, mode, model, baseRevision: currentRevision,
                 verificationPlanVersion: canonicalFull ? 2 : 1,
-                paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                paragraphMap: input.paragraphMap, sourceUnitLengths: input.sourceUnitLengths, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))
             }
@@ -827,7 +830,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const input = prepareVerificationInputHost(a)
+              const input = prepareVerificationInputHost(a, a.reviewIssue !== undefined)
+              if (input.error) return writeJson(res, 200, { error: input.error })
               const text = input.text
               const graph = input.graph
               const question = typeof a.question === 'string' ? a.question.trim() : ''
@@ -877,7 +881,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'question',
-                text, graph, target, question, model, reviewIssue, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                text, graph, target, question, model, reviewIssue, paragraphMap: input.paragraphMap, sourceUnitLengths: input.sourceUnitLengths, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runQuestionTask, 'AI 质疑回答失败：内部错误'))
             }
@@ -908,7 +912,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               seq += 1
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'fact-check',
-                text, graph, mode, sources, rules, model, paragraphMap: input.paragraphMap, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
+                text, graph, mode, sources, rules, model, paragraphMap: input.paragraphMap, sourceUnitLengths: input.sourceUnitLengths, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runFactCheckTask, 'AI 外部事实核查失败：内部错误'))
             }

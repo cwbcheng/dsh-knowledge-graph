@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as host from '../lib/index.js'
 
@@ -193,6 +194,60 @@ try {
     { sourceText: text, expectedRevision: 1 })
   assert(!store.listIncompleteRuns().some(run => run.runId === reportRun.taskId),
     'a report attached to the canonical graph must leave the recovery list')
+
+  const codeUnit = 'AtomicCodeSegment_'.repeat(14), nextUnit = 'A distinct later source unit.'
+  const scopedText = codeUnit + '\n\n' + nextUnit
+  const scopedUnits = [{ paragraph: 10, text: codeUnit }, { paragraph: 30, text: nextUnit }]
+  const scopedGraph = { nodes: Array.from({ length: 13 }, (_, i) => ({ id: 's' + i, type: 'fact',
+    text: i < 12 ? codeUnit : nextUnit, quote: i < 12 ? codeUnit : nextUnit, paragraph: i < 12 ? 10 : 30 })),
+    edges: [{ fromNodeId: 's0', toNodeId: 's12', relation: 'supports', evidence: [{ paragraph: 30, quote: nextUnit }] }] }
+  let scopedCalls = 0
+  const scopedHost = createHost(async function* (request) {
+    scopedCalls++
+    assert.ok(request.messages[0].content[0].text.includes('[P0] ' + codeUnit + '\n[P1] ' + nextUnit),
+      'the original scoped plan must retain atomic source units')
+    if (scopedCalls === 1) { yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }; return }
+    await new Promise(resolve => request.signal.addEventListener('abort', resolve, { once: true }))
+  })
+  const scopedRun = await scopedHost('verify-graph', { text: '', graph: scopedGraph, sourceUnits: scopedUnits,
+    mode: 'standard', concurrency: 1, model })
+  await until(() => scopedCalls === 2 && store.loadVerificationBatches(scopedRun.taskId).length === 1, 'Scoped batch was not saved')
+  await scopedHost('task-pause', { taskId: scopedRun.taskId })
+  await until(async () => (await status(scopedHost, scopedRun.taskId)).status === 'paused', 'Scoped task did not pause')
+  const scopedCheckpoint = store.loadCheckpoint(scopedRun.taskId).checkpoint
+  assert.deepEqual(scopedCheckpoint.sourceUnitLengths, [codeUnit.length, nextUnit.length])
+  assert.equal(store.loadCheckpoint(scopedRun.taskId).sourceText, scopedText)
+  store.saveCheckpoint({ ...scopedCheckpoint, sourceUnitLengths: [codeUnit.length - 1, nextUnit.length + 1] },
+    { runId: scopedRun.taskId, status: 'paused', sourceText: scopedText })
+  assert.equal((await scopedHost('resume-verify', { runId: scopedRun.taskId, resumePaused: true })).error.code, 'checkpoint_invalid',
+    'the checkpoint hash must bind unit boundaries, not only concatenated text')
+  const legacyScoped = { ...scopedCheckpoint }
+  delete legacyScoped.sourceUnitLengths
+  legacyScoped.inputHash = createHash('sha256').update(JSON.stringify({ version: 1, taskKind: 'verify',
+    text: scopedText, graph: legacyScoped.graph, mode: legacyScoped.mode, scope: legacyScoped.scope,
+    paragraphMap: legacyScoped.paragraphMap, model: legacyScoped.model })).digest('hex')
+  store.saveCheckpoint(legacyScoped, { runId: scopedRun.taskId, status: 'paused', sourceText: scopedText })
+  const legacyResponse = await scopedHost('resume-verify', { runId: scopedRun.taskId, resumePaused: true })
+  assert.equal(legacyResponse.error.code, 'checkpoint_invalid')
+  assert.match(legacyResponse.error.message, /段落边界/, 'legacy scoped plans cannot silently mix old and new paragraph meanings')
+  assert.equal(store.loadCheckpoint(scopedRun.taskId).status, 'paused')
+  assert.equal(store.loadVerificationBatches(scopedRun.taskId).length, 1)
+  assert.equal(scopedCalls, 2, 'rejected recovery must not spend another model request')
+  store.saveCheckpoint(scopedCheckpoint, { runId: scopedRun.taskId, status: 'paused', sourceText: scopedText })
+  let scopedResumedCalls = 0
+  const scopedRestart = createHost(async function* (request) {
+    scopedResumedCalls++
+    assert.ok(request.messages[0].content[0].text.includes('[P0] ' + codeUnit + '\n[P1] ' + nextUnit),
+      'a fresh host must restore identical prompt boundaries')
+    yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }
+  }, [{ id: selectedModel.model }])
+  assert.equal((await scopedRestart('resume-verify', { runId: scopedRun.taskId, resumePaused: true, model: selectedModel })).taskId,
+    scopedRun.taskId)
+  await until(async () => (await status(scopedRestart, scopedRun.taskId)).status === 'succeeded', 'Scoped recovery did not finish')
+  assert.equal(scopedResumedCalls, 2, 'scoped recovery must not repeat the completed first batch')
+  assert.deepEqual(store.loadCheckpoint(scopedRun.taskId).checkpoint.sourceUnitLengths, scopedCheckpoint.sourceUnitLengths)
+  assert.ok(!(await status(scopedRestart, scopedRun.taskId)).result.issues.some(issue =>
+    issue.targetId === 's12' && issue.invariantCode === 'node_paragraph_mismatch'))
 
   let cancelledCalls = 0
   const cancelHost = createHost(async function* ({ signal }) {

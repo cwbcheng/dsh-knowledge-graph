@@ -53,6 +53,24 @@ try {
   api.validateGraphInvariantsHost(graph, 'Other document.')
   api.validateGraphInvariantsHost(graph, text)
   assert.equal(harness.parses - before, 3, 'the cache retains only one source, rather than every processed document')
+  const codeUnit = 'AtomicCodeSegment_'.repeat(14), nextUnit = 'The next source unit is distinct.'
+  const scopedText = codeUnit + '\n\n' + nextUnit
+  const scopedGraph = { nodes: [{ id: 'b', type: 'fact', text: nextUnit, quote: nextUnit, paragraph: 1 }], edges: [] }
+  const lengths = [codeUnit.length, nextUnit.length]
+  assert.ok(api.validateGraphInvariantsHost(scopedGraph, scopedText).blockingIssues.some(issue => issue.code === 'node_paragraph_mismatch'))
+  assert.equal(api.validateGraphInvariantsHost(scopedGraph, scopedText, { sourceUnitLengths: lengths }).blockingIssues.length, 0,
+    'scoped boundaries must not reuse a whole-source segmentation cache')
+  assert.ok(api.validateGraphInvariantsHost(scopedGraph, scopedText).blockingIssues.some(issue => issue.code === 'node_paragraph_mismatch'),
+    'whole-source validation must not inherit a scoped index')
+  api.validateGraphInvariantsHost(scopedGraph, scopedText, { sourceUnitLengths: lengths })
+  lengths[0]--
+  assert.throws(() => api.validateGraphInvariantsHost(scopedGraph, scopedText, { sourceUnitLengths: lengths }),
+    error => error.code === 'source_units_invalid', 'in-place boundary corruption must invalidate the source cache')
+  for (const invalid of [[], null, [-1, nextUnit.length], [codeUnit.length, nextUnit.length + 1],
+    [codeUnit.length + 1, nextUnit.length - 1], [NaN], [1.5], [240001]]) {
+    assert.throws(() => api.validateGraphInvariantsHost(scopedGraph, scopedText, { sourceUnitLengths: invalid }),
+      error => error.code === 'source_units_invalid', 'malformed boundaries must never fall back to guessed paragraphs')
+  }
   console.log(JSON.stringify({ ok: true, oneParseForRepeatedValidation: true, freshGraphChecks: true, sourceChangesInvalidated: true, ontologyIsolation: true, singleSourceBound: true }))
 } finally {
   if (previousHarness === undefined) delete globalThis.harness

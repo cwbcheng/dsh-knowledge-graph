@@ -1584,6 +1584,10 @@
           contextNodeIds: [...new Set(String(issue.title || '').concat(' ', issue.detail || '')
             .match(/\b(?:n|m)\d+\b/gi) || [])].slice(0, 24) }
       }
+      function reviewIssueSignature(issue) {
+        return issue ? JSON.stringify([issue.id, issue.targetKind, issue.targetId || null,
+          issue.title || '', issue.detail || '', issue.evidence || []]) : null
+      }
       function reviewContextChanged(before, after, target) {
         if (before === after) return false
         const original = typeof before === 'string' ? before : reviewContextSignature(before, target)
@@ -1664,7 +1668,7 @@
           failed: valid.filter(row => row.error).length }
       }
       async function reviewSignatureHash(signature) {
-        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验批量核实的图版本')
+        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验核实结果的图版本')
         const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(signature))
         return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('')
       }
@@ -5215,7 +5219,7 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview, reviewSaving = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
@@ -5243,7 +5247,7 @@
         const bulkCandidates = openIssues.filter(issue => !issue.batchReview
           && (!issueFilter || issueFilter === 'all' || issue.severity === issueFilter))
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report)
-        const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying'
+        const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
@@ -5269,7 +5273,11 @@
         const isReviewResult = questionResult?.mode === 'issue_review'
         const issueReview = isReviewResult &&
           questionResult.reviewedIssueId === questionTarget?.sourceIssueId
-        const reviewGraphChanged = issueReview && reviewContextChanged(questionTarget.reviewSignature, graph, questionTarget)
+        // A renderer window cannot prove that canonical dependencies are fresh.
+        // Canonical snapshots are checked again on confirmation, before CAS.
+        const reviewGraphChanged = issueReview && (questionTarget.reviewSnapshot
+          ? questionTarget.reviewSnapshot.documentId !== documentIdOfGraph(graph)
+          : reviewContextChanged(questionTarget.reviewSignature, graph, questionTarget))
         const qFix = questionResult && questionResult.proposedFix &&
           (!isReviewResult || (issueReview && questionResult.verdict === 'confirmed')) ? questionResult.proposedFix : null
         const qFixConflicts = nodeTypeFixConflicts(graph, qFix)
@@ -5316,7 +5324,7 @@
             if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
           }
           setPendingDestructiveFix(null)
-          onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSignature : undefined)
+          onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSnapshot || questionTarget?.reviewSignature : undefined)
         }
         // A contradicted/insufficient answer without a structured fix is not a
         // deletion instruction. Never synthesize delete_node/delete_edge from
@@ -5345,11 +5353,11 @@
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
           targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
-            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running', onClick: clearQuestionTarget }, '清除目标')) : null,
-          questionPhase === 'running'
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running' || reviewSaving, onClick: clearQuestionTarget }, '清除目标')) : null,
+          questionPhase === 'running' || reviewSaving
             ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
                 h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
-                ' ', progress?.stage || '正在提交质疑…')
+                ' ', reviewSaving ? '正在核对当前知识图并保存核实结果…' : progress?.stage || '正在提交质疑…')
             : null,
           questionError
             ? h('p', { className: 'kg-question-error', role: 'alert', ref: questionFeedbackRef }, questionError)
@@ -5370,8 +5378,9 @@
                   : null,
                 issueReview && !reviewGraphChanged && qVerdict === 'false_positive' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
-                      h('button', { type: 'button', className: 'kg-secondary',
-                        onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持')) },
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning,
+                        onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持'),
+                          questionTarget.reviewSnapshot || questionTarget.reviewSignature) },
                         '标记原问题为误报')) : null,
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
@@ -5399,14 +5408,16 @@
                   : null,
                 qNeedsManualRepair
                   ? h('p', { className: 'kg-hint' }, issueReview
-                    ? questionResult.repairStatus === 'not_generated'
+                    ? questionResult.repairStatus === 'context_limit'
+                      ? '问题成立，但完整上下文加上修复说明超过单次 AI 上限，未调用追加模型；核实结论已保留，知识图未改变。请拆分问题或人工修改。'
+                      : questionResult.repairStatus === 'not_generated'
                       ? '问题成立，但追加生成仍未获得通过结构校验的补丁；知识图未改变。可重试或人工修改。'
                       : '问题已由 AI 核实，但没有可安全单步执行的修复；知识图未改变，请根据上方证据人工处理。'
                     : qVerdict === 'contradicted'
                     ? '质疑成立，但当前没有可安全单步应用的修复。可能需要协同修改节点与关系；原图保持不变，请根据上方证据分步复核。'
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
-                issueReview && qNeedsManualRepair && !reviewGraphChanged && recheckedIssue
+                issueReview && qNeedsManualRepair && questionResult.repairStatus !== 'context_limit' && !reviewGraphChanged && recheckedIssue
                   ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
                   : null,
               )

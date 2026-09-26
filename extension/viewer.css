@@ -156,7 +156,7 @@
 .kg-question-target { margin: 8px 0 0; font-size: 11.5px; color: var(--kg-text-dim); }
 .kg-question-progress { display: flex; align-items: center; gap: 7px; margin: 9px 0 0; font-size: 12.5px; color: var(--kg-text-dim); }
 .kg-question-error { margin: 9px 0 0; padding: 8px 10px; color: #b91c1c; background: rgba(220,38,38,0.07); border-left: 3px solid #dc2626; font-size: 12.5px; overflow-wrap: anywhere; }
-.kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; }
+.kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; overflow-wrap: anywhere; }
 .kg-question-asked { margin: 0 0 6px; color: var(--kg-text-dim); overflow-wrap: anywhere; }
 .kg-fix-preview { margin: 7px 0 2px; padding: 6px 8px; border-left: 3px solid #2563eb; background: rgba(59,130,246,0.07); font-size: 12px; overflow-wrap: anywhere; }
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }

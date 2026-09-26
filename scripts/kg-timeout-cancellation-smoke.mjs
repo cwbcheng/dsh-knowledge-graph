@@ -132,7 +132,8 @@ async function dynamicSmoke() {
   assert(timedStart.taskId, 'dynamic timeout task did not start')
   const timed = await waitDynamic(handlers, timedStart.taskId)
   assert(timed.status === 'failed' && timed.error && timed.error.code === 'timeout', 'never-resolving stream creation did not fail with timeout: ' + JSON.stringify(timed))
-  assert(timed.elapsedMs < 800 && llm.state.aborts >= 1, 'dynamic timeout was not prompt or did not abort the provider')
+  assert(timed.elapsedMs < 800 && llm.state.aborts >= 1, 'dynamic timeout was not prompt or did not abort the provider: '
+    + JSON.stringify({ elapsedMs: timed.elapsedMs, calls: llm.state.calls, aborts: llm.state.aborts }))
 
   const lateReturnsBefore = llm.state.returns
   const lateNextBefore = llm.state.nextCalls
@@ -259,7 +260,8 @@ async function persistentSmoke() {
     assert(started.taskId, 'persistent timeout task did not start')
     const timed = await waitHttp(api, started.taskId)
     assert(timed.status === 'failed' && timed.error && timed.error.code === 'timeout', 'persistent timeout did not preserve timeout code: ' + JSON.stringify(timed))
-    assert(timed.elapsedMs < 800 && llm.state.aborts >= 1, 'persistent timeout was not prompt or did not abort provider')
+    assert(timed.elapsedMs < 800 && llm.state.aborts >= 1, 'persistent timeout was not prompt or did not abort provider: '
+      + JSON.stringify({ elapsedMs: timed.elapsedMs, calls: llm.state.calls, aborts: llm.state.aborts }))
 
     llm.state.mode = 'success'
     const recoveredStart = await startHttpAnswer(api, payload)

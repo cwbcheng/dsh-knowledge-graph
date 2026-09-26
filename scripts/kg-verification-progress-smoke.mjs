@@ -295,8 +295,10 @@ for (const mode of ['valid', 'malformed', 'rejected', 'switched']) {
   const env = {
     view, currentViewRef, documentIdOfGraph: () => 'fixture', semanticOperationsOf: () => [],
     trajRevisionRef: revision, trajCommitQueueRef: { current: Promise.resolve() }, graphSemanticOperations: new WeakMap(),
+    trajCommitEpochRef: { current: 0 }, mountedSessionRef: { current: 'original-session' },
     sessionId: 'original-session', traceEvents: [], writeTrajResult: (...args) => writes.push(args),
-    setError: value => errors.push(value), setView: value => writes.push(value), makeView: value => value,
+    setError: value => { const next = typeof value === 'function' ? value(errors.at(-1)) : value; if (next) errors.push(next) },
+    setView: value => writes.push(value), makeView: value => value,
     setVerification: value => reports.push(['verification', value]),
     setFactReport: value => reports.push(['fact', value]),
     host: { async call(method, payload) {
@@ -310,10 +312,10 @@ for (const mode of ['valid', 'malformed', 'rejected', 'switched']) {
   const commit = new Function(...Object.keys(env), commitCode + '; return persistTrajGraph')(...Object.values(env))
   const result = await commit({ ...graph }, graph, 4)
   assert.equal(!!result, mode === 'valid')
-  assert.equal(writes.length > 0, mode === 'valid' || mode === 'malformed' || mode === 'rejected')
+  assert.equal(writes.length > 0, mode === 'valid')
   assert.equal(errors.length, mode === 'malformed' || mode === 'rejected' ? 1 : 0)
-  assert.equal(reports.length, mode === 'malformed' || mode === 'rejected' ? 2 : 0,
-    'failed canonical commit must restore the trajectory report as well as the graph')
+  assert.equal(reports.length, 0,
+    'a pinned canonical commit is not optimistic; failure must retain the existing window and report without replacing them')
   if (mode !== 'valid') assert.equal(revision.current, 7)
 }
 console.log(JSON.stringify({ ok: true, realHostBatches: 3, retryAndIndependentConfirmation: true, reconnectWithoutResubmit: true, terminalStates: 5, lateResponses: 3, admissionScenarios: 10, cancellationRecovery: true, reportPersistenceBeforeCompletion: true }))

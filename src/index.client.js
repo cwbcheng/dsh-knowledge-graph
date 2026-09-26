@@ -197,7 +197,7 @@ export default function clientPlugin() {
 .kg-question-target { margin: 8px 0 0; font-size: 11.5px; color: var(--kg-text-dim); }
 .kg-question-progress { display: flex; align-items: center; gap: 7px; margin: 9px 0 0; font-size: 12.5px; color: var(--kg-text-dim); }
 .kg-question-error { margin: 9px 0 0; padding: 8px 10px; color: #b91c1c; background: rgba(220,38,38,0.07); border-left: 3px solid #dc2626; font-size: 12.5px; overflow-wrap: anywhere; }
-.kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; }
+.kg-question-result { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(59,130,246,0.4); border-radius: 10px; background: rgba(59,130,246,0.06); font-size: 12.5px; line-height: 1.7; overflow-wrap: anywhere; }
 .kg-question-asked { margin: 0 0 6px; color: var(--kg-text-dim); overflow-wrap: anywhere; }
 .kg-fix-preview { margin: 7px 0 2px; padding: 6px 8px; border-left: 3px solid #2563eb; background: rgba(59,130,246,0.07); font-size: 12px; overflow-wrap: anywhere; }
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }
@@ -2297,6 +2297,10 @@ export default function clientPlugin() {
           contextNodeIds: [...new Set(String(issue.title || '').concat(' ', issue.detail || '')
             .match(/\b(?:n|m)\d+\b/gi) || [])].slice(0, 24) }
       }
+      function reviewIssueSignature(issue) {
+        return issue ? JSON.stringify([issue.id, issue.targetKind, issue.targetId || null,
+          issue.title || '', issue.detail || '', issue.evidence || []]) : null
+      }
       function reviewContextChanged(before, after, target) {
         if (before === after) return false
         const original = typeof before === 'string' ? before : reviewContextSignature(before, target)
@@ -2377,7 +2381,7 @@ export default function clientPlugin() {
           failed: valid.filter(row => row.error).length }
       }
       async function reviewSignatureHash(signature) {
-        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验批量核实的图版本')
+        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验核实结果的图版本')
         const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(signature))
         return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('')
       }
@@ -5928,7 +5932,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview, reviewSaving = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
@@ -5956,7 +5960,7 @@ export default function clientPlugin() {
         const bulkCandidates = openIssues.filter(issue => !issue.batchReview
           && (!issueFilter || issueFilter === 'all' || issue.severity === issueFilter))
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report)
-        const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying'
+        const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
@@ -5982,7 +5986,11 @@ export default function clientPlugin() {
         const isReviewResult = questionResult?.mode === 'issue_review'
         const issueReview = isReviewResult &&
           questionResult.reviewedIssueId === questionTarget?.sourceIssueId
-        const reviewGraphChanged = issueReview && reviewContextChanged(questionTarget.reviewSignature, graph, questionTarget)
+        // A renderer window cannot prove that canonical dependencies are fresh.
+        // Canonical snapshots are checked again on confirmation, before CAS.
+        const reviewGraphChanged = issueReview && (questionTarget.reviewSnapshot
+          ? questionTarget.reviewSnapshot.documentId !== documentIdOfGraph(graph)
+          : reviewContextChanged(questionTarget.reviewSignature, graph, questionTarget))
         const qFix = questionResult && questionResult.proposedFix &&
           (!isReviewResult || (issueReview && questionResult.verdict === 'confirmed')) ? questionResult.proposedFix : null
         const qFixConflicts = nodeTypeFixConflicts(graph, qFix)
@@ -6029,7 +6037,7 @@ export default function clientPlugin() {
             if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
           }
           setPendingDestructiveFix(null)
-          onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSignature : undefined)
+          onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSnapshot || questionTarget?.reviewSignature : undefined)
         }
         // A contradicted/insufficient answer without a structured fix is not a
         // deletion instruction. Never synthesize delete_node/delete_edge from
@@ -6058,11 +6066,11 @@ export default function clientPlugin() {
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
           targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
-            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running', onClick: clearQuestionTarget }, '清除目标')) : null,
-          questionPhase === 'running'
+            h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running' || reviewSaving, onClick: clearQuestionTarget }, '清除目标')) : null,
+          questionPhase === 'running' || reviewSaving
             ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
                 h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
-                ' ', progress?.stage || '正在提交质疑…')
+                ' ', reviewSaving ? '正在核对当前知识图并保存核实结果…' : progress?.stage || '正在提交质疑…')
             : null,
           questionError
             ? h('p', { className: 'kg-question-error', role: 'alert', ref: questionFeedbackRef }, questionError)
@@ -6083,8 +6091,9 @@ export default function clientPlugin() {
                   : null,
                 issueReview && !reviewGraphChanged && qVerdict === 'false_positive' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
-                      h('button', { type: 'button', className: 'kg-secondary',
-                        onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持')) },
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning,
+                        onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持'),
+                          questionTarget.reviewSnapshot || questionTarget.reviewSignature) },
                         '标记原问题为误报')) : null,
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
@@ -6112,14 +6121,16 @@ export default function clientPlugin() {
                   : null,
                 qNeedsManualRepair
                   ? h('p', { className: 'kg-hint' }, issueReview
-                    ? questionResult.repairStatus === 'not_generated'
+                    ? questionResult.repairStatus === 'context_limit'
+                      ? '问题成立，但完整上下文加上修复说明超过单次 AI 上限，未调用追加模型；核实结论已保留，知识图未改变。请拆分问题或人工修改。'
+                      : questionResult.repairStatus === 'not_generated'
                       ? '问题成立，但追加生成仍未获得通过结构校验的补丁；知识图未改变。可重试或人工修改。'
                       : '问题已由 AI 核实，但没有可安全单步执行的修复；知识图未改变，请根据上方证据人工处理。'
                     : qVerdict === 'contradicted'
                     ? '质疑成立，但当前没有可安全单步应用的修复。可能需要协同修改节点与关系；原图保持不变，请根据上方证据分步复核。'
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
-                issueReview && qNeedsManualRepair && !reviewGraphChanged && recheckedIssue
+                issueReview && qNeedsManualRepair && questionResult.repairStatus !== 'context_limit' && !reviewGraphChanged && recheckedIssue
                   ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
                   : null,
               )
@@ -7357,6 +7368,138 @@ export default function clientPlugin() {
       }
 
       // -------------------------- workbench body --------------------------
+      function questionContextTools() {
+        const questionParagraphIndicesClient = (question, paragraphCount) => {
+          const indices = []
+          for (const match of question.matchAll(/\bP(\d+)(?:\s*[-–—~至到]\s*P?(\d+))?/gi)) {
+            const start = Number(match[1])
+            const end = match[2] == null ? start : Number(match[2])
+            if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || start > end || end - start > 80) continue
+            for (let p = start; p <= end && p <= paragraphCount; p++) indices.push(p - 1)
+          }
+          return indices
+        }
+        const verificationSourcePayload = (source, graph, question = '', reviewIssue = null) => {
+          if (reviewIssue?.targetKind === 'graph') {
+            if (typeof source !== 'string' || !source.trim() || source.length > MAX_VERIFY_SCOPE_CHARS
+              || splitParagraphs(source).length > MAX_VERIFY_SCOPE_UNITS) {
+              throw new Error('整图问题必须核对完整原文，当前原文缺失或超过单次 AI 复核上限；请将问题缩小到具体节点或关系，未提交模型请求')
+            }
+            return {}
+          }
+          if (typeof source !== 'string' || source.length <= MAX_VERIFY_SCOPE_CHARS) return {}
+          const paragraphs = splitParagraphs(source)
+          const required = new Set()
+          if (reviewIssue) {
+            const add = paragraph => { if (Number.isInteger(paragraph) && paragraph >= 0) required.add(paragraph) }
+            const evidence = items => { for (const item of Array.isArray(items) ? items : []) add(item?.paragraph) }
+            for (const node of graph?.nodes || []) { add(node?.paragraph); evidence(node?.evidence) }
+            for (const edge of graph?.edges || []) evidence(edge?.evidence)
+            evidence(reviewIssue.evidence)
+            for (const paragraph of questionParagraphIndicesClient(
+              [question, reviewIssue.title, reviewIssue.detail].join(' '), paragraphs.length)) add(paragraph)
+          }
+          const wanted = new Set()
+          const priority = []
+          if (question) {
+            priority.push(...questionParagraphIndicesClient(question, paragraphs.length))
+            const terms = new Set()
+            for (const match of question.replace(/\bP\d+\b/gi, ' ').matchAll(/[\p{Script=Han}]{2,}|[A-Za-z][A-Za-z0-9_-]{2,}/gu)) {
+              const phrase = match[0]
+              if (phrase.length <= 12) terms.add(phrase)
+              if (/^[\p{Script=Han}]+$/u.test(phrase)) {
+                for (let i = 0; i < phrase.length - 1; i++) {
+                  terms.add(phrase.slice(i, i + 2))
+                  if (i + 3 <= phrase.length) terms.add(phrase.slice(i, i + 3))
+                }
+              }
+            }
+            const scored = paragraphs.map((para, index) => {
+              let score = 0
+              for (const term of terms) if (para.text.includes(term)) score += Math.min(term.length, 5)
+              return { index, score }
+            }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
+            priority.push(...scored.slice(0, 30).map((item) => item.index))
+          }
+          for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
+            if (!node || !Number.isInteger(node.paragraph) || node.paragraph < 0 || node.paragraph >= paragraphs.length) continue
+            wanted.add(node.paragraph)
+            if (node.paragraph > 0) wanted.add(node.paragraph - 1)
+            if (node.paragraph + 1 < paragraphs.length) wanted.add(node.paragraph + 1)
+          }
+          const sourceUnits = []
+          const selected = new Set()
+          let chars = 0
+          for (const paragraph of [...required, ...new Set(priority), ...Array.from(wanted).sort((a, b) => a - b)]) {
+            if (sourceUnits.length >= MAX_VERIFY_SCOPE_UNITS) break
+            const text = paragraphs[paragraph] && typeof paragraphs[paragraph].text === 'string' ? paragraphs[paragraph].text : ''
+            if (!text.trim() || selected.has(paragraph) || chars + text.length > MAX_VERIFY_SCOPE_CHARS) continue
+            sourceUnits.push({ paragraph, text })
+            selected.add(paragraph)
+            chars += text.length
+          }
+          if (reviewIssue && (!sourceUnits.length || [...required].some(paragraph => !selected.has(paragraph)))) {
+            throw new Error('复核必需的原文段落缺失或超过单次上下文上限；请拆分该问题或核对原文后重试，未提交模型请求')
+          }
+          // Override the caller's full `text` field when a scoped payload is
+          // available. This bounds browser→Host wire size for book-scale text.
+          return sourceUnits.length > 0 ? { text: '', sourceUnits } : {}
+        }
+        const questionNeighborhoodGraph = (graph, question, target, reviewIssue = null) => {
+          const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
+          const edges = Array.isArray(graph?.edges) ? graph.edges : []
+          if (reviewIssue?.targetKind === 'graph') {
+            const known = new Set(nodes.map(node => node?.id).filter(Boolean))
+            if (graph?.view?.truncated || nodes.length > 96 || edges.length > 512
+              || edges.some(edge => !known.has(edge?.fromNodeId) || !known.has(edge?.toNodeId))) {
+              throw new Error('整图问题必须核对完整知识图，当前图不完整或超过单次 AI 复核上限；请将问题缩小到具体节点或关系，未提交模型请求')
+            }
+            return graph
+          }
+          const allegation = reviewIssue ? [question, reviewIssue.title, reviewIssue.detail].join(' ') : String(question)
+          const references = Array.from(allegation.matchAll(/\b(?:n|m)\d+\b/gi), match => match[0])
+          const ids = new Set(reviewIssue ? references : references.slice(0, 24))
+          if (reviewIssue && ids.size > 24) {
+            throw new Error('该问题引用的对照节点超过单次 AI 复核上限；请拆分问题后重试，未提交模型请求')
+          }
+          if (target?.kind === 'node' && target.id) ids.add(target.id)
+          if (target?.kind === 'edge' && target.id) for (const id of target.id.split('>')) ids.add(id)
+          if (ids.size === 0) return graph
+          const known = new Set(nodes.map(node => node?.id).filter(Boolean))
+          if (reviewIssue) {
+            // A repair verdict needs the whole union, not the first 96 nodes.
+            // The host cannot detect relations already discarded by the caller.
+            const selected = new Set(ids)
+            for (const edge of edges) if (ids.has(edge?.fromNodeId) || ids.has(edge?.toNodeId)) {
+              selected.add(edge.fromNodeId); selected.add(edge.toNodeId)
+            }
+            if ([...selected].some(id => !known.has(id))) {
+              throw new Error('复核所需的目标、对照节点或关系端点未完整载入；请核对当前图后重试，未提交模型请求')
+            }
+            const selectedEdges = edges.filter(edge => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId))
+            const incidentCount = target?.kind === 'node' ? edges.filter(edge =>
+              edge.fromNodeId === target.id || edge.toNodeId === target.id).length : 0
+            if (selected.size > 96 || selectedEdges.length > 512 || incidentCount > 95) {
+              throw new Error('目标与对照节点的完整上下文超过单次 AI 复核上限；请拆分问题或缩小目标范围后重试，未提交模型请求')
+            }
+            return { ...graph, nodes: nodes.filter(node => selected.has(node.id)), edges: selectedEdges }
+          }
+          const selected = new Set([...ids].filter(id => known.has(id)))
+          if (selected.size === 0) return { ...graph, nodes: [], edges: [] }
+          const seeds = new Set(selected)
+          for (const edge of edges) {
+            if (selected.size >= 96) break
+            if (selected.size < 96 && seeds.has(edge?.fromNodeId) && known.has(edge.toNodeId)) selected.add(edge.toNodeId)
+            if (selected.size < 96 && seeds.has(edge?.toNodeId) && known.has(edge.fromNodeId)) selected.add(edge.fromNodeId)
+          }
+          return { ...graph, nodes: nodes.filter(node => selected.has(node.id)),
+            edges: edges.filter(edge => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId)) }
+        }
+        // End question context helpers.
+        return { questionNeighborhoodGraph, verificationSourcePayload }
+      }
+      const { questionNeighborhoodGraph, verificationSourcePayload } = questionContextTools()
+
       function WorkbenchBody({ ctx }) {
         const [title, setTitle] = useState('')
         const [text, setText] = useState('')
@@ -7583,6 +7726,11 @@ export default function clientPlugin() {
         const graphRevisionRef = useRef(0)
         const graphCommitQueueRef = useRef(Promise.resolve())
         const graphCommitEpochRef = useRef(0)
+        const resetGraphCommitQueue = () => {
+          // Already-dispatched writes may settle, but no longer own this view.
+          graphCommitEpochRef.current += 1
+          graphCommitQueueRef.current = Promise.resolve()
+        }
         // ---- 追加拆分（incremental merge）----
         const [fullText, setFullText] = useState('') // accumulated source across appends
         const [currentHistoryId, setCurrentHistoryId] = useState(null)
@@ -7599,6 +7747,8 @@ export default function clientPlugin() {
         const [questionError, setQuestionError] = useState('')
         const [questionPhase, setQuestionPhase] = useState('idle') // idle | running
         const [questionTaskId, setQuestionTaskId] = useState(null)
+        const questionAdmissionRef = useRef(null)
+        const [reviewSaving, setReviewSaving] = useState(false)
         const [bulkReview, setBulkReview] = useState(null)
         const bulkRunRef = useRef(false)
         const bulkStopRef = useRef(false)
@@ -7637,6 +7787,7 @@ export default function clientPlugin() {
         useEffect(() => { imageInputsRef.current = imageInputs }, [imageInputs])
         useEffect(() => () => {
           verifyGenRef.current += 1
+          graphCommitEpochRef.current += 1
           for (const url of uploadPreviewUrlsRef.current) { try { URL.revokeObjectURL(url) } catch (error) {} }
           for (const url of Object.values(sourceImageUrlRef.current)) { try { URL.revokeObjectURL(url) } catch (error) {} }
           uploadPreviewUrlsRef.current.clear()
@@ -7688,6 +7839,7 @@ export default function clientPlugin() {
         // the generations invalidates stale polling callbacks.
         const cancelVerifyTasks = () => {
           verifyGenRef.current += 1
+          questionAdmissionRef.current = null
           factGenRef.current += 1
           setVerifyTaskId(null)
           setQuestionTaskId(null)
@@ -8509,6 +8661,7 @@ export default function clientPlugin() {
           submittedRef.current = { title: ti, text: t, documentId: payload.documentId || '', model: payload.model || null, images: submittingImages.map((image) => ({ name: image.name, mediaType: image.mediaType, bytes: image.bytes })), append: false }
           setExtractProgress(null)
           setPhase('extracting')
+          resetGraphCommitQueue()
           setResultView(null)
            setChapterFilter('all')
           setSelectedNodeId(null)
@@ -8654,6 +8807,7 @@ export default function clientPlugin() {
           try { localStorage.removeItem(LS_PENDING); localStorage.removeItem(LS_RESULT); localStorage.removeItem(LS_DRAFT) } catch (e) {}
            resumeAttemptRef.current = false
           cancelVerifyTasks()
+          resetGraphCommitQueue()
           setTitle(''); setText(''); clearImageInputs(); setTaskId(null); setPhase('idle'); setResultView(null)
            setChapterFilter('all'); setGraphWindowLoading(false); setGraphPageDraft('1'); setGraphQueryDraft('')
           setError(null); toastStore.clear(); setSelectedNodeId(null); setSelectedEdgeId(null)
@@ -8717,7 +8871,6 @@ export default function clientPlugin() {
             } else if (details && details.code === 'ontology_relation_conflict') {
               toastStore.show('修复会破坏现有关系的类型约束，已恢复未提交状态')
             }
-            graphSemanticOperations.delete(g)
             if (baseline && baseline !== g) {
               setResultView(makeView(baseline, rollbackText))
               const previousReport = baseline.verification && baseline.verification.lastReport ? baseline.verification.lastReport : null
@@ -8727,8 +8880,10 @@ export default function clientPlugin() {
             }
           }
           const commitEpoch = graphCommitEpochRef.current
+          const ownsCommit = () => commitEpoch === graphCommitEpochRef.current
+            && documentIdOfGraph(currentResultRef.current?.graph) === documentId
           const queued = graphCommitQueueRef.current.catch(() => {}).then(async () => {
-            if (commitEpoch !== graphCommitEpochRef.current) {
+            if (!ownsCommit()) {
               graphSemanticOperations.delete(g)
               return null
             }
@@ -8749,10 +8904,10 @@ export default function clientPlugin() {
             if (!response || response.documentId !== documentId || !Number.isSafeInteger(response.revision) || !response.graph) {
               throw new Error('保存结果未确认，请重新载入知识图后核对')
             }
-            if (documentIdOfGraph(currentResultRef.current?.graph) !== documentId) return response
+            graphSemanticOperations.delete(g)
+            if (!ownsCommit()) return null
             if (Number.isSafeInteger(pinnedRevision) && currentResultRef.current !== resultView) return response
             if (response && Number.isInteger(response.revision)) graphRevisionRef.current = response.revision
-            graphSemanticOperations.delete(g)
             if (baseline.view?.kind === 'all') setResultView(current => current?.graph?.nodes === g.nodes
               && current.graph.edges === g.edges && current.graph.verification === g.verification
               && current.graph.factCheck === g.factCheck && current.graph.summary === g.summary
@@ -8762,6 +8917,8 @@ export default function clientPlugin() {
             rememberLocalGraph()
             return response
           }).catch((error) => {
+            graphSemanticOperations.delete(g)
+            if (!ownsCommit()) return null
             graphCommitEpochRef.current += 1
             restoreAfterCommitFailure(error)
             return null
@@ -8855,88 +9012,24 @@ export default function clientPlugin() {
           setResultView(makeView(g2, resultView.sourceText))
           return persistGraph(g2, baseline)
         }
-        const questionParagraphIndicesClient = (question, paragraphCount) => {
-          const indices = []
-          for (const match of question.matchAll(/\bP(\d+)(?:\s*[-–—~至到]\s*P?(\d+))?/gi)) {
-            const start = Number(match[1])
-            const end = match[2] == null ? start : Number(match[2])
-            if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || start > end || end - start > 80) continue
-            for (let p = start; p <= end && p <= paragraphCount; p++) indices.push(p - 1)
-          }
-          return indices
-        }
-        const verificationSourcePayload = (source, graph, question = '') => {
-          if (typeof source !== 'string' || source.length <= MAX_VERIFY_SCOPE_CHARS) return {}
-          const paragraphs = splitParagraphs(source)
-          const wanted = new Set()
-          const priority = []
-          if (question) {
-            priority.push(...questionParagraphIndicesClient(question, paragraphs.length))
-            const terms = new Set()
-            for (const match of question.replace(/\bP\d+\b/gi, ' ').matchAll(/[\p{Script=Han}]{2,}|[A-Za-z][A-Za-z0-9_-]{2,}/gu)) {
-              const phrase = match[0]
-              if (phrase.length <= 12) terms.add(phrase)
-              if (/^[\p{Script=Han}]+$/u.test(phrase)) {
-                for (let i = 0; i < phrase.length - 1; i++) {
-                  terms.add(phrase.slice(i, i + 2))
-                  if (i + 3 <= phrase.length) terms.add(phrase.slice(i, i + 3))
-                }
-              }
-            }
-            const scored = paragraphs.map((para, index) => {
-              let score = 0
-              for (const term of terms) if (para.text.includes(term)) score += Math.min(term.length, 5)
-              return { index, score }
-            }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
-            priority.push(...scored.slice(0, 30).map((item) => item.index))
-          }
-          for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
-            if (!node || !Number.isInteger(node.paragraph) || node.paragraph < 0 || node.paragraph >= paragraphs.length) continue
-            wanted.add(node.paragraph)
-            if (node.paragraph > 0) wanted.add(node.paragraph - 1)
-            if (node.paragraph + 1 < paragraphs.length) wanted.add(node.paragraph + 1)
-          }
-          const sourceUnits = []
-          const selected = new Set()
-          let chars = 0
-          for (const paragraph of [...new Set(priority), ...Array.from(wanted).sort((a, b) => a - b)]) {
-            if (sourceUnits.length >= MAX_VERIFY_SCOPE_UNITS) break
-            const text = paragraphs[paragraph] && typeof paragraphs[paragraph].text === 'string' ? paragraphs[paragraph].text.trim() : ''
-            if (!text || selected.has(paragraph) || chars + text.length > MAX_VERIFY_SCOPE_CHARS) continue
-            sourceUnits.push({ paragraph, text })
-            selected.add(paragraph)
-            chars += text.length
-          }
-          // Override the caller's full `text` field when a scoped payload is
-          // available. This bounds browser→Host wire size for book-scale text.
-          return sourceUnits.length > 0 ? { text: '', sourceUnits } : {}
-        }
-        const questionNeighborhoodGraph = (graph, question, target) => {
-          const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
-          const edges = Array.isArray(graph?.edges) ? graph.edges : []
-          const ids = new Set(Array.from(String(question).matchAll(/\b(?:n|m)\d+\b/gi), match => match[0]).slice(0, 24))
-          if (target?.kind === 'node' && target.id) ids.add(target.id)
-          if (target?.kind === 'edge' && target.id) for (const id of target.id.split('>')) ids.add(id)
-          if (ids.size === 0) return graph
-          const known = new Set(nodes.map(node => node?.id).filter(Boolean))
-          const selected = new Set([...ids].filter(id => known.has(id)))
-          if (selected.size === 0) return { ...graph, nodes: [], edges: [] }
-          const seeds = new Set(selected)
-          for (const edge of edges) {
-            if (selected.size >= 96) break
-            if (selected.size < 96 && seeds.has(edge?.fromNodeId) && known.has(edge.toNodeId)) selected.add(edge.toNodeId)
-            if (selected.size < 96 && seeds.has(edge?.toNodeId) && known.has(edge.fromNodeId)) selected.add(edge.fromNodeId)
-          }
-          return { ...graph, nodes: nodes.filter(node => selected.has(node.id)),
-            edges: edges.filter(edge => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId)) }
-        }
         const startQuickVerify = async () => {
           if (!resultView || verifyBusyRef.current || bulkRunRef.current) return
+          const reviewedView = resultView, generation = verifyGenRef.current
+          const documentId = documentIdOfGraph(reviewedView.graph)
+          const isCurrent = () => verifyGenRef.current === generation
+            && currentResultRef.current && documentIdOfGraph(currentResultRef.current.graph) === documentId
+          const commits = graphCommitQueueRef.current, epoch = graphCommitEpochRef.current
           setError(null)
           setVerifyProgress(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
           try {
+            await commits
+            if (!isCurrent()) return
+            if (currentResultRef.current !== reviewedView || commits !== graphCommitQueueRef.current || epoch !== graphCommitEpochRef.current) {
+              throw new Error('知识图或排队修改已变化，请等待保存完成后重新体检')
+            }
+            const revision = graphRevisionRef.current
             const payload = {
               title, text: fullText || resultView.sourceText || '',
               graph: { ontology: resultView.graph.ontology || resultView.graph.source?.ontology || resultView.graph.graphMeta?.ontology,
@@ -8946,21 +9039,43 @@ export default function clientPlugin() {
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('verify-graph', payload)
+            if (!isCurrent()) return
+            if (currentResultRef.current !== reviewedView || graphRevisionRef.current !== revision
+              || commits !== graphCommitQueueRef.current || epoch !== graphCommitEpochRef.current) {
+              throw new Error('体检期间知识图或排队修改已变化，未附加旧报告；请重新体检')
+            }
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
+              // A completed check is not a saved report. Keep the current view
+              // until the exact reviewed revision has acknowledged the write.
+              let graph = withVerification(reviewedView.graph, res.report, false)
+              if (documentId) {
+                const saving = persistGraph(graph, reviewedView.graph, revision)
+                const saveQueue = graphCommitQueueRef.current
+                const saved = await saving
+                if (!isCurrent()) return
+                if (!saved) {
+                  setError(previous => previous || { message: '快速体检报告保存未确认，请检查知识图版本或连接后重试' })
+                  return
+                }
+                if (currentResultRef.current !== reviewedView || saveQueue !== graphCommitQueueRef.current || epoch !== graphCommitEpochRef.current) {
+                  throw new Error('体检报告已保存，但当前知识图已变化；请重新载入核对')
+                }
+                graphRevisionRef.current = saved.revision
+                graph = { ...graph, revision: saved.revision, source: { ...(graph.source || {}), revision: saved.revision } }
+              }
               const m = res.report.metrics || {}
+              setResultView(makeView(graph, reviewedView.sourceText))
               setVerification(res.report)
-              attachReport(res.report, false)
               setActiveIssueId(null)
               toastStore.show('快速体检完成：确定性错误 ' + (m.errorCount || 0) + ' / 质量警告 ' + (m.warningCount || 0) + ' / 建议 ' + (m.suggestionCount || 0))
             } else {
               setError({ message: '快速体检没有返回报告，请重试' })
             }
           } catch (e) {
-            setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
+            if (isCurrent()) setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
           } finally {
-            setVerifyPhase('idle')
-            verifyBusyRef.current = false
+            if (isCurrent()) { setVerifyPhase('idle'); verifyBusyRef.current = false }
           }
         }
         const startDeepVerify = async () => {
@@ -9125,11 +9240,18 @@ export default function clientPlugin() {
         }
         const submitQuestion = async (draftOverride, targetOverride, reviewIssue = null) => {
           const q = (typeof draftOverride === 'string' ? draftOverride : questionDraft).trim()
-          if (!q || !resultView || questionPhase === 'running' || bulkRunRef.current) return
+          if (!q || !resultView || questionPhase === 'running' || bulkRunRef.current || questionAdmissionRef.current) return
           if (reviewIssue && modelCatalog?.issueReview !== true) {
             setQuestionError('服务端尚未加载 AI 问题核实功能；未提交任务。请稍后刷新页面重试')
             return
           }
+          const generation = verifyGenRef.current
+          const documentId = documentIdOfGraph(resultView.graph)
+          const admission = {}
+          questionAdmissionRef.current = admission
+          const isCurrent = () => questionAdmissionRef.current === admission && verifyGenRef.current === generation
+            && (documentId ? documentIdOfGraph(currentResultRef.current?.graph) === documentId
+              : currentResultRef.current === resultView)
           setError(null)
           setQuestionError('')
           setVerifyProgress(null)
@@ -9138,22 +9260,62 @@ export default function clientPlugin() {
           try {
             const target = targetOverride || questionTarget || { kind: 'graph', id: null }
             let questionGraph = resultView.graph
-            const hasNodeReference = /\b(?:n|m)\d+\b/i.test(q) || (target.kind !== 'graph' && target.id)
-            if (reviewIssue && questionGraph.view?.truncated === true && !hasNodeReference) {
-              throw new Error('该全图问题无法在当前窗口定位到具体节点；请先定位目标再核实')
+            let questionSource = typeof resultView.sourceText === 'string' ? resultView.sourceText : fullText || ''
+            const hasNodeReference = /\b(?:n|m)\d+\b/i.test([q, reviewIssue?.title, reviewIssue?.detail].join(' '))
+              || (target.kind !== 'graph' && target.id)
+            if (reviewIssue && questionGraph.view?.truncated === true && !hasNodeReference && !documentId) {
+              throw new Error('当前是部分知识图，且无法定位完整图；请先载入完整知识图再核实')
             }
-            if (questionGraph.view?.truncated === true && hasNodeReference) {
+            if ((questionGraph.view?.truncated === true && hasNodeReference) || (reviewIssue && documentId)) {
               const documentId = documentIdOfGraph(questionGraph)
               if (!documentId) throw new Error('当前是部分知识图，且无法定位完整图；请先载入目标子图')
-              const loaded = await host.call('document-export', { documentId })
-              if (!loaded?.graph || !Array.isArray(loaded.graph.nodes)) {
+              // Read graph and source at one committed boundary; an optimistic
+              // page and a newly exported graph are not a reviewable snapshot.
+              const commits = graphCommitQueueRef.current
+              const commitEpoch = graphCommitEpochRef.current
+              await commits
+              if (!isCurrent()) return
+              if (commits !== graphCommitQueueRef.current || commitEpoch !== graphCommitEpochRef.current) {
+                throw new Error('知识图的排队修改已变化；请等保存完成并核对当前图后重试，未提交模型请求')
+              }
+              const expectedRevision = graphRevisionRef.current
+              if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+                throw new Error('当前知识图缺少已保存的版本信息；请重新载入后核实')
+              }
+              const loaded = await host.call('document-export', { documentId, includeSourceText: true })
+              if (!isCurrent()) return
+              if (!loaded?.graph || !Array.isArray(loaded.graph.nodes) || !Array.isArray(loaded.graph.edges)) {
                 throw new Error(loaded?.error?.message || '读取完整知识图失败，无法安全复核窗口外关系')
               }
+              if (loaded.documentId !== documentId || documentIdOfGraph(loaded.graph) !== documentId
+                || loaded.revision !== expectedRevision || loaded.graph.revision !== loaded.revision
+                || loaded.graph.source?.revision !== loaded.revision || graphRevisionRef.current !== expectedRevision
+                || commits !== graphCommitQueueRef.current || commitEpoch !== graphCommitEpochRef.current) {
+                throw new Error('知识图版本或排队修改已变化；请重新载入当前图后核实，未提交模型请求')
+              }
+              if (typeof loaded.sourceText !== 'string' || !loaded.sourceText.trim()) {
+                throw new Error('服务端未返回与完整图配套的原文；请更新服务并重新载入后核实，未提交模型请求')
+              }
               questionGraph = loaded.graph
+              questionSource = loaded.sourceText
+              if (currentResultRef.current?.sourceText !== questionSource) {
+                setResultView(current => documentIdOfGraph(current?.graph) === documentId
+                  ? makeView(current.graph, questionSource) : current)
+              }
+              if (fullText !== questionSource) setFullText(questionSource)
             }
-            if (reviewIssue && target.kind === 'node' &&
-              (questionGraph.edges || []).filter(edge => edge.fromNodeId === target.id || edge.toNodeId === target.id).length > 95) {
-              throw new Error('该节点关联关系超过单次 AI 复核的完整上下文上限，请先缩小目标范围；未提交任何修复')
+            if (reviewIssue && documentId) {
+              const report = questionGraph.verification?.lastReport
+              const original = report?.issues?.find(issue => issue.id === reviewIssue.id && issue.status === 'open')
+              if (!report?.reportId || reviewIssueSignature(original) !== reviewIssueSignature(reviewIssue)) {
+                throw new Error('待核实问题或审校报告已变化；请重新载入当前报告，未提交模型请求')
+              }
+              const reviewSnapshot = { version: 1, documentId, reportId: report.reportId, issueId: reviewIssue.id,
+                issueSignature: reviewIssueSignature(original),
+                contextSignature: reviewContextSignature(questionGraph, reviewIssueContextTarget(original)),
+                sourceHash: await reviewSignatureHash(questionSource) }
+              if (!isCurrent()) return
+              setQuestionTarget({ ...target, reviewSnapshot })
             }
             const targetParagraphs = reviewIssue && target.kind === 'node'
               ? (questionGraph.nodes || []).filter(node => node.id === target.id).map(node => node.paragraph)
@@ -9163,27 +9325,22 @@ export default function clientPlugin() {
             const retrievalQuery = reviewIssue
               ? q + ' ' + [...targetParagraphs, ...(reviewIssue.evidence || []).map(ev => ev.paragraph)]
                 .filter(Number.isInteger).map(paragraph => 'P' + (paragraph + 1)).join(' ') : q
-            const completeIncidentCount = reviewIssue && target.kind === 'node'
-              ? (questionGraph.edges || []).filter(edge => edge.fromNodeId === target.id || edge.toNodeId === target.id).length : null
-            questionGraph = questionNeighborhoodGraph(questionGraph, retrievalQuery, target)
-            if (completeIncidentCount != null && (questionGraph.edges || []).filter(edge =>
-              edge.fromNodeId === target.id || edge.toNodeId === target.id).length !== completeIncidentCount) {
-              throw new Error('节点关系没有完整进入复核上下文；请缩小目标范围后重试')
-            }
+            questionGraph = questionNeighborhoodGraph(questionGraph, retrievalQuery, target, reviewIssue)
             if (hasNodeReference && questionGraph.nodes.length === 0) {
               throw new Error('引用的节点或关系端点不在当前 canonical graph 中，请核对审校报告中的 ID')
             }
             const payload = {
-              title, text: fullText || resultView.sourceText || '',
+              title, text: questionSource,
               graph: { ontology: questionGraph.ontology || questionGraph.source?.ontology || questionGraph.graphMeta?.ontology,
                 summary: questionGraph.summary || '', nodes: questionGraph.nodes, edges: questionGraph.edges },
-               ...verificationSourcePayload(fullText || resultView.sourceText || '', questionGraph, retrievalQuery),
+              ...verificationSourcePayload(questionSource, questionGraph, retrievalQuery, reviewIssue),
               target: { kind: target.kind, id: target.id },
               question: q,
               ...(reviewIssue ? { reviewIssue } : {}),
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             }
             const res = await host.call('question-graph', payload)
+            if (!isCurrent()) return
             if (res && res.error) {
               setQuestionPhase('idle')
               setQuestionError(res.error.message || '无法提交质疑任务，请重试')
@@ -9196,8 +9353,11 @@ export default function clientPlugin() {
               setQuestionError('无法提交质疑任务，请重试')
             }
           } catch (e) {
+            if (!isCurrent()) return
             setQuestionPhase('idle')
             setQuestionError('无法提交质疑任务：' + (e && e.message ? e.message : '未知错误'))
+          } finally {
+            if (questionAdmissionRef.current === admission) questionAdmissionRef.current = null
           }
         }
         const saveBulkReview = (state) => {
@@ -9252,16 +9412,18 @@ export default function clientPlugin() {
               const contextSignature = reviewContextSignature(canonical, reviewIssueContextTarget(issue), contextIndex)
               let error = ''
               if (!contextSignature) error = '审校目标已不在当前知识图中'
-              const incidentCount = target.kind === 'node'
-                ? canonical.edges.filter(edge => edge.fromNodeId === target.id || edge.toNodeId === target.id).length : 0
-              if (incidentCount > 95) error = '节点关联关系超出单次完整复核上限，需单独处理'
-              const questionGraph = !error ? questionNeighborhoodGraph(canonical, retrievalQuery, target) : null
+              let questionGraph = null
+              let sourcePayload = null
+              if (!error) {
+                try {
+                  questionGraph = questionNeighborhoodGraph(canonical, retrievalQuery, target, issue)
+                  sourcePayload = verificationSourcePayload(source, questionGraph, retrievalQuery, issue)
+                }
+                catch (contextError) { error = contextError.message || '复核上下文不完整，需单独处理' }
+              }
               if (!error && questionGraph.nodes.length > MAX_VERIFY_NODES) error = '全图问题无法收敛到有限目标，需单独处理'
               if (!error && target.kind !== 'graph' && questionGraph.nodes.length === 0) error = '审校目标未进入复核上下文'
-              if (!error && target.kind === 'node' && questionGraph.edges.filter(edge =>
-                edge.fromNodeId === target.id || edge.toNodeId === target.id).length !== incidentCount) {
-                error = '节点关联关系未完整进入复核上下文'
-              }
+              if (error && state.activeTaskId) throw new Error(error + '；批量任务已暂停，保留原核实任务，未重新请求模型')
               let review = null
               let taskId = state.activeTaskId || null
               bulkActiveTaskRef.current = taskId
@@ -9271,7 +9433,7 @@ export default function clientPlugin() {
                 const payload = { title, text: source,
                   graph: { ontology: questionGraph.ontology || questionGraph.source?.ontology || questionGraph.graphMeta?.ontology,
                     summary: questionGraph.summary || '', nodes: questionGraph.nodes, edges: questionGraph.edges },
-                  ...verificationSourcePayload(source, questionGraph, retrievalQuery),
+                  ...sourcePayload,
                   target, question: draft, reviewIssue: issue,
                   ...(state.model ? { model: state.model } : {}),
                 }
@@ -9412,9 +9574,101 @@ export default function clientPlugin() {
             bulkRunRef.current = false
           }
         }
+        const saveCanonicalIssueReview = async (issue, snapshot, rejectionNote = null) => {
+          const rejecting = typeof rejectionNote === 'string'
+          const actionLabel = rejecting ? '误报标记' : '修复'
+          const openingView = resultView
+          const documentId = documentIdOfGraph(openingView.graph)
+          const generation = verifyGenRef.current
+          const isCurrent = () => verifyGenRef.current === generation && currentResultRef.current === openingView
+          const sameDocument = () => verifyGenRef.current === generation
+            && documentIdOfGraph(currentResultRef.current?.graph) === documentId
+          if (verifyBusyRef.current || questionPhase === 'running') {
+            toastStore.show('核实任务仍在运行，请等待完成后再确认处理')
+            return
+          }
+          bulkRunRef.current = true
+          setReviewSaving(true)
+          setQuestionError('')
+          let committed = false
+          try {
+            if (snapshot?.version !== 1 || snapshot.documentId !== documentId || snapshot.issueId !== issue.id
+              || !snapshot.contextSignature || !snapshot.sourceHash || !snapshot.issueSignature) {
+              throw new Error('这项核实缺少完整图与原文的校验记录；请重新核实该问题，未保存' + actionLabel)
+            }
+            const commits = graphCommitQueueRef.current, epoch = graphCommitEpochRef.current
+            await commits
+            if (!isCurrent()) return
+            if (commits !== graphCommitQueueRef.current || epoch !== graphCommitEpochRef.current) {
+              throw new Error('排队修改已变化；请等保存完成后再次确认，未保存' + actionLabel)
+            }
+            const loaded = await host.call('document-export', { documentId, includeSourceText: true })
+            if (!isCurrent()) return
+            if (loaded?.error || loaded?.documentId !== documentId || documentIdOfGraph(loaded?.graph) !== documentId
+              || !Number.isSafeInteger(loaded.revision) || loaded.revision < 1 || loaded.graph.revision !== loaded.revision
+              || loaded.graph.source?.revision !== loaded.revision || !Array.isArray(loaded.graph.nodes)
+              || !Array.isArray(loaded.graph.edges) || loaded.graph.view?.truncated === true || typeof loaded.sourceText !== 'string') {
+              throw new Error(loaded?.error?.message || '无法读取完整知识图与原文，未保存' + actionLabel)
+            }
+            const baseline = asAllNodesGraph(loaded.graph), report = baseline.verification?.lastReport
+            const original = report?.issues?.find(item => item.id === issue.id && item.status === 'open')
+            if (report?.reportId !== snapshot.reportId || reviewIssueSignature(original) !== snapshot.issueSignature) {
+              throw new Error('审校问题或报告已变化；请核对当前报告，未保存' + actionLabel)
+            }
+            if (await reviewSignatureHash(loaded.sourceText) !== snapshot.sourceHash
+              || reviewContextSignature(baseline, reviewIssueContextTarget(original)) !== snapshot.contextSignature) {
+              throw new Error('该问题依赖的节点、关系或原文已变化；请重新核实该问题，未保存' + actionLabel)
+            }
+            if (!isCurrent()) return
+            if (commits !== graphCommitQueueRef.current || epoch !== graphCommitEpochRef.current) {
+              throw new Error('核对期间排队修改已变化；请等保存完成后再次确认，未保存' + actionLabel)
+            }
+            const patched = rejecting ? baseline : applyPatch(baseline, issue)
+            if (!rejecting && patched === baseline && !patchAlreadySatisfied(baseline, issue)) {
+              throw new Error('当前图无法安全应用该补丁；请重新核实，未保存修复')
+            }
+            const nextReport = rejecting ? updateIssueStatus(report, issue.id, 'rejected', rejectionNote)
+              : { ...updateIssueStatus(recordReviewedFix(report, issue), issue.id, 'applied',
+                  'AI 核实确认：' + String(issue.detail || '').slice(0, 300)), stale: true }
+            const next = withVerification(patched, nextReport, rejecting ? verificationReportStale(report, baseline) : true)
+            const saved = await persistGraph(next, baseline, loaded.revision)
+            if (!saved) throw new Error(actionLabel + '保存未确认，请核对当前知识图后重试')
+            committed = true
+            if (!isCurrent()) return
+            const meta = graphViewMetadata(openingView.graph)
+            const windowed = meta && meta.kind !== 'all'
+            const refreshed = windowed
+              ? await loadGraphDocument({ documentId, nodeOffset: meta.nodeOffset, nodeLimit: meta.nodeLimit,
+                  ...(meta.kind === 'query' ? { query: meta.query } : {}), includeSourceText: true })
+              : await host.call('document-export', { documentId, includeSourceText: true })
+            if (!isCurrent()) return
+            if (refreshed?.error || refreshed?.documentId !== documentId || documentIdOfGraph(refreshed?.graph) !== documentId
+              || !Number.isSafeInteger(refreshed.revision) || refreshed.revision < saved.revision || typeof refreshed.sourceText !== 'string') {
+              throw new Error(actionLabel + '已保存，但当前窗口刷新失败；请重新载入知识图核对')
+            }
+            setError(null)
+            graphRevisionRef.current = refreshed.revision
+            setFullText(refreshed.sourceText)
+            setResultView(makeView(windowed ? refreshed.graph : asAllNodesGraph(refreshed.graph), refreshed.sourceText))
+            setVerification(refreshed.graph.verification?.lastReport || null)
+            setActiveIssueId(null)
+            setQuestionResult(null)
+            toastStore.show('已保存' + actionLabel + '：' + (issue.title || ''))
+          } catch (error) {
+            if (sameDocument()) setQuestionError(committed
+              ? actionLabel + '已保存，但页面刷新失败；请重新载入知识图核对'
+              : error?.message || actionLabel + '未保存，请核对当前图后重试')
+          } finally {
+            bulkRunRef.current = false
+            setReviewSaving(false)
+          }
+        }
         const handleApplyIssue = async (issue, reviewedAgainstGraph) => {
           if (!resultView) return
           if (bulkRunRef.current) { toastStore.show('批量核实进行中，请先暂停后再单独修改'); return }
+          if (issue?.source === 'issue_review' && documentIdOfGraph(resultView.graph)) {
+            return saveCanonicalIssueReview(issue, reviewedAgainstGraph)
+          }
           if (archivedIssueNeedsFreshReview(verification, resultView.graph, issue)) {
             toastStore.show('旧审校补丁不能直接用于当前图；请点击「AI 核实问题」后确认修复')
             return
@@ -9492,9 +9746,16 @@ export default function clientPlugin() {
             bulkFixBusyRef.current = false
           }
         }
-        const handleRejectIssue = async (issue, note) => {
+        const handleRejectIssue = async (issue, note, reviewedAgainstGraph) => {
           if (!verification) return
           if (bulkRunRef.current) { toastStore.show('批量核实进行中，请先暂停后再处理问题'); return }
+          if (note && documentIdOfGraph(resultView?.graph)) {
+            return saveCanonicalIssueReview(issue, reviewedAgainstGraph, note)
+          }
+          if (note && reviewContextChanged(reviewedAgainstGraph, resultView?.graph, reviewIssueContextTarget(issue))) {
+            toastStore.show('知识图已变化，请重新核实该问题后再标记误报')
+            return
+          }
           const report = updateIssueStatus(verification, issue.id, 'rejected', note)
           setVerification(report)
           if (await attachReport(report, verification.stale === true)) toastStore.show(note ? '已保存误报标记' : '已忽略该问题')
@@ -9836,6 +10097,7 @@ export default function clientPlugin() {
             }
             const graph = loaded.graph
             const sourceText = typeof loaded.sourceText === 'string' ? loaded.sourceText : ''
+            resetGraphCommitQueue()
             graphRevisionRef.current = Number.isInteger(loaded.revision)
               ? loaded.revision
               : (graph.source && Number.isInteger(graph.source.revision) ? graph.source.revision : 0)
@@ -10408,7 +10670,7 @@ export default function clientPlugin() {
                           setQuestionTarget((target) => target?.sourceIssueId ? { kind: target.kind, id: target.id } : target)
                         }, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
-                        questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
+                        questionResult, questionError, questionPhase, reviewSaving, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-workbench',
                         progress: verifyProgress,
@@ -10591,6 +10853,7 @@ export default function clientPlugin() {
         const mountedSessionRef = useRef(null)
         const trajRevisionRef = useRef(0)
         const trajCommitQueueRef = useRef(Promise.resolve())
+        const trajCommitEpochRef = useRef(0)
         const appendModeRef = useRef(false) // true while an append task is running
         const [appendCount, setAppendCount] = useState(0)
         // ---- verification / questioning ----
@@ -10606,6 +10869,9 @@ export default function clientPlugin() {
         const [questionResult, setQuestionResult] = useState(null)
         const [questionError, setQuestionError] = useState('')
         const [questionPhase, setQuestionPhase] = useState('idle')
+        const questionAdmissionRef = useRef(null)
+        const reviewSaveRef = useRef(null)
+        const [reviewSaving, setReviewSaving] = useState(false)
         const [factReport, setFactReport] = useState(null)
         const [factPhase, setFactPhase] = useState('idle')
         const [factTaskId, setFactTaskId] = useState(null)
@@ -10627,6 +10893,7 @@ export default function clientPlugin() {
         const cancelTrajVerifyTasks = () => {
           sessionSeq.current += 1
           verifyGenRef.current += 1
+          questionAdmissionRef.current = null
           factGenRef.current += 1
           setVerifyTaskId(null)
           setQuestionTaskId(null)
@@ -10689,6 +10956,10 @@ export default function clientPlugin() {
         useEffect(() => {
           if (mountedSessionRef.current === sessionId) return
           mountedSessionRef.current = sessionId
+          trajCommitEpochRef.current += 1
+          trajCommitQueueRef.current = Promise.resolve()
+          reviewSaveRef.current = null
+          setReviewSaving(false)
           setError(null)
           setSelectedNodeId(null); setSelectedEdgeId(null); setActivePara(-1); setFlashPara(-1)
           setShowDiag(false); setTrajToast(null)
@@ -10752,6 +11023,8 @@ export default function clientPlugin() {
 
         // Clear the toast timer on unmount.
         useEffect(() => () => {
+          mountedSessionRef.current = null
+          trajCommitEpochRef.current += 1
           verifyGenRef.current += 1
           if (toastTimer.current) { toastTimer.current(); toastTimer.current = null }
         }, [])
@@ -11075,6 +11348,9 @@ export default function clientPlugin() {
         const persistTrajGraph = (g, baseGraph, pinnedRevision) => {
           const documentId = documentIdOfGraph(g)
           if (!documentId) return Promise.resolve(null)
+          const commitEpoch = trajCommitEpochRef.current
+          const ownsDocument = () => mountedSessionRef.current === sessionId
+            && documentIdOfGraph(currentViewRef.current?.graph) === documentId
           const baseline = baseGraph && typeof baseGraph === 'object' ? baseGraph : (view && view.graph ? view.graph : g)
           const sourceText = view ? view.sourceText : ''
           const edgeRevisionKey = (edge) => edge && edge.fromNodeId && edge.toNodeId
@@ -11089,6 +11365,10 @@ export default function clientPlugin() {
             ...(g.factCheck && typeof g.factCheck === 'object' ? { factCheck: g.factCheck } : {}),
           }
           const queued = trajCommitQueueRef.current.catch(() => {}).then(async () => {
+            if (commitEpoch !== trajCommitEpochRef.current || !ownsDocument()) {
+              graphSemanticOperations.delete(g)
+              return null
+            }
             const response = await host.call('graph-commit', {
               documentId,
               expectedRevision: Number.isSafeInteger(pinnedRevision) ? pinnedRevision : trajRevisionRef.current,
@@ -11105,17 +11385,25 @@ export default function clientPlugin() {
             if (!response || response.documentId !== documentId || !Number.isSafeInteger(response.revision) || !response.graph) {
               throw new Error('保存结果未确认，请重新载入知识图后核对')
             }
-            if (Number.isSafeInteger(pinnedRevision) && currentViewRef.current !== view) return response
-            if (response && Number.isInteger(response.revision)) trajRevisionRef.current = response.revision
             graphSemanticOperations.delete(g)
+            if (commitEpoch !== trajCommitEpochRef.current || !ownsDocument()
+              || (Number.isSafeInteger(pinnedRevision) && currentViewRef.current !== view)) return response
+            if (response && Number.isInteger(response.revision)) trajRevisionRef.current = response.revision
+            setError(previous => previous?.trajectoryCommitFailure === true ? null : previous)
             writeTrajResult(sessionId, { graph: g, traceText: sourceText, traceEvents, revision: trajRevisionRef.current, ts: Date.now() })
             return response
           }).catch((error) => {
+            graphSemanticOperations.delete(g)
+            if (commitEpoch !== trajCommitEpochRef.current || !ownsDocument()) return null
+            // Dependent optimistic edits were based on this failed write.
+            trajCommitEpochRef.current += 1
             if (Number.isSafeInteger(pinnedRevision) && currentViewRef.current !== view) return null
             const details = error && error.details && typeof error.details === 'object' ? error.details : error
-            graphSemanticOperations.delete(g)
-            setError({ ...(details && typeof details === 'object' ? details : {}), message: details && details.message ? details.message : '轨迹知识图提交失败' })
-            if (baseline && baseline !== g) {
+            setError({ ...(details && typeof details === 'object' ? details : {}), trajectoryCommitFailure: true,
+              message: (details && details.message ? details.message : '轨迹知识图提交失败')
+                + '；后续排队的编辑不会提交，请核对当前知识图' })
+            // Pinned saves never optimistically replace the renderer window.
+            if (baseline && baseline !== g && !Number.isSafeInteger(pinnedRevision)) {
               setView(makeView(baseline, sourceText))
               setVerification(baseline.verification?.lastReport || null)
               setFactReport(baseline.factCheck?.lastReport || null)
@@ -11141,11 +11429,22 @@ export default function clientPlugin() {
         }
         const startQuickVerify = async () => {
           if (!view || verifyBusyRef.current) return
+          const reviewedView = view, generation = verifyGenRef.current
+          const documentId = documentIdOfGraph(reviewedView.graph)
+          const isCurrent = () => mountedSessionRef.current === sessionId && verifyGenRef.current === generation
+            && currentViewRef.current && documentIdOfGraph(currentViewRef.current.graph) === documentId
+          const commits = trajCommitQueueRef.current, epoch = trajCommitEpochRef.current
           setError(null)
           setVerifyProgress(null)
           setVerifyPhase('running')
           verifyBusyRef.current = true
           try {
+            await commits
+            if (!isCurrent()) return
+            if (currentViewRef.current !== reviewedView || commits !== trajCommitQueueRef.current || epoch !== trajCommitEpochRef.current) {
+              throw new Error('知识图或排队修改已变化，请等待保存完成后重新体检')
+            }
+            const revision = trajRevisionRef.current
             const res = await host.call('verify-graph', {
               title: '', text: view.sourceText || '',
               graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
@@ -11153,19 +11452,39 @@ export default function clientPlugin() {
               mode: 'quick',
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
             })
+            if (!isCurrent()) return
+            if (currentViewRef.current !== reviewedView || trajRevisionRef.current !== revision
+              || commits !== trajCommitQueueRef.current || epoch !== trajCommitEpochRef.current) {
+              throw new Error('体检期间知识图或排队修改已变化，未附加旧报告；请重新体检')
+            }
             if (res && res.error) { setError(res.error); return }
             if (res && res.report) {
+              let graph = withVerification(reviewedView.graph, res.report, false)
+              if (documentId) {
+                const saving = persistTrajGraph(graph, reviewedView.graph, revision)
+                const saveQueue = trajCommitQueueRef.current
+                const saved = await saving
+                if (!isCurrent()) return
+                if (!saved) {
+                  setError(previous => previous || { message: '快速体检报告保存未确认，请检查知识图版本或连接后重试' })
+                  return
+                }
+                if (currentViewRef.current !== reviewedView || saveQueue !== trajCommitQueueRef.current || epoch !== trajCommitEpochRef.current) {
+                  throw new Error('体检报告已保存，但当前知识图已变化；请重新载入核对')
+                }
+                trajRevisionRef.current = saved.revision
+                graph = { ...graph, revision: saved.revision, source: { ...(graph.source || {}), revision: saved.revision } }
+              }
               const m = res.report.metrics || {}
+              setView(makeView(graph, reviewedView.sourceText))
               setVerification(res.report)
-              attachTrajReport(res.report, false)
               setActiveIssueId(null)
               showToast('快速体检完成：确定性错误 ' + (m.errorCount || 0) + ' / 质量警告 ' + (m.warningCount || 0) + ' / 建议 ' + (m.suggestionCount || 0))
             } else setError({ message: '快速体检没有返回报告，请重试' })
           } catch (e) {
-            setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
+            if (isCurrent()) setError({ message: '快速体检失败：' + (e && e.message ? e.message : '未知错误') })
           } finally {
-            setVerifyPhase('idle')
-            verifyBusyRef.current = false
+            if (isCurrent()) { setVerifyPhase('idle'); verifyBusyRef.current = false }
           }
         }
         const startDeepVerify = async () => {
@@ -11292,36 +11611,224 @@ export default function clientPlugin() {
         }
         const submitQuestion = async (draftOverride, targetOverride, reviewIssue = null) => {
           const q = (typeof draftOverride === 'string' ? draftOverride : questionDraft).trim()
-          if (!q || !view || questionPhase === 'running') return
+          if (!q || !view || questionPhase === 'running' || reviewSaveRef.current || questionAdmissionRef.current) return
           if (reviewIssue && modelCatalog?.issueReview !== true) {
             setQuestionError('服务端尚未加载 AI 问题核实功能；未提交任务。请稍后刷新页面重试')
             return
           }
+          const generation = verifyGenRef.current
+          const documentId = documentIdOfGraph(view.graph)
+          const admission = {}
+          questionAdmissionRef.current = admission
+          const isCurrent = () => mountedSessionRef.current === sessionId && questionAdmissionRef.current === admission && verifyGenRef.current === generation
+            && (documentId ? documentIdOfGraph(currentViewRef.current?.graph) === documentId
+              : currentViewRef.current === view)
           setError(null)
           setQuestionError('')
           setVerifyProgress(null)
           setQuestionPhase('running')
           setQuestionResult(null)
           try {
-            const res = await host.call('question-graph', {
-              title: '', text: view.sourceText || '',
-              graph: { ontology: view.graph.ontology || view.graph.source?.ontology || view.graph.graphMeta?.ontology,
-                summary: view.graph.summary || '', nodes: view.graph.nodes, edges: view.graph.edges },
-              target: (() => { const t = targetOverride || questionTarget || { kind: 'graph', id: null }; return { kind: t.kind, id: t.id } })(),
+            const target = targetOverride || questionTarget || { kind: 'graph', id: null }
+            let questionGraph = view.graph
+            let questionSource = typeof view.sourceText === 'string' ? view.sourceText : ''
+            const hasNodeReference = /\b(?:n|m)\d+\b/i.test([q, reviewIssue?.title, reviewIssue?.detail].join(' '))
+              || (target.kind !== 'graph' && target.id)
+            if (reviewIssue && questionGraph.view?.truncated === true && !hasNodeReference && !documentId) {
+              throw new Error('当前是部分知识图，且无法定位完整图；请先载入完整知识图再核实')
+            }
+            if ((questionGraph.view?.truncated === true && hasNodeReference) || (reviewIssue && documentId)) {
+              const documentId = documentIdOfGraph(questionGraph)
+              if (!documentId) throw new Error('当前是部分知识图，且无法定位完整图；请先载入目标子图')
+              // Read graph and source at one committed boundary; an optimistic
+              // page and a newly exported graph are not a reviewable snapshot.
+              const commits = trajCommitQueueRef.current
+              const commitEpoch = trajCommitEpochRef.current
+              await commits
+              if (!isCurrent()) return
+              if (commits !== trajCommitQueueRef.current || commitEpoch !== trajCommitEpochRef.current) {
+                throw new Error('知识图的排队修改已变化；请等保存完成并核对当前图后重试，未提交模型请求')
+              }
+              const expectedRevision = trajRevisionRef.current
+              if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+                throw new Error('当前知识图缺少已保存的版本信息；请重新载入后核实')
+              }
+              const loaded = await host.call('document-export', { documentId, includeSourceText: true })
+              if (!isCurrent()) return
+              if (!loaded?.graph || loaded.graph.view?.truncated === true || !Array.isArray(loaded.graph.nodes) || !Array.isArray(loaded.graph.edges)) {
+                throw new Error(loaded?.error?.message || '读取完整知识图失败，无法安全复核窗口外关系')
+              }
+              if (loaded.documentId !== documentId || documentIdOfGraph(loaded.graph) !== documentId
+                || loaded.revision !== expectedRevision || loaded.graph.revision !== loaded.revision
+                || loaded.graph.source?.revision !== loaded.revision || trajRevisionRef.current !== expectedRevision
+                || commits !== trajCommitQueueRef.current || commitEpoch !== trajCommitEpochRef.current) {
+                throw new Error('知识图版本或排队修改已变化；请重新载入当前图后核实，未提交模型请求')
+              }
+              if (typeof loaded.sourceText !== 'string' || !loaded.sourceText.trim()) {
+                throw new Error('服务端未返回与完整图配套的原文；请更新服务并重新载入后核实，未提交模型请求')
+              }
+              questionGraph = loaded.graph
+              questionSource = loaded.sourceText
+              if (currentViewRef.current?.sourceText !== questionSource) {
+                setView(current => documentIdOfGraph(current?.graph) === documentId
+                  ? makeView(current.graph, questionSource) : current)
+              }
+            }
+            if (reviewIssue && documentId) {
+              const report = questionGraph.verification?.lastReport
+              const original = report?.issues?.find(issue => issue.id === reviewIssue.id && issue.status === 'open')
+              if (!report?.reportId || reviewIssueSignature(original) !== reviewIssueSignature(reviewIssue)) {
+                throw new Error('待核实问题或审校报告已变化；请重新载入当前报告，未提交模型请求')
+              }
+              const reviewSnapshot = { version: 1, documentId, reportId: report.reportId, issueId: reviewIssue.id,
+                issueSignature: reviewIssueSignature(original),
+                contextSignature: reviewContextSignature(questionGraph, reviewIssueContextTarget(original)),
+                sourceHash: await reviewSignatureHash(questionSource) }
+              if (!isCurrent()) return
+              setQuestionTarget({ ...target, reviewSnapshot })
+            }
+            const targetParagraphs = reviewIssue && target.kind === 'node'
+              ? (questionGraph.nodes || []).filter(node => node.id === target.id).map(node => node.paragraph)
+              : reviewIssue && target.kind === 'edge'
+                ? (questionGraph.nodes || []).filter(node => target.id?.split('>').includes(node.id)).map(node => node.paragraph)
+                : []
+            const retrievalQuery = reviewIssue
+              ? q + ' ' + [...targetParagraphs, ...(reviewIssue.evidence || []).map(ev => ev.paragraph)]
+                .filter(Number.isInteger).map(paragraph => 'P' + (paragraph + 1)).join(' ') : q
+            questionGraph = questionNeighborhoodGraph(questionGraph, retrievalQuery, target, reviewIssue)
+            if (hasNodeReference && questionGraph.nodes.length === 0) {
+              throw new Error('引用的节点或关系端点不在当前 canonical graph 中，请核对审校报告中的 ID')
+            }
+            const payload = {
+              title: '', text: questionSource,
+              graph: { ontology: questionGraph.ontology || questionGraph.source?.ontology || questionGraph.graphMeta?.ontology,
+                summary: questionGraph.summary || '', nodes: questionGraph.nodes, edges: questionGraph.edges },
+              ...verificationSourcePayload(questionSource, questionGraph, retrievalQuery, reviewIssue),
+              target: { kind: target.kind, id: target.id },
               question: q,
               ...(reviewIssue ? { reviewIssue } : {}),
               ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
-            })
-            if (res && res.error) { setQuestionPhase('idle'); setQuestionError(res.error.message || '无法提交质疑任务，请重试'); return }
-            if (res && res.taskId) setQuestionTaskId(res.taskId)
-            else { setQuestionPhase('idle'); setQuestionError('无法提交质疑任务，请重试') }
+            }
+            const res = await host.call('question-graph', payload)
+            if (!isCurrent()) return
+            if (res && res.error) {
+              setQuestionPhase('idle')
+              setQuestionError(res.error.message || '无法提交质疑任务，请重试')
+              return
+            }
+            if (res && res.taskId) {
+              setQuestionTaskId(res.taskId)
+            } else {
+              setQuestionPhase('idle')
+              setQuestionError('无法提交质疑任务，请重试')
+            }
           } catch (e) {
+            if (!isCurrent()) return
             setQuestionPhase('idle')
             setQuestionError('无法提交质疑任务：' + (e && e.message ? e.message : '未知错误'))
+          } finally {
+            if (questionAdmissionRef.current === admission) questionAdmissionRef.current = null
+          }
+        }
+        const saveCanonicalIssueReview = async (issue, snapshot, rejectionNote = null) => {
+          const rejecting = typeof rejectionNote === 'string'
+          const actionLabel = rejecting ? '误报标记' : '修复'
+          const openingView = view
+          const documentId = documentIdOfGraph(openingView.graph)
+          const generation = verifyGenRef.current
+          const isCurrent = () => mountedSessionRef.current === sessionId && verifyGenRef.current === generation && currentViewRef.current === openingView
+          const sameDocument = () => mountedSessionRef.current === sessionId && verifyGenRef.current === generation
+            && documentIdOfGraph(currentViewRef.current?.graph) === documentId
+          if (verifyBusyRef.current || questionPhase === 'running') {
+            showToast('核实任务仍在运行，请等待完成后再确认处理')
+            return
+          }
+          const saveOwner = {}
+          reviewSaveRef.current = saveOwner
+          setReviewSaving(true)
+          setQuestionError('')
+          let committed = false
+          try {
+            if (snapshot?.version !== 1 || snapshot.documentId !== documentId || snapshot.issueId !== issue.id
+              || !snapshot.contextSignature || !snapshot.sourceHash || !snapshot.issueSignature) {
+              throw new Error('这项核实缺少完整图与原文的校验记录；请重新核实该问题，未保存' + actionLabel)
+            }
+            const commits = trajCommitQueueRef.current, epoch = trajCommitEpochRef.current
+            await commits
+            if (!isCurrent()) return
+            if (commits !== trajCommitQueueRef.current || epoch !== trajCommitEpochRef.current) {
+              throw new Error('排队修改已变化；请等保存完成后再次确认，未保存' + actionLabel)
+            }
+            const loaded = await host.call('document-export', { documentId, includeSourceText: true })
+            if (!isCurrent()) return
+            if (loaded?.error || loaded?.documentId !== documentId || documentIdOfGraph(loaded?.graph) !== documentId
+              || !Number.isSafeInteger(loaded.revision) || loaded.revision < 1 || loaded.graph.revision !== loaded.revision
+              || loaded.graph.source?.revision !== loaded.revision || !Array.isArray(loaded.graph.nodes)
+              || !Array.isArray(loaded.graph.edges) || loaded.graph.view?.truncated === true || typeof loaded.sourceText !== 'string') {
+              throw new Error(loaded?.error?.message || '无法读取完整知识图与原文，未保存' + actionLabel)
+            }
+            const baseline = asAllNodesGraph(loaded.graph), report = baseline.verification?.lastReport
+            const original = report?.issues?.find(item => item.id === issue.id && item.status === 'open')
+            if (report?.reportId !== snapshot.reportId || reviewIssueSignature(original) !== snapshot.issueSignature) {
+              throw new Error('审校问题或报告已变化；请核对当前报告，未保存' + actionLabel)
+            }
+            if (await reviewSignatureHash(loaded.sourceText) !== snapshot.sourceHash
+              || reviewContextSignature(baseline, reviewIssueContextTarget(original)) !== snapshot.contextSignature) {
+              throw new Error('该问题依赖的节点、关系或原文已变化；请重新核实该问题，未保存' + actionLabel)
+            }
+            if (!isCurrent()) return
+            if (commits !== trajCommitQueueRef.current || epoch !== trajCommitEpochRef.current) {
+              throw new Error('核对期间排队修改已变化；请等保存完成后再次确认，未保存' + actionLabel)
+            }
+            const patched = rejecting ? baseline : applyPatch(baseline, issue)
+            if (!rejecting && patched === baseline && !patchAlreadySatisfied(baseline, issue)) {
+              throw new Error('当前图无法安全应用该补丁；请重新核实，未保存修复')
+            }
+            const nextReport = rejecting ? updateIssueStatus(report, issue.id, 'rejected', rejectionNote)
+              : { ...updateIssueStatus(recordReviewedFix(report, issue), issue.id, 'applied',
+                  'AI 核实确认：' + String(issue.detail || '').slice(0, 300)), stale: true }
+            const next = withVerification(patched, nextReport, rejecting ? verificationReportStale(report, baseline) : true)
+            const saved = await persistTrajGraph(next, baseline, loaded.revision)
+            if (!saved) throw new Error(actionLabel + '保存未确认，请核对当前知识图后重试')
+            committed = true
+            if (!isCurrent()) return
+            const meta = graphViewMetadata(openingView.graph)
+            const windowed = meta && meta.kind !== 'all'
+            const refreshed = windowed
+              ? await loadGraphDocument({ documentId, nodeOffset: meta.nodeOffset, nodeLimit: meta.nodeLimit,
+                  ...(meta.kind === 'query' ? { query: meta.query } : {}), includeSourceText: true })
+              : await host.call('document-export', { documentId, includeSourceText: true })
+            if (!isCurrent()) return
+            if (refreshed?.error || refreshed?.documentId !== documentId || documentIdOfGraph(refreshed?.graph) !== documentId
+              || !Number.isSafeInteger(refreshed.revision) || refreshed.revision < saved.revision || typeof refreshed.sourceText !== 'string') {
+              throw new Error(actionLabel + '已保存，但当前窗口刷新失败；请重新载入知识图核对')
+            }
+            setError(null)
+            trajRevisionRef.current = refreshed.revision
+            setView(makeView(windowed ? refreshed.graph : asAllNodesGraph(refreshed.graph), refreshed.sourceText))
+            setVerification(refreshed.graph.verification?.lastReport || null)
+            writeTrajResult(sessionId, { graph: refreshed.graph, traceText: refreshed.sourceText, traceEvents,
+              revision: refreshed.revision, ts: Date.now() })
+            setActiveIssueId(null)
+            setQuestionResult(null)
+            showToast('已保存' + actionLabel + '：' + (issue.title || ''))
+          } catch (error) {
+            if (sameDocument()) setQuestionError(committed
+              ? actionLabel + '已保存，但页面刷新失败；请重新载入知识图核对'
+              : error?.message || actionLabel + '未保存，请核对当前图后重试')
+          } finally {
+            if (reviewSaveRef.current === saveOwner) {
+              reviewSaveRef.current = null
+              if (mountedSessionRef.current === sessionId && verifyGenRef.current === generation) setReviewSaving(false)
+            }
           }
         }
         const handleApplyIssue = async (issue, reviewedAgainstGraph) => {
           if (!view) return
+          if (reviewSaveRef.current) return
+          if (issue?.source === 'issue_review' && documentIdOfGraph(view.graph)) {
+            return saveCanonicalIssueReview(issue, reviewedAgainstGraph)
+          }
           if (archivedIssueNeedsFreshReview(verification, view.graph, issue)) {
             showToast('旧审校补丁不能直接用于当前图；请点击「AI 核实问题」后确认修复')
             return
@@ -11392,15 +11899,21 @@ export default function clientPlugin() {
           commitTrajGraph(g2)
           showToast('一键修复完成：已应用 ' + res.applied + ' 项，跳过 ' + res.skipped + ' 项')
         }
-        const handleRejectIssue = async (issue, note) => {
-          if (!verification) return
+        const handleRejectIssue = async (issue, note, reviewedAgainstGraph) => {
+          if (!verification || reviewSaveRef.current) return
+          if (note && documentIdOfGraph(view?.graph)) {
+            return saveCanonicalIssueReview(issue, reviewedAgainstGraph, note)
+          }
+          if (note && reviewContextChanged(reviewedAgainstGraph, view?.graph, reviewIssueContextTarget(issue))) {
+            showToast('知识图已变化，请重新核实该问题后再标记误报')
+            return
+          }
           const report = updateIssueStatus(verification, issue.id, 'rejected', note)
           setVerification(report)
           if (await attachTrajReport(report, verification.stale === true)) showToast(note ? '已保存误报标记' : '已忽略该问题')
         }
         const handleRecheckIssue = async (issue) => {
-          if (!view || questionPhase === 'running') return
-          const openingView = view
+          if (!view || reviewSaveRef.current || questionPhase === 'running') return
           const generation = verifyGenRef.current
           const titleIds = issue.targetKind === 'graph'
             ? [...new Set(String(issue.title || '').match(/\b(?:n|m)\d+\b/gi) || [])] : []
@@ -11409,38 +11922,9 @@ export default function clientPlugin() {
             : issue.targetKind === 'graph'
               ? { kind: 'graph', id: null, sourceIssueId: issue.id, reviewScopeKind: 'graph' }
               : { kind: issue.targetKind, id: issue.targetId, sourceIssueId: issue.id, reviewScopeKind: issue.targetKind }
-          let reviewGraph = view.graph
-          const focusNodeId = target.kind === 'node' ? target.id
-            : target.kind === 'edge' ? target.id?.split('>')[0] : null
-          if (reviewGraph.view?.truncated === true && focusNodeId
-            && !reviewGraph.nodes.some(node => node.id === focusNodeId)) {
-            setQuestionPhase('running')
-            try {
-              await trajCommitQueueRef.current.catch(() => {})
-              const documentId = documentIdOfGraph(reviewGraph)
-              if (!documentId) throw new Error('无法定位当前知识图文档')
-              const loaded = await loadGraphDocument({ documentId, query: focusNodeId, nodeOffset: 0,
-                includeSourceText: false })
-              if (generation !== verifyGenRef.current || currentViewRef.current !== openingView) {
-                if (generation === verifyGenRef.current) setQuestionPhase('idle')
-                return
-              }
-              if (loaded?.error || !loaded?.graph?.nodes?.some(node => node.id === focusNodeId)) {
-                throw new Error(loaded?.error?.message || '无法载入该问题所在的知识图子图')
-              }
-              reviewGraph = loaded.graph
-              trajRevisionRef.current = Number.isInteger(loaded.revision) ? loaded.revision : trajRevisionRef.current
-              setView(makeView(reviewGraph, view.sourceText || ''))
-            } catch (error) {
-              if (generation !== verifyGenRef.current) return
-              setQuestionPhase('idle')
-              setQuestionError('无法核实该问题：' + (error?.message || '载入目标子图失败'))
-              return
-            }
-          }
           target.contextNodeIds = reviewIssueContextTarget(issue).contextNodeIds
-          target.reviewSignature = reviewContextSignature(reviewGraph, target)
-          if (!target.reviewSignature) {
+          target.reviewSignature = reviewContextSignature(view.graph, target)
+          if (!documentIdOfGraph(view.graph) && !target.reviewSignature) {
             setQuestionPhase('idle')
             setQuestionError('无法核实该问题：目标或关系未完整载入当前图')
             return
@@ -11450,8 +11934,10 @@ export default function clientPlugin() {
           setQuestionDraft(draft)
           setQuestionResult(null)
           setActiveIssueId(issue.id)
-          submitQuestion(draft.slice(0, 600), target, issue)
-          showToast('已提交 AI 核实；知识图在你确认修复前不会改变')
+          const submitted = await submitQuestion(draft.slice(0, 600), target, issue)
+          if (submitted && generation === verifyGenRef.current && mountedSessionRef.current === sessionId) {
+            showToast('已提交 AI 核实；知识图在你确认修复前不会改变')
+          }
         }
         const handleQuestionNode = (node) => {
           setQuestionTarget({ kind: 'node', id: node.id })
@@ -11828,7 +12314,7 @@ export default function clientPlugin() {
                           setQuestionTarget((target) => target?.sourceIssueId ? { kind: target.kind, id: target.id } : target)
                         }, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
-                        questionResult, questionError, questionPhase, onSubmitQuestion: submitQuestion,
+                        questionResult, questionError, questionPhase, reviewSaving, onSubmitQuestion: submitQuestion,
                         onDeleteTarget: handleDeleteQuestionTarget,
                         panelId: 'kg-verify-panel-traj',
                         progress: verifyProgress,

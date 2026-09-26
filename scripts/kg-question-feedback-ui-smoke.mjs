@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto'
 import { getOntology } from '../src/kg-ontology.mjs'
 
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
+assert.match(client, /\.kg-question-result\s*\{[^}]*overflow-wrap:\s*anywhere\s*;/,
+  'long unbroken model answers must wrap instead of expanding the mobile page')
 const neighborhoodStart = client.indexOf('        const questionNeighborhoodGraph = ')
-const neighborhoodEnd = client.indexOf('        const startQuickVerify = ', neighborhoodStart)
+const neighborhoodEnd = client.indexOf('        // End question context helpers.', neighborhoodStart)
 assert(neighborhoodStart >= 0 && neighborhoodEnd > neighborhoodStart)
 const questionNeighborhoodGraph = new Function(client.slice(neighborhoodStart, neighborhoodEnd) + '; return questionNeighborhoodGraph')()
 const focused = questionNeighborhoodGraph({ nodes: [
@@ -24,7 +26,7 @@ const largeGraph = { nodes: Array.from({ length: 5000 }, (_, index) => ({ id: 'n
 const bounded = questionNeighborhoodGraph(largeGraph, '复核 n1', { kind: 'graph' })
 assert(bounded.nodes.length <= 96 && bounded.edges.length <= 95, 'a hub node cannot reintroduce body-too-large requests')
 assert.equal(largeGraph.nodes.length, 5000, 'building a question neighborhood must not mutate canonical data')
-assert(client.includes("host.call('document-export', { documentId })") && client.includes('questionGraph = questionNeighborhoodGraph(questionGraph, retrievalQuery, target)'),
+assert(client.includes("host.call('document-export', { documentId, includeSourceText: true })") && client.includes('questionGraph = questionNeighborhoodGraph(questionGraph, retrievalQuery, target, reviewIssue)'),
   'questioning an off-window issue must load canonical context before making a bounded model request')
 const host = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const contextStart = host.indexOf('      function buildQuestionContext(')
@@ -68,6 +70,10 @@ assert(panel.includes("qVerdict === 'false_positive' && recheckedIssue")
 assert(panel.includes("'AI 核实：问题成立'") && panel.includes("'确认修复并保存'")
   && panel.includes("'AI 核实问题'") && panel.includes('questionResult.reviewedIssueId === questionTarget?.sourceIssueId'),
   'issue review must distinguish the AI verdict from a user-confirmed graph repair')
+assert(panel.includes("questionResult.repairStatus === 'context_limit'")
+  && panel.includes('未调用追加模型；核实结论已保留，知识图未改变')
+  && panel.includes("qNeedsManualRepair && questionResult.repairStatus !== 'context_limit'"),
+  'an oversized follow-up preserves the verdict and explains the limit without suggesting an unchanged costly retry')
 assert(panel.includes("id: questionTarget?.sourceIssueId || 'qfix-' + Date.now()"),
   'a fix proposed by rechecking an issue must resolve that original issue')
 assert(panel.includes("disabled: questionPhase === 'running' || bulkRunning, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) }"),
@@ -382,8 +388,14 @@ const confirmedFix = { action: 'update_node', nodePatch: { id: 'n1', patch: { te
 assert.deepEqual(recordReviewedFix({ issues: [{ id: 'issue-1', proposedFix: { action: 'delete_node' } }] },
   { id: 'issue-1', source: 'issue_review', proposedFix: confirmedFix }).issues[0].proposedFix, confirmedFix,
   'the persisted report must show the repair actually confirmed by AI, not its earlier candidate')
-assert.equal((client.match(/\.\.\.updateIssueStatus\(recordReviewedFix\(report, issue\), issue\.id, 'applied'/g) || []).length, 2,
-  'both workbenches must mark a report stale after applying an actual graph mutation')
+const applyHandlers = [...client.matchAll(/        const handleApplyIssue = async \(/g)]
+assert.equal(applyHandlers.length, 2)
+for (const match of applyHandlers) {
+  const end = client.indexOf('        const handleApplyAll =', match.index)
+  assert(end > match.index)
+  assert.match(client.slice(match.index, end), /\.\.\.updateIssueStatus\(recordReviewedFix\(report, issue\), issue\.id, 'applied',[\s\S]*?\), stale: true \}/,
+    'each workbench must mark a report stale after applying an actual graph mutation')
+}
 const recheckHandlers = [...client.matchAll(/        const handleRecheckIssue = async \(issue\) => \{/g)]
 assert.equal(recheckHandlers.length, 2, 'document and trajectory workbenches must share focused review behavior')
 for (const match of recheckHandlers) {
@@ -396,13 +408,15 @@ for (const match of recheckHandlers) {
     'bulkRunRef', 'questionPhase', 'setQuestionPhase', 'setQuestionError', 'graphCommitQueueRef', 'trajCommitQueueRef',
     'documentIdOfGraph', 'loadGraphDocument', 'graphRevisionRef', 'trajRevisionRef', 'setResultView', 'setView',
     'makeView', 'fullText', 'setGraphQueryDraft', 'verifyGenRef', 'currentResultRef', 'currentViewRef', 'reviewIssueContextTarget',
+    'reviewSaveRef', 'sessionId', 'mountedSessionRef',
     client.slice(match.index, end) + '; return handleRecheckIssue')(
     () => {}, () => {}, () => {}, () => {}, (_, target, issue) => submitted.push({ target, issue }), { show() {} }, () => {},
     openingView, openingView, (_, scope) => 'sig-' + (scope.reviewScopeKind || scope.kind)
       + '-' + (scope.reviewScopeKind === 'graph' ? 'all' : scope.id || 'all'),
     { current: false }, 'idle', () => {}, () => {}, { current: Promise.resolve() }, { current: Promise.resolve() },
     () => 'doc', async () => { throw new Error('must not load the current graph') }, { current: 1 }, { current: 1 },
-    () => {}, () => {}, graph => ({ graph }), '', () => {}, { current: 0 }, { current: openingView }, { current: openingView }, reviewIssueContextTarget)
+    () => {}, () => {}, graph => ({ graph }), '', () => {}, { current: 0 }, { current: openingView }, { current: openingView }, reviewIssueContextTarget,
+    { current: null }, 'session', { current: 'session' })
   await recheck({ id: 'one', targetKind: 'graph', title: 'n2076 将示例误标为 rule' })
   await recheck({ id: 'two', targetKind: 'graph', title: 'n2052 与 n2087 关系错误' })
   assert.deepEqual(submitted.map(item => item.target), [
@@ -425,6 +439,7 @@ for (const match of recheckHandlers) {
     'bulkRunRef', 'questionPhase', 'setQuestionPhase', 'setQuestionError', 'graphCommitQueueRef', 'trajCommitQueueRef',
     'documentIdOfGraph', 'loadGraphDocument', 'graphRevisionRef', 'trajRevisionRef', 'setResultView', 'setView',
     'makeView', 'fullText', 'setGraphQueryDraft', 'verifyGenRef', 'currentResultRef', 'currentViewRef', 'reviewIssueContextTarget',
+    'reviewSaveRef', 'sessionId', 'mountedSessionRef',
     client.slice(match.index, end) + '; return handleRecheckIssue')(
     () => {}, () => {}, () => {}, () => {}, (_, target) => submitted.push(target), { show() {} }, () => {},
     openingView, openingView,
@@ -435,8 +450,15 @@ for (const match of recheckHandlers) {
       if (navigate) activeView.current = { graph: { source: { documentId: 'another-document' } } }
       return { graph: focused, revision: 9 }
     }, { current: 1 }, { current: 1 }, graph => loadedViews.push(graph), graph => loadedViews.push(graph),
-    graph => graph, '', () => {}, { current: 0 }, activeView, activeView, reviewIssueContextTarget)
+    graph => graph, '', () => {}, { current: 0 }, activeView, activeView, reviewIssueContextTarget,
+    { current: null }, 'session', { current: 'session' })
   await recheck({ id: 'off-window', targetKind: 'node', targetId: 'n8018', title: '缺失原文证据' })
+  if (match.index > client.indexOf('      function TrajectoryTab(')) {
+    assert.equal(loadedViews.length, 0, 'trajectory recheck must not pretend a target-only window is the review context')
+    assert.equal(submitted[0].id, 'n8018', 'canonical admission receives an off-window target without narrowing it')
+    assert.equal(submitted[0].reviewSignature, null, 'only canonical admission may bind the missing target snapshot')
+    continue
+  }
   assert.equal(loadedViews.length, 1, 'a reviewed node outside the current window must be loaded into the editable view')
   assert.equal(submitted[0].reviewSignature, 'focused-signature',
     'the review snapshot must come from the target subgraph, not the old window')
@@ -562,6 +584,9 @@ function fixture(start, response, modelCatalog = { issueReview: true }) {
     questionDraft: 'Why?', resultView: view, view, questionPhase: 'idle',
     title: 'Fixture', fullText: 'source', questionTarget: null, effectiveModelArg: null,
     modelCatalog, bulkRunRef: { current: false },
+    reviewSaveRef: { current: null }, sessionId: 'session', mountedSessionRef: { current: 'session' },
+    questionAdmissionRef: { current: null }, verifyGenRef: { current: 0 },
+    currentResultRef: { current: view }, currentViewRef: { current: view },
     setError: value => states.error.push(value),
     setQuestionError: value => states.questionError.push(value),
     setVerifyProgress: value => states.progress.push(value),
