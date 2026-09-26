@@ -341,10 +341,11 @@
 .kg-launcher-title { font-size: 14px; font-weight: 600; }
 .kg-launcher-sub { font-size: 12px; color: var(--kg-text-dim); margin-top: 2px; }
 .kg-launcher .kg-primary { white-space: nowrap; }
-.kg-sidebar-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: 0; border-radius: 8px; color: inherit; cursor: pointer; padding: 5px 8px; font-size: 12px; font-family: inherit; }
+.kg-sidebar-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; min-height: 36px; background: transparent; border: 0; border-radius: 8px; color: inherit; cursor: pointer; padding: 6px 8px; font-size: 14px; font-family: inherit; white-space: nowrap; flex: 0 0 auto; }
 .kg-sidebar-btn:hover { background: rgba(127,127,127,0.16); }
-.kg-header-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 10px; font-size: 12.5px; font-family: inherit; }
-.kg-header-btn:hover { background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.28); }
+.kg-sidebar-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+.kg-sidebar-btn.is-collapsed { width: 36px; height: 36px; padding: 0; }
+.kg-sidebar-btn svg { flex: 0 0 auto; }
 .kg-doc-import-btn { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: inherit; cursor: pointer; padding: 4px 8px; font-size: 12px; font-family: inherit; white-space: nowrap; }
 .kg-doc-import-btn:hover:not(:disabled) { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.35); color: #2563eb; }
 .kg-doc-import-btn:disabled { opacity: 0.5; cursor: not-allowed; }
