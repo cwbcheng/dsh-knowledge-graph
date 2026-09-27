@@ -3463,6 +3463,192 @@ function createHostPlugin(graphContractOnly) {
         return splitParagraphsOffsetsHost(text).map((p) => p.text)
       }
 
+      function readingMapHost(document, options = {}) {
+        const graph = document && document.graph
+        if (!graph || !Array.isArray(graph.nodes)) return null
+        const revision = document.revision
+        if (Number.isInteger(options.expectedRevision) && options.expectedRevision !== revision) {
+          return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入阅读地图', currentRevision: revision } }
+        }
+        const source = graph.source && typeof graph.source === 'object' ? graph.source : {}
+        const sections = Array.isArray(source.sections) ? source.sections.filter((section) => section && typeof section.id === 'string' && section.id) : []
+        const topics = sections.map((section) => ({ id: section.id, title: String(section.title || section.id), count: 0, origin: 'source_section' }))
+        const known = new Map(topics.map((topic) => [topic.id, topic]))
+        const sectionById = new Map(sections.map((section) => [section.id, section]))
+        const other = { id: '__unassigned__', title: '未归入章节', count: 0, origin: 'unassigned' }
+        const entries = []
+        for (const node of graph.nodes) {
+          if (!node || typeof node.id !== 'string' || !node.id) continue
+          const paragraph = Number.isInteger(node.paragraph) && node.paragraph >= 0 ? node.paragraph : null
+          const declared = sectionById.get(node.sectionId)
+          const declaredHasRange = declared && Number.isInteger(declared.startParagraph) && Number.isInteger(declared.endParagraph)
+          let topic = declared && (!declaredHasRange || (paragraph !== null
+            && paragraph >= declared.startParagraph && paragraph <= declared.endParagraph)) ? known.get(declared.id) : null
+          if (!topic && paragraph !== null) {
+            const matching = sections.find((section) => Number.isInteger(section.startParagraph) && Number.isInteger(section.endParagraph)
+              && paragraph >= section.startParagraph && paragraph <= section.endParagraph)
+            topic = matching && known.get(matching.id)
+          }
+          if (!topic) topic = other
+          topic.count += 1
+          entries.push({ node, topicId: topic.id })
+        }
+        if (other.count) topics.push(other)
+        const requestedTopic = typeof options.topicId === 'string' ? options.topicId : ''
+        const topicId = requestedTopic || (topics[0]?.id || '')
+        if (requestedTopic && !topics.some((topic) => topic.id === requestedTopic)) {
+          return { error: { code: 'invalid_input', message: '阅读地图中找不到该章节' } }
+        }
+        const offset = Number.isInteger(options.offset) && options.offset >= 0 ? options.offset : 0
+        const limit = Number.isInteger(options.limit) ? Math.max(1, Math.min(50, options.limit)) : 20
+        const topicEntries = entries.filter((entry) => entry.topicId === topicId)
+        const byId = new Map(topicEntries.map((entry) => [entry.node.id, entry]))
+        const claimTypes = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'feature', 'discrimination_model', 'connection_model'])
+        const linked = new Map()
+        const neighbors = new Map()
+        for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
+          const from = byId.get(edge?.fromNodeId)?.node
+          const to = byId.get(edge?.toNodeId)?.node
+          if (!from || !to) continue
+          if (!neighbors.has(from.id)) neighbors.set(from.id, new Set())
+          if (!neighbors.has(to.id)) neighbors.set(to.id, new Set())
+          neighbors.get(from.id).add(to.id)
+          neighbors.get(to.id).add(from.id)
+          if (from.type === 'concept' && claimTypes.has(to.type)) {
+            if (!linked.has(from.id)) linked.set(from.id, new Set())
+            linked.get(from.id).add(to.id)
+          }
+          if (to.type === 'concept' && claimTypes.has(from.type)) {
+            if (!linked.has(to.id)) linked.set(to.id, new Set())
+            linked.get(to.id).add(from.id)
+          }
+        }
+        const allThemes = [...linked].map(([nodeId, claimIds]) => ({ nodeId,
+          title: String(byId.get(nodeId).node.text || '').slice(0, 160), linkedCount: claimIds.size,
+          origin: 'graph_concept', claimIds })).sort((a, b) => b.linkedCount - a.linkedCount
+            || (byId.get(a.nodeId).node.paragraph ?? Number.MAX_SAFE_INTEGER) - (byId.get(b.nodeId).node.paragraph ?? Number.MAX_SAFE_INTEGER)
+            || a.nodeId.localeCompare(b.nodeId))
+        const requestedTheme = typeof options.themeId === 'string' ? options.themeId : ''
+        const selectedTheme = requestedTheme ? allThemes.find((theme) => theme.nodeId === requestedTheme) : null
+        if (requestedTheme && !selectedTheme) {
+          return { error: { code: 'invalid_input', message: '本章没有这一概念线索' } }
+        }
+        const themeOffset = Number.isInteger(options.themeOffset) && options.themeOffset >= 0 ? options.themeOffset : 0
+        const themes = allThemes.slice(themeOffset, themeOffset + 12).map(({ claimIds, ...theme }) => theme)
+        const selectedIds = selectedTheme ? new Set([selectedTheme.nodeId, ...selectedTheme.claimIds]) : null
+        const ordered = (selectedIds ? topicEntries.filter((entry) => selectedIds.has(entry.node.id)) : topicEntries).sort((a, b) => {
+          const pa = Number.isInteger(a.node.paragraph) ? a.node.paragraph : Number.MAX_SAFE_INTEGER
+          const pb = Number.isInteger(b.node.paragraph) ? b.node.paragraph : Number.MAX_SAFE_INTEGER
+          return pa - pb || a.node.id.localeCompare(b.node.id)
+        })
+        const units = Array.isArray(document.sourceUnits) && document.sourceUnits.length > 0
+          ? new Map(document.sourceUnits.map((unit) => [unit.paragraph, unit.text]))
+          : new Map(splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+        const itemOf = ({ node }) => {
+          const citations = []
+          const evidenceRows = Array.isArray(node.evidence) ? [...node.evidence] : []
+          if (typeof node.quote === 'string' && node.quote.trim()) evidenceRows.push({ paragraph: node.paragraph, quote: node.quote })
+          for (const evidence of evidenceRows) {
+            if (citations.length >= 3) break
+            const paragraph = evidence && evidence.paragraph
+            const quote = evidence && typeof evidence.quote === 'string' ? evidence.quote.trim() : ''
+            if (!Number.isInteger(paragraph) || paragraph < 0 || !quote) continue
+            if (evidence.documentId && evidence.documentId !== document.documentId) continue
+            if (evidence.sourceId && source.id && evidence.sourceId !== source.id) continue
+            if (!units.get(paragraph)?.includes(quote)) continue
+            if (citations.some((item) => item.paragraph === paragraph && item.quote === quote)) continue
+            citations.push({ paragraph, quote: quote.slice(0, 1200), truncated: quote.length > 1200 })
+          }
+          const text = String(node.text || '')
+          return { nodeId: node.id, type: node.type, text: text.slice(0, 2400), textTruncated: text.length > 2400, paragraph: node.paragraph,
+            sectionId: node.sectionId || null, groundingStatus: node.groundingStatus || 'candidate',
+            entailmentStatus: node.entailmentStatus || 'unverified', citations }
+        }
+        const items = ordered.slice(offset, offset + limit).map(itemOf)
+        const priorityType = { claim: 3, inference: 3, rule: 3, discrimination_model: 2, connection_model: 2,
+          fact: 1, definition: 1, feature: 1 }
+        const ranked = ordered.filter(({ node }) => priorityType[node.type] && node.entailmentStatus !== 'unsupported'
+          && (typeof node.quote === 'string' && node.quote.trim()
+            || Array.isArray(node.evidence) && node.evidence.some((evidence) => typeof evidence?.quote === 'string' && evidence.quote.trim())))
+          .sort((a, b) => priorityType[b.node.type] - priorityType[a.node.type]
+            || (neighbors.get(b.node.id)?.size || 0) - (neighbors.get(a.node.id)?.size || 0)
+            || (a.node.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.node.paragraph ?? Number.MAX_SAFE_INTEGER)
+            || a.node.id.localeCompare(b.node.id))
+        const featuredItems = []
+        for (const entry of ranked) {
+          if (featuredItems.length >= 5) break
+          const item = itemOf(entry)
+          if (item.citations.length > 0) featuredItems.push(item)
+        }
+        return { documentId: document.documentId, revision, title: String(source.title || ''), topics,
+          topicId, themes, themesTotal: allThemes.length, themeOffset, themeId: selectedTheme?.nodeId || '',
+          featuredItems, featureBasis: 'source_quote_type_degree_v1',
+          total: ordered.length, offset, limit, items, origin: 'canonical_derived' }
+      }
+
+      function learningPlanHost(document, options = {}) {
+        const graph = document?.graph
+        if (!graph || !Array.isArray(graph.nodes)) return null
+        if (Number.isInteger(options.expectedRevision) && options.expectedRevision !== document.revision) {
+          return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入学习任务',
+            currentRevision: document.revision } }
+        }
+        const source = graph.source && typeof graph.source === 'object' ? graph.source : {}
+        const units = Array.isArray(document.sourceUnits) && document.sourceUnits.length
+          ? new Map(document.sourceUnits.map(unit => [unit.paragraph, unit.text]))
+          : new Map(splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+        const references = new Map()
+        for (const node of graph.nodes) {
+          if (!node || typeof node.id !== 'string' || !node.id || node.entailmentStatus === 'unsupported' || node.state === 'rejected') continue
+          const evidence = Array.isArray(node.evidence) ? [...node.evidence] : []
+          if (typeof node.quote === 'string' && node.quote.trim()) evidence.push({ paragraph: node.paragraph, quote: node.quote })
+          for (const item of evidence) {
+            const paragraph = item?.paragraph
+            const quote = typeof item?.quote === 'string' ? item.quote.trim() : ''
+            if (!Number.isInteger(paragraph) || paragraph < 0 || !quote ||
+                item.documentId && item.documentId !== document.documentId ||
+                item.sourceId && source.id && item.sourceId !== source.id ||
+                !units.get(paragraph)?.includes(quote)) continue
+            references.set(node.id, { nodeId: node.id, type: node.type,
+              text: String(node.text || '').slice(0, 1200), paragraph, quote: quote.slice(0, 1200),
+              entailmentStatus: node.entailmentStatus || 'unverified' })
+            break
+          }
+        }
+        const ordered = graph.nodes.filter(node => references.has(node?.id)).sort((a, b) =>
+          (a.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.paragraph ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id))
+        const tasks = []
+        const add = (kind, ids, prompt, guide, extra = {}) => tasks.push({
+          id: kind + ':' + ids.map(encodeURIComponent).join('|'), kind, prompt, guide,
+          origin: 'derived_exercise_not_source', grading: 'self_assessment_only',
+          references: ids.map(id => references.get(id)), ...extra,
+        })
+        const concepts = ordered.filter(node => node.type === 'concept' || node.type === 'definition')
+        if (concepts.length >= 2) {
+          const [first, second] = concepts
+          add('distinction', [first.id, second.id],
+            '比较这两个概念在资料中的含义：它们是否真的不同？指出适用边界，并用原文支持，不要仅凭名称判断。',
+            ['分别说明两个概念', '给出可核对的区别或承认原文不足以区分', '指出适用条件并回查原文'])
+        }
+        const mechanismTypes = new Set(['concept', 'definition', 'claim', 'inference', 'rule', 'connection_model', 'discrimination_model'])
+        const edge = (Array.isArray(graph.edges) ? graph.edges : []).find(item =>
+          references.has(item?.fromNodeId) && references.has(item?.toNodeId) &&
+          item.fromNodeId !== item.toNodeId &&
+          mechanismTypes.has(references.get(item.fromNodeId).type) && mechanismTypes.has(references.get(item.toNodeId).type))
+        if (edge) add('mechanism', [edge.fromNodeId, edge.toNodeId],
+          '解释这两个知识条目的关系是否构成机制。写出可能的中间步骤、证据和无法从资料推出的部分。',
+          ['区分图中的关联与已证实的因果', '逐步解释并标出推测', '引用原文，指出缺失的验证'],
+          { relation: String(edge.relation || '') })
+        const transfer = ordered.find(node => node.type === 'rule') || concepts[0]
+        if (transfer) add('transfer', [transfer.id],
+          '提出一个原资料没有出现的新情境，尝试应用这一知识，写出预测、可观察的验证方式和可能失效的条件。',
+          ['新情境不能只是原书例子的改写', '明确预测和可观察证据', '说明适用边界与替代解释'],
+          { scenarioOrigin: 'learner_provided' })
+        return { documentId: document.documentId, revision: document.revision,
+          origin: 'derived_learning_plan_not_canonical', tasks,
+          unavailable: ['distinction', 'mechanism', 'transfer'].filter(kind => !tasks.some(task => task.kind === kind)) }
+      }
+
       function splitParagraphsOffsetsHost(text) {
         const lines = text.split(NL)
         const blocks = []
@@ -11251,6 +11437,15 @@ function createHostPlugin(graphContractOnly) {
            a.nodeLimit,
          )
          return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
+       })
+
+       harness.handle('reading-map', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         if (!documentId) return { error: { code: 'invalid_input', message: '阅读地图缺少 documentId' } }
+         const saved = loadCanonicalDocumentHost(documentId)
+         if (!saved) return { error: { code: 'not_found', message: '找不到 canonical 知识图' } }
+         return readingMapHost(saved, a)
        })
 
        harness.handle('image-load', async (args) => {

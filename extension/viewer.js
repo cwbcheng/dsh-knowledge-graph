@@ -497,6 +497,561 @@
           truncated: view.truncated === true,
         }
       }
+      function PerspectiveControls({ documentId, revision, capture, onApply }) {
+        const [items, setItems] = useState([])
+        const [selectedId, setSelectedId] = useState('')
+        const [name, setName] = useState('')
+        const [busy, setBusy] = useState(false)
+        const [message, setMessage] = useState('')
+        const scope = useRef('')
+        const selected = items.find(item => item.id === selectedId)
+        const load = async () => {
+          const key = documentId + ':' + revision
+          const response = await host.call('perspectives', { action: 'list', documentId })
+          if (scope.current !== key) return
+          if (response?.error) throw new Error(response.error.message)
+          setItems(response.perspectives || [])
+        }
+        useEffect(() => {
+          scope.current = documentId + ':' + revision
+          setSelectedId(''); setName(''); setMessage('')
+          load().catch(error => setMessage(error?.message || '无法读取任务视图'))
+          return () => { scope.current = '' }
+        }, [documentId, revision])
+        const perform = async (action) => {
+          if (busy) return
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            let response
+            if (action === 'save' || action === 'overwrite') {
+              response = await host.call('perspectives', { action: 'save', documentId,
+                perspective: { ...(action === 'overwrite' ? { id: selected.id, expectedVersion: selected.version } : {}),
+                  name: name.trim(), expectedRevision: revision, state: capture() } })
+            } else if (action === 'delete') {
+              response = await host.call('perspectives', { action: 'delete', documentId,
+                id: selected.id, expectedVersion: selected.version })
+            } else {
+              response = await host.call('perspectives', { action: 'resolve', documentId, id: selected.id })
+            }
+            if (scope.current !== key) return
+            if (response?.error) throw new Error(response.error.message)
+            if (action === 'apply') {
+              if (!response.resolved || response.resolved.revision !== revision) throw new Error('知识图已变化，请刷新后重试')
+              await onApply(response.resolved)
+              setMessage(response.resolved.warnings?.join('；') || '已恢复任务视图')
+            } else {
+              await load()
+              if (action === 'delete') { setSelectedId(''); setName(''); setMessage('任务视图已删除') }
+              else { setSelectedId(response.perspective.id); setName(response.perspective.name); setMessage('任务视图已保存') }
+            }
+          } catch (error) {
+            if (scope.current === key) setMessage(error?.message || '任务视图操作失败')
+          } finally { if (scope.current === key) setBusy(false) }
+        }
+        return h('div', { className: 'kg-perspectives', 'aria-label': '任务视图' },
+          h('label', null, '任务视图 ', h('select', { value: selectedId, disabled: busy,
+            onChange: event => { const id = event.target.value; setSelectedId(id); setName(items.find(item => item.id === id)?.name || '') } },
+            h('option', { value: '' }, '新视图'), items.map(item => h('option', { key: item.id, value: item.id }, item.name + ' · v' + item.version)))),
+          h('input', { value: name, maxLength: 80, placeholder: '视图名称', 'aria-label': '任务视图名称',
+            onChange: event => setName(event.target.value) }),
+          h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !name.trim() || items.length >= 20,
+            onClick: () => perform('save') }, '另存新视图'),
+          h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !selected || !name.trim(),
+            onClick: () => perform('overwrite') }, '更新所选视图'),
+          h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !selected,
+            onClick: () => perform('apply') }, '打开视图'),
+          h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: busy || !selected,
+            onClick: () => { if (window.confirm('删除这个任务视图？知识图不会改变。')) perform('delete') } }, '删除'),
+          message ? h('span', { role: 'status', className: 'kg-hint' }, message) : null)
+      }
+      function ConceptDossierPanel({ documentId, revision, selectedNodeId, graph, onLocate, onOpenSource }) {
+        const concepts = graph.nodes.filter(node => node.type === 'concept' || node.type === 'definition')
+        const [anchorId, setAnchorId] = useState('')
+        const [candidates, setCandidates] = useState([])
+        const [anchor, setAnchor] = useState(null)
+        const [choices, setChoices] = useState({})
+        const [dossiers, setDossiers] = useState([])
+        const [opened, setOpened] = useState(null)
+        const [edit, setEdit] = useState(null)
+        const [editAcknowledged, setEditAcknowledged] = useState(false)
+        const [title, setTitle] = useState('')
+        const [query, setQuery] = useState('')
+        const [submittedQuery, setSubmittedQuery] = useState('')
+        const [busy, setBusy] = useState(false)
+        const [message, setMessage] = useState('')
+        const scope = useRef('')
+        const active = edit ? edit.anchor.nodeId : anchorId
+        const searchDocumentId = edit ? edit.anchor.documentId : documentId
+        const keyOf = item => item.documentId + '\u0000' + item.nodeId
+        const request = async payload => {
+          const result = await host.call('concept-dossier', payload)
+          if (result?.error) throw new Error(result.error.message)
+          return result
+        }
+        useEffect(() => {
+          const key = documentId + ':' + revision
+          scope.current = key
+          setAnchorId(concepts.some(node => node.id === selectedNodeId) ? selectedNodeId : '')
+          setQuery(''); setSubmittedQuery('')
+          setAnchor(null); setCandidates([]); setChoices({}); setOpened(null); setEdit(null); setMessage('')
+          request({ action: 'list', documentId }).then(result => {
+            if (scope.current === key) setDossiers(result.dossiers || [])
+          }).catch(error => { if (scope.current === key) setMessage(error?.message || '无法读取概念档案') })
+          return () => { scope.current = '' }
+        }, [documentId, revision])
+        useEffect(() => {
+          if (selectedNodeId && concepts.some(node => node.id === selectedNodeId)) {
+            setAnchorId(selectedNodeId); setQuery(''); setSubmittedQuery('')
+          }
+        }, [selectedNodeId])
+        useEffect(() => {
+          if (!active) { setCandidates([]); setAnchor(null); return }
+          const key = scope.current
+          let live = true
+          setCandidates([]); setAnchor(null)
+          request({ action: 'candidates', documentId: searchDocumentId, nodeId: active, query: submittedQuery }).then(result => {
+            if (!live || scope.current !== key) return
+            setAnchor(result.anchor); setCandidates(result.candidates || [])
+            if (!edit) setTitle(previous => previous || result.anchor?.text || '')
+          }).catch(error => { if (live && scope.current === key) setMessage(error?.message || '无法查找同名候选') })
+          return () => { live = false }
+        }, [documentId, revision, searchDocumentId, active, submittedQuery, edit?.id])
+        useEffect(() => { setChoices({}); setTitle('') }, [searchDocumentId, active, edit?.id])
+        const refresh = async () => {
+          const result = await request({ action: 'list', documentId })
+          setDossiers(result.dossiers || [])
+        }
+        const save = async () => {
+          if (busy || !anchor) return
+          const selected = Object.values(choices).filter(choice => choice.include && choice.item)
+          if (!selected.length) { setMessage('先选择至少一个候选概念'); return }
+          if (!window.confirm('将所选条目保存为候选对照档案？这不会合并或修改原知识图。')) return
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            const expectedRevisions = { [anchor.documentId]: anchor.revision }
+            const members = selected.map(choice => {
+              const item = choice.item
+              expectedRevisions[item.documentId] = item.revision
+              return { documentId: item.documentId, nodeId: item.nodeId,
+                relation: choice.relation || 'related', note: choice.note || '',
+                applicability: choice.applicability || '', validTime: choice.validTime || '' }
+            })
+            await request({ action: 'save', dossier: { title: title.trim(), anchor: { documentId, nodeId: active },
+              members, expectedRevisions } })
+            if (scope.current !== key) return
+            await refresh()
+            setChoices({}); setMessage('对照档案已保存，原知识图未改变')
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '无法保存档案') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const open = async item => {
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            const result = await request({ action: 'get', id: item.id })
+            if (scope.current === key) { setOpened(result.dossier); setEdit(null) }
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '无法读取档案') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const remove = async () => {
+          if (!opened || busy || !window.confirm('删除此候选对照档案？原知识图不会改变。')) return
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            await request({ action: 'delete', id: opened.id, expectedVersion: opened.version })
+            if (scope.current !== key) return
+            setOpened(null); setEdit(null); await refresh(); setMessage('档案已删除')
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '无法删除档案') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const beginEdit = () => {
+          if (!opened || opened.members[0]?.missing) { setMessage('基准概念已不存在，不能修改此档案'); return }
+          setQuery(''); setSubmittedQuery(''); setEditAcknowledged(false)
+          setEdit({ id: opened.id, version: opened.version, title: opened.title, anchor: opened.anchor,
+            members: opened.members.slice(1).map(item => ({ ...item, include: true })) })
+        }
+        const addToEdit = item => {
+          if (!edit) return
+          const key = keyOf(item)
+          const existing = edit.members.find(member => keyOf(member) === key)
+          if (existing) {
+            setEdit({ ...edit, members: edit.members.map(member => keyOf(member) === key ? { ...member, include: true,
+              ...item, missing: false } : member) })
+          } else {
+            setEdit({ ...edit, members: [...edit.members, { ...item, include: true, relation: 'related',
+              note: '', applicability: '', validTime: '' }] })
+          }
+        }
+        const saveEdit = async () => {
+          if (!edit || !opened || busy) return
+          const kept = edit.members.filter(item => item.include)
+          if (!kept.length) { setMessage('档案至少需要一个跨书对照；若不再需要，请删除档案'); return }
+          if (kept.some(item => item.missing || !Number.isInteger(item.revision))) {
+            setMessage('已删除的来源不能保留在新版本中；请先移除该成员'); return
+          }
+          if ((opened.members.some(item => item.stale) || kept.some(item => item.stale)) && !editAcknowledged) {
+            setMessage('来源已变化；请核对当前引文并确认后再保存'); return
+          }
+          if (!window.confirm('保存更新后的跨书对照？原知识图不会改变。')) return
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            const expectedRevisions = { [edit.anchor.documentId]: opened.members[0].revision }
+            for (const item of kept) expectedRevisions[item.documentId] = item.revision
+            const result = await request({ action: 'save', dossier: { id: edit.id, expectedVersion: edit.version,
+              title: edit.title.trim(), anchor: edit.anchor, expectedRevisions,
+              members: kept.map(item => ({ documentId: item.documentId, nodeId: item.nodeId,
+                relation: item.relation, note: item.note, applicability: item.applicability || '',
+                validTime: item.validTime || '' })) } })
+            if (scope.current !== key) return
+            setOpened(result.dossier); setEdit(null); await refresh(); setMessage('档案修改已保存')
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '无法修改档案') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const locateCurrent = async item => {
+          if (busy || item.documentId !== documentId || item.missing) return
+          const key = scope.current
+          setBusy(true); setMessage('')
+          try {
+            const located = await onLocate({ nodeId: item.nodeId, paragraph: item.evidenceParagraph },
+              () => scope.current === key)
+            if (scope.current === key && !located) setMessage('当前图中找不到该概念，请刷新后重试')
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '无法定位概念') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const confirmedSnapshot = item => !item.stale || item.missing ? null : item.confirmedReference ? h('details', null,
+          h('summary', null, '查看保存时的来源内容（revision ' + item.boundRevision + '）'),
+          h('p', null, item.confirmedReference.text || ''),
+          h('p', { className: 'kg-hint' }, item.confirmedReference.quote
+            ? '当时记录的引文：' + item.confirmedReference.quote : '当时未找到可核对的引文'))
+          : h('p', { className: 'kg-error' }, '此旧版档案没有保存确认时的来源快照；不能把当前原文当作当时依据')
+        const reference = item => h(React.Fragment, null,
+          item.missing ? h('p', { className: 'kg-error' }, item.confirmedReference
+            ? '来源图已删除；以下是保存档案时的快照，不是当前原文'
+            : '来源图已删除；旧版档案没有保存来源快照') : null,
+          h('strong', null, item.source?.title || item.documentId),
+          item.source?.author ? ' · ' + item.source.author : '',
+          item.source?.publicationDate ? ' · ' + item.source.publicationDate : '',
+          h('p', null, item.text || '概念节点已删除'),
+          h('p', { className: 'kg-hint' }, item.evidenceStatus === 'source_quote_matched'
+            ? '原文 P' + (item.evidenceParagraph + 1) + '：' + item.quote : '未找到可核对的原文引文'),
+          h('p', { className: 'kg-hint' }, '原文语义一致性：' + ({ verified: '已验证', unsupported: '不支持',
+            uncertain: '不确定', unverified: '未核实' }[item.attributionStatus] || '未核实') + ' · 现实真实性：未评估'),
+          item.sourceParagraphText ? h('details', null,
+            h('summary', null, '查看 ' + (item.source?.title || item.documentId) + ' 原文 P' + (item.evidenceParagraph + 1)),
+            h('p', null, item.sourceParagraphText, item.sourceParagraphTruncated ? '（段落过长，仅显示引文附近内容）' : '')) : null,
+          !item.missing ? h('button', { type: 'button', className: 'kg-secondary',
+            disabled: busy, onClick: () => item.documentId === documentId ? locateCurrent(item) : onOpenSource(item) },
+            item.documentId === documentId ? '在当前图定位' : '打开来源知识图') : null)
+        return h('section', { className: 'kg-dossiers', 'aria-label': '跨书概念档案' },
+          h('div', { className: 'kg-dossiers-head' }, h('strong', null, '跨书概念档案'),
+            h('span', { className: 'kg-hint' }, '同名只作为候选，不自动合并')),
+          h('div', { className: 'kg-dossiers-controls' },
+            h('label', null, '当前图概念 ', h('select', { value: edit ? '' : active || '', disabled: busy || !!edit,
+              onChange: event => { setAnchorId(event.target.value); setQuery(''); setSubmittedQuery('') } },
+              h('option', { value: '' }, '选择概念'), concepts.map(node => h('option', { key: node.id, value: node.id }, node.text.slice(0, 70))))),
+            h('span', { className: 'kg-hint' }, edit ? '正在编辑 ' + opened?.title :
+              selectedNodeId && active === selectedNodeId ? '当前选中节点' : '')),
+          active && anchor ? h(React.Fragment, null,
+            h('div', { className: 'kg-dossier-item' }, reference(anchor)),
+            h('div', { className: 'kg-dossiers-controls' },
+              h('input', { value: query, maxLength: 80, 'aria-label': '跨书概念检索词', placeholder: '按名称或关键词找其他书的概念',
+                onChange: event => setQuery(event.target.value),
+                onKeyDown: event => { if (event.key === 'Enter') setSubmittedQuery(query.trim()) } }),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => setSubmittedQuery(query.trim()) }, '查找候选')),
+            h('p', { className: 'kg-hint' }, candidates.length + (submittedQuery ? ' 个检索候选' : ' 个同名候选') + '；请逐一判断是否同义、分歧或仅相关。'),
+            candidates.map(item => {
+              const key = keyOf(item); const choice = choices[key] || {}
+              return h('div', { key, className: 'kg-dossier-item' }, reference(item),
+                edit ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy ||
+                  edit.members.some(member => keyOf(member) === key && member.include),
+                  onClick: () => addToEdit(item) }, '加入当前档案') : h('div', { className: 'kg-dossiers-controls' },
+                  h('label', null, h('input', { type: 'checkbox', checked: !!choice.include, disabled: busy,
+                    onChange: event => setChoices({ ...choices, [key]: { ...choice, item, include: event.target.checked } }) }), ' 纳入对照'),
+                  h('select', { value: choice.relation || 'related', disabled: busy || !choice.include,
+                    'aria-label': item.source?.title + ' 对照关系',
+                    onChange: event => setChoices({ ...choices, [key]: { ...choice, item, relation: event.target.value } }) },
+                    h('option', { value: 'related' }, '相关，待辨析'),
+                    h('option', { value: 'contrast' }, '不同用法 / 分歧'),
+                    h('option', { value: 'aligned' }, '可能同义')),
+                  h('input', { value: choice.applicability || '', maxLength: 300, disabled: busy || !choice.include,
+                    placeholder: '适用条件（个人判断）', 'aria-label': item.source?.title + ' 适用条件',
+                    onChange: event => setChoices({ ...choices, [key]: { ...choice, item, applicability: event.target.value } }) }),
+                  h('input', { value: choice.validTime || '', maxLength: 100, disabled: busy || !choice.include,
+                    placeholder: '适用时间（个人判断）', 'aria-label': item.source?.title + ' 适用时间',
+                    onChange: event => setChoices({ ...choices, [key]: { ...choice, item, validTime: event.target.value } }) }),
+                  h('input', { value: choice.note || '', maxLength: 500, disabled: busy || !choice.include,
+                    placeholder: '分歧或对照说明（个人注释）', 'aria-label': item.source?.title + ' 对照注释',
+                    onChange: event => setChoices({ ...choices, [key]: { ...choice, item, note: event.target.value } }) })))
+            }),
+            !edit && Object.values(choices).some(choice => choice.include) ? h('p', { className: 'kg-hint' },
+              '已选 ' + Object.values(choices).filter(choice => choice.include).length + ' 个候选（跨检索保留）') : null,
+            !edit && candidates.length ? h('div', { className: 'kg-dossiers-controls' },
+              h('input', { value: title, maxLength: 100, disabled: busy, 'aria-label': '概念档案标题',
+                onChange: event => setTitle(event.target.value) }),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !title.trim(), onClick: save }, '保存候选对照')) : null) : null,
+          h('div', { className: 'kg-dossiers-controls' }, h('strong', null, '已保存档案'),
+            dossiers.length ? dossiers.map(item => h('button', { key: item.id, type: 'button', className: 'kg-secondary',
+              disabled: busy, onClick: () => open(item) }, item.title)) : h('span', { className: 'kg-hint' }, '暂无')),
+          opened && !edit ? h('div', { className: 'kg-dossier-item' },
+            h('div', { className: 'kg-dossiers-controls' }, h('strong', null, opened.title),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: beginEdit }, '编辑档案'),
+              h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: busy, onClick: remove }, '删除档案')),
+            h('p', { className: 'kg-hint' }, '记录时间：' + new Date(opened.createdAt).toLocaleString('zh-CN') + '；适用时间单独记录，不由录入时间推定'),
+            opened.members.map(item => h('div', { key: keyOf(item), className: 'kg-dossier-item' },
+              h('p', { className: 'kg-hint' }, item.relation === 'anchor' ? '基准概念' : item.relation === 'contrast' ? '不同用法 / 分歧' :
+                item.relation === 'aligned' ? '候选同义，未合并' : '相关，待辨析', item.stale ? ' · 来源图已变化，需重新比较' : ''),
+              reference(item), confirmedSnapshot(item),
+              item.applicability ? h('p', null, '适用条件（个人判断）：' + item.applicability) : null,
+              item.validTime ? h('p', null, '适用时间（个人判断）：' + item.validTime) : null,
+              item.note ? h('p', null, '对照注释：' + item.note) : null))) : null,
+          edit ? h('div', { className: 'kg-dossier-item' },
+            h('div', { className: 'kg-dossiers-controls' },
+              h('input', { value: edit.title, maxLength: 100, 'aria-label': '编辑档案标题',
+                onChange: event => setEdit({ ...edit, title: event.target.value }) }),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => setEdit(null) }, '取消编辑')),
+            edit.members.map(item => h('div', { key: keyOf(item), className: 'kg-dossier-item' },
+              reference(item), confirmedSnapshot(item), item.stale ? h('p', { className: 'kg-error' },
+                item.missing ? '来源图已删除，请移除该成员后保存' : '来源图已变化，请核对当前引文') : null,
+              h('div', { className: 'kg-dossiers-controls' },
+                h('label', null, h('input', { type: 'checkbox', checked: !!item.include,
+                  onChange: event => setEdit({ ...edit, members: edit.members.map(member =>
+                    keyOf(member) === keyOf(item) ? { ...member, include: event.target.checked } : member) }) }), ' 保留'),
+                h('select', { value: item.relation, disabled: !item.include,
+                  'aria-label': (item.source?.title || item.documentId) + ' 编辑对照关系',
+                  onChange: event => setEdit({ ...edit, members: edit.members.map(member =>
+                    keyOf(member) === keyOf(item) ? { ...member, relation: event.target.value } : member) }) },
+                  h('option', { value: 'related' }, '相关，待辨析'),
+                  h('option', { value: 'contrast' }, '不同用法 / 分歧'),
+                  h('option', { value: 'aligned' }, '可能同义')),
+                h('input', { value: item.note, maxLength: 500, disabled: !item.include,
+                  'aria-label': (item.source?.title || item.documentId) + ' 编辑对照注释',
+                  onChange: event => setEdit({ ...edit, members: edit.members.map(member =>
+                    keyOf(member) === keyOf(item) ? { ...member, note: event.target.value } : member) }) }),
+                h('input', { value: item.applicability || '', maxLength: 300, disabled: !item.include,
+                  placeholder: '适用条件（个人判断）', 'aria-label': (item.source?.title || item.documentId) + ' 编辑适用条件',
+                  onChange: event => setEdit({ ...edit, members: edit.members.map(member =>
+                    keyOf(member) === keyOf(item) ? { ...member, applicability: event.target.value } : member) }) }),
+                h('input', { value: item.validTime || '', maxLength: 100, disabled: !item.include,
+                  placeholder: '适用时间（个人判断）', 'aria-label': (item.source?.title || item.documentId) + ' 编辑适用时间',
+                  onChange: event => setEdit({ ...edit, members: edit.members.map(member =>
+                    keyOf(member) === keyOf(item) ? { ...member, validTime: event.target.value } : member) }) })))),
+            opened?.members.some(item => item.stale) ? h('label', null,
+              h('input', { type: 'checkbox', checked: editAcknowledged,
+                onChange: event => setEditAcknowledged(event.target.checked) }), ' 已核对变化后的来源') : null,
+            h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !edit.title.trim() ||
+              edit.members.filter(item => item.include).some(item => item.missing), onClick: saveEdit }, '保存档案修改')) : null,
+          message ? h('p', { role: 'status', className: 'kg-hint' }, message) : null)
+      }
+      function LearningModePanel({ documentId, revision, onLocate }) {
+        const [plan, setPlan] = useState(null)
+        const [attempts, setAttempts] = useState([])
+        const [kind, setKind] = useState('distinction')
+        const [answer, setAnswer] = useState('')
+        const [scenario, setScenario] = useState('')
+        const [selfRating, setSelfRating] = useState('needs_work')
+        const [openedAttempt, setOpenedAttempt] = useState(null)
+        const [lastSaved, setLastSaved] = useState('')
+        const [busy, setBusy] = useState(false)
+        const [message, setMessage] = useState('')
+        const requestId = useRef(null)
+        const scope = useRef('')
+        const labels = { distinction: '概念辨析', mechanism: '机制解释', transfer: '新情境应用' }
+        useEffect(() => {
+          const key = documentId + ':' + revision
+          scope.current = key
+          setPlan(null); setAttempts([]); setOpenedAttempt(null); setLastSaved(''); setMessage(''); requestId.current = null
+          Promise.all([
+            host.call('learning-mode', { action: 'plan', documentId, expectedRevision: revision }),
+            host.call('learning-mode', { action: 'attempts', documentId }),
+          ]).then(([nextPlan, progress]) => {
+            if (scope.current !== key) return
+            if (nextPlan?.error || progress?.error) throw new Error(nextPlan?.error?.message || progress?.error?.message)
+            setPlan(nextPlan); setAttempts(progress.attempts || [])
+            if (!nextPlan.tasks.some(task => task.kind === kind)) setKind(nextPlan.tasks[0]?.kind || 'distinction')
+          }).catch(error => { if (scope.current === key) setMessage(error?.message || '学习任务读取失败') })
+          return () => { scope.current = '' }
+        }, [documentId, revision])
+        const task = plan?.tasks?.find(item => item.kind === kind)
+        const answerKey = task ? JSON.stringify([task.id, revision, answer.trim(), scenario.trim(), selfRating]) : ''
+        const save = async () => {
+          if (!task || busy || answerKey === lastSaved || !answer.trim() ||
+              task.kind === 'transfer' && !scenario.trim()) return
+          const key = scope.current
+          const submittedKey = answerKey
+          if (!requestId.current) requestId.current = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random()
+          setBusy(true); setMessage('')
+          try {
+            const response = await host.call('learning-mode', { action: 'save', documentId,
+              expectedRevision: revision, taskId: task.id, attemptId: requestId.current,
+              answer: answer.trim(), scenario: scenario.trim(), selfRating })
+            if (scope.current !== key) return
+            if (response?.error || !response?.attempt) throw new Error(response?.error?.message || '学习记录未确认保存')
+            setOpenedAttempt(response.attempt)
+            setLastSaved(submittedKey)
+            const progress = await host.call('learning-mode', { action: 'attempts', documentId })
+            if (scope.current === key) setAttempts(progress.attempts || [])
+            requestId.current = null
+            setMessage('练习记录已保存；自评不等于答案已被验证')
+          } catch (error) { if (scope.current === key) setMessage(error?.message || '学习记录保存失败；可重试') }
+          finally { if (scope.current === key) setBusy(false) }
+        }
+        const switchKind = next => {
+          setKind(next); setAnswer(''); setScenario(''); setOpenedAttempt(null); setLastSaved(''); setMessage(''); requestId.current = null
+        }
+        return h('section', { className: 'kg-learning-mode', 'aria-label': '学习模式' },
+          h('div', { className: 'kg-reading-head' }, h('strong', null, '学习模式'),
+            h('span', { className: 'kg-hint' }, '图派生练习，非原文 · 自我评估，不自动判对错')),
+          !plan && !message ? h('p', { role: 'status', className: 'kg-hint' }, '正在准备有原文依据的练习…') : null,
+          plan ? h(React.Fragment, null,
+            h('div', { className: 'kg-consume-tabs', role: 'tablist', 'aria-label': '学习任务类型' },
+              ['distinction', 'mechanism', 'transfer'].map(value => h('button', { key: value, type: 'button',
+                role: 'tab', 'aria-selected': kind === value, className: 'kg-consume-tab' + (kind === value ? ' on' : ''),
+                disabled: !plan.tasks.some(item => item.kind === value), onClick: () => switchKind(value) }, labels[value]))),
+            task ? h(React.Fragment, null,
+              h('p', null, task.prompt),
+              h('div', { className: 'kg-learning-references' }, task.references.map(ref => h('div', { key: ref.nodeId },
+                h('strong', null, ref.text),
+                h('p', { className: 'kg-hint' }, '原文 P' + (ref.paragraph + 1) + '：' + ref.quote),
+                h('button', { type: 'button', className: 'kg-secondary', onClick: () => Promise.resolve(onLocate({
+                  nodeId: ref.nodeId, paragraph: ref.paragraph })).catch(error => toastStore.show(error?.message || '定位失败')) }, '定位原文')))),
+              kind === 'transfer' ? h('label', null, '你的新情境（不能照搬原文）', h('textarea', {
+                value: scenario, maxLength: 2000, placeholder: '写一个原书没有讨论的具体场景…',
+                'aria-label': '新情境', onChange: event => { setScenario(event.target.value); requestId.current = null },
+              })) : null,
+              h('label', null, '你的回答', h('textarea', { value: answer, maxLength: 10000,
+                'aria-label': '学习回答', placeholder: '写下推理、可核对依据和不确定之处…',
+                onChange: event => { setAnswer(event.target.value); requestId.current = null } })),
+              h('label', null, '自评 ', h('select', { value: selfRating,
+                'aria-label': '学习自评', onChange: event => { setSelfRating(event.target.value); requestId.current = null } },
+                h('option', { value: 'needs_work' }, '还需练习'), h('option', { value: 'uncertain' }, '部分理解'),
+                h('option', { value: 'confident' }, '有把握，未外部核验'))),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !answer.trim() ||
+                kind === 'transfer' && !scenario.trim() || answerKey === lastSaved, onClick: save },
+              busy ? '保存中…' : answerKey === lastSaved ? '已保存' : '保存练习与自评'))
+              : h('p', { className: 'kg-hint' }, '当前图缺少此任务所需的可回链概念或关系；不会编造练习依据。'),
+            h('div', { className: 'kg-learning-history' }, h('strong', null, '学习记录 · ' + attempts.length),
+              attempts.map(item => h('button', { key: item.attemptId, type: 'button', className: 'kg-secondary',
+                onClick: () => setOpenedAttempt(item) }, labels[item.kind] + ' · ' +
+                new Date(item.createdAt).toLocaleString('zh-CN') + (item.stale ? ' · 旧版' : '')))),
+            openedAttempt ? h('div', { className: 'kg-learning-feedback' },
+              h('strong', null, (labels[openedAttempt.kind] || '练习') + ' · 第 ' + openedAttempt.baseRevision + ' 版'),
+              h('p', null, openedAttempt.task.prompt),
+              (openedAttempt.task.references || []).map(ref => h('p', { key: ref.nodeId, className: 'kg-hint' },
+                '当时原文 P' + (ref.paragraph + 1) + '：' + ref.quote)),
+              h('p', null, '当时回答：' + openedAttempt.answer),
+              openedAttempt.scenario ? h('p', null, '当时新情境：' + openedAttempt.scenario) : null,
+              h('strong', null, '复盘清单（不是自动评分）'),
+              h('ul', null, (openedAttempt.task.guide || []).map((point, index) => h('li', { key: index }, point))),
+              h('p', { className: 'kg-hint' }, openedAttempt.stale ? '来源图已更新，此练习基于旧版本。' :
+                '请根据这条记录中的原文引文复核；这不是自动评分。')) : null,
+          ) : null,
+          message ? h('p', { role: 'status', className: 'kg-hint' }, message) : null)
+      }
+      function ReadingMapPanel({ documentId, revision, loadPage, onLocate, restoreState, onStateChange }) {
+        const [topicId, setTopicId] = useState('')
+        const [themeId, setThemeId] = useState('')
+        const [themeOffset, setThemeOffset] = useState(0)
+        const [offset, setOffset] = useState(0)
+        const [pageDraft, setPageDraft] = useState('1')
+        const [page, setPage] = useState(null)
+        const [loading, setLoading] = useState(true)
+        const [failure, setFailure] = useState('')
+        useEffect(() => {
+          if (!restoreState?.seq || restoreState.documentId !== documentId || restoreState.revision !== revision) return
+          const next = restoreState.state
+          setTopicId(next.topicId); setThemeId(next.themeId)
+          setOffset(next.offset); setThemeOffset(next.themeOffset)
+        }, [restoreState?.seq])
+        useEffect(() => {
+          onStateChange?.({ topicId, themeId, offset, themeOffset })
+        }, [topicId, themeId, offset, themeOffset])
+        useEffect(() => {
+          let live = true
+          setLoading(true)
+          setFailure('')
+          loadPage({ documentId, expectedRevision: revision, topicId, themeId, themeOffset, offset, limit: 20 }).then((result) => {
+            if (!live) return
+            if (!result || result.error) throw new Error(result?.error?.message || '无法载入阅读地图')
+            if (result.documentId !== documentId || result.revision !== revision) throw new Error('阅读地图已过期，请重新载入知识图')
+            setPage(result)
+            setPageDraft(String(Math.floor(result.offset / result.limit) + 1))
+          }).catch((error) => {
+            if (live) { setPage(null); setFailure(error?.message || '无法载入阅读地图') }
+          }).finally(() => { if (live) setLoading(false) })
+          return () => { live = false }
+        }, [documentId, revision, topicId, themeId, themeOffset, offset])
+        return h('section', { className: 'kg-reading-map', 'aria-label': '分层阅读地图' },
+          h('div', { className: 'kg-reading-head' },
+            h('strong', null, page?.title || '阅读地图'),
+            h('span', { className: 'kg-hint' }, '来源章节 → 知识条目 → 原文引文 · 派生视图')),
+          failure ? h('p', { role: 'alert', className: 'kg-error' }, failure) : null,
+          loading ? h('p', { role: 'status', className: 'kg-hint' }, '正在读取章节与条目…') : null,
+          page ? h(React.Fragment, null,
+            h('nav', { className: 'kg-reading-topics', 'aria-label': '来源章节' }, page.topics.map((topic) => h('button', {
+              key: topic.id, type: 'button', className: topic.id === page.topicId ? 'on' : '',
+              'aria-current': topic.id === page.topicId ? 'true' : undefined,
+              onClick: () => { setTopicId(topic.id); setThemeId(''); setThemeOffset(0); setOffset(0); setPageDraft('1') },
+            }, topic.title + ' · ' + topic.count))),
+            page.themesTotal > 0 ? h(React.Fragment, null,
+              h('div', { className: 'kg-reading-theme-head' },
+                h('strong', null, '图中概念线索'),
+                h('span', { className: 'kg-hint' }, '同章直接关系 · 候选主题，非原文标题')),
+              h('nav', { className: 'kg-reading-topics kg-reading-themes', 'aria-label': '图中概念线索' },
+                h('button', { type: 'button', className: page.themeId ? '' : 'on',
+                  'aria-current': page.themeId ? undefined : 'true', onClick: () => { setThemeId(''); setOffset(0); setPageDraft('1') } }, '全部条目'),
+                page.themes.map((theme) => h('button', { key: theme.nodeId, type: 'button',
+                  className: theme.nodeId === page.themeId ? 'on' : '',
+                  'aria-current': theme.nodeId === page.themeId ? 'true' : undefined,
+                  title: theme.title + ' · ' + theme.nodeId + ' · 关联 ' + theme.linkedCount + ' 条',
+                  onClick: () => { setThemeId(theme.nodeId); setOffset(0); setPageDraft('1') },
+                }, theme.title + ' · ' + theme.nodeId + ' · ' + theme.linkedCount))),
+              page.themesTotal > 12 ? h('div', { className: 'kg-reading-pages' },
+                h('span', null, (page.themeOffset + 1) + '–' + Math.min(page.themesTotal, page.themeOffset + page.themes.length) + ' / ' + page.themesTotal + ' 条概念线索'),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: loading || themeOffset === 0,
+                  onClick: () => { setThemeOffset(Math.max(0, themeOffset - 12)); setThemeId(''); setOffset(0) } }, '上一组'),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: loading || themeOffset + page.themes.length >= page.themesTotal,
+                  onClick: () => { setThemeOffset(themeOffset + 12); setThemeId(''); setOffset(0) } }, '下一组')) : null,
+              page.themeId ? h('p', { className: 'kg-hint' }, '仅显示这一概念节点和本章直接关联的知识条目；关系不代表结论已获证实。') : null,
+            ) : null,
+            page.featuredItems?.length ? h('section', { className: 'kg-reading-highlights', 'aria-label': '证据锚定的阅读起点' },
+              h('div', { className: 'kg-reading-theme-head' },
+                h('strong', null, '证据锚定的阅读起点'),
+                h('span', { className: 'kg-hint' }, '按类型与直接关系筛选 · 非作者标注的核心论点')),
+              h('div', { className: 'kg-reading-highlights-list' }, page.featuredItems.map((item) => h('button', {
+                key: item.nodeId, type: 'button',
+                onClick: () => Promise.resolve(onLocate({ nodeId: item.nodeId, paragraph: item.citations[0].paragraph, sectionId: item.sectionId }))
+                  .catch((error) => toastStore.show(error?.message || '定位失败')),
+              }, item.text.slice(0, 160),
+              h('span', null, (TYPE_META[item.type]?.label || item.type || '条目') + ' · ' + item.nodeId + ' · P' + (item.citations[0].paragraph + 1)
+                + ' · ' + ({ verified: '语义已验证', uncertain: '语义不确定' }[item.entailmentStatus] || '语义未验证')))))) : null,
+            h('div', { className: 'kg-reading-items' }, page.items.map((item) => h('article', { key: item.nodeId, className: 'kg-reading-item' },
+              h('div', { className: 'kg-reading-item-head' },
+                h('span', null, (TYPE_META[item.type]?.label || item.type || '条目') + ' · ' + item.nodeId
+                  + ' · ' + ({ verified: '语义已验证', unsupported: '语义不支持', uncertain: '语义不确定' }[item.entailmentStatus] || '语义未验证')),
+                h('button', { type: 'button', className: 'kg-secondary', onClick: () => Promise.resolve(onLocate({ nodeId: item.nodeId, paragraph: item.paragraph, sectionId: item.sectionId }))
+                  .catch((error) => toastStore.show(error?.message || '定位失败')) }, '在图中定位')),
+              h('p', null, item.text + (item.textTruncated ? '…' : '')),
+              item.citations.length > 0 ? h('div', { className: 'kg-reading-citations' }, item.citations.map((citation, index) => h('button', {
+                key: index, type: 'button', className: 'kg-reading-citation',
+                onClick: () => Promise.resolve(onLocate({ nodeId: item.nodeId, paragraph: citation.paragraph, sectionId: item.sectionId }))
+                  .catch((error) => toastStore.show(error?.message || '定位失败')),
+              }, '原文 P' + (citation.paragraph + 1) + ' · ' + citation.quote + (citation.truncated ? '…' : ''))))
+                : h('p', { className: 'kg-hint' }, '尚无可核对的原文引文'))),
+              page.total === 0 ? h('p', { className: 'kg-hint' }, '这一章节暂无知识条目') : null),
+            h('div', { className: 'kg-reading-pages' },
+              h('span', null, page.total ? (page.offset + 1) + '–' + Math.min(page.total, page.offset + page.items.length) + ' / ' + page.total : '0 条'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页'),
+              h('input', { type: 'number', min: 1, max: Math.max(1, Math.ceil(page.total / 20)), value: pageDraft,
+                'aria-label': '阅读地图页码', onChange: (event) => setPageDraft(event.target.value),
+                onKeyDown: (event) => { if (event.key === 'Enter') { event.preventDefault(); const number = Number(pageDraft); if (Number.isInteger(number) && number >= 1 && number <= Math.ceil(page.total / 20)) setOffset((number - 1) * 20) } } }),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !Number.isInteger(Number(pageDraft)) || Number(pageDraft) < 1 || Number(pageDraft) > Math.ceil(page.total / 20),
+                onClick: () => setOffset((Number(pageDraft) - 1) * 20) }, '跳转'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页')),
+          ) : null)
+      }
       function asAllNodesGraph(graph) {
         const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
         const edges = Array.isArray(graph.edges) ? graph.edges : []
@@ -4273,6 +4828,7 @@
           active.current?.abort()
           setRequest(null); setResult(null); setStatus(null); setHistory([])
           latest.current.onGatherProjection?.(null)
+          latest.current.onGatherRequestChange?.(null)
           localPrepared.current = null
           if (restore.current) {
             if (restoreContext) restore.current.callback?.()
@@ -4295,7 +4851,16 @@
             latest.current.onGatherProjection?.(null)
           }
           setRequest({ ...nextQuery, offset: 0, nonce: ++sequence.current })
+          latest.current.onGatherRequestChange?.({ centerId: nextQuery.centerId, direction: nextQuery.direction,
+            relation: nextQuery.relation, hops: nextQuery.hops })
         }
+        useEffect(() => {
+          const saved = props.restoreGather?.request
+          if (!props.restoreGather?.seq || props.restoreGather.documentId !== props.documentId ||
+            props.restoreGather.revision !== props.revision) return
+          if (saved && props.documentId) gather(saved.centerId, saved)
+          else if (request) exit(false)
+        }, [props.restoreGather?.seq])
         useEffect(() => {
           if (!request) return
           const controller = new AbortController(), nonce = request.nonce
@@ -4357,7 +4922,7 @@
           focused ? h('div', { className: 'kg-gather-layer', 'aria-label': '关系聚拢视图' },
             h('div', { className: 'kg-gather-bar' },
               h('button', { type: 'button', className: 'kg-secondary', disabled: !history.length, title: '返回上个中心', 'aria-label': '返回上个中心',
-                onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setResult(null); latest.current.onGatherProjection?.(null); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
+                onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setResult(null); latest.current.onGatherProjection?.(null); latest.current.onGatherRequestChange?.(last); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
               h('strong', null, '关系聚拢 · ' + (result?.centerId || request.centerId)),
               result ? h('span', { role: 'status' }, '已显示 ' + (result.nodes.length - 1) + '/' + result.neighborsTotal + ' 个 ' + request.hops + ' 层内节点 · ' + result.edges.length + ' 条关系' + (result.truncated ? ' · 最多显示 ' + result.visibleTotal + ' 个' : '')) : null,
               h('label', { className: 'kg-gather-depth' }, '层数 ', h('select', { value: request.hops, 'aria-label': '聚拢层数', onChange: event => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: Number(event.target.value) }) },

@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-commit-preview" || method === "graph-undo-bulk-review" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "reading-map" || method === "perspectives" || method === "concept-dossier" || method === "learning-mode" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-commit-preview" || method === "graph-undo-bulk-review" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -167,6 +167,7 @@ c = c.split('styles.insert(').join('insertStyles(')
 if (!c.includes("host.call('candidate-list'")) throw new Error('candidate-list call not found')
 if (!c.includes("host.call('candidate-update'")) throw new Error('candidate-update call not found')
 if (!c.includes("host.call('document-load'")) throw new Error('document-load call not found')
+if (!c.includes("host.call('reading-map'")) throw new Error('reading-map call not found')
 if (!c.includes("host.call('image-load'")) throw new Error('image-load call not found')
 if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
 if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
@@ -189,11 +190,18 @@ if (!c.includes("host.call('task-cancel'")) throw new Error('task-cancel call no
 if (!c.includes("host.call('list-models'")) throw new Error('list-models call not found')
 if (!c.includes("host.call('document-import'")) throw new Error('document-import call not found')
 if (!c.includes("host.call('graph-query'")) throw new Error('graph-query call not found')
+if (!c.includes("host.call('perspectives'")) throw new Error('perspectives call not found')
+if (!c.includes("host.call('concept-dossier'")) throw new Error('concept-dossier call not found')
+if (!c.includes("host.call('learning-mode'")) throw new Error('learning-mode call not found')
 if (!c.includes("host.call('answer-graph'")) throw new Error('answer-graph call not found')
 if (!c.includes("host.call('document-list'")) throw new Error('document-list call not found')
 c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('document-load'").join("rpc('document-load'")
+c = c.split("host.call('reading-map'").join("rpc('reading-map'")
+c = c.split("host.call('perspectives'").join("rpc('perspectives'")
+c = c.split("host.call('concept-dossier'").join("rpc('concept-dossier'")
+c = c.split("host.call('learning-mode'").join("rpc('learning-mode'")
 c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")

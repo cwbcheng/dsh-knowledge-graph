@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { getOntology, ontologyIdOf, rawProfiles } from './kg-ontology.mjs'
@@ -160,6 +160,56 @@ CREATE TABLE IF NOT EXISTS graph_revisions (
   FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS graph_revisions_document_idx ON graph_revisions(document_id, revision DESC);
+CREATE TABLE IF NOT EXISTS document_perspectives (
+  perspective_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  base_revision INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS document_perspectives_document_idx ON document_perspectives(document_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS concept_dossiers (
+  dossier_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  anchor_document_id TEXT NOT NULL,
+  anchor_node_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS concept_dossier_members (
+  dossier_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  applicability TEXT NOT NULL DEFAULT '',
+  valid_time TEXT NOT NULL DEFAULT '',
+  reference_json TEXT NOT NULL DEFAULT '{}',
+  bound_revision INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (dossier_id, document_id, node_id),
+  FOREIGN KEY (dossier_id) REFERENCES concept_dossiers(dossier_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS concept_dossier_members_document_idx ON concept_dossier_members(document_id, dossier_id);
+CREATE INDEX IF NOT EXISTS graph_nodes_concept_lookup_idx ON graph_nodes(type, text COLLATE NOCASE, document_id);
+CREATE TABLE IF NOT EXISTS learning_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  base_revision INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  task_kind TEXT NOT NULL,
+  task_json TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  scenario TEXT NOT NULL DEFAULT '',
+  self_rating TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS learning_attempts_document_idx ON learning_attempts(document_id, created_at DESC);
 `
 
 const ENTITY_TYPES = new Set(['concept', 'definition'])
@@ -202,6 +252,61 @@ function parseJson(value, fallback) {
   } catch (e) {
     return fallback
   }
+}
+
+function perspectiveInputError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_input' })
+}
+
+function perspectiveString(value, max, label, fallback = '') {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string' || value.length > max) throw perspectiveInputError(label + '无效')
+  return value
+}
+
+function perspectiveKeys(value, allowed, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key))) {
+    throw perspectiveInputError(label + '包含不支持的字段')
+  }
+}
+
+function normalizePerspectiveState(state) {
+  perspectiveKeys(state, ['tab', 'query', 'filters', 'chapterId', 'layout', 'focusNodeId', 'gather', 'reading', 'sourceParagraph'], '视图')
+  const filters = state.filters === undefined ? {} : state.filters
+  perspectiveKeys(filters, ['type', 'section', 'grounding', 'entailment'], '筛选')
+  const tab = perspectiveString(state.tab, 10, '视图类型', 'search')
+  const layout = perspectiveString(state.layout, 16, '布局', 'layered')
+  if (!['search', 'answer'].includes(tab) || !['force', 'circular', 'radial', 'layered'].includes(layout)) throw perspectiveInputError('视图模式无效')
+  const focusNodeId = state.focusNodeId == null ? null : perspectiveString(state.focusNodeId, 160, '焦点节点')
+  let gather = null
+  if (state.gather != null) {
+    perspectiveKeys(state.gather, ['centerId', 'direction', 'relation', 'hops'], '聚拢状态')
+    const direction = perspectiveString(state.gather.direction, 8, '聚拢方向', 'both')
+    if (!['both', 'in', 'out'].includes(direction) || !Number.isInteger(state.gather.hops) || state.gather.hops < 1 || state.gather.hops > 5) {
+      throw perspectiveInputError('聚拢参数无效')
+    }
+    gather = { centerId: perspectiveString(state.gather.centerId, 160, '聚拢中心'), direction,
+      relation: perspectiveString(state.gather.relation, 80, '聚拢关系'), hops: state.gather.hops }
+    if (!gather.centerId) throw perspectiveInputError('聚拢中心不能为空')
+  }
+  const reading = state.reading === undefined ? {} : state.reading
+  perspectiveKeys(reading, ['open', 'topicId', 'themeId', 'offset', 'themeOffset'], '阅读位置')
+  const count = (value, label) => {
+    if (value === undefined) return 0
+    if (!Number.isInteger(value) || value < 0 || value > 1000000) throw perspectiveInputError(label + '无效')
+    return value
+  }
+  if (reading.open !== undefined && typeof reading.open !== 'boolean') throw perspectiveInputError('阅读状态无效')
+  const sourceParagraph = state.sourceParagraph == null ? null : count(state.sourceParagraph, '原文位置')
+  return { tab, query: perspectiveString(state.query, 600, '检索词'),
+    filters: { type: perspectiveString(filters.type, 80, '节点类型', 'all'),
+      section: perspectiveString(filters.section, 160, '章节', 'all'),
+      grounding: perspectiveString(filters.grounding, 32, '证据状态', 'all'),
+      entailment: perspectiveString(filters.entailment, 32, '语义状态', 'all') },
+    chapterId: perspectiveString(state.chapterId, 160, '章节', 'all'), layout, focusNodeId, gather,
+    reading: { open: reading.open === true, topicId: perspectiveString(reading.topicId, 160, '阅读章节'),
+      themeId: perspectiveString(reading.themeId, 160, '阅读线索'), offset: count(reading.offset, '阅读页码'),
+      themeOffset: count(reading.themeOffset, '线索页码') }, sourceParagraph }
 }
 
 function normalizeStatus(value) {
@@ -582,6 +687,9 @@ export class SqliteKnowledgeStore {
     this.ensureColumn('extraction_runs', 'source_text', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('extraction_runs', 'error_code', 'TEXT')
     this.ensureColumn('extraction_runs', 'error_message', 'TEXT')
+    this.ensureColumn('concept_dossier_members', 'applicability', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('concept_dossier_members', 'valid_time', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('concept_dossier_members', 'reference_json', "TEXT NOT NULL DEFAULT '{}'")
   }
 
   ensureColumn(table, column, declaration) {
@@ -1145,9 +1253,366 @@ export class SqliteKnowledgeStore {
     }))
   }
 
+  conceptReference(documentId, nodeId) {
+    const row = this.db.prepare(`SELECT n.*, d.title AS document_title, d.source_json, d.graph_revision
+      FROM graph_nodes n JOIN documents d ON d.document_id = n.document_id
+      WHERE n.document_id = ? AND n.node_id = ? AND n.type IN ('concept', 'definition')`).get(documentId, nodeId)
+    if (!row) return null
+    const source = parseJson(row.source_json, {})
+    const evidence = parseJson(row.evidence_json, [])
+    const unitAt = this.db.prepare('SELECT text FROM document_units WHERE document_id = ? AND paragraph = ?')
+    let verifiedQuote = ''
+    let evidenceParagraph = null
+    let sourceParagraphText = ''
+    let sourceParagraphTruncated = false
+    const recordUnit = (unitText, quote, paragraph) => {
+      verifiedQuote = quote
+      evidenceParagraph = paragraph
+      const matchStart = unitText.indexOf(quote)
+      let start = Math.max(0, matchStart - 1000)
+      if (matchStart + quote.length > start + 20000) start = matchStart + quote.length - 20000
+      const end = Math.min(unitText.length, start + 20000)
+      sourceParagraphText = unitText.slice(start, end)
+      sourceParagraphTruncated = start > 0 || end < unitText.length
+    }
+    if (Array.isArray(evidence)) {
+      for (const item of evidence) {
+        if (item?.documentId !== documentId || item?.sourceId !== row.source_id ||
+            !Number.isInteger(item.paragraph) || item.paragraph < 0 || typeof item.quote !== 'string') continue
+        const quote = item.quote.trim()
+        const unitText = quote && unitAt.get(documentId, item.paragraph)?.text
+        if (!quote || !unitText?.includes(quote)) continue
+        recordUnit(unitText, quote, item.paragraph)
+        break
+      }
+      if (!verifiedQuote && evidence.length === 0 && Number.isInteger(row.paragraph) && row.quote.trim()) {
+        const unitText = unitAt.get(documentId, row.paragraph)?.text
+        if (unitText?.includes(row.quote.trim())) recordUnit(unitText, row.quote.trim(), row.paragraph)
+      }
+    }
+    return { documentId, nodeId, type: row.type, text: row.text, paragraph: row.paragraph,
+      source: { title: row.document_title, author: text(source.author).slice(0, 200),
+        publicationDate: text(source.publicationDate || source.date).slice(0, 100) },
+      quote: verifiedQuote, evidenceParagraph, sourceParagraphText, sourceParagraphTruncated,
+      evidenceStatus: verifiedQuote ? 'source_quote_matched' : 'unverified',
+      attributionStatus: text(row.entailment_status, 'unverified'), realWorldTruth: 'not_assessed',
+      revision: row.graph_revision }
+  }
+
+  searchConceptCandidates({ documentId, nodeId, query, limit = 30 } = {}) {
+    const anchor = this.conceptReference(documentId, nodeId)
+    if (!anchor) throw Object.assign(new Error('找不到概念节点'), { code: 'not_found' })
+    if (query !== undefined && (typeof query !== 'string' || query.length > 80)) {
+      throw Object.assign(new Error('概念检索词无效'), { code: 'invalid_input' })
+    }
+    const searched = typeof query === 'string' && !!query.trim()
+    const term = searched ? query.trim() : anchor.text
+    const rows = this.db.prepare(`SELECT document_id, node_id FROM graph_nodes
+      WHERE type IN ('concept', 'definition') AND ${searched ? 'instr(lower(text), lower(?)) > 0' : 'text = ? COLLATE NOCASE'}
+      AND document_id <> ? ORDER BY document_id, node_id LIMIT ?`)
+      .all(term, documentId, Math.max(1, Math.min(100, int(limit, 30))))
+    return { anchor, candidates: rows.map(row => this.conceptReference(row.document_id, row.node_id)),
+      matchRule: searched ? 'user_search_candidate_only' : 'same_label_candidate_only' }
+  }
+
+  listConceptDossiers(documentId) {
+    return this.db.prepare(`SELECT DISTINCT d.dossier_id AS id, d.title, d.anchor_document_id AS anchorDocumentId,
+      d.anchor_node_id AS anchorNodeId, d.version, d.updated_at AS updatedAt
+      FROM concept_dossiers d JOIN concept_dossier_members m ON m.dossier_id = d.dossier_id
+      WHERE m.document_id = ? ORDER BY d.updated_at DESC, d.dossier_id LIMIT 100`).all(documentId)
+  }
+
+  getConceptDossier(id) {
+    const row = this.db.prepare('SELECT * FROM concept_dossiers WHERE dossier_id = ?').get(id)
+    if (!row) return null
+    const members = this.db.prepare(`SELECT document_id, node_id, relation, note, applicability, valid_time,
+      reference_json, bound_revision
+      FROM concept_dossier_members WHERE dossier_id = ? ORDER BY position`).all(id).map(member => {
+      const current = this.conceptReference(member.document_id, member.node_id)
+      const savedReference = parseJson(member.reference_json, null)
+      const confirmed = savedReference?.source && typeof savedReference.text === 'string' ? savedReference : null
+      return { documentId: member.document_id, nodeId: member.node_id, relation: member.relation,
+        note: member.note, noteOrigin: member.note ? 'user_annotation' : null,
+        applicability: member.applicability, validTime: member.valid_time,
+        applicabilityOrigin: member.applicability ? 'user_annotation' : null,
+        validTimeOrigin: member.valid_time ? 'user_annotation' : null,
+        boundRevision: member.bound_revision, stale: !current || current.revision !== member.bound_revision,
+        confirmedReference: confirmed,
+        ...(current || confirmed || { evidenceStatus: 'unverified', realWorldTruth: 'not_assessed' }),
+        missing: !current }
+    })
+    return { id: row.dossier_id, title: row.title, anchor: { documentId: row.anchor_document_id,
+      nodeId: row.anchor_node_id }, version: row.version, createdAt: row.created_at,
+      updatedAt: row.updated_at, members }
+  }
+
+  saveConceptDossier(input) {
+    const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
+    if (!input || typeof input !== 'object') throw invalid('档案内容无效')
+    const title = typeof input.title === 'string' ? input.title.trim() : ''
+    const anchor = input.anchor
+    if (!title || title.length > 100 || !anchor || typeof anchor.documentId !== 'string' ||
+        typeof anchor.nodeId !== 'string' || !anchor.documentId || !anchor.nodeId ||
+        !Array.isArray(input.members) || input.members.length > 19) throw invalid('档案标题、锚点或成员无效')
+    const members = [{ documentId: anchor.documentId, nodeId: anchor.nodeId, relation: 'anchor', note: '',
+      applicability: '', validTime: '' }]
+    const seen = new Set([anchor.documentId + '\u0000' + anchor.nodeId])
+    for (const member of input.members) {
+      if (!member || typeof member.documentId !== 'string' || typeof member.nodeId !== 'string' ||
+          !member.documentId || !member.nodeId || !['aligned', 'contrast', 'related'].includes(member.relation) ||
+          typeof member.note !== 'string' || member.note.length > 500 ||
+          typeof (member.applicability ?? '') !== 'string' || member.applicability?.length > 300 ||
+          typeof (member.validTime ?? '') !== 'string' || member.validTime?.length > 100) {
+        throw invalid('档案成员、适用条件或时间无效')
+      }
+      const key = member.documentId + '\u0000' + member.nodeId
+      if (seen.has(key)) throw invalid('档案包含重复概念')
+      seen.add(key); members.push({ ...member, applicability: member.applicability || '', validTime: member.validTime || '' })
+    }
+    const id = typeof input.id === 'string' && input.id ? input.id : randomUUID()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const old = this.db.prepare('SELECT * FROM concept_dossiers WHERE dossier_id = ?').get(id)
+      if (old && (old.anchor_document_id !== anchor.documentId || old.anchor_node_id !== anchor.nodeId)) throw invalid('不能更改档案锚点')
+      if (old && (!Number.isInteger(input.expectedVersion) || old.version !== input.expectedVersion)) {
+        throw Object.assign(new Error('档案已被修改，请刷新'), { code: 'dossier_conflict' })
+      }
+      if (!old && input.id) throw Object.assign(new Error('找不到档案'), { code: 'not_found' })
+      const revisions = input.expectedRevisions
+      if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) throw invalid('缺少知识图版本围栏')
+      const bound = new Map()
+      const references = new Map()
+      for (const member of members) {
+        const current = this.conceptReference(member.documentId, member.nodeId)
+        if (!current) throw Object.assign(new Error('概念节点已不存在'), { code: 'not_found' })
+        if (!Number.isInteger(revisions[member.documentId]) || revisions[member.documentId] !== current.revision) {
+          throw Object.assign(new Error('知识图已变化，请重新比较'), { code: 'revision_conflict' })
+        }
+        bound.set(member.documentId, current.revision)
+        references.set(member.documentId + '\u0000' + member.nodeId, {
+          source: current.source, type: current.type, text: current.text, quote: current.quote,
+          paragraph: current.paragraph, evidenceParagraph: current.evidenceParagraph,
+          evidenceStatus: current.evidenceStatus, attributionStatus: current.attributionStatus,
+          realWorldTruth: 'not_assessed', revision: current.revision,
+        })
+      }
+      const now = Date.now()
+      if (old) {
+        this.db.prepare('UPDATE concept_dossiers SET title = ?, version = version + 1, updated_at = ? WHERE dossier_id = ?')
+          .run(title, now, id)
+        this.db.prepare('DELETE FROM concept_dossier_members WHERE dossier_id = ?').run(id)
+      } else {
+        this.db.prepare(`INSERT INTO concept_dossiers
+          (dossier_id, title, anchor_document_id, anchor_node_id, version, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 1, ?, ?)`).run(id, title, anchor.documentId, anchor.nodeId, now, now)
+      }
+      const insert = this.db.prepare(`INSERT INTO concept_dossier_members
+        (dossier_id, document_id, node_id, relation, note, applicability, valid_time, reference_json,
+         bound_revision, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      members.forEach((member, position) => insert.run(id, member.documentId, member.nodeId,
+        member.relation, member.note, member.applicability, member.validTime,
+        JSON.stringify(references.get(member.documentId + '\u0000' + member.nodeId)),
+        bound.get(member.documentId), position))
+      this.db.exec('COMMIT')
+      return this.getConceptDossier(id)
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  deleteConceptDossier(id, expectedVersion) {
+    if (typeof id !== 'string' || !Number.isInteger(expectedVersion)) {
+      throw Object.assign(new Error('档案标识或版本无效'), { code: 'invalid_input' })
+    }
+    const result = this.db.prepare('DELETE FROM concept_dossiers WHERE dossier_id = ? AND version = ?').run(id, expectedVersion)
+    if (result.changes) return true
+    if (this.db.prepare('SELECT 1 FROM concept_dossiers WHERE dossier_id = ?').get(id)) {
+      throw Object.assign(new Error('档案已被修改，请刷新'), { code: 'dossier_conflict' })
+    }
+    return false
+  }
+
+  listLearningAttempts(documentId) {
+    if (typeof documentId !== 'string' || !documentId || documentId.length > 160) return []
+    const revision = this.getDocumentRevision(documentId)
+    return this.db.prepare(`SELECT attempt_id, base_revision, task_id, task_kind, task_json,
+      answer, scenario, self_rating, created_at FROM learning_attempts
+      WHERE document_id = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 100`).all(documentId)
+      .map(row => this.learningAttemptOf(row, documentId, revision))
+  }
+
+  learningAttemptOf(row, documentId, revision) {
+    return { attemptId: row.attempt_id, documentId, baseRevision: row.base_revision,
+      taskId: row.task_id, kind: row.task_kind, task: parseJson(row.task_json, {}), answer: row.answer,
+      scenario: row.scenario, selfRating: row.self_rating, createdAt: row.created_at,
+      stale: revision !== row.base_revision }
+  }
+
+  getLearningAttempt(attemptId) {
+    const row = this.db.prepare('SELECT * FROM learning_attempts WHERE attempt_id = ?').get(attemptId)
+    return row ? this.learningAttemptOf(row, row.document_id, this.getDocumentRevision(row.document_id)) : null
+  }
+
+  saveLearningAttempt(input) {
+    const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
+    const { attemptId, documentId, expectedRevision, task, answer, scenario = '', selfRating } = input || {}
+    if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 120 ||
+        typeof documentId !== 'string' || !documentId || documentId.length > 160 ||
+        !Number.isInteger(expectedRevision) || expectedRevision < 1 ||
+        !task || typeof task.id !== 'string' || !['distinction', 'mechanism', 'transfer'].includes(task.kind) ||
+        task.origin !== 'derived_exercise_not_source' || !Array.isArray(task.references) ||
+        typeof answer !== 'string' || !answer.trim() || answer.length > 10000 ||
+        typeof scenario !== 'string' || scenario.length > 2000 ||
+        !['needs_work', 'uncertain', 'confident'].includes(selfRating) ||
+        task.kind === 'transfer' && !scenario.trim()) throw invalid('学习记录内容无效')
+    const comparableText = value => typeof value === 'string' ?
+      value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '') : ''
+    if (task.kind === 'transfer' && task.references.some(ref =>
+      comparableText(scenario) && comparableText(scenario) === comparableText(ref.quote))) {
+      throw invalid('新情境不能直接复制原文引文；请描述具体的新场景')
+    }
+    const taskJson = JSON.stringify(task)
+    const answerText = answer.trim()
+    const scenarioText = scenario.trim()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.db.prepare('SELECT * FROM learning_attempts WHERE attempt_id = ?').get(attemptId)
+      if (previous) {
+        if (previous.document_id !== documentId || previous.base_revision !== expectedRevision ||
+            previous.task_id !== task.id || previous.task_json !== taskJson || previous.answer !== answerText ||
+            previous.scenario !== scenarioText || previous.self_rating !== selfRating) {
+          throw Object.assign(new Error('学习记录请求与已保存记录冲突'), { code: 'attempt_conflict' })
+        }
+        this.db.exec('COMMIT')
+        return this.getLearningAttempt(attemptId)
+      }
+      const revision = this.getDocumentRevision(documentId)
+      if (!revision || revision !== expectedRevision) {
+        throw Object.assign(new Error('知识图已变化，请重新生成学习任务'), { code: 'revision_conflict', currentRevision: revision })
+      }
+      this.db.prepare(`INSERT INTO learning_attempts (attempt_id, document_id, base_revision,
+        task_id, task_kind, task_json, answer, scenario, self_rating, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(attemptId, documentId, expectedRevision,
+        task.id, task.kind, taskJson, answerText, scenarioText, selfRating, Date.now())
+      this.db.exec('COMMIT')
+      return this.getLearningAttempt(attemptId)
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
   getDocumentRevision(documentId) {
     const row = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(text(documentId).trim())
     return row && Number.isInteger(row.graph_revision) ? row.graph_revision : 0
+  }
+
+  getDocumentSourceUnits(documentId) {
+    return this.db.prepare('SELECT paragraph, text FROM document_units WHERE document_id = ? ORDER BY paragraph').all(documentId)
+  }
+
+  listPerspectives(documentId) {
+    return this.db.prepare(`SELECT perspective_id, name, state_json, base_revision, version, created_at, updated_at
+      FROM document_perspectives WHERE document_id = ? ORDER BY updated_at DESC, perspective_id LIMIT 20`).all(documentId)
+      .map(row => ({ id: row.perspective_id, name: row.name, state: parseJson(row.state_json, {}),
+        baseRevision: row.base_revision, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at }))
+  }
+
+  resolvePerspective(documentId, id) {
+    const perspective = this.listPerspectives(documentId).find(item => item.id === id)
+    const document = this.db.prepare('SELECT graph_revision, source_json, paragraph_count FROM documents WHERE document_id = ?').get(documentId)
+    if (!perspective || !document) return null
+    const state = normalizePerspectiveState(perspective.state)
+    const warnings = []
+    const ids = [state.focusNodeId, state.gather?.centerId, state.reading.themeId].filter(Boolean)
+    const nodes = new Map(ids.map(nodeId => [nodeId, this.db.prepare(
+      'SELECT type, section_id, paragraph FROM graph_nodes WHERE document_id = ? AND node_id = ?').get(documentId, nodeId)]))
+    const source = parseJson(document.source_json, {})
+    const sourceSections = Array.isArray(source.sections) ? source.sections : []
+    const sections = new Set(sourceSections.map(section => section?.id).filter(Boolean))
+    if (state.chapterId !== 'all' && !sections.has(state.chapterId)) {
+      state.chapterId = 'all'; warnings.push('原章节已不存在，改为全部章节')
+    }
+    if (state.filters.section !== 'all' && !sections.has(state.filters.section)) {
+      state.filters.section = 'all'; warnings.push('筛选章节已不存在，已清除')
+    }
+    if (state.focusNodeId && !nodes.get(state.focusNodeId)) {
+      state.focusNodeId = null; warnings.push('焦点节点已不存在，未定位')
+    }
+    if (state.gather && !nodes.get(state.gather.centerId)) {
+      state.gather = null; warnings.push('聚拢中心已不存在，未恢复聚拢')
+    }
+    if (state.reading.topicId && state.reading.topicId !== '__unassigned__' && !sections.has(state.reading.topicId)) {
+      state.reading.topicId = ''; state.reading.themeId = ''; warnings.push('阅读章节已不存在，已回到章节列表')
+    }
+    const theme = nodes.get(state.reading.themeId)
+    const themeSection = theme && Number.isInteger(theme.paragraph)
+      ? sourceSections.find(section => Number.isInteger(section.startParagraph) && Number.isInteger(section.endParagraph)
+        && theme.paragraph >= section.startParagraph && theme.paragraph <= section.endParagraph)?.id || '__unassigned__'
+      : '__unassigned__'
+    if (state.reading.themeId && (!theme || theme.type !== 'concept' ||
+      (state.reading.topicId && themeSection !== state.reading.topicId))) {
+      state.reading.themeId = ''; warnings.push('概念线索已不存在，已清除')
+    }
+    if (state.sourceParagraph !== null && state.sourceParagraph >= document.paragraph_count) {
+      state.sourceParagraph = null; warnings.push('原文位置已不存在，未定位')
+    }
+    if (perspective.baseRevision !== document.graph_revision) {
+      state.reading.offset = 0
+      state.reading.themeOffset = 0
+      warnings.unshift('知识图版本已变化，已重新检查节点与章节；阅读页码已重置')
+    }
+    return { perspectiveId: perspective.id, baseRevision: perspective.baseRevision,
+      revision: document.graph_revision, revisionChanged: perspective.baseRevision !== document.graph_revision,
+      state, warnings }
+  }
+
+  savePerspective(documentId, input) {
+    if (typeof documentId !== 'string' || !documentId || !input || typeof input !== 'object') throw perspectiveInputError('视图参数无效')
+    const name = typeof input.name === 'string' ? input.name.trim() : ''
+    if (!name || name.length > 80) throw perspectiveInputError('视图名称需要 1 至 80 个字')
+    const state = normalizePerspectiveState(input.state)
+    const stateJson = JSON.stringify(state)
+    if (stateJson.length > 4096 || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) throw perspectiveInputError('视图内容或版本无效')
+    const id = input.id == null ? randomUUID() : perspectiveString(input.id, 160, '视图编号')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const doc = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(documentId)
+      if (!doc) throw Object.assign(new Error('找不到知识图文档'), { code: 'not_found' })
+      if (doc.graph_revision !== input.expectedRevision) throw Object.assign(new Error('知识图版本已变化，未保存视图'), { code: 'revision_conflict', currentRevision: doc.graph_revision })
+      const now = Date.now()
+      if (input.id == null) {
+        const count = this.db.prepare('SELECT COUNT(*) AS count FROM document_perspectives WHERE document_id = ?').get(documentId).count
+        if (count >= 20) throw perspectiveInputError('每张知识图最多保存 20 个视图')
+        this.db.prepare(`INSERT INTO document_perspectives
+          (perspective_id, document_id, name, state_json, base_revision, version, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?)`).run(id, documentId, name, stateJson, doc.graph_revision, now, now)
+      } else {
+        if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) throw perspectiveInputError('更新视图缺少版本')
+        const result = this.db.prepare(`UPDATE document_perspectives SET name = ?, state_json = ?, base_revision = ?,
+          version = version + 1, updated_at = ? WHERE perspective_id = ? AND document_id = ? AND version = ?`)
+          .run(name, stateJson, doc.graph_revision, now, id, documentId, input.expectedVersion)
+        if (result.changes !== 1) throw Object.assign(new Error('视图已被修改或移除，请刷新列表'), { code: 'perspective_conflict' })
+      }
+      const row = this.db.prepare(`SELECT perspective_id, name, state_json, base_revision, version, created_at, updated_at
+        FROM document_perspectives WHERE perspective_id = ? AND document_id = ?`).get(id, documentId)
+      this.db.exec('COMMIT')
+      return { id: row.perspective_id, name: row.name, state: parseJson(row.state_json, {}),
+        baseRevision: row.base_revision, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  deletePerspective(documentId, id, expectedVersion) {
+    if (typeof documentId !== 'string' || !documentId || typeof id !== 'string' || !id ||
+      !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw perspectiveInputError('删除视图参数无效')
+    const deleted = this.db.prepare('DELETE FROM document_perspectives WHERE document_id = ? AND perspective_id = ? AND version = ?')
+      .run(documentId, id, expectedVersion)
+    if (deleted.changes === 1) return true
+    if (this.db.prepare('SELECT 1 FROM document_perspectives WHERE document_id = ? AND perspective_id = ?').get(documentId, id)) {
+      throw Object.assign(new Error('视图已被修改，请刷新列表'), { code: 'perspective_conflict' })
+    }
+    return false
   }
 
   listRevisions(documentId, limit = 50) {

@@ -22,10 +22,12 @@ const navigationSource = client.slice(navigationStart, navigationEnd)
 const resetStart = client.indexOf('        const resetGraphCommitQueue = () => {')
 const resetEnd = client.indexOf('        // ---- 追加拆分', resetStart)
 const loadStart = client.indexOf('        const loadHistoryEntry = async (entry) => {')
-const loadEnd = client.indexOf('        const removeHistory =', loadStart)
-assert(resetStart >= 0 && resetEnd > resetStart && loadStart >= 0 && loadEnd > loadStart)
+const loadEnd = client.indexOf('        const dossierNavigationBlockedRef = useRef(false)', loadStart)
+const dossierEnd = client.indexOf('        const removeHistory =', loadEnd)
+assert(resetStart >= 0 && resetEnd > resetStart && loadStart >= 0 && loadEnd > loadStart && dossierEnd > loadEnd)
 const resetSource = client.slice(resetStart, resetEnd)
 const loadSource = client.slice(loadStart, loadEnd)
+const dossierSource = client.slice(loadEnd, dossierEnd)
 
 function makeFixture(kind, replyForCall) {
   const documentId = 'queue-fixture'
@@ -82,10 +84,12 @@ function makeFixture(kind, replyForCall) {
     return new Function(...Object.keys(deps), kind === 'trajectory'
       ? `${trajectorySource}; return persistTrajGraph` : `${commitSource}; return persistGraph`)(...Object.values(deps))
   }
-  const navigate = async (graph, failed = false) => {
+  const historyLoadSeqRef = { current: 0 }
+  const navigate = async (graph, failed = false, loadOverride = null, entryOverride = null) => {
     const deps = { ...refs, makeView, setResultView, toastStore: { clear() {} }, localStorage: { setItem() {} }, LS_RESULT: 'result',
-      loadGraphDocument: async () => failed ? { error: { message: 'Fixture document load failed' } }
-        : { graph, revision: graph.revision, sourceText: 'navigated source' },
+      historyLoadSeqRef, setFocusReq: () => {},
+      loadGraphDocument: loadOverride || (async () => failed ? { error: { message: 'Fixture document load failed' } }
+        : { graph, revision: graph.revision, sourceText: 'navigated source' }),
       setError: error => { if (error) errors.push(error) } }
     for (const name of ['setVerifyTaskId', 'setQuestionTaskId', 'setFactTaskId', 'setVerifyPhase', 'setQuestionPhase',
       'setFactPhase', 'setQuestionResult', 'setVerifyProgress', 'setFactProgress', 'setExtractProgress',
@@ -94,7 +98,7 @@ function makeFixture(kind, replyForCall) {
       'setVerification', 'setFactReport', 'setActiveIssueId', 'setIssueFilter', 'setFactActiveId', 'setQuestionTarget', 'setQuestionDraft']) deps[name] = () => {}
     const load = new Function(...Object.keys(deps), resetSource + navigationSource + loadSource
       + '; return loadHistoryEntry')(...Object.values(deps))
-    return load({ documentId: graph.source.documentId, title: 'Navigation fixture' })
+    return load(entryOverride || { documentId: graph.source.documentId, title: 'Navigation fixture' })
   }
   return { base, refs, calls, errors, history, operations, makeView, setResultView, makeCommit, navigate }
 }
@@ -244,6 +248,44 @@ assert.equal(stayed.refs.currentResultRef.current.graph.summary, stayed.base.sum
   'a failed navigation must retain current-save ownership so an optimistic edit still rolls back on failure')
 assert.match(stayed.errors.at(-1).message, /Current view save rejected/)
 
+let releaseOlderHistory
+const olderHistory = new Promise(resolve => { releaseOlderHistory = resolve })
+const racing = makeFixture('document', () => { throw new Error('no graph edit expected') })
+const olderGraph = { ...racing.base, source: { documentId: 'older-book' }, revision: 2 }
+const newerGraph = { ...racing.base, source: { documentId: 'newer-book' }, revision: 3,
+  nodes: [{ id: 'target', type: 'concept', text: 'new source' }] }
+const olderLoad = racing.navigate(olderGraph, false, async () => olderHistory)
+const newerLoad = racing.navigate(newerGraph, false, async options => {
+  assert.equal(options.query, 'target', 'dossier navigation must request the actual source node')
+  return { graph: newerGraph, revision: 3, sourceText: 'new source' }
+}, { documentId: 'newer-book', title: 'Newer book', focusNodeId: 'target', focusParagraph: 0 })
+assert(await newerLoad)
+releaseOlderHistory({ graph: olderGraph, revision: 2, sourceText: 'old source' })
+await olderLoad
+assert.equal(racing.refs.currentResultRef.current.graph.source.documentId, 'newer-book',
+  'an older history response must not replace a newer dossier/source navigation')
+assert.equal(racing.refs.graphRevisionRef.current, 3)
+
+let releasePendingEdit
+const pendingEdit = new Promise(resolve => { releasePendingEdit = resolve })
+const blocked = { current: false }
+const messages = []
+let sourceOpens = 0
+const openSource = new Function('useRef', 'taskId', 'verifyTaskId', 'questionTaskId', 'factTaskId',
+  'phase', 'verifyPhase', 'factPhase', 'questionPhase', 'graphWindowLoading', 'removingParagraphType',
+  'runActionRef', 'window', 'currentResultRef', 'graphCommitEpochRef', 'graphCommitQueueRef',
+  'toastStore', 'loadHistoryEntry', 'history', `${dossierSource}; return openDossierSource`)(
+  () => blocked, null, null, null, null, 'done', 'idle', 'idle', 'idle', false, false,
+  { current: false }, { confirm: () => true }, { current: {} }, { current: 1 }, { current: pendingEdit },
+  { show: message => messages.push(message) }, async () => { sourceOpens += 1 }, [])
+const switched = openSource({ documentId: 'other-book', nodeId: 'concept', source: { title: 'Other Book' } })
+blocked.current = true
+releasePendingEdit()
+await switched
+assert.equal(sourceOpens, 0, 'a task started while waiting for a graph save must prevent dossier navigation')
+assert(messages.some(message => message.includes('任务状态已变化')))
+
 console.log(JSON.stringify({ ok: true, workbenches: ['document', 'trajectory'], rejectedChainStopped: true,
   freshEditAllowed: true, successfulChainSerialized: true, unconfirmedWritesStopQueue: true,
-  navigationQueueIsolation: true, sameDocumentReloadFenced: true, failedNavigationPreservesOwnership: true }))
+  navigationQueueIsolation: true, sameDocumentReloadFenced: true, failedNavigationPreservesOwnership: true,
+  historyRaceFenced: true, lateTaskBlocksDossierNavigation: true }))

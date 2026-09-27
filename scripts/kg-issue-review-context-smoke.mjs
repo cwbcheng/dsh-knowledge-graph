@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import hostPlugin, { createGraphContract } from '../src/index.host.js'
 import * as persistentPlugin from '../lib/index.js'
+import { captureReviewRun, fingerprintReviewGold, evaluateReviewRun } from './kg-review-benchmark.mjs'
 
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const selectorStart = client.indexOf('        const questionNeighborhoodGraph =')
@@ -40,6 +41,7 @@ const llm = { stream(request) {
       answer: 'The comparison source distinguishes the two claims.',
       evidence: [{ paragraph: evidenceParagraph, quote: paragraphs[evidenceParagraph === 3 ? 300 : evidenceParagraph] }],
       proposedFix: { action: 'none' } }) }
+    yield { type: 'usage', usage: { inputTokens: 20, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
 } }
@@ -174,10 +176,19 @@ async function exercise(call, label) {
   const targetedGraph = { summary: 'Study results', nodes: [
     { id: 'n1', type: 'fact', text: qualifiedText, quote: qualifiedSource, paragraph: 0,
       evidence: [{ paragraph: 0, quote: qualifiedSource }], groundingStatus: 'grounded' },
-    { id: 'n2', type: 'inference', text: 'Scores improve for the population described in the study.', paragraph: 0 },
+    { id: 'n2', type: 'inference', text: 'Scores improve for the population described in the study.', paragraph: 0,
+      evidence: [] },
   ], edges: [{ ...edge('n1', 'n2'), evidence: [{ paragraph: 0, quote: qualifiedSource }] }] }
   for (const kind of ['node', 'edge']) {
     const targetId = kind === 'node' ? 'n1' : 'n1>n2'
+    const benchmarkQuestion = 'Check whether the study conclusion is overstated.'
+    const benchmarkIssue = { ...candidate, targetKind: kind, targetId,
+      title: 'Possible overgeneralization', detail: 'The conclusion may improperly include children.',
+      evidence: [{ paragraph: 0, quote: qualifiedSource }] }
+    const benchmarkRequest = { graph: targetedGraph, text: qualifiedSource,
+      sourceUnits: [{ paragraph: 0, text: qualifiedSource }], question: benchmarkQuestion,
+      target: { kind, id: targetId }, reviewIssue: benchmarkIssue,
+      model: { provider: 'fixture', model: 'controlled' } }
     modelReply = request => {
       const subgraph = JSON.parse(request.messages[0].content[0].text.split('\n').find(line => line.startsWith('{"summary":')))
       const qualifierPresent = subgraph.nodes.find(node => node.id === 'n1').text.includes('not for children')
@@ -189,14 +200,28 @@ async function exercise(call, label) {
           : { action: 'delete_edge', edgePatch: { fromNodeId: 'n1', toNodeId: 'n2', relation: 'supports' } } }
     }
     let adjudicated
-    try {
-      adjudicated = await review({ graph: targetedGraph, text: qualifiedSource, target: { kind, id: targetId },
-        question: 'Check whether the study conclusion is overstated.', reviewIssue: { ...candidate,
-          targetKind: kind, targetId, title: 'Possible overgeneralization', detail: 'The conclusion may improperly include children.',
-          evidence: [{ paragraph: 0, quote: qualifiedSource }] } })
-    } finally { modelReply = null }
+    try { adjudicated = await review(benchmarkRequest) }
+    finally { modelReply = null }
     assert.equal(adjudicated.result?.verdict, 'false_positive',
       label + '/' + kind + ': removing the node qualification before review must not manufacture a confirmed error')
+    const benchmarkGold = { schemaVersion: 1, datasetId: 'controlled-host-' + kind,
+      cases: [{ id: 'qualified-' + kind, category: 'qualification',
+        label: { status: 'draft', rationale: 'This is a controlled Host response, not a human quality label.' },
+        sourceUnits: [{ paragraph: 0, text: qualifiedSource }], graph: targetedGraph,
+        allegation: { issueId: candidate.id, targetKind: kind, targetId, title: 'Possible overgeneralization' },
+        input: { text: qualifiedSource, question: benchmarkQuestion,
+          detail: benchmarkIssue.detail, evidence: benchmarkIssue.evidence },
+        gold: { verdict: 'false_positive', allowedFixes: [{ action: 'none' }] } }] }
+    const benchmarkCapture = { schemaVersion: 1, datasetId: benchmarkGold.datasetId,
+      goldHash: fingerprintReviewGold(benchmarkGold), runId: label + '-' + kind,
+      model: { provider: 'fixture', model: 'controlled' }, promptVersion: 'host-smoke-v1',
+      measurementStatus: 'controlled_fixture', cases: [{ caseId: 'qualified-' + kind,
+        startedAtMs: 1000, finishedAtMs: 1010, request: benchmarkRequest, taskStatus: adjudicated }] }
+    const converted = captureReviewRun(benchmarkGold, benchmarkCapture)
+    assert.equal(evaluateReviewRun(benchmarkGold, converted).metrics.confusion.tn, 1,
+      label + '/' + kind + ': real Host task-status must convert without rewriting its verdict')
+    assert.equal(converted.predictions[0].usage?.inputTokens, 20,
+      label + '/' + kind + ': capture must use complete Host-reported model usage')
     assert.deepEqual(context().subgraph.nodes, targetedGraph.nodes, 'targeted review needs complete node fields, not display previews')
     assert.deepEqual(context().subgraph.edges, targetedGraph.edges, 'targeted review must retain relation evidence')
   }

@@ -310,6 +310,119 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               graph.graphOntology = ontDescribe(graph)
               return writeJson(res, 200, { documentId, sourceText, revision, graph })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/reading-map') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的阅读地图查询' } }) }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '阅读地图缺少 documentId' } })
+              const store = await getSqliteStore()
+              const saved = store.getDocument(documentId)
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到 canonical 知识图' } })
+              return writeJson(res, 200, readingMapHost({ documentId, revision: saved.revision,
+                sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved }, a))
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/perspectives') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的任务视图请求' } }) }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '任务视图缺少 documentId' } })
+              const store = await getSqliteStore()
+              const revision = store.getDocumentRevision(documentId)
+              if (!revision) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到知识图文档' } })
+              try {
+                if (a.action === 'list') return writeJson(res, 200, { documentId, revision, perspectives: store.listPerspectives(documentId) })
+                if (a.action === 'resolve') {
+                  const resolved = store.resolvePerspective(documentId, a.id)
+                  if (!resolved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到任务视图' } })
+                  return writeJson(res, 200, { documentId, revision, resolved })
+                }
+                if (a.action === 'save') return writeJson(res, 200, { documentId, revision,
+                  perspective: store.savePerspective(documentId, a.perspective) })
+                if (a.action === 'delete') return writeJson(res, 200, { documentId, revision,
+                  deleted: store.deletePerspective(documentId, a.id, a.expectedVersion) })
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '任务视图操作无效' } })
+              } catch (error) {
+                if (['invalid_input', 'revision_conflict', 'perspective_conflict', 'not_found'].includes(error?.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message,
+                    ...(Number.isInteger(error.currentRevision) ? { currentRevision: error.currentRevision } : {}) } })
+                }
+                throw error
+              }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/concept-dossier') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的概念档案请求' } }) }
+              const store = await getSqliteStore()
+              try {
+                if (a.action === 'candidates') return writeJson(res, 200,
+                  store.searchConceptCandidates({ documentId: a.documentId, nodeId: a.nodeId, query: a.query, limit: a.limit }))
+                if (a.action === 'list') return writeJson(res, 200,
+                  { dossiers: store.listConceptDossiers(a.documentId) })
+                if (a.action === 'get') return writeJson(res, 200,
+                  { dossier: store.getConceptDossier(a.id) })
+                if (a.action === 'save') return writeJson(res, 200,
+                  { dossier: store.saveConceptDossier(a.dossier) })
+                if (a.action === 'delete') return writeJson(res, 200,
+                  { deleted: store.deleteConceptDossier(a.id, a.expectedVersion) })
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '概念档案操作无效' } })
+              } catch (error) {
+                if (['invalid_input', 'revision_conflict', 'dossier_conflict', 'not_found'].includes(error?.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message } })
+                }
+                throw error
+              }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/learning-mode') {
+              const raw = await readBody(req, 24 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的学习任务请求' } }) }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim() : ''
+              if (!documentId || documentId.length > 160) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: '学习任务缺少有效的 documentId' } })
+              const store = await getSqliteStore()
+              try {
+                if (a.action === 'attempts') return writeJson(res, 200,
+                  { attempts: store.listLearningAttempts(documentId) })
+                if (a.action === 'save' && typeof a.attemptId === 'string') {
+                  const previous = store.getLearningAttempt(a.attemptId)
+                  if (previous) {
+                    if (previous.documentId !== documentId || previous.taskId !== a.taskId) return writeJson(res, 200,
+                      { error: { code: 'attempt_conflict', message: '练习记录请求与已保存记录冲突' } })
+                    return writeJson(res, 200, { attempt: store.saveLearningAttempt({
+                      attemptId: a.attemptId, documentId, expectedRevision: a.expectedRevision,
+                      task: previous.task, answer: a.answer, scenario: a.scenario || '', selfRating: a.selfRating,
+                    }) })
+                  }
+                }
+                const saved = store.getDocument(documentId)
+                if (!saved) return writeJson(res, 200,
+                  { error: { code: 'not_found', message: '找不到 canonical 知识图' } })
+                const plan = learningPlanHost({ documentId, revision: saved.revision,
+                  sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved },
+                  { expectedRevision: a.expectedRevision })
+                if (plan?.error) return writeJson(res, 200, plan)
+                if (a.action === 'plan') return writeJson(res, 200, plan)
+                if (a.action === 'save') {
+                  const task = plan.tasks.find(item => item.id === a.taskId)
+                  if (!task) return writeJson(res, 200,
+                    { error: { code: 'invalid_input', message: '学习任务不属于当前知识图版本' } })
+                  return writeJson(res, 200, { attempt: store.saveLearningAttempt({
+                    attemptId: a.attemptId, documentId, expectedRevision: a.expectedRevision,
+                    task, answer: a.answer, scenario: a.scenario || '', selfRating: a.selfRating,
+                  }) })
+                }
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '学习任务操作无效' } })
+              } catch (error) {
+                if (['invalid_input', 'revision_conflict', 'attempt_conflict'].includes(error?.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message,
+                    ...(Number.isInteger(error.currentRevision) ? { currentRevision: error.currentRevision } : {}) } })
+                }
+                throw error
+              }
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-load') {
               res.setHeader('Cache-Control', 'no-store')
               res.setHeader('Pragma', 'no-cache')
