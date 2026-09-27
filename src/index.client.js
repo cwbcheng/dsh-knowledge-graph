@@ -577,6 +577,7 @@ export default function clientPlugin() {
           batches?.coverage ? h('p', { role: 'status' }, '全图覆盖：节点 ' + batches.coverage.completedNodes + '/' + batches.coverage.nodeCount +
             ' · 关系 ' + batches.coverage.completedEdges + '/' + batches.coverage.edgeCount +
             ' · 原文单元 ' + batches.coverage.completedSourceUnits + '/' + batches.coverage.sourceUnitCount) : null,
+          batches?.reusedBatches > 0 ? h('p', null, '复用 ' + batches.reusedBatches + ' 批 · 本次新审校 ' + Math.max(0, completed - batches.reusedBatches) + ' 批') : null,
           active && !total ? h('progress', { 'aria-label': 'AI 审校准备进度' }) : null,
           active && batches?.phase === 'local' ? h('p', null, '本地规则检查 · 已检查 ' + (batches.checkedPairs || 0) + ' 对节点') : null,
           active && progress.relationParallel ? h('p', null, '审校并发上限 ' + progress.relationParallel.limit + ' 路 · 执行中 ' + progress.relationParallel.active + ' 路') : null,
@@ -6153,6 +6154,8 @@ export default function clientPlugin() {
                 ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
                   item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；'))
                 : null,
+              report?.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '增量审校：复用 ' + report.reuse.reusedBatches +
+                ' 批 · 本次新审校 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
               report && reportStale
                 ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原审校结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 核实，确认后依据当前图修复；无需重新跑完整审校。旧补丁不能直接采纳。')
                 : null,
@@ -9176,8 +9179,9 @@ export default function clientPlugin() {
             if (isCurrent()) { setVerifyPhase('idle'); verifyBusyRef.current = false }
           }
         }
-        const startDeepVerify = async () => {
+        const startDeepVerify = async (options) => {
           if (!resultView || verifyBusyRef.current || bulkRunRef.current) return
+          const reuseVerified = options?.reuseVerified === true
           const selectedDocumentId = documentIdOfGraph(resultView.graph)
           const totalNodes = graphViewMetadata(resultView.graph)?.totalNodes || resultView.graph.nodes.length
           const myGen = verifyGenRef.current
@@ -9193,20 +9197,32 @@ export default function clientPlugin() {
             if (!reviewedView || documentIdOfGraph(reviewedView.graph) !== selectedDocumentId) throw new Error('知识图已切换，请重新发起审校')
             const revision = graphRevisionRef.current
             const canonicalFull = !!selectedDocumentId && Number.isSafeInteger(revision) && revision > 0
-            if (canonicalFull && totalNodes > MAX_VERIFY_NODES) {
-              const preview = await host.call('verification-plan', { documentId: selectedDocumentId, expectedRevision: revision })
+            let reviewModel = effectiveModelArg
+            if (reuseVerified && !canonicalFull) throw new Error('请先保存知识图，再进行增量审校')
+            if (canonicalFull && (totalNodes > MAX_VERIFY_NODES || reuseVerified)) {
+              const preview = await host.call('verification-plan', { documentId: selectedDocumentId, expectedRevision: revision,
+                ...(reuseVerified ? { reuseVerified: true, ...(reviewModel ? { model: reviewModel } : {}) } : {}) })
               if (myGen !== verifyGenRef.current) return
               if (!preview || preview.error || preview.revision !== revision || !Number.isInteger(preview.coverage?.batchCount)) {
                 throw new Error(preview?.error?.message || '未能确认完整审校计划')
               }
+              if (reuseVerified && (preview.reuse?.version !== 1 || !Number.isInteger(preview.reuse.reusedBatches) ||
+                !Number.isInteger(preview.reuse.reviewBatches) || preview.reuse.reusedBatches < 0 || preview.reuse.reviewBatches < 0 ||
+                preview.reuse.reusedBatches + preview.reuse.reviewBatches !== preview.coverage.batchCount ||
+                !preview.model?.provider || !preview.model?.model)) throw new Error('当前服务未提供有效的增量审校计划，请更新服务后重试')
+              if (reuseVerified) reviewModel = preview.model
               const coverage = preview.coverage
-              if (!window.confirm('将审校 canonical 图的 ' + coverage.nodeCount + ' 个节点、' + coverage.edgeCount +
+              const reuseText = reuseVerified ? '可复用 ' + preview.reuse.reusedBatches + ' 批，需要重新审校 ' + preview.reuse.reviewBatches +
+                ' 批。本地规则仍会全图检查。模型：' + reviewModel.provider + ' · ' + reviewModel.model + '。\n\n' : ''
+              if (!window.confirm(reuseText + '将审校 canonical 图的 ' + coverage.nodeCount + ' 个节点、' + coverage.edgeCount +
                 ' 条关系和 ' + coverage.sourceUnitCount + ' 个原文单元。计划共 ' + coverage.batchCount +
                 ' 批，至少需要 ' + preview.minimumModelRequests + ' 次模型请求；发现问题还需独立复核，失败重试也会增加请求。任务可暂停续跑。是否开始？')) {
                 setVerifyPhase('idle'); verifyBusyRef.current = false; setVerifyProgress(null)
                 return
               }
             }
+            if (myGen !== verifyGenRef.current) return
+            if (currentResultRef.current !== reviewedView || graphRevisionRef.current !== revision) throw new Error('知识图已变化，请重新计算审校计划')
             verifySnapshotRef.current = { view: reviewedView, revision }
             setVerifyProgress(previous => ({ ...previous, stage: '正在提交 AI 深度审校…' }))
             const payload = {
@@ -9220,7 +9236,8 @@ export default function clientPlugin() {
               mode: 'standard', concurrency: verifyConcurrency,
               documentId: selectedDocumentId,
               expectedRevision: revision,
-              ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+              ...(reuseVerified ? { reuseVerified: true } : {}),
+              ...(reviewModel ? { model: reviewModel } : {}),
             }
             admissionRequested = true
             const res = await host.call('verify-graph', payload)
@@ -10435,6 +10452,9 @@ export default function clientPlugin() {
                       title: documentIdOfGraph(graph) ? '从 canonical 文档审校全部节点、关系和原文；支持暂停续跑' : '审校当前知识图',
                       disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, verifyPhase === 'running' ? '审校中…' :
                         (documentIdOfGraph(graph) ? '🤖 AI 全图深度审校' : '🤖 AI 深度审校')),
+                    documentIdOfGraph(graph) ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => startDeepVerify({ reuseVerified: true }),
+                      title: '复用输入、模型和规则一致的历史批次，仅重审变化部分；开始前确认计划',
+                      disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, '增量审校') : null,
                     h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel, disabled: relationTaskActive || factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '🔎 外部事实核查')),
                   h(GraphExportActions, { graph: resultView.graph, title, ctx,
                     loadCanonical: (documentId) => host.call('document-export', { documentId }) }),

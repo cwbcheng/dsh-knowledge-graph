@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS verification_batch_results (
   PRIMARY KEY (run_id, batch_index),
   FOREIGN KEY (run_id) REFERENCES extraction_runs(run_id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS verification_batch_reuse_idx
+  ON verification_batch_results(json_extract(result_json, '$.reuse.inputHash'), created_at DESC)
+  WHERE json_extract(result_json, '$.reuse.version') = 1;
 CREATE TABLE IF NOT EXISTS graph_revisions (
   document_id TEXT NOT NULL,
   revision INTEGER NOT NULL,
@@ -164,6 +167,21 @@ const CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition',
 const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
 const NODE_ATTRIBUTES = new Set(Object.values(rawProfiles()).flatMap((profile) => profile.nodeAttributes || []))
 const EDGE_ATTRIBUTES = new Set(Object.values(rawProfiles()).flatMap((profile) => profile.edgeAttributes || []))
+
+// A completed review is recoverable only until its report has been committed.
+// Current and historical revisions are atomic publication evidence, even after
+// another report replaces it or the reader restores a pre-review revision.
+const INCOMPLETE_RUN_PREDICATE = `run.status IN ('running', 'failed', 'paused')
+  OR (run.status = 'succeeded' AND run.document_id IS NOT NULL
+    AND json_extract(run.checkpoint_json, '$.taskKind') = 'verify'
+    AND json_type(run.checkpoint_json, '$.report.reportId') = 'text'
+    AND (SELECT json_extract(graph_meta_json, '$.verification.lastReport.reportId')
+      FROM documents WHERE document_id = run.document_id)
+      IS NOT json_extract(run.checkpoint_json, '$.report.reportId')
+    AND NOT EXISTS (SELECT 1 FROM graph_revisions AS history
+      WHERE history.document_id = run.document_id AND history.snapshot_json IS NOT NULL
+        AND json_extract(history.snapshot_json, '$.graph.verification.lastReport.reportId')
+          = json_extract(run.checkpoint_json, '$.report.reportId')))`
 
 function stableHash(value) {
   return createHash('sha256').update(String(value == null ? '' : value)).digest('hex').slice(0, 32)
@@ -553,6 +571,9 @@ export class SqliteKnowledgeStore {
     this.ensureColumn('documents', 'graph_meta_json', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('documents', 'graph_revision', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('graph_revisions', 'snapshot_json', 'TEXT')
+    this.db.exec(`CREATE INDEX IF NOT EXISTS verification_report_history_idx
+      ON graph_revisions(document_id, json_extract(snapshot_json, '$.graph.verification.lastReport.reportId'))
+      WHERE snapshot_json IS NOT NULL`)
     this.ensureColumn('graph_nodes', 'grounding_status', "TEXT NOT NULL DEFAULT 'candidate'")
     this.ensureColumn('graph_nodes', 'entailment_status', "TEXT NOT NULL DEFAULT 'unverified'")
     this.ensureColumn('graph_nodes', 'attributes_json', "TEXT NOT NULL DEFAULT '{}'")
@@ -1068,6 +1089,18 @@ export class SqliteKnowledgeStore {
       .all(runId).map(row => ({ batchIndex: row.batchIndex, result: parseJson(row.resultJson, null) }))
   }
 
+  loadReusableVerificationBatch(documentId, inputHash) {
+    if (!text(documentId) || !/^[a-f0-9]{64}$/.test(inputHash)) return null
+    const row = this.db.prepare(`SELECT b.batch_index AS batchIndex, b.result_json AS resultJson,
+      b.run_id AS runId, json_extract(r.checkpoint_json, '$.baseRevision') AS revision
+      FROM verification_batch_results b JOIN extraction_runs r ON r.run_id = b.run_id
+      WHERE r.document_id = ? AND json_extract(b.result_json, '$.reuse.inputHash') = ?
+        AND json_extract(b.result_json, '$.reuse.version') = 1
+      ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1`).get(documentId, inputHash)
+    return row ? { runId: row.runId, batchIndex: row.batchIndex, revision: row.revision,
+      result: parseJson(row.resultJson, null) } : null
+  }
+
   listIncompleteRuns(limit = 50) {
     return this.db.prepare(`SELECT run_id AS runId, document_id AS documentId,
       title, status, next_batch_index AS nextBatchIndex, total_batches AS totalBatches,
@@ -1081,13 +1114,7 @@ export class SqliteKnowledgeStore {
       json_extract(checkpoint_json, '$.postprocess.reviewSummary.eligible') AS totalRelations,
       (SELECT count(*) FROM json_each(checkpoint_json, '$.relationWeave.results')) AS savedRelationGroups,
       json_extract(checkpoint_json, '$.relationWeave.totalGroups') AS totalRelationGroups
-      FROM extraction_runs AS run WHERE status IN ('running', 'failed', 'paused')
-        OR (status = 'succeeded' AND document_id IS NOT NULL
-          AND json_extract(checkpoint_json, '$.taskKind') = 'verify'
-          AND json_type(checkpoint_json, '$.report.reportId') = 'text'
-          AND (SELECT json_extract(graph_meta_json, '$.verification.lastReport.reportId')
-            FROM documents WHERE document_id = run.document_id)
-            IS NOT json_extract(checkpoint_json, '$.report.reportId'))
+      FROM extraction_runs AS run WHERE ${INCOMPLETE_RUN_PREDICATE}
       ORDER BY updated_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, int(limit, 50))))
   }
 
@@ -1095,7 +1122,8 @@ export class SqliteKnowledgeStore {
     if (typeof runId !== 'string' || !runId.trim() || runId.length > 200 || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
       throw Object.assign(new Error('任务标识或更新时间无效'), { code: 'invalid_input' })
     }
-    const result = this.db.prepare("DELETE FROM extraction_runs WHERE run_id = ? AND updated_at = ? AND (status IN ('running', 'failed', 'paused') OR (status = 'succeeded' AND json_extract(checkpoint_json, '$.taskKind') = 'verify'))").run(runId, expectedUpdatedAt)
+    const result = this.db.prepare(`DELETE FROM extraction_runs AS run WHERE run_id = ? AND updated_at = ?
+      AND (${INCOMPLETE_RUN_PREDICATE})`).run(runId, expectedUpdatedAt)
     if (result.changes) return { deleted: true, runId }
     const row = this.db.prepare('SELECT status FROM extraction_runs WHERE run_id = ?').get(runId)
     if (!row) return { deleted: false, runId }

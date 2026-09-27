@@ -7415,7 +7415,7 @@ function createHostPlugin(graphContractOnly) {
         if (state === 'paused' || state === 'pausing') return { status: state, progress: taskProgressSnapshotHost(task),
           ...(includeCheckpoint && task.checkpoint ? { checkpoint: task.checkpoint } : {}) }
         if (task.status === 'succeeded') return { status: 'succeeded', result: task.result, modelUsage: modelUsageSnapshotHost(task),
-          ...(task.kind === 'verify' ? { documentId: task.documentId || '', baseRevision: task.baseRevision } : {}) }
+          ...(task.kind === 'verify' ? { documentId: task.documentId || '', baseRevision: task.baseRevision, progress: taskProgressSnapshotHost(task) } : {}) }
         if (task.status === 'failed' || task.status === 'cancelled') return {
           status: task.status, modelUsage: modelUsageSnapshotHost(task),
           error: { code: task.errorCode, message: task.errorMessage },
@@ -10172,11 +10172,133 @@ function createHostPlugin(graphContractOnly) {
           (batch.nodeReviewOnly ? '原文遗漏和全文总结已由另一批负责，不得报告 graph 问题。' : 'graph 问题仅限 completeness/summary。') +
           '不得把不存在的关系当作已有边；没有本批合法问题时输出 {"issues":[]}。'
       }
+      function verificationReuseContextHost(task, paragraphs) {
+        const nodes = new Map((task.graph.nodes || []).map(node => [node.id, node]))
+        const incident = new Map()
+        for (const edge of task.graph.edges || []) for (const id of new Set([edge.fromNodeId, edge.toNodeId])) {
+          if (!incident.has(id)) incident.set(id, [])
+          incident.get(id).push(edge)
+        }
+        return { task, paragraphs, nodes, incident, sourceHash: sha256HexHost(task.text) }
+      }
+      function verificationSemanticJsonHost(value) {
+        return JSON.stringify(value, (key, item) => item && typeof item === 'object' && !Array.isArray(item)
+          ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)
+      }
+      function verificationBatchInputHashHost(context, batch) {
+        const task = context.task
+        // Hash complete declared inputs as well as the actual prompts. Cosmetic
+        // ordinals, object key order and revision are not semantic dependencies.
+        const canonicalBatch = JSON.parse(verificationSemanticJsonHost(batch))
+        const unanchored = [...batch.nodes, ...batch.edges].some(item =>
+          (item.quote && !Number.isInteger(item.paragraph)) || (item.evidence || []).some(evidence =>
+            evidence?.quote && !Number.isInteger(evidence.paragraph)))
+        return sha256HexHost(verificationSemanticJsonHost({ version: 1, model: task.model, mode: task.mode,
+          ontology: ontProfile(task.graph), system: verifySystemPromptForBatchHost(task, batch),
+          verifier: VERIFIER_SYSTEM_PROMPT, user: buildVerifyUserText2(canonicalBatch, 0, 1, task.graph),
+          nodes: batch.nodes, edges: batch.edges, units: batch.units,
+          ...(unanchored ? { unanchoredSourceHash: context.sourceHash } : {}),
+          primaryNodeIds: batch.primaryNodeIds, primaryEdgeKeys: batch.primaryEdgeKeys, sourceUnitIds: batch.sourceUnitIds,
+        }))
+      }
+      function verificationOutputDependenciesHashHost(context, result) {
+        const nodeIds = new Set(), paragraphs = new Set(), edges = new Map()
+        let entireSource = false
+        const collectEvidence = evidence => {
+          for (const item of evidence || []) {
+            if (Number.isInteger(item?.paragraph)) paragraphs.add(item.paragraph)
+            else if (item?.quote) entireSource = true
+          }
+        }
+        for (const issue of result.issues) {
+          if (issue.targetKind === 'node') nodeIds.add(issue.targetId)
+          if (issue.targetKind === 'edge') for (const id of String(issue.targetId).split('>')) nodeIds.add(id)
+          collectEvidence(issue.evidence)
+          const fix = issue.proposedFix || {}
+          if (fix.nodePatch?.id) nodeIds.add(fix.nodePatch.id)
+          if (fix.mergeIntoId) nodeIds.add(fix.mergeIntoId)
+          for (const key of ['fromNodeId', 'toNodeId', 'newFromNodeId', 'newToNodeId']) if (fix.edgePatch?.[key]) nodeIds.add(fix.edgePatch[key])
+          collectEvidence(fix.edgePatch?.evidence)
+          collectEvidence(fix.nodePatch?.patch?.evidence)
+          if (Number.isInteger(fix.nodePatch?.patch?.paragraph)) paragraphs.add(fix.nodePatch.patch.paragraph)
+          else if (fix.nodePatch?.patch?.quote) entireSource = true
+        }
+        // Output may refer to evidence or a merge destination beyond the prompt.
+        // Retain those dependencies too, including incident-edge set membership.
+        for (const id of nodeIds) for (const edge of context.incident.get(id) || []) edges.set(edgeKeyHost(edge), edge)
+        for (const edge of edges.values()) {
+          nodeIds.add(edge.fromNodeId); nodeIds.add(edge.toNodeId); collectEvidence(edge.evidence)
+        }
+        const nodes = [...nodeIds].sort().map(id => {
+          const node = context.nodes.get(id)
+          if (node) {
+            if (Number.isInteger(node.paragraph)) paragraphs.add(node.paragraph)
+            else if (node.quote) entireSource = true
+            collectEvidence(node.evidence)
+          }
+          return [id, node || null]
+        })
+        return sha256HexHost(verificationSemanticJsonHost({ nodes, edges: [...edges].sort(([a], [b]) => a.localeCompare(b)),
+          source: entireSource ? { hash: context.sourceHash } : [...paragraphs].sort((a, b) => a - b).map(p => [p, context.paragraphs[p] ?? null]) }))
+      }
+      function certifyVerificationBatchHost(context, batch, result, origin) {
+        return { ...result, reuse: { version: 1, inputHash: verificationBatchInputHashHost(context, batch),
+          resultHash: sha256HexHost(verificationSemanticJsonHost({ issues: result.issues, warnings: result.warnings })),
+          dependenciesHash: verificationOutputDependenciesHashHost(context, result),
+          ...(origin ? { origin } : {}),
+        } }
+      }
+      function reusableVerificationResultHost(context, batch, cached, index) {
+        const result = cached?.result, proof = result?.reuse
+        if (proof?.version !== 1 || !Array.isArray(result.issues) || !Array.isArray(result.warnings) || result.warnings.length ||
+          proof.inputHash !== verificationBatchInputHashHost(context, batch) ||
+          proof.resultHash !== sha256HexHost(verificationSemanticJsonHost({ issues: result.issues, warnings: result.warnings }))) return null
+        try {
+          if (proof.dependenciesHash !== verificationOutputDependenciesHashHost(context, result)) return null
+          const issues = result.issues.map(issue => ({ ...issue, id: 'b' + (index + 1) + ':' + String(issue.id).replace(/^b\d+:/, '') }))
+          assertFullVerifyBatchIssuesHost(batch, issues, index)
+          // Re-admit evidence and proposed operations against today's graph.
+          const warnings = []
+          const checked = normalizeIssues({ issues }, context.task.graph, context.task.text, context.paragraphs.length,
+            warnings, 'cache:', context.task.sourceUnitLengths).issues.map(issue => ({ ...issue, id: issue.id.slice(6) }))
+          if (warnings.length || verificationSemanticJsonHost(checked) !== verificationSemanticJsonHost(issues)) return null
+          return certifyVerificationBatchHost(context, batch, { issues, warnings: result.warnings },
+            proof.origin || { runId: cached.runId, batchIndex: cached.batchIndex, revision: cached.revision })
+        } catch (error) { return null }
+      }
+      async function loadVerificationReuseHost(task, plan, paragraphs) {
+        const context = verificationReuseContextHost(task, paragraphs)
+        const results = new Array(plan.batches.length).fill(null)
+        if (typeof loadReusableVerificationBatch === 'function') for (let i = 0; i < plan.batches.length; i++) {
+          throwIfTaskCancelledHost(task)
+          const batch = plan.batches[i]
+          const saved = await loadReusableVerificationBatch(task.documentId, verificationBatchInputHashHost(context, batch))
+          results[i] = reusableVerificationResultHost(context, batch, saved, i)
+        }
+        const reusedBatches = results.filter(Boolean).length
+        return { context, results, summary: { version: 1, reusedBatches, reviewBatches: plan.batches.length - reusedBatches } }
+      }
+      function verificationReportIssuesHost(task, results) {
+        const key = issue => verificationSemanticJsonHost(['source', 'severity', 'category', 'targetKind', 'targetId', 'targetRelation',
+          'title', 'detail', 'evidence', 'confidence', 'proposedFix', 'reviewDependencyHash'].map(field => issue[field] ?? null))
+        const decisions = new Map((task.graph.verification?.lastReport?.issues || [])
+          .filter(issue => issue?.reviewDependencyHash && ['rejected', 'applied'].includes(issue.status)).map(issue => [key(issue), issue]))
+        let retainedDecisions = 0
+        const issues = results.flatMap(result => result.issues.map(issue => {
+          const reviewed = result.reuse ? { ...issue,
+            reviewDependencyHash: sha256HexHost(result.reuse.inputHash + result.reuse.dependenciesHash) } : issue
+          const previous = task.reuseVerified && result.reuse?.origin ? decisions.get(key(reviewed)) : null
+          if (!previous) return reviewed
+          retainedDecisions++
+          return { ...reviewed, status: previous.status, userNote: previous.userNote || '' }
+        }))
+        return { issues, retainedDecisions }
+      }
       function verificationInputHashHost(task) {
         return sha256HexHost(JSON.stringify({
           version: task.verificationPlanVersion === 2 ? 2 : 1, taskKind: 'verify', text: task.text, graph: task.graph,
           mode: task.mode, scope: task.scope, paragraphMap: task.paragraphMap, sourceUnitLengths: task.sourceUnitLengths,
-          model: task.model,
+          model: task.model, ...(task.reuseVerified ? { reuseVerified: true } : {}),
         }))
       }
       function verifiedBatchModelsHost(checkpoint, savedResults) {
@@ -10228,6 +10350,7 @@ function createHostPlugin(graphContractOnly) {
           const local = await buildLocalReportBatchedHost(task.graph, task.text, task)
           const fullPlan = task.verificationPlanVersion === 2 ? buildFullVerifyPlanHost(paras, task.graph) : null
           const batches = fullPlan ? fullPlan.batches : buildVerifyBatches(paras, task.graph)
+          const reuseContext = fullPlan ? verificationReuseContextHost(task, paras) : null
           task.progress.verification.totalBatches = batches.length
           if (fullPlan) task.progress.verification.coverage = { ...fullPlan.coverage,
             completedNodes: 0, completedEdges: 0, completedSourceUnits: 0 }
@@ -10243,6 +10366,7 @@ function createHostPlugin(graphContractOnly) {
               sourceId: task.graph?.source?.sourceId || '', baseRevision: task.baseRevision,
               graph: task.graph, mode: task.mode, scope: task.scope, paragraphMap: task.paragraphMap, sourceUnitLengths: task.sourceUnitLengths,
               model, concurrency: task.concurrency, verificationPlanVersion: task.verificationPlanVersion || 1,
+              ...(task.reuseVerified ? { reuseVerified: true } : {}),
               totalBatches: batches.length, nextBatchIndex: 0, inputHash,
             }
             await saveTaskCheckpointHost(task, checkpoint, 'running')
@@ -10256,12 +10380,14 @@ function createHostPlugin(graphContractOnly) {
           }
           verifiedBatchModelsHost(task.checkpoint, (task.verificationResults || []))
           task.progress.verification.completedBatches = results.filter(Boolean).length
+          task.progress.verification.reusedBatches = results.filter(result => result?.reuse?.origin).length
           if (fullPlan) for (let i = 0; i < batches.length; i++) if (results[i]) {
             task.progress.verification.coverage.completedNodes += (batches[i].primaryNodeIds || []).length
             task.progress.verification.coverage.completedEdges += (batches[i].primaryEdgeKeys || []).length
             task.progress.verification.coverage.completedSourceUnits += (batches[i].sourceUnitIds || []).length
           }
           if (task.checkpoint) task.checkpoint.nextBatchIndex = task.progress.verification.completedBatches
+          const reusable = task.reuseVerified && fullPlan ? await loadVerificationReuseHost(task, fullPlan, paras) : null
           await runRelationQueueHost(task, batches.map((_, index) => index).filter(index => !results[index]), 'AI 深度审校', async (i, save, check) => {
             const batch = batches[i]
             const batchLabel = '第 ' + (i + 1) + '/' + batches.length + ' 批'
@@ -10269,8 +10395,23 @@ function createHostPlugin(graphContractOnly) {
             const progress = task.progress.verification
             progress.activeBatches.push(batchProgress)
             progress.phase = progress.activeBatches.some(item => item.phase === 'confirm') ? 'confirm' : 'review'
+            const completeBatch = async result => {
+              await save(async () => {
+                if (typeof persistVerificationBatch === 'function') await persistVerificationBatch(task, i, result)
+                results[i] = result
+                progress.completedBatches++
+                if (result.reuse?.origin) progress.reusedBatches++
+                if (fullPlan) {
+                  progress.coverage.completedNodes += (batch.primaryNodeIds || []).length
+                  progress.coverage.completedEdges += (batch.primaryEdgeKeys || []).length
+                  progress.coverage.completedSourceUnits += (batch.sourceUnitIds || []).length
+                }
+                if (task.checkpoint) task.checkpoint.nextBatchIndex = progress.completedBatches
+              })
+            }
             let warnings = []
             try {
+              if (reusable?.results[i]) { check(); await completeBatch(reusable.results[i]); return }
               const userText = buildVerifyUserText2(batch, i, batches.length, task.graph)
               let kept
               for (let scopeAttempt = 0; scopeAttempt < (fullPlan ? 2 : 1); scopeAttempt++) {
@@ -10306,18 +10447,8 @@ function createHostPlugin(graphContractOnly) {
                 kept = kept.filter(issue => ids.has(issue.id))
               }
               check()
-              await save(async () => {
-                const result = { issues: kept, warnings }
-                if (typeof persistVerificationBatch === 'function') await persistVerificationBatch(task, i, result)
-                results[i] = result
-                progress.completedBatches++
-                if (fullPlan) {
-                  progress.coverage.completedNodes += (batch.primaryNodeIds || []).length
-                  progress.coverage.completedEdges += (batch.primaryEdgeKeys || []).length
-                  progress.coverage.completedSourceUnits += (batch.sourceUnitIds || []).length
-                }
-                if (task.checkpoint) task.checkpoint.nextBatchIndex = progress.completedBatches
-              })
+              const result = { issues: kept, warnings }
+              await completeBatch(reuseContext ? certifyVerificationBatchHost(reuseContext, batch, result) : result)
             } finally {
               progress.activeBatches = progress.activeBatches.filter(item => item !== batchProgress)
               progress.phase = progress.activeBatches.some(item => item.phase === 'confirm') ? 'confirm' : 'review'
@@ -10334,12 +10465,13 @@ function createHostPlugin(graphContractOnly) {
           task.progress.stage = '正在汇总审校报告'
           task.progress.verification.phase = 'merge'
           // Arrival order must not affect report ordering, deduplication or issue ids.
-          const issues = mergeReportIssues(local, results.flatMap(result => result.issues))
+          const reviewedIssues = verificationReportIssuesHost(task, results)
+          const issues = mergeReportIssues(local, reviewedIssues.issues)
           const warnings = results.flatMap(result => result.warnings)
           const omittedPairIssues = local.metrics.omittedPairIssues || 0
           if (omittedPairIssues) warnings.push('本地相似性提示超过展示上限，另有 ' + omittedPairIssues + ' 条未展开；AI 批次覆盖不等于相似性提示全部展示。')
           const counts = { error: 0, warning: 0, suggestion: 0 }
-          for (const it of issues) counts[it.severity] += 1
+          for (const it of issues) if (it.status === 'open' || it.status === 'accepted') counts[it.severity] += 1
           task.status = 'succeeded'
           task.finishedAt = Date.now()
           const report = {
@@ -10348,6 +10480,9 @@ function createHostPlugin(graphContractOnly) {
             createdAt: Date.now(),
             model,
             modelsUsed: verificationModelsUsedHost(results, task.checkpoint, model),
+            ...(task.reuseVerified ? { reuse: { version: 1, reusedBatches: task.progress.verification.reusedBatches,
+              reviewedBatches: batches.length - task.progress.verification.reusedBatches,
+              retainedDecisions: reviewedIssues.retainedDecisions } } : {}),
             scope: task.scope || { kind: 'full', ids: [] },
             ...(fullPlan ? { coverage: { ...fullPlan.coverage, completedNodes: fullPlan.coverage.nodeCount,
               completedEdges: fullPlan.coverage.edgeCount, completedSourceUnits: fullPlan.coverage.sourceUnitCount,
@@ -11353,6 +11488,7 @@ function createHostPlugin(graphContractOnly) {
       } }))
       harness.handle('verify-graph', async (args) => {
         const a = args && typeof args === 'object' ? args : {}
+        if (a.reuseVerified) return { error: { code: 'unsupported', message: '增量审校需要持久化服务中的 canonical 文档' } }
         const input = prepareVerificationInputHost(a)
         const text = input.text
         const graph = input.graph

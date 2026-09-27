@@ -71,6 +71,8 @@ export function apply(ctx) {
       throw error
     }
   }
+  const loadReusableVerificationBatch = async (documentId, inputHash) =>
+    (await getSqliteStore()).loadReusableVerificationBatch(documentId, inputHash)
 `
 
 // strip the dynamic wrapper: `return { inject, apply(ctx) {` -> header,
@@ -643,7 +645,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 !Number.isInteger(checkpoint.totalBatches) || checkpoint.totalBatches < 1 ||
                 checkpoint.inputHash !== verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
                   mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths,
-                  model: checkpoint.model, verificationPlanVersion: checkpoint.verificationPlanVersion })) {
+                  model: checkpoint.model, reuseVerified: checkpoint.reuseVerified, verificationPlanVersion: checkpoint.verificationPlanVersion })) {
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '审校输入或检查点不完整，禁止续跑' } })
               }
               if (Array.isArray(checkpoint.paragraphMap) && !Array.isArray(checkpoint.sourceUnitLengths)) {
@@ -685,7 +687,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 resumedCheckpoint = { ...checkpoint, model: selectedModel, batchModels,
                   inputHash: verificationInputHashHost({ text: savedRun.sourceText, graph: checkpoint.graph,
                     mode: checkpoint.mode, scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths,
-                    model: selectedModel, verificationPlanVersion: checkpoint.verificationPlanVersion }) }
+                    model: selectedModel, reuseVerified: checkpoint.reuseVerified, verificationPlanVersion: checkpoint.verificationPlanVersion }) }
                 store.saveCheckpoint(resumedCheckpoint, { runId, status: 'running', title: savedRun.title,
                   sourceText: savedRun.sourceText })
               }
@@ -695,6 +697,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 scope: checkpoint.scope, paragraphMap: checkpoint.paragraphMap, sourceUnitLengths: checkpoint.sourceUnitLengths, model: selectedModel,
                 concurrency: checkpoint.concurrency, baseRevision: checkpoint.baseRevision,
                 verificationPlanVersion: checkpoint.verificationPlanVersion || 1,
+                ...(checkpoint.reuseVerified ? { reuseVerified: true } : {}),
                 checkpoint: resumedCheckpoint, verificationResults: savedResults, createdAt: Date.now(),
               }
               const started = startTaskHost(task, runVerifyTask, 'AI 审校恢复失败：内部错误')
@@ -756,8 +759,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 for (let index = 0; index < plan.batches.length; index++) {
                   buildVerifyUserText2(plan.batches[index], index, plan.batches.length, saved)
                 }
+                let reuse = null, model = null
+                if (payload.reuseVerified === true) {
+                  model = payload.model || await resolveModel()
+                  if (!model || typeof model.provider !== 'string' || !model.provider || typeof model.model !== 'string' || !model.model) {
+                    return writeJson(res, 200, { error: { code: 'no_model', message: '请选择用于增量审校的模型' } })
+                  }
+                  reuse = (await loadVerificationReuseHost({ documentId, graph: saved, text: saved.sourceText,
+                    mode: 'standard', model }, plan, splitParagraphsHost(saved.sourceText))).summary
+                }
                 return writeJson(res, 200, { documentId, revision: saved.revision, coverage: plan.coverage,
-                  minimumModelRequests: plan.coverage.batchCount })
+                  minimumModelRequests: reuse ? reuse.reviewBatches : plan.coverage.batchCount,
+                  ...(reuse ? { reuse, model } : {}) })
               } catch (error) {
                 return writeJson(res, 200, { error: { code: 'verification_plan_invalid', message: error?.message || '无法建立完整审校计划' } })
               }
@@ -776,6 +789,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
               const canonicalFull = a.canonicalFull === true
+              if (a.reuseVerified !== undefined && (typeof a.reuseVerified !== 'boolean' ||
+                (a.reuseVerified && (!canonicalFull || a.mode !== 'standard')))) return writeJson(res, 200, {
+                error: { code: 'invalid_input', message: '增量审校只支持已保存文档的 canonical 全图审校' },
+              })
               let input, currentRevision = null
               if (canonicalFull) {
                 const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
@@ -821,6 +838,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 text, graph, mode, model, baseRevision: currentRevision,
                 verificationPlanVersion: canonicalFull ? 2 : 1,
+                ...(a.reuseVerified === true ? { reuseVerified: true } : {}),
                 paragraphMap: input.paragraphMap, sourceUnitLengths: input.sourceUnitLengths, scope: input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }, createdAt: Date.now(),
               }
               return writeJson(res, 200, startTaskHost(task, runVerifyTask, 'AI 审校失败：内部错误'))

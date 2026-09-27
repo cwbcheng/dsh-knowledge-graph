@@ -190,7 +190,8 @@ assert.deepEqual(lateCancel.progress, { taskId: 'new-run', status: 'running' }, 
 lateCancel.close()
 
 // Run both real click handlers, not a second implementation of admission.
-const handlersCode = client.split('        const startDeepVerify = async () => {').slice(1).map(part => 'const startDeepVerify = async () => {' + part.slice(0, part.indexOf('        const startFactCheck')) + '; return startDeepVerify')
+const handlersCode = [...client.matchAll(/        const startDeepVerify = async \([^)]*\) => \{/g)].map(match =>
+  client.slice(match.index, client.indexOf('        const startFactCheck', match.index)) + '; return startDeepVerify')
 assert.equal(handlersCode.length, 2)
 for (const code of handlersCode) for (const mode of ['accepted', 'rejected', 'no-id', 'offline', 'changed-document']) {
   const admission = deferred(), values = { phase: 'idle', progress: null, taskId: null }, busy = { current: false }, generation = { current: 0 }
@@ -269,6 +270,44 @@ for (const approved of [false, true, 'plan-error']) {
   else assert.equal(confirmations.length, 0)
   assert.equal(busy.current, approved === true)
   assert.equal(progress.current?.status || null, approved === true ? 'running' : approved === 'plan-error' ? 'failed' : null)
+}
+
+for (const mode of ['approved', 'cancelled', 'old-host', 'invalid-counts', 'revision-changed', 'navigated', 'plan-offline']) {
+  const view = { graph: { ...graph, source: { documentId: 'incremental-document' } }, sourceText: text }
+  const calls = [], confirmations = [], errors = [], busy = { current: false }
+  const selectedModel = { provider: 'fixture', model: 'selected-model' }
+  const env = {
+    resultView: view, currentResultRef: { current: view }, graphCommitQueueRef: { current: Promise.resolve() },
+    graphRevisionRef: { current: 42 }, verifySnapshotRef: { current: null }, verifyBusyRef: busy, bulkRunRef: { current: false },
+    verifyGenRef: { current: 0 }, graphViewMetadata: () => null, MAX_VERIFY_NODES: 2000,
+    documentIdOfGraph: () => 'incremental-document', title: '', fullText: text, verifyConcurrency: 2,
+    effectiveModelArg: selectedModel, verificationSourcePayload: () => ({}),
+    window: { confirm(message) { confirmations.push(message); return mode !== 'cancelled' } },
+    host: { async call(method, payload) {
+      calls.push({ method, payload })
+      if (method === 'verification-plan') {
+        assert.equal(payload.reuseVerified, true)
+        assert.deepEqual(payload.model, selectedModel)
+        if (mode === 'plan-offline') throw new Error('offline')
+        if (mode === 'revision-changed') env.graphRevisionRef.current++
+        if (mode === 'navigated') env.verifyGenRef.current++
+        return { revision: 42, coverage: { nodeCount: 13, edgeCount: 0, sourceUnitCount: 1, batchCount: 3 },
+          minimumModelRequests: 1, model: selectedModel,
+          ...(mode === 'old-host' ? {} : { reuse: { version: 1, reusedBatches: 2, reviewBatches: mode === 'invalid-counts' ? -1 : 1 } }) }
+      }
+      assert.equal(method, 'verify-graph')
+      assert.equal(payload.reuseVerified, true)
+      assert.deepEqual(payload.model, selectedModel)
+      assert.equal(payload.expectedRevision, 42)
+      return { taskId: 'incremental-run' }
+    } },
+    setError(value) { if (value) errors.push(value) }, setVerifyPhase() {}, setVerifyTaskId() {}, setVerifyProgress() {},
+  }
+  await new Function(...Object.keys(env), fullHandler)(...Object.values(env))({ reuseVerified: true })
+  assert.deepEqual(calls.map(call => call.method), mode === 'approved' ? ['verification-plan', 'verify-graph'] : ['verification-plan'],
+    'incremental admission must fail closed: ' + mode)
+  if (mode === 'approved' || mode === 'cancelled') assert.match(confirmations[0], /可复用 2 批，需要重新审校 1 批/)
+  if (['old-host', 'invalid-counts', 'revision-changed', 'plan-offline'].includes(mode)) { assert.equal(busy.current, false); assert.equal(errors.length, 1) }
 }
 
 const h = (tag, attrs, ...children) => ({ tag, attrs, children })

@@ -1189,6 +1189,25 @@ versus new typing remains a separate navigation race to prove.
 
 ## Next Checks
 
+The user has now accepted the seven-feature roadmap and resumed automation.
+The implementation queue and current authorization boundary are recorded in
+`knowledge-workbench-roadmap-2026-09-26.md`. Prior focus/draft changes were
+committed as `f898a1d`; the incremental-audit work is committed separately.
+Its final full test passed in
+`output/incremental-audit-verified-test-20260926.log`, with isolated browser
+evidence and additional dependency/copy-failure/pause-resume regressions.
+The completed-report history misclassification has now been reproduced and
+fixed (2026-09-27). Current and committed historical revisions prove publication;
+listing and explicit deletion share the same eligibility rule. The new
+`kg-verification-report-history-smoke.mjs` proves failed-save rollback, recovery,
+restore, stale deletion, migration and indexed lookup without deleting reusable
+batches. Full Node 24 tests passed in `output/report-history-full-test-20260927.log`.
+The roadmap records real browser replacement/failed-save/recovery evidence,
+the isolated 3119 restart and unchanged application-table hashes. No production
+access or release was performed. Continue item 2, issue work packages, next.
+The older checks below remain open risks, not claims that they have been fixed
+by the new feature.
+
 1. Intrinsically oversized whole-graph issue review now fails explicitly; a
    resumable multi-pass synthesis strategy remains unimplemented.
    Separately inspect manual ignore/report updates for cross-session lost-status

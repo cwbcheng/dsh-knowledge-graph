@@ -5439,6 +5439,8 @@
                 ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
                   item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；'))
                 : null,
+              report?.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '增量审校：复用 ' + report.reuse.reusedBatches +
+                ' 批 · 本次新审校 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
               report && reportStale
                 ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原审校结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 核实，确认后依据当前图修复；无需重新跑完整审校。旧补丁不能直接采纳。')
                 : null,
