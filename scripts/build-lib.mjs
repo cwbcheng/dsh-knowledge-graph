@@ -355,7 +355,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { documentId, revision, graph,
                 ...(payload.includeSourceText === true ? { sourceText: saved.sourceText || '' } : {}) })
             }
-            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-commit') {
+            if (req.method === 'POST' && (pathname === '/api/dsh-knowledge-graph/graph-commit' || pathname === '/api/dsh-knowledge-graph/graph-commit-preview')) {
+              const previewOnly = pathname.endsWith('/graph-commit-preview')
               const raw = await readBody(req, 4 * 1024 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
@@ -370,6 +371,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 const expectedRevision = a.expectedRevision
                 if (expectedRevision !== current.revision) {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
+                }
+                const baseNodeIds = new Set(Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [])
+                const canonicalNodeIds = new Set((current.nodes || []).map(node => node.id))
+                for (const node of Array.isArray(a.graph.nodes) ? a.graph.nodes : []) {
+                  if (canonicalNodeIds.has(node?.id) && !baseNodeIds.has(node.id)) {
+                    return writeJson(res, 200, { error: { code: 'node_id_conflict', message: '节点 id 与当前 canonical graph 冲突', nodeId: node.id } })
+                  }
                 }
                 // An edit may not switch the document's ontology; the merge below
                 // builds a fresh object, so re-stamp rather than trust the payload.
@@ -404,6 +412,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                     },
                   })
                 }
+                if (previewOnly) return writeJson(res, 200, { documentId, revision: current.revision, valid: true })
                 const committed = store.commitViewGraph({
                   documentId,
                   graph: incomingGraph,
@@ -411,7 +420,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   baseNodeIds: Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [],
                   baseEdgeKeys: Array.isArray(a.baseEdgeKeys) ? a.baseEdgeKeys : [],
                   expectedRevision,
-                  kind: 'ui_patch',
+                  kind: a.commitKind === 'bulk_review' ? 'bulk_review' : 'ui_patch',
                 })
                 const saved = store.getDocument(documentId)
                 if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '提交后无法重新读取文档' } })
@@ -431,6 +440,41 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   return writeJson(res, 200, { error: { code: 'invalid_operation', message: error.message || '无法应用 canonical graph operation' } })
                 }
                 if (error && error.code === 'not_found') return writeJson(res, 200, { error: { code: 'not_found', message: error.message } })
+                throw error
+              }
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-undo-bulk-review') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { a = {} }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const expectedRevision = a?.expectedRevision
+              const parentRevision = a?.parentRevision
+              const reportId = typeof a?.reportId === 'string' ? a.reportId : ''
+              if (!documentId || !reportId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 2
+                || !Number.isSafeInteger(parentRevision) || parentRevision !== expectedRevision - 1) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '撤销本组修改缺少有效的版本和报告凭据' } })
+              }
+              const store = await getSqliteStore()
+              const current = store.getDocument(documentId)
+              if (!current) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到当前知识图' } })
+              if (current.revision !== expectedRevision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已有后续修改，本组不能直接撤销；请核对版本记录', currentRevision: current.revision } })
+              const latest = store.listRevisions(documentId, 1)[0]
+              if (latest?.revision !== expectedRevision || latest.kind !== 'bulk_review'
+                || latest.parent_revision !== parentRevision || current.verification?.lastReport?.reportId !== reportId) {
+                return writeJson(res, 200, { error: { code: 'undo_conflict', message: '当前版本不是这组核实修改，未撤销知识图' } })
+              }
+              try {
+                store.restoreRevision(documentId, parentRevision, expectedRevision)
+                const saved = store.getDocument(documentId)
+                const revision = saved.revision
+                const fullGraph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
+                delete fullGraph.sourceText
+                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
+                return writeJson(res, 200, { documentId, revision, graph: buildGraphViewHost(fullGraph) })
+              } catch (error) {
+                if (error?.code === 'revision_conflict') return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已有后续修改，未撤销本组' } })
+                if (error?.code === 'snapshot_unavailable') return writeJson(res, 200, { error: { code: 'snapshot_unavailable', message: '上一版本快照不可用，未撤销本组' } })
                 throw error
               }
             }

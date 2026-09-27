@@ -77,14 +77,27 @@ async function persistentSmoke() {
   assert(update.source === 'sqlite' && update.candidate && update.candidate.status === 'rejected', 'persistent candidate update failed')
   const loaded = await request(api, { documentId: graph.source.documentId }, 'document-load')
   assert(loaded && loaded.sourceText === sourceText && loaded.revision === 1 && loaded.graph.nodes.length === 2, 'persistent document-load did not hydrate canonical state')
-  const committed = await request(api, {
+  const commitPayload = {
     documentId: graph.source.documentId,
     expectedRevision: 1,
-    graph: { summary: 'route commit', nodes: graph.nodes, edges: graph.edges },
+    graph: { summary: 'route commit', nodes: graph.nodes, edges: graph.edges,
+      verification: { lastReport: { reportId: 'report-work-package', issues: [{ id: 'issue-1', status: 'applied' }] } } },
     baseNodeIds: graph.nodes.map((node) => node.id),
     baseEdgeKeys: [],
-  }, 'graph-commit')
+    commitKind: 'bulk_review',
+  }
+  const preview = await request(api, commitPayload, 'graph-commit-preview')
+  assert(preview && preview.valid === true && preview.revision === 1, 'read-only graph preflight did not validate the actual commit payload')
+  const afterPreview = await request(api, { documentId: graph.source.documentId }, 'document-export')
+  assert(afterPreview.revision === 1 && afterPreview.graph.summary !== 'route commit', 'graph preflight modified canonical state')
+  const invalidPreview = await request(api, { ...commitPayload, graph: { nodes: [{ id: 'bad-node', type: 'fact', text: '无锚点节点', quote: '', paragraph: null }], edges: [] }, baseNodeIds: [] }, 'graph-commit-preview')
+  assert(invalidPreview?.error?.code === 'invariant_violation', 'graph preflight accepted an invalid patch')
+  const afterInvalidPreview = await request(api, { documentId: graph.source.documentId }, 'document-export')
+  assert(afterInvalidPreview.revision === 1, 'invalid graph preflight changed canonical revision')
+  const committed = await request(api, commitPayload, 'graph-commit')
   assert(committed && !committed.error && committed.revision === 2, 'persistent graph-commit did not advance revision')
+  const stalePreview = await request(api, commitPayload, 'graph-commit-preview')
+  assert(stalePreview?.error?.code === 'revision_conflict', 'graph preflight must reject a changed canonical revision')
   const rejectedCommit = await request(api, {
     documentId: graph.source.documentId,
     expectedRevision: 2,
@@ -97,6 +110,30 @@ async function persistentSmoke() {
   assert(exported && exported.revision === 2 && exported.graph.nodes.length === 2, 'rejected persistent graph-commit mutated canonical state')
   const afterCommit = await request(api, { documentId: graph.source.documentId, kind: 'entity', status: 'rejected', limit: 20 }, 'candidate-list')
   assert(afterCommit.candidates.length === 1 && afterCommit.candidates[0].nodeId === 'n-concept', 'candidate review state was lost across graph revision')
+  const wrongUndo = await request(api, { documentId: graph.source.documentId, expectedRevision: 2,
+    parentRevision: 1, reportId: 'different-report' }, 'graph-undo-bulk-review')
+  assert(wrongUndo?.error?.code === 'undo_conflict', 'another report must not undo this group')
+  const undone = await request(api, { documentId: graph.source.documentId, expectedRevision: 2,
+    parentRevision: 1, reportId: 'report-work-package' }, 'graph-undo-bulk-review')
+  assert(undone?.revision === 3 && !undone.error, 'one-group undo did not restore the prior canonical snapshot')
+  const restored = await request(api, { documentId: graph.source.documentId }, 'document-export')
+  assert(restored.revision === 3 && restored.graph.summary !== 'route commit'
+    && !restored.graph.verification?.lastReport, 'undo must restore both graph content and review state')
+  const repeatedUndo = await request(api, { documentId: graph.source.documentId, expectedRevision: 2,
+    parentRevision: 1, reportId: 'report-work-package' }, 'graph-undo-bulk-review')
+  assert(repeatedUndo?.error?.code === 'revision_conflict', 'an old receipt must not undo newer canonical revisions')
+  const secondGroup = await request(api, { ...commitPayload, expectedRevision: 3,
+    graph: { ...commitPayload.graph, summary: 'second work package' } }, 'graph-commit')
+  assert(secondGroup.revision === 4 && !secondGroup.error, 'a second isolated group was not saved')
+  const laterEdit = await request(api, { documentId: graph.source.documentId, expectedRevision: 4,
+    graph: { summary: 'later independent edit', nodes: [], edges: [] }, baseNodeIds: [], baseEdgeKeys: [] }, 'graph-commit')
+  assert(laterEdit.revision === 5 && !laterEdit.error, 'an unrelated later edit was not saved')
+  const unsafeUndo = await request(api, { documentId: graph.source.documentId, expectedRevision: 4,
+    parentRevision: 3, reportId: 'report-work-package' }, 'graph-undo-bulk-review')
+  assert(unsafeUndo?.error?.code === 'revision_conflict', 'undo must not erase an edit made after the work package')
+  const afterUnsafeUndo = await request(api, { documentId: graph.source.documentId }, 'document-export')
+  assert(afterUnsafeUndo.revision === 5 && afterUnsafeUndo.graph.summary === 'later independent edit',
+    'a rejected undo changed canonical graph contents')
   rmSync(dir, { recursive: true, force: true })
   return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id, revision: committed.revision }
 }

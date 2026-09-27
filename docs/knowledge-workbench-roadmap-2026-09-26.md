@@ -3,10 +3,10 @@
 ## Authorization And Delivery State
 
 The user accepted the seven directions below, requested a commit of the prior
-uncommitted work, and then requested sequential implementation. The user also
-explicitly resumed the existing continuous-improvement heartbeat. This does
-not authorize committing new feature work, pushing, merging or restarting
-production again.
+uncommitted work, and then requested sequential implementation. They later
+explicitly authorized committing item 1, which is `cb37aaf68658dcea380e0f8637e96cf373082154`.
+They then authorized committing the verified item 2 work. This does not
+authorize committing later items, pushing, merging or restarting production.
 
 - Prior work committed: `f898a1d` (`fix: preserve workbench drafts and keyboard
   focus`). A fresh full Node 24 `npm test` passed before that commit; evidence:
@@ -30,7 +30,7 @@ production again.
 | Order | Capability | State | Acceptance boundary |
 | --- | --- | --- | --- |
 | 1 | Incremental audit reuse | First version and publication-history follow-up verified and committed | Explicit plan, complete coverage, content/ontology/model/prompt dependencies, durable independent results, local checks rerun, no stale patch authority |
-| 2 | Issue work packages | In progress, not yet complete | Group by rule/problem family and source/context; independent verdict per item; preview conflicts and before/after changes; one confirmation and reversible changes |
+| 2 | Issue work packages | Implemented and isolated-browser verified; included in this commit | Group by rule/problem family and source/context; independent verdict per item; preview conflicts and before/after changes; one confirmation and reversible changes |
 | 3 | Hierarchical reading map | Pending | Book, topic, claim and original evidence navigation; derived views never merge canonical nodes or turn AI summaries into source facts |
 | 4 | Saved task perspectives | Pending | Persist filters, focus and expansion/reading state rather than copying the graph; test reload, revision changes and missing nodes |
 | 5 | Cross-book concept dossiers | Pending | Candidate alignment only; retain each source, conditions, time and disagreements; distinguish faithful attribution from real-world truth |
@@ -233,12 +233,72 @@ publication history without weakening graph revision CAS.
   history browser. Any future snapshot-retention policy must preserve durable
   publication evidence before pruning snapshots.
 
+## Item 2: Issue Work Packages
+
+The page groups open findings by allegation family or family plus source
+paragraph, without merging their verdicts. A group run exports one canonical
+graph/source context and reuses its context index, but sends a separately
+identified review request for every issue. Resumed tasks retain the original
+allegation and context hashes; title, detail, category, evidence, or proposed
+fix changes cannot rebind an in-flight answer. Similar missing-quote and
+unsupported-claim findings are not treated as one automatic quote repair.
+
+Confirmation requires an explicit read-only `graph-commit-preview` call on
+the current revision. The preview runs the sequential planner, shows each
+outcome and graph before/after lines, and reports actual conflicts rather than
+the optimistic count of individually safe patches. The Host applies the same
+ontology/evidence/invariant checks as commit, but does not write a graph or
+revision. A second export before save checks the revision and deterministic
+plan fingerprint. The one group save is a revision-fenced canonical commit;
+failed persistence retains the review session instead of claiming success.
+
+The commit is tagged `bulk_review` in revision history. The UI retains only
+document/report/revision references for undo, not a graph copy. The undo
+endpoint restores the previous canonical snapshot as a new revision only
+when the latest revision is exactly that group commit and its report matches.
+Any later edit or an already-used receipt is rejected, so undo cannot erase
+unrelated work. The volatile Host uses the same fence with its in-memory
+snapshot; after a Host restart, that nonpersistent mode cannot undo an older
+group, while the production SQLite Host can. Undo restores both graph content
+and review statuses.
+
+Evidence:
+
+- The adversarial planner case had two individually safe fixes for one node;
+  the actual plan applied one and held the second as a conflict. Missing
+  allegation proof, changed source, graph/context/revision changes, edited
+  outcomes after preview, repeated clicks and navigation were rejected before
+  commit. A failed model row cannot attach to a changed allegation.
+- Persistent SQLite and dynamic Host tests verify read-only preflight, invalid
+  graph rejection, successful group undo, wrong report rejection, repeated
+  receipt rejection and a later-edit CAS fence. The generated HTTP route was
+  used against an independent temporary database.
+- Real isolated browser, controlled model and temporary SQLite: two separate
+  issue reviews produced a two-fix preview with zero graph commits; one
+  confirmation saved revision 2; undo restored four open issues and the two
+  original empty quotations at revision 3. A second run confirmed the undo
+  button survived page reload and still restored the graph. No production
+  data, paid model or user task was used.
+- At 390 px, the preview was visible and document scroll width equalled
+  viewport width. This visual check caught a negative hidden-change count
+  from a pre-existing diff helper; the count now tracks all changes and the
+  zero/overflow cases have a regression test.
+- Final Node 24 `npm test` passed, exit 0, after the mobile visual fix. It
+  rebuilt source/generated artifacts and passed the packaging payload parity
+  and stale-payload rejection gates using the existing external identity.
+  `git diff --check` passed. Synthetic fault fixtures logged their expected
+  errors; those lines were not treated as test failures.
+- Focused checks: `kg-issue-work-packages-smoke`,
+  `kg-question-feedback-ui-smoke`, `kg-question-context-completeness-smoke`,
+  `kg-candidate-sync-smoke`, `kg-generation-gate-smoke`,
+  `kg-commit-queue-smoke`, `kg-paragraph-remove-smoke`,
+  `kg-quick-verification-lifecycle-smoke` and packaging parity.
+
 ## Next Action
 
 Item 1's first-version delivery and its history follow-up are verified and
-committed. Item 2 has a verified first increment for grouping and binding each
-verdict to the allegation reviewed; its conflict preview, shared context and
-group undo remain open. Preserve per-item evidence and do not group missing
-quotations with unsupported factual assertions as one automatic quote-filling
-operation. Item 2 code remains uncommitted; neither item is pushed or deployed
-to production. No further production release is authorized.
+committed. Item 2's end-to-end work-package flow is implemented and committed
+on the isolated branch but remains undeployed. Begin item 3 with a
+derived book-to-theme-to-claim-to-evidence reading map; do not merge canonical
+nodes or present generated summaries as source facts. Neither item is pushed
+or deployed to production. No further production release is authorized.

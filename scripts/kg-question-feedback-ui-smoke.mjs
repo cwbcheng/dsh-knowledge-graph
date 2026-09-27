@@ -48,6 +48,21 @@ const panelStart = client.indexOf('      function VerificationPanel(')
 const panelEnd = client.indexOf('      function ', panelStart + 10)
 assert(panelStart >= 0 && panelEnd > panelStart)
 const panel = client.slice(panelStart, panelEnd)
+const auditDiffLines = new Function('TYPE_META', 'REL_LABEL', client.slice(
+  client.indexOf('      function auditDiffLines('), client.indexOf('      function compactAuditSnapshots('))
+  + '; return auditDiffLines')({}, {})
+const diffBefore = { nodes: Array.from({ length: 4 }, (_, index) => ({ id: 'n' + index, text: 'old' })), edges: [] }
+const diffAfter = { nodes: diffBefore.nodes.map(node => ({ ...node, text: 'new' })), edges: [] }
+assert.deepEqual(auditDiffLines(diffBefore, diffAfter, 5).more, 0,
+  'a short group preview must not claim a negative number of hidden edits')
+assert.deepEqual(auditDiffLines(diffBefore, diffAfter, 2).more, 2,
+  'a long group preview must count omitted changes, not just retained lines')
+assert(panel.includes('onPreviewBulkReview') && panel.includes('bulkReviewPreview'),
+  'saving a reviewed work package must require an explicit conflict and change preview')
+assert(panel.includes('逐项处理预览') && panel.includes('修改前后'),
+  'the preview must make both per-item outcomes and actual graph changes inspectable')
+assert(panel.includes('撤销上一组修改') && panel.includes('onUndoBulkReview'),
+  'a committed work package needs an explicit one-group undo control')
 assert(panel.indexOf('questionContent,') < panel.indexOf("className: 'kg-verify-filters'"),
   'question and its feedback must appear before a potentially long issue list')
 assert.equal((panel.match(/className: 'kg-question-bar'/g) || []).length, 1)
@@ -92,9 +107,9 @@ assert(panel.includes('const reportStale = verificationReportStale(report, graph
 const staleStart = client.indexOf('      function verificationReportStale(')
 const staleEnd = client.indexOf('      function paragraphTypeNodes(', staleStart)
 assert(staleStart >= 0 && staleEnd > staleStart)
-const { verificationReportStale, archivedIssueNeedsFreshReview, reviewContextChanged, reviewContextSignature, buildReviewContextIndex, reviewIssueContextTarget } =
+const { verificationReportStale, archivedIssueNeedsFreshReview, reviewContextChanged, reviewContextSignature, buildReviewContextIndex, reviewIssueContextTarget, reviewIssueSignature } =
   new Function('documentIdOfGraph', client.slice(staleStart, staleEnd)
-    + '; return { verificationReportStale, archivedIssueNeedsFreshReview, reviewContextChanged, reviewContextSignature, buildReviewContextIndex, reviewIssueContextTarget }')(
+    + '; return { verificationReportStale, archivedIssueNeedsFreshReview, reviewContextChanged, reviewContextSignature, buildReviewContextIndex, reviewIssueContextTarget, reviewIssueSignature }')(
     graph => graph?.source?.documentId || null)
 assert.equal(verificationReportStale({ createdAt: 100 }, { verification: { auditLog: [{ ts: 99 }] } }), false)
 assert.equal(verificationReportStale({ createdAt: 100 }, { verification: { auditLog: [{ ts: 101 }] } }), true)
@@ -214,6 +229,13 @@ const collisionReport = { ...batchReport, issues: reportIssues.map(issue => issu
 const collision = planBulkReviewedFixes(batchBase, collisionReport, collidingRows, { a: true, b: true })
 assert.equal(collision.counts.applied, 1)
 assert.equal(collision.counts.conflicts, 1, 'a later fix touching an already edited context must be held for review')
+assert.deepEqual(collision.outcomes.map(item => item.kind), ['applied', 'conflict'],
+  'a group with two individually safe proposals must preview the actual sequential conflict')
+const unboundFailure = planBulkReviewedFixes(batchBase, batchReport,
+  [{ issueId: 'a', error: 'Old model request failed' }], { a: false })
+assert.equal(unboundFailure.report, batchReport,
+  'an old failed model request cannot be attached to a changed allegation or graph context')
+assert.deepEqual(unboundFailure.outcomes.map(item => item.kind), ['conflict'])
 const changedNeighbor = planBulkReviewedFixes(linkedBatchBase, batchReport, batchRows, { a: true, b: true, c: true, d: true })
 assert.equal(changedNeighbor.counts.applied, 1,
   'a text-only repair is not independent when its AI review read a neighbor changed earlier in the batch')
@@ -239,9 +261,9 @@ assert.equal(changedVerdict.counts.conflicts, 1,
 const outdated = planBulkReviewedFixes(batchBase, batchReport, batchRows, { a: false, b: true, c: true, d: true })
 assert.equal(outdated.counts.applied, 1)
 assert.equal(outdated.counts.conflicts, 1, 'a changed review context cannot be batch-applied')
-assert(panel.includes('批量 AI 核实下一组') && panel.includes('查看逐项核实结果')
-  && panel.includes('确认保存核实结果') && client.includes('activeContextHash')
-  && client.includes('persistGraph(next, baseline, loaded.revision)')
+assert(panel.includes('AI 核实本组下一批') && panel.includes('查看逐项核实结果')
+  && panel.includes('检查冲突与修改') && panel.includes('确认保存本组处理') && client.includes('activeContextHash')
+  && client.includes("persistGraph(next, baseline, loaded.revision, 'bulk_review')")
   && client.includes('localStorage.getItem(bulkReviewStorageKey(documentId))'),
   'batch review needs bounded progress, a reviewable preview, resumable task identity, and one CAS save')
 const pauseStart = client.indexOf('        const handleStopBulkReview = () => {')
@@ -253,10 +275,18 @@ const bulkRunStart = client.indexOf('        const saveBulkReview = (state) => {
 const bulkRunEnd = client.indexOf('        const handleApplyIssue = async (issue, reviewedAgainstGraph) => {', bulkRunStart)
 assert(bulkRunStart > 0 && bulkRunEnd > bulkRunStart)
 const digest = value => createHash('sha256').update(value).digest('hex')
+const batchReviewIssueSignature = new Function('reviewIssueSignature',
+  client.slice(client.indexOf('      function batchReviewIssueSignature('), client.indexOf('      function batchSafeFix('))
+  + '; return batchReviewIssueSignature')(reviewIssueSignature)
+const buildIssueWorkPackages = new Function(
+  client.slice(client.indexOf('      function buildIssueWorkPackages('), client.indexOf('      function batchReviewIssueSignature('))
+  + '; return buildIssueWorkPackages')()
 async function runBulkFixture(initial, options = {}) {
   const calls = []
   let lastState = null
-  const canonical = { ...batchBase, verification: { lastReport: batchReport } }
+  const currentReport = structuredClone(batchReport)
+  for (const [id, patch] of Object.entries(options.issueChanges || {})) Object.assign(currentReport.issues.find(issue => issue.id === id), patch)
+  const canonical = { ...batchBase, verification: { lastReport: currentReport } }
   const view = { graph: canonical, sourceText: 'stale page text' }
   const host = { call: async (method, payload) => {
     calls.push({ method, payload })
@@ -270,17 +300,18 @@ async function runBulkFixture(initial, options = {}) {
     } }
     throw new Error('unexpected method ' + method)
   } }
-  const names = ['setBulkReview', 'localStorage', 'toastStore', 'bulkReviewStorageKey', 'resultView', 'bulkRunRef', 'bulkStopRef',
+  const names = ['setBulkReviewPreview', 'setBulkReview', 'localStorage', 'toastStore', 'bulkReviewStorageKey', 'resultView', 'bulkRunRef', 'bulkStopRef',
     'bulkActiveTaskRef', 'host', 'fullText', 'asAllNodesGraph', 'documentIdOfGraph', 'currentResultRef',
     'verificationRef', 'questionNeighborhoodGraph', 'reviewContextSignature', 'reviewSignatureHash', 'buildReviewContextIndex', 'reviewIssueContextTarget',
     'verificationSourcePayload', 'MAX_VERIFY_NODES', 'title', 'effectiveModelArg', 'modelCatalog',
-    'questionPhase', 'verifyPhase', 'verification']
-  const args = [state => { lastState = state }, { setItem() {}, removeItem() {} }, { show() {} },
+    'questionPhase', 'verifyPhase', 'verification', 'batchReviewIssueSignature', 'buildIssueWorkPackages']
+  const args = [() => {}, state => { lastState = state }, { setItem() {}, removeItem() {} }, { show() {} },
     documentId => 'review:' + documentId, view,
     { current: false }, { current: false }, { current: null }, host, 'stale page text', graph => graph,
     graph => graph?.source?.documentId, { current: view }, { current: batchReport }, graph => graph,
     reviewContextSignature, async signature => digest(signature), buildReviewContextIndex, reviewIssueContextTarget,
-    () => ({}), 2000, 'Fixture', { provider: 'fake', model: 'fake' }, { issueReview: true }, 'idle', 'idle', batchReport]
+    () => ({}), 2000, 'Fixture', { provider: 'fake', model: 'fake' }, { issueReview: true }, 'idle', 'idle', batchReport,
+    batchReviewIssueSignature, buildIssueWorkPackages]
   const run = new Function(...names, client.slice(bulkRunStart, bulkRunEnd) + '; return runBulkReview')(...args)
   await run(initial)
   return { calls, lastState }
@@ -301,8 +332,23 @@ const resumedBatch = await runBulkFixture({ documentId: 'doc', reportId: 'report
   sourceHash: newBatch.lastState.sourceHash, activeTaskId: 'task-b', activeContextHash: 'saved-hash' })
 assert.equal(resumedBatch.lastState.phase, 'ready')
 assert.equal(resumedBatch.lastState.rows[1].contextHash, 'saved-hash')
+assert.equal(resumedBatch.lastState.rows[1].issueHash, null, 'a legacy in-flight task cannot invent proof of the allegation it reviewed')
 assert.equal(resumedBatch.calls.filter(call => call.method === 'question-graph').length, 0,
   'a refreshed page must recover the in-flight review result instead of paying for it again')
+const boundResume = await runBulkFixture({ documentId: 'doc', reportId: 'report-1', issueIds: ['a', 'b'],
+  rows: [newBatch.lastState.rows[0]], sourceHash: newBatch.lastState.sourceHash,
+  activeTaskId: 'task-b', activeContextHash: 'original-context', activeIssueHash: newBatch.lastState.rows[1].issueHash },
+  { issueChanges: { b: { detail: 'A changed allegation while the model was running' } } })
+assert.equal(boundResume.lastState.rows[1].issueHash, newBatch.lastState.rows[1].issueHash,
+  'resuming a task must preserve the old allegation identity, not bind its result to whatever is current')
+assert.equal(boundResume.calls.filter(call => call.method === 'question-graph').length, 0)
+const staleGroup = await runBulkFixture({ documentId: 'doc', reportId: 'report-1', issueIds: ['a'], rows: [],
+  workPackage: { version: 1, key: buildIssueWorkPackages(batchReport)[0].key, mode: 'family' },
+  sourceHash: newBatch.lastState.sourceHash, activeTaskId: 'task-a', activeIssueHash: newBatch.lastState.rows[0].issueHash },
+  { issueChanges: { a: { title: 'Now in a different issue family' } } })
+assert.equal(staleGroup.lastState.phase, 'paused')
+assert.equal(staleGroup.lastState.activeTaskId, 'task-a', 'a changed group cannot discard or cancel an existing model task')
+assert.equal(staleGroup.calls.filter(call => call.method === 'question-graph').length, 0)
 const lostBatch = await runBulkFixture({ ...newBatch.lastState, rows: [],
   activeTaskId: 'missing', activeContextHash: 'saved-hash' })
 assert.equal(lostBatch.lastState.phase, 'paused')
@@ -314,32 +360,49 @@ const sourceChangedBatch = await runBulkFixture({ ...newBatch.lastState, rows: [
 assert.equal(sourceChangedBatch.lastState.phase, 'paused')
 assert.equal(sourceChangedBatch.calls.filter(call => call.method === 'question-graph').length, 0,
   'source changes, including equal-length edits, invalidate resumed review evidence before any model call')
-const bulkApplyStart = client.indexOf('        const handleApplyBulkReview = async () => {')
+const bulkApplyStart = client.indexOf('        const prepareBulkReviewedCommit = async (session) => {')
 const bulkApplyEnd = client.indexOf('        const handleApplyIssue = async (issue, reviewedAgainstGraph) => {', bulkApplyStart)
 assert(bulkApplyStart > 0 && bulkApplyEnd > bulkApplyStart)
 async function applyBulkFixture(rows, saveRevision = 247, options = {}) {
-  const canonical = { ...batchBase, verification: { lastReport: batchReport } }
+  const currentReport = structuredClone(batchReport)
+  const canonical = { ...batchBase, verification: { lastReport: currentReport } }
+  if (options.allegationChange) currentReport.issues[0].detail = 'The opposite allegation, with unchanged graph evidence.'
+  if (options.issuePatch) Object.assign(currentReport.issues[0], options.issuePatch)
   const view = { graph: canonical, sourceText: 'source text' }
   const session = { documentId: 'doc', reportId: 'report-1', phase: 'ready', sourceHash: digest('source text'),
-    issueIds: rows.map(row => row.issueId), rows: rows.map(row => ({ ...row, contextHash: row.contextHash === 'ok'
+    issueIds: rows.map(row => row.issueId), rows: rows.map(row => ({ ...row, issueHash: digest(JSON.stringify([
+      reviewIssueSignature(batchReport.issues.find(issue => issue.id === row.issueId)),
+      batchReport.issues.find(issue => issue.id === row.issueId)?.category || 'other',
+      batchReport.issues.find(issue => issue.id === row.issueId)?.proposedFix || { action: 'none' },
+    ])), contextHash: row.contextHash === 'ok'
       ? digest(reviewContextSignature(canonical, reviewIssueContextTarget(batchReport.issues.find(issue => issue.id === row.issueId))))
       : row.contextHash })) }
-  const saves = [], states = [], refreshed = [], messages = []
+  if (options.legacyRows) for (const row of session.rows) delete row.issueHash
+  const saves = [], states = [], refreshed = [], messages = [], previewCalls = []
+  const previewState = {}
   const currentResultRef = { current: view }, busy = { current: false }
-  const names = ['bulkReview', 'resultView', 'bulkRunRef', 'documentIdOfGraph', 'verification',
+  const names = ['bulkReview', 'bulkReviewPreview', 'setBulkReviewPreview', 'resultView', 'bulkRunRef', 'documentIdOfGraph', 'verification',
     'toastStore', 'saveBulkReview', 'host', 'asAllNodesGraph', 'reviewContextSignature',
     'reviewSignatureHash', 'buildReviewContextIndex', 'reviewIssueContextTarget', 'planBulkReviewedFixes', 'withVerification', 'persistGraph',
     'clearBulkReview', 'graphViewMetadata', 'loadGraphDocument', 'currentResultRef',
     'setResultView', 'makeView', 'setVerification', 'setQuestionResult', 'setError', 'graphCommitQueueRef',
-    'verifyBusyRef', 'questionPhase', 'graphRevisionRef', 'setFullText']
-  const args = [session, view, busy, graph => graph.source?.documentId, batchReport,
+    'verifyBusyRef', 'questionPhase', 'graphRevisionRef', 'setFullText', 'batchReviewIssueSignature',
+    'graphCommitRequest', 'graphCommitViewPatch', 'auditDiffLines', 'setBulkReviewUndo',
+    'localStorage', 'bulkReviewUndoStorageKey']
+  const args = [session, previewState, state => { for (const key of Object.keys(previewState)) delete previewState[key]; if (state) Object.assign(previewState, state) },
+    view, busy, graph => graph.source?.documentId, batchReport,
     { show: message => messages.push(message) }, state => states.push(state),
     { call: async method => {
+      if (method === 'graph-commit-preview') {
+        previewCalls.push(method)
+        return { documentId: 'doc', valid: true, revision: 246 }
+      }
       assert.equal(method, 'document-export')
       if (options.navigate) currentResultRef.current = { graph: { source: { documentId: 'different-document' } } }
       if (saves.length && options.refreshFailure) return { error: { message: 'fixture readback failed' } }
       return { graph: saves.length ? { ...saves[0].next, normalizedByHost: true } : canonical,
-        revision: saves.length ? saveRevision : 246, sourceText: options.sourceText ?? 'source text' }
+        revision: saves.length ? saveRevision : options.revisionAfterPreview && previewCalls.length ? 247 : 246,
+        sourceText: options.sourceText ?? 'source text' }
     } }, graph => graph, reviewContextSignature, async value => digest(value), buildReviewContextIndex, reviewIssueContextTarget, planBulkReviewedFixes,
     (graph, report, stale) => ({ ...graph, verification: { lastReport: report, stale } }),
     async (next, baseline, revision) => {
@@ -349,16 +412,41 @@ async function applyBulkFixture(rows, saveRevision = 247, options = {}) {
     async () => { throw new Error('whole-graph save must not load a window') }, currentResultRef,
     value => refreshed.push(value), (graph, sourceText) => ({ graph, sourceText }),
     () => {}, () => {}, error => messages.push(error.message), { current: Promise.resolve() },
-    { current: false }, 'idle', { current: 246 }, () => {}]
-  const apply = new Function(...names, client.slice(bulkApplyStart, bulkApplyEnd)
-    + '; return handleApplyBulkReview')(...args)
+    { current: false }, 'idle', { current: 246 }, () => {}, batchReviewIssueSignature,
+    (graph, baseline, expectedRevision) => ({ documentId: 'doc', expectedRevision, graph: { nodes: graph.nodes, verification: graph.verification } }),
+    graph => ({ nodes: graph.nodes, edges: graph.edges }),
+    () => ({ lines: [], more: 0 }), () => {}, { setItem() {}, removeItem() {} }, documentId => 'undo:' + documentId]
+  const handlers = new Function(...names, client.slice(bulkApplyStart, bulkApplyEnd)
+    + '; return { preview: handlePreviewBulkReview, apply: handleApplyBulkReview }')(...args)
+  await handlers.preview()
+  if (options.mutateRowAfterPreview) session.rows[0].answer = 'Different verdict explanation after approval'
+  const apply = handlers.apply
   await Promise.all(options.doubleClick ? [apply(), apply()] : [apply()])
   assert.equal(busy.current, false, 'all terminal paths must release the synchronous save lock')
-  return { saves, states, refreshed, messages }
+  return { saves, states, refreshed, messages, previewCalls }
 }
 const committedBulk = await applyBulkFixture(batchRows.map(row => ({ ...row, contextHash: 'ok' })), 247, { doubleClick: true })
-assert.equal(committedBulk.saves.length, 1, 'one confirmation must make exactly one canonical graph commit')
+assert.equal(committedBulk.previewCalls.length, 1, 'the group must pass a distinct read-only server preflight before saving')
+assert.equal(committedBulk.saves.length, 1, 'one confirmation must make exactly one canonical graph commit: ' + JSON.stringify(committedBulk))
 assert.equal(committedBulk.saves[0].revision, 246, 'the commit must be fenced to the exported revision')
+const changedAfterPreview = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { revisionAfterPreview: true })
+assert.equal(changedAfterPreview.saves.length, 0, 'an external graph revision between preview and confirmation must stop the group')
+assert(changedAfterPreview.states.at(-1).error.includes('预览后已变化'))
+const changedRowAfterPreview = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { mutateRowAfterPreview: true })
+assert.equal(changedRowAfterPreview.saves.length, 0, 'changing a review outcome after preview must require a new preview')
+const changedAllegation = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { allegationChange: true })
+assert.equal(changedAllegation.saves.length, 0,
+  'a verdict about an old allegation must not repair a changed issue just because its graph context still matches')
+assert(changedAllegation.states.at(-1).error.includes('问题内容已变化'), 'explain the changed allegation instead of blaming an unchanged graph target')
+for (const issuePatch of [{ title: 'Changed title' }, { category: 'different' },
+  { evidence: [{ paragraph: 0, quote: 'New alleged evidence' }] }, { proposedFix: patchFor('n1', 'Different proposal') }]) {
+  const changed = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { issuePatch })
+  assert.equal(changed.saves.length, 0, 'each model-visible allegation field must remain bound: ' + JSON.stringify(issuePatch))
+}
+const unboundLegacy = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { legacyRows: true })
+assert.equal(unboundLegacy.saves.length, 0, 'legacy verdicts without allegation proof are retained, not silently certified')
+assert.equal(unboundLegacy.states.at(-1).phase, 'ready')
+assert(unboundLegacy.states.at(-1).error.includes('缺少问题校验凭据'), 'legacy proof absence must be distinguishable from an actual content change')
 assert.deepEqual(committedBulk.saves[0].next.verification.lastReport.issues.map(issue => issue.status),
   ['applied', 'applied', 'rejected', 'open'])
 assert.equal(committedBulk.refreshed.length, 1)

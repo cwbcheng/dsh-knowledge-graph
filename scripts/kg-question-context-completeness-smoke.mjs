@@ -165,7 +165,10 @@ async function bulk(graph, candidates, checkpoint = {}, sourceText = 'Source sta
   const env = { ...helpers, ...signatures, documentIdOfGraph, resultView: view, currentResultRef: { current: view },
     verificationRef: { current: report }, bulkRunRef: { current: false }, bulkStopRef: { current: false },
     bulkActiveTaskRef: { current: null }, asAllNodesGraph: graph => graph, reviewSignatureHash: digest,
-    title: 'Fixture', MAX_VERIFY_NODES: 800, setBulkReview: state => states.push(state),
+    batchReviewIssueSignature: new Function('reviewIssueSignature',
+      section('      function batchReviewIssueSignature(', '      function batchSafeFix(')
+      + '; return batchReviewIssueSignature')(signatures.reviewIssueSignature),
+    title: 'Fixture', MAX_VERIFY_NODES: 800, setBulkReview: state => states.push(state), setBulkReviewPreview() {},
     localStorage: { setItem() {} }, toastStore: { show() {} }, bulkReviewStorageKey: documentId => documentId,
     host: { call: async (method, payload) => {
       calls.push({ method, payload })

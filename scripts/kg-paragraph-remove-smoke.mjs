@@ -12,7 +12,7 @@ import * as persistentHost from '../lib/index.js'
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const sandbox = { window: { React: {} }, console }
-runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { paragraphTypeNodes, removeParagraphType, graphViewMetadata, documentIdOfGraph, asAllNodesGraph, graphCommitViewPatch,'), sandbox)
+runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { paragraphTypeNodes, removeParagraphType, graphViewMetadata, documentIdOfGraph, asAllNodesGraph, graphCommitViewPatch, graphCommitRequest,'), sandbox)
 const helpers = sandbox.window.KGViewer
 const sourceText = '# Sample book\n\n# Contents and learning reuse Learning concept\n\nExample Author reuses Learning concept\n\nLearning concept'
 const documentId = 'document-paragraph-remove-test'
@@ -135,7 +135,7 @@ assert.equal(ui.views.length, 1)
 assert.equal(ui.views[0].graph.view.kind, 'all', 'deletion must preserve the complete working view')
 assert.deepEqual(ids(ui.views[0].graph.nodes), ['concept', 'author'])
 
-const persistStart = source.indexOf('        const persistGraph = (g, baseGraph, pinnedRevision)')
+const persistStart = source.indexOf("        const persistGraph = (g, baseGraph, pinnedRevision, commitKind = 'ui_patch')")
 assert(persistStart >= 0 && persistStart < actionStart)
 function persistHarness(response, overrides = {}) {
   const errors = [], saved = [], requests = [], views = []

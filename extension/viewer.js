@@ -33,6 +33,7 @@
       const LS_RESULT = 'dsh-kg-result-v2'
       const LS_BULK_REVIEW = 'dsh-kg-bulk-review-v1'
       const bulkReviewStorageKey = (documentId) => LS_BULK_REVIEW + ':' + documentId
+      const bulkReviewUndoStorageKey = (documentId) => 'dsh-kg-bulk-undo-v1:' + documentId
       const LS_DRAFT = 'dsh-kg-draft-v1'
       const LEGACY_LARGE_STORAGE_KEYS = ['dsh-kg-pending-v1', 'dsh-kg-checkpoint-v1', 'dsh-kg-result-v1']
       const LS_WIN = 'dsh-kg-win-v1'
@@ -526,6 +527,20 @@
           edges: [...newEdges].filter(([key, edge]) => !oldEdges.has(key) || changed(oldEdges.get(key), edge)).map(([, edge]) => edge),
           baseNodeIds: [...oldNodes].filter(([id, node]) => !newNodes.has(id) || changed(node, newNodes.get(id))).map(([id]) => id),
           baseEdgeKeys: [...oldEdges].filter(([key, edge]) => !newEdges.has(key) || changed(edge, newEdges.get(key))).map(([key]) => key),
+        }
+      }
+      function graphCommitRequest(graph, baseline, expectedRevision) {
+        const patch = graphCommitViewPatch(graph, baseline)
+        return {
+          documentId: documentIdOfGraph(graph), expectedRevision,
+          graph: {
+            summary: typeof graph.summary === 'string' ? graph.summary : '',
+            nodes: patch.nodes, edges: patch.edges,
+            ...(graph.verification && typeof graph.verification === 'object' ? { verification: graph.verification } : {}),
+            ...(graph.factCheck && typeof graph.factCheck === 'object' ? { factCheck: graph.factCheck } : {}),
+          },
+          operations: semanticOperationsOf(graph),
+          baseNodeIds: patch.baseNodeIds, baseEdgeKeys: patch.baseEdgeKeys,
         }
       }
       function historyMetadata(entry) {
@@ -1653,6 +1668,34 @@
         return { ...report, issues: (report.issues || []).map(item => item.id === issue.id
           ? { ...item, proposedFix: issue.proposedFix } : item) }
       }
+      function buildIssueWorkPackages(report, filter = 'all', mode = 'family') {
+        const groups = new Map()
+        for (const issue of report?.issues || []) {
+          if (!issue?.id || filter && filter !== 'all' && issue.severity !== filter) continue
+          // Grouping organizes allegations; it never transfers one verdict to
+          // another. Keep numeric conditions and negation in the family key.
+          const title = String(issue.title || '').replace(/\b(?:n|m)\d+\b/gi, '节点').replace(/\s+/g, ' ').trim()
+            || '未命名问题 ' + issue.id
+          const family = issue.invariantCode ? ['rule', issue.invariantCode] : ['title', title]
+          const anchors = (issue.evidence || []).filter(ev => Number.isInteger(ev?.paragraph) && ev.paragraph >= 0)
+            .map(ev => [String(ev.documentId || ''), String(ev.sourceId || ''), ev.paragraph])
+            .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || a[2] - b[2])
+          const anchor = mode === 'source' ? anchors[0] || ['unanchored', issue.id] : null
+          const key = JSON.stringify([issue.source || '', issue.category || 'other', issue.targetKind || 'graph', family, anchor])
+          let group = groups.get(key)
+          if (!group) {
+            group = { key, label: title + (mode === 'source' ? anchors.length ? ' · P' + (anchors[0][2] + 1) : ' · 未定位原文' : ''),
+              issues: [], remaining: 0 }
+            groups.set(key, group)
+          }
+          group.issues.push(issue)
+          if (issue.status === 'open' && !issue.batchReview) group.remaining++
+        }
+        return [...groups.values()]
+      }
+      function batchReviewIssueSignature(issue) {
+        return JSON.stringify([reviewIssueSignature(issue), issue?.category || 'other', issue?.proposedFix || { action: 'none' }])
+      }
       function batchSafeFix(issue, fix, evidence = []) {
         if (issue?.targetKind !== 'node' || fix?.action !== 'update_node'
           || fix.nodePatch?.id !== issue.targetId) return false
@@ -1682,20 +1725,23 @@
         let nextReport = report
         const modifiedNodes = new Set()
         const counts = { applied: 0, falsePositive: 0, manual: 0, conflicts: 0, failed: 0 }
+        const outcomes = []
         for (const row of rows || []) {
           const issue = nextReport?.issues?.find(item => item.id === row.issueId && item.status === 'open')
-          if (!issue) { counts.conflicts++; continue }
+          if (!issue) { counts.conflicts++; outcomes.push({ issueId: row.issueId, kind: 'conflict', reason: '问题已处理或不存在' }); continue }
           const scope = reviewIssueContextTarget(issue)
-          if (row.error) {
-            nextReport = { ...nextReport, issues: nextReport.issues.map(item => item.id === issue.id
-              ? { ...item, batchReview: { verdict: 'failed', answer: row.error, reviewedAt: row.reviewedAt || Date.now() } } : item) }
-            counts.failed++
-            continue
-          }
           if (contextMatches[row.issueId] !== true
             || (scope.kind === 'node' ? modifiedNodes.has(scope.id) : current !== graph)
             || reviewContextChanged(graph, current, scope)) {
             counts.conflicts++
+            outcomes.push({ issueId: row.issueId, kind: 'conflict', reason: '问题或依赖上下文已变化，或与本组前一项修改冲突' })
+            continue
+          }
+          if (row.error) {
+            nextReport = { ...nextReport, issues: nextReport.issues.map(item => item.id === issue.id
+              ? { ...item, batchReview: { verdict: 'failed', answer: row.error, reviewedAt: row.reviewedAt || Date.now() } } : item) }
+            counts.failed++
+            outcomes.push({ issueId: row.issueId, kind: 'failed', reason: row.error })
             continue
           }
           nextReport = { ...nextReport, issues: nextReport.issues.map(item => item.id === issue.id
@@ -1705,6 +1751,7 @@
           if (row.verdict === 'false_positive') {
             nextReport = updateIssueStatus(nextReport, issue.id, 'rejected', '批量 AI 核实认为原问题不成立：' + String(row.answer || '').slice(0, 300))
             counts.falsePositive++
+            outcomes.push({ issueId: row.issueId, kind: 'false_positive', reason: '标记原问题为误报，不修改知识图' })
           } else if (row.verdict === 'confirmed' && batchSafeFix(issue, row.proposedFix, row.evidence)
             && nodeTypeFixConflicts(current, row.proposedFix).length === 0) {
             const patched = applyPatch(current, { ...issue, proposedFix: row.proposedFix, reportId: report.reportId })
@@ -1713,10 +1760,14 @@
               modifiedNodes.add(issue.targetId)
               nextReport = updateIssueStatus(nextReport, issue.id, 'applied', '批量 AI 核实确认：' + String(row.answer || '').slice(0, 300))
               counts.applied++
-            } else counts.conflicts++
-          } else counts.manual++
+              outcomes.push({ issueId: row.issueId, kind: 'applied', reason: '应用已核实的节点文字或原文摘录修复' })
+            } else { counts.conflicts++; outcomes.push({ issueId: row.issueId, kind: 'conflict', reason: '补丁无法安全应用' }) }
+          } else {
+            counts.manual++
+            outcomes.push({ issueId: row.issueId, kind: 'manual', reason: row.verdict === 'uncertain' ? '证据不足，保留待处理' : '问题成立，但补丁不满足批量安全条件' })
+          }
         }
-        return { graph: current, report: nextReport, counts }
+        return { graph: current, report: nextReport, counts, outcomes }
       }
       function bulkFixEligible(issue) {
         const action = issue?.proposedFix?.action
@@ -1780,13 +1831,14 @@
         const cap = typeof maxLines === 'number' && maxLines > 0 ? maxLines : 5
         if (!before || !after) return { lines: [], more: 0 }
         const lines = []
+        let total = 0
         const short = (s, n) => { const t = String(s == null ? '' : s).trim(); return t.length > (n || 44) ? t.slice(0, n || 44) + '…' : (t || '（空）') }
         const shortQuote = (s) => { const t = String(s == null ? '' : s).trim(); return t.length > 30 ? t.slice(0, 30) + '…' : (t || '（空）') }
         const bNodes = Array.isArray(before.nodes) ? before.nodes : []
         const aNodes = Array.isArray(after.nodes) ? after.nodes : []
         const bById = new Map(bNodes.map((n) => [n.id, n]))
         const aById = new Map(aNodes.map((n) => [n.id, n]))
-        const push = (s) => { if (lines.length < cap) lines.push(s) }
+        const push = (s) => { total++; if (lines.length < cap) lines.push(s) }
         const nodeIds = new Set([...bById.keys(), ...aById.keys()])
         for (const id of nodeIds) {
           const b = bById.get(id)
@@ -1830,8 +1882,7 @@
         if (String(after.summary || '').trim() !== String(before.summary || '').trim()) {
           push('总结：' + short(before.summary, 30) + ' → ' + short(after.summary, 30))
         }
-        const total = lines.length
-        return { lines: lines.slice(0, cap), more: total - cap }
+        return { lines, more: total - lines.length }
       }
       // Build compact before/after snapshots for the audit log: only nodes and
       // edges that actually changed are kept. Storing whole graphs in every
@@ -5224,9 +5275,11 @@
       }
 
       // --------------------- verification panel ---------------------
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onApplyBulkReview, onDiscardBulkReview, reviewSaving = false }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
+        const [workPackageMode, setWorkPackageMode] = useState('family')
+        const [workPackageKey, setWorkPackageKey] = useState(null)
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
@@ -5251,6 +5304,10 @@
         const resolvedIssues = issues.filter((it) => it.status === 'applied').length
         const bulkCandidates = openIssues.filter(issue => !issue.batchReview
           && (!issueFilter || issueFilter === 'all' || issue.severity === issueFilter))
+        const workPackages = useMemo(() => buildIssueWorkPackages(report, issueFilter, workPackageMode), [report, issueFilter, workPackageMode])
+        const workPackage = typeof onStartBulkReview !== 'function' || workPackageKey === 'all' ? null
+          : workPackages.find(group => group.key === workPackageKey) || workPackages.find(group => group.remaining > 0) || workPackages[0]
+        const workPackageIds = workPackage ? new Set(workPackage.issues.map(issue => issue.id)) : null
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report)
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
@@ -5258,14 +5315,20 @@
           && (reportStale || !bulkFixEligible(it))).length
         const shown = issues.filter((it) => {
           if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
+          if (workPackageIds && !workPackageIds.has(it.id)) return false
           return true
         })
-        useEffect(() => { setIssueLimit(40) }, [report?.reportId, issueFilter])
+        useEffect(() => { setIssueLimit(40) }, [report?.reportId, issueFilter, workPackageKey, workPackageMode])
+        useEffect(() => {
+          if (!activeIssueId) return
+          const group = workPackages.find(item => item.issues.some(issue => issue.id === activeIssueId))
+          if (group) setWorkPackageKey(group.key)
+        }, [activeIssueId, report?.reportId, issueFilter, workPackageMode])
         useEffect(() => { setPendingDestructiveFix(null) }, [questionResult, activeIssueId])
         useEffect(() => {
           const index = shown.findIndex(issue => issue.id === activeIssueId)
           if (index >= 40) setIssueLimit(limit => Math.max(limit, Math.ceil((index + 1) / 40) * 40))
-        }, [activeIssueId, report?.reportId, issueFilter])
+        }, [activeIssueId, report?.reportId, issueFilter, workPackage?.key, workPackageMode])
         const qNode = questionTarget && questionTarget.kind === 'node' && graph && Array.isArray(graph.nodes)
           ? graph.nodes.find((n) => n && n.id === questionTarget.id) : null
         const targetLabel = questionTarget
@@ -5490,27 +5553,54 @@
             : null,
           typeof onStartBulkReview === 'function' && report
             ? h('div', { className: 'kg-bulk-review' },
+                h('div', { className: 'kg-issue-actions' },
+                  h('select', { value: workPackageMode, disabled: bulkRunning, 'aria-label': '问题分组方式',
+                    onChange: event => { setWorkPackageMode(event.target.value); setWorkPackageKey(null) } },
+                    h('option', { value: 'family' }, '同类问题'), h('option', { value: 'source' }, '同类问题与原文')),
+                  h('select', { className: 'kg-work-package-picker', value: workPackage?.key || 'all', disabled: bulkRunning,
+                    'aria-label': '选择问题组', title: workPackage?.label || '全部问题', onChange: event => setWorkPackageKey(event.target.value) },
+                    h('option', { value: 'all' }, '全部问题（' + issues.length + ' 项）'),
+                    workPackages.map(group => h('option', { key: group.key, value: group.key },
+                      group.label + '（待核实 ' + group.remaining + '/' + group.issues.length + ' 项）'))),
+                  h('span', { className: 'kg-meta' }, workPackages.length + ' 组 · 待核实 ' + bulkCandidates.length + ' 项')),
                 !bulkReview && bulkCandidates.length > 0
                   ? h('div', { className: 'kg-issue-actions' },
                       h('select', { value: bulkLimit, disabled: verifying || questionPhase === 'running',
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每组 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
-                        disabled: verifying || questionPhase === 'running',
-                        onClick: () => onStartBulkReview(bulkLimit, issueFilter) },
-                        '批量 AI 核实下一组（剩余 ' + bulkCandidates.length + ' 项）'))
+                        disabled: verifying || questionPhase === 'running' || !workPackage?.remaining,
+                        onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key, workPackageMode) },
+                        'AI 核实本组下一批（' + Math.min(bulkLimit, workPackage?.remaining || 0) + ' 项）'))
                   : null,
                 bulkReview
                   ? h('div', null,
+                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '问题组：' + bulkReview.workPackage.label) : null,
                       h('p', { className: 'kg-verify-summary', role: 'status' },
                         '批量核实 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
                         (bulkReview.phase === 'running' ? ' · 正在处理 ' + (bulkReview.currentIssueId || '')
                           : bulkReview.phase === 'applying' ? ' · 正在保存' : bulkReview.phase === 'ready' ? ' · 等待确认' : ' · 已暂停')),
                       bulkReview.error ? h('p', { className: 'kg-question-error' }, bulkReview.error) : null,
                       bulkReview.phase === 'ready'
-                        ? h('p', { className: 'kg-verify-summary' }, '待确认：可批量修复 ' + bulkCounts.safe + ' · 疑似误报 ' + bulkCounts.falsePositive +
+                        ? h('p', { className: 'kg-verify-summary' }, '核实结果：拟修复 ' + bulkCounts.safe + ' · 疑似误报 ' + bulkCounts.falsePositive +
                             ' · 成立但需单独处理 ' + bulkCounts.confirmedManual + ' · 证据不足 ' + bulkCounts.uncertain +
-                            ' · 失败 ' + bulkCounts.failed + '。保存时会再次检查冲突，冲突项不修改。') : null,
+                            ' · 失败 ' + bulkCounts.failed + '。请先检查基于当前 canonical graph 的冲突和修改预览。') : null,
+                      bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
+                        && bulkReviewPreview.documentId === bulkReview.documentId
+                        ? h('section', { className: 'kg-bulk-preview', 'aria-label': '逐项处理预览' },
+                            h('strong', null, '逐项处理预览 · revision ' + bulkReviewPreview.revision),
+                            h('p', { className: 'kg-verify-summary' }, '实际计划：修复 ' + bulkReviewPreview.counts.applied +
+                              ' · 误报 ' + bulkReviewPreview.counts.falsePositive + ' · 待单独处理 ' + bulkReviewPreview.counts.manual +
+                              ' · 冲突 ' + bulkReviewPreview.counts.conflicts + ' · 失败 ' + bulkReviewPreview.counts.failed),
+                            h('div', { className: 'kg-bulk-preview-list' }, bulkReviewPreview.outcomes.map(item =>
+                              h('p', { key: item.issueId, className: 'kg-issue-detail' },
+                                item.issueId + ' · ' + ({ applied: '修复', false_positive: '误报', manual: '单独处理', conflict: '冲突跳过', failed: '核实失败' }[item.kind] || item.kind) + ' · ' + item.reason))),
+                            h('strong', null, '修改前后'),
+                            bulkReviewPreview.diff.lines.length
+                              ? h('div', { className: 'kg-bulk-preview-list' }, bulkReviewPreview.diff.lines.map((line, index) =>
+                                  h('p', { key: index, className: 'kg-issue-detail' }, line)),
+                                  bulkReviewPreview.diff.more ? h('p', { className: 'kg-meta' }, '另有 ' + bulkReviewPreview.diff.more + ' 处修改') : null)
+                              : h('p', { className: 'kg-meta' }, '本组只更新问题状态，不修改节点或关系。')) : null,
                       bulkReview.phase === 'ready' && bulkReview.rows?.length
                         ? h('details', null, h('summary', null, '查看逐项核实结果'),
                             h('div', { className: 'kg-issue-list' }, bulkReview.rows.map(row => {
@@ -5530,12 +5620,21 @@
                         bulkReview.phase === 'paused'
                           ? h('button', { type: 'button', className: 'kg-primary', onClick: onContinueBulkReview }, '继续批量核实') : null,
                         bulkReview.phase === 'ready'
+                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
+                              '检查冲突与修改') : null,
+                        bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
+                          && bulkReviewPreview.documentId === bulkReview.documentId
                           ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
-                              '确认保存核实结果' + (bulkCounts.safe ? '并修复 ' + bulkCounts.safe + ' 项' : '')) : null,
+                              '确认保存本组处理') : null,
                         bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
                           ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview }, '放弃本组结果') : null))
                   : null)
             : null,
+          bulkReviewUndo?.documentId === documentIdOfGraph(graph) && bulkReviewUndo?.reportId === report?.reportId
+            && bulkReviewUndo?.revision === graph?.revision
+            ? h('div', { className: 'kg-issue-actions' },
+                h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
+                  onClick: onUndoBulkReview, title: '仅当本组保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上一组修改')) : null,
           questionContent,
           h('div', { className: 'kg-verify-filters' },
             ['all', ...SEVERITY_ORDER].map((s) => h('button', {

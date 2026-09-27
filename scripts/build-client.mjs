@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-commit-preview" || method === "graph-undo-bulk-review" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -170,6 +170,8 @@ if (!c.includes("host.call('document-load'")) throw new Error('document-load cal
 if (!c.includes("host.call('image-load'")) throw new Error('image-load call not found')
 if (!c.includes("host.call('document-export'")) throw new Error('document-export call not found')
 if (!c.includes("host.call('graph-commit'")) throw new Error('graph-commit call not found')
+if (!c.includes("host.call('graph-commit-preview'")) throw new Error('graph-commit-preview call not found')
+if (!c.includes("host.call('graph-undo-bulk-review'")) throw new Error('graph-undo-bulk-review call not found')
 if (!c.includes("host.call('resume-extract'")) throw new Error('resume-extract call not found')
 if (!c.includes("host.call('resume-verify'")) throw new Error('resume-verify call not found')
 if (!c.includes("host.call('relation-retry'")) throw new Error('relation-retry call not found')
@@ -195,6 +197,8 @@ c = c.split("host.call('document-load'").join("rpc('document-load'")
 c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
+c = c.split("host.call('graph-commit-preview'").join("rpc('graph-commit-preview'")
+c = c.split("host.call('graph-undo-bulk-review'").join("rpc('graph-undo-bulk-review'")
 c = c.split("host.call('resume-extract'").join("rpc('resume-extract'")
 c = c.split("host.call('resume-verify'").join("rpc('resume-verify'")
 c = c.split("host.call('relation-retry'").join("rpc('relation-retry'")

@@ -100,6 +100,7 @@ function createHostPlugin(graphContractOnly) {
        const canonicalGraphs = new Map()
        const canonicalSources = new Map()
        const canonicalRevisions = new Map()
+       const bulkReviewUndoSnapshots = new Map()
 
        // ---- ontology profiles -------------------------------------------------
        // The ontology is a property of the DOCUMENT, not of the process: every
@@ -11289,7 +11290,7 @@ function createHostPlugin(graphContractOnly) {
          } }
        })
 
-       harness.handle('graph-commit', async (args) => {
+       const handleGraphCommitHost = async (args, previewOnly = false) => {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
          const incoming = a.graph && typeof a.graph === 'object' ? a.graph : null
@@ -11343,11 +11344,36 @@ function createHostPlugin(graphContractOnly) {
              },
            }
          }
+         if (previewOnly) return { documentId, revision: current.revision, valid: true }
          const revision = current.revision + 1
          merged.revision = revision
          merged.source = { ...(current.graph.source || incoming.source || {}), revision }
+         if (a.commitKind === 'bulk_review' && typeof merged.verification?.lastReport?.reportId === 'string') {
+           bulkReviewUndoSnapshots.set(documentId, { revision, parentRevision: current.revision,
+             reportId: merged.verification.lastReport.reportId, graph: structuredClone(current.graph) })
+         } else bulkReviewUndoSnapshots.delete(documentId)
          rememberCanonicalGraphHost(merged, current.sourceText, revision)
          return { documentId, revision, graph: buildGraphViewHost(merged) }
+       }
+       harness.handle('graph-commit', (args) => handleGraphCommitHost(args))
+       harness.handle('graph-commit-preview', (args) => handleGraphCommitHost(args, true))
+       harness.handle('graph-undo-bulk-review', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         const current = loadCanonicalDocumentHost(documentId)
+         const receipt = bulkReviewUndoSnapshots.get(documentId)
+         if (!current || !receipt) return { error: { code: 'undo_conflict', message: '当前 Host 没有可撤销的本组修改记录' } }
+         if (current.revision !== a.expectedRevision || receipt.revision !== a.expectedRevision
+           || receipt.parentRevision !== a.parentRevision || receipt.reportId !== a.reportId
+           || current.graph.verification?.lastReport?.reportId !== a.reportId) {
+           return { error: { code: 'revision_conflict', message: '知识图已有后续修改，未撤销本组' } }
+         }
+         const revision = current.revision + 1
+         const graph = { ...structuredClone(receipt.graph), revision,
+           source: { ...(receipt.graph.source || {}), revision } }
+         bulkReviewUndoSnapshots.delete(documentId)
+         rememberCanonicalGraphHost(graph, current.sourceText, revision)
+         return { documentId, revision, graph: buildGraphViewHost(graph) }
        })
 
        harness.handle('graph-neighborhood', async (args) => {

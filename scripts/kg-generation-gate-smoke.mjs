@@ -185,6 +185,27 @@ const acceptedCommit = await handlers.get('graph-commit')({
 assert(acceptedCommit && !acceptedCommit.error && acceptedCommit.revision === (completed.result.source.revision + 1), 'valid add_edge repair was rejected by the canonical invariant gate: ' + JSON.stringify(acceptedCommit))
 const updated = await handlers.get('document-export')({ documentId })
 assert(updated && updated.graph && updated.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n1' && edge.relation === 'supports'), 'accepted add_edge repair did not update canonical graph')
+const groupPayload = { documentId, expectedRevision: updated.revision, commitKind: 'bulk_review',
+  graph: { summary: 'reviewed group', nodes: updated.graph.nodes, edges: updated.graph.edges,
+    verification: { lastReport: { reportId: 'dynamic-group', issues: [{ id: 'one', status: 'applied' }] } } },
+  baseNodeIds: updated.graph.nodes.map(node => node.id),
+  baseEdgeKeys: updated.graph.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation) }
+const dynamicPreview = await handlers.get('graph-commit-preview')(groupPayload)
+assert(dynamicPreview.valid === true && dynamicPreview.revision === updated.revision,
+  'dynamic Host must offer read-only preflight for the same group payload')
+assert((await handlers.get('document-export')({ documentId })).revision === updated.revision,
+  'dynamic preflight changed canonical revision')
+const grouped = await handlers.get('graph-commit')(groupPayload)
+assert(grouped.revision === updated.revision + 1 && !grouped.error, 'dynamic group commit failed')
+const dynamicUndo = await handlers.get('graph-undo-bulk-review')({ documentId, expectedRevision: grouped.revision,
+  parentRevision: updated.revision, reportId: 'dynamic-group' })
+assert(dynamicUndo.revision === grouped.revision + 1 && !dynamicUndo.error, 'dynamic group undo failed')
+const undoExport = await handlers.get('document-export')({ documentId })
+assert(undoExport.revision === dynamicUndo.revision && undoExport.graph.summary === updated.graph.summary
+  && !undoExport.graph.verification?.lastReport, 'dynamic undo did not restore the previous graph and report')
+const repeatDynamicUndo = await handlers.get('graph-undo-bulk-review')({ documentId, expectedRevision: grouped.revision,
+  parentRevision: updated.revision, reportId: 'dynamic-group' })
+assert(repeatDynamicUndo?.error, 'an already undone dynamic group must not be undone again')
 
 const qualityStarted = await handlers.get('extract')({ title: 'gate-quality', text: '孤立事实' })
 const qualityCompleted = await waitTask(qualityStarted.taskId)

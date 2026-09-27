@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const helperStart = client.indexOf('      function asAllNodesGraph(graph) {')
 const helperEnd = client.indexOf('      function historyMetadata(entry) {', helperStart)
-const commitStart = client.indexOf('        const persistGraph = (g, baseGraph, pinnedRevision) => {')
+const commitStart = client.indexOf("        const persistGraph = (g, baseGraph, pinnedRevision, commitKind = 'ui_patch') => {")
 const commitEnd = client.indexOf('        const handleRemoveParagraphType = ', commitStart)
 assert(helperStart >= 0 && helperEnd > helperStart && commitStart >= 0 && commitEnd > commitStart)
 const { asAllNodesGraph, graphCommitViewPatch } = new Function(
@@ -64,6 +64,12 @@ function makeFixture(kind, replyForCall) {
       ...refs, host, makeView, setResultView, asAllNodesGraph, graphCommitViewPatch,
       documentIdOfGraph: (graph) => graph?.source?.documentId || '',
       semanticOperationsOf: graph => operations.get(graph) || [], graphSemanticOperations: operations,
+      graphCommitRequest: (graph, baseline, expectedRevision) => {
+        const patch = graphCommitViewPatch(graph, baseline)
+        return { documentId, expectedRevision, graph: { nodes: patch.nodes, edges: patch.edges,
+          ...(graph.verification ? { verification: graph.verification } : {}) },
+          operations: operations.get(graph) || [], baseNodeIds: patch.baseNodeIds, baseEdgeKeys: patch.baseEdgeKeys }
+      },
       localStorage: { setItem() {} }, LS_RESULT: 'result',
       setHistory: (update) => history.push(update([])),
       appendHistory: (previous, entry) => [...previous, entry],

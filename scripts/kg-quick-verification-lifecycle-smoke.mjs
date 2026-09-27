@@ -66,6 +66,12 @@ function fixture(kind, { verifyReply, commitReply, local = false } = {}) {
       makeView: (graph, sourceText) => ({ graph, sourceText }), setResultView: setView, setView,
       withVerification: (graph, report, stale) => ({ ...graph, verification: { lastReport: report, stale } }),
       verificationSourcePayload: () => ({}), asAllNodesGraph, graphCommitViewPatch,
+      graphCommitRequest: (next, baseline, expectedRevision) => {
+        const patch = graphCommitViewPatch(next, baseline)
+        return { documentId: next.source?.documentId, expectedRevision,
+          graph: { summary: next.summary, nodes: patch.nodes, edges: patch.edges, verification: next.verification },
+          operations: operations.get(next) || [], baseNodeIds: patch.baseNodeIds, baseEdgeKeys: patch.baseEdgeKeys }
+      },
       graphSemanticOperations: operations, semanticOperationsOf: value => operations.get(value) || [],
       setError: set('error'), setVerification: set('report'), setVerifyPhase: set('phase'),
       setVerifyProgress: set('progress'), setActiveIssueId: set('activeIssueId'), setFactReport() {},

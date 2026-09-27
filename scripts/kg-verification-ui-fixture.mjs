@@ -13,6 +13,7 @@ const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
+const workPackagesMode = process.argv.includes('--work-packages')
 const snapshotMode = process.argv.includes('--snapshot')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
@@ -30,7 +31,7 @@ const trajectoryQueueMode = process.argv.includes('--trajectory-queue')
 const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
-const reviewMode = process.argv.includes('--review') || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
+const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (reviewSaveMode) paragraphs[0] = 'Fixture observation 0 supports fixture observation 801 in the source.'
 if (repairPatchLimitMode) paragraphs[0] = paragraphs[1] = '> ' + completeRepairText
@@ -192,6 +193,7 @@ ${snapshotMode ? '<nav><button onclick="control(\'advance-revision\')">Advance f
 ${reviewSaveMode ? '<nav><button onclick="control(\'change-hidden\')">Change hidden dependency</button><button onclick="control(\'change-unrelated\')">Change unrelated node</button></nav>' : ''}
 ${heldSaveMode ? '<nav><button onclick="control(\'hold-next-save\')">Hold next graph save</button><button onclick="control(\'reject-held-save\')">Reject held graph save</button></nav>' : ''}
 ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">Hold next quick report</button><button onclick="control(\'release-verification\')">Release quick report</button></nav>' : ''}
+${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
 <script>
 window.fixtureErrors=[];window.addEventListener('error',event=>fixtureErrors.push(event.message));
@@ -215,6 +217,8 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      ...(workPackagesMode ? { report: store.getDocument(documentId).verification.lastReport,
+        targetQuotes: store.getDocument(documentId).nodes.slice(0, 4).map(node => node.quote) } : {}),
       ...(repairPatchLimitMode ? { repairTargets: store.getDocument(documentId).nodes.slice(0, 2) } : {}),
       ...(heldSaveMode ? { saveHeld: !!releaseHeldSave } : {}),
       ...(quickVerifyMode ? { verificationHeld: !!releaseHeldVerification } : {}),
@@ -237,6 +241,11 @@ const server = createServer(async (req, res) => {
       if (quickVerifyMode && url.pathname.endsWith('/release-verification')) releaseHeldVerification?.()
       if (url.pathname.endsWith('/complete')) { finishAutomatically = true; for (const stream of pending) stream.finish() }
       if (url.pathname.endsWith('/next')) pending.values().next().value?.finish()
+      if (workPackagesMode && url.pathname.endsWith('/change-allegation')) {
+        const current = store.getDocument(documentId)
+        current.verification.lastReport.issues[0].detail = 'A changed allegation with the same target and source evidence.'
+        store.saveGraph(current, { sourceText, expectedRevision: current.revision })
+      }
       if (snapshotMode && url.pathname.endsWith('/advance-revision')) store.saveGraph(store.getDocument(documentId), { sourceText })
       if (reviewSaveMode && ['/fixture/change-hidden', '/fixture/change-unrelated'].includes(url.pathname)) {
         const next = store.getDocument(documentId), id = url.pathname.endsWith('/change-hidden') ? 'n801' : 'n700'
