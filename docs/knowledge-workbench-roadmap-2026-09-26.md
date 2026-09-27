@@ -5,8 +5,10 @@
 The user accepted the seven directions below, requested a commit of the prior
 uncommitted work, and then requested sequential implementation. They later
 explicitly authorized committing item 1, which is `cb37aaf68658dcea380e0f8637e96cf373082154`.
-They then authorized committing the verified item 2 work. This does not
-authorize committing later items, pushing, merging or restarting production.
+They then authorized committing the verified item 2 work. That earlier scope
+did not authorize committing later items, pushing, merging or restarting
+production. On 2026-09-27 the user explicitly requested merging all current
+work into local `main` and deploying it to 3099. No push was requested.
 
 - Prior work committed: `f898a1d` (`fix: preserve workbench drafts and keyboard
   focus`). A fresh full Node 24 `npm test` passed before that commit; evidence:
@@ -14,9 +16,10 @@ authorize committing later items, pushing, merging or restarting production.
   were not committed.
 - Development checkout: `/mnt/d/github/.dsh-safe-bulk-verification-20260925`,
   branch `codex/kg-audit-continuation-20260926`.
-- Production remains separate: `/mnt/d/github/dsh-knowledge-graph`, port 3099,
-  `dsh-kgsrc-web.service`. No production graph, report, configuration or
-  credential may be used as writable test data. Port 3109 is unrelated.
+- Production checkout: `/mnt/d/github/dsh-knowledge-graph`, port 3099,
+  `dsh-kgsrc-web.service`. It now runs the merged code. No production graph,
+  report, configuration or credential was used as writable test data. Port
+  3109 is unrelated.
 - Use Node 24 at `/opt/node-v24.14.0/bin`. Keep source, `lib`, extension viewer
   and signed distribution consistent. Use only the existing external signing
   identity. Never weaken a gate or create a new signing identity.
@@ -29,19 +32,20 @@ authorize committing later items, pushing, merging or restarting production.
 
 | Order | Capability | State | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Incremental audit reuse | First version and publication-history follow-up verified and committed | Explicit plan, complete coverage, content/ontology/model/prompt dependencies, durable independent results, local checks rerun, no stale patch authority |
-| 2 | Issue work packages | Implemented and isolated-browser verified; included in this commit | Group by rule/problem family and source/context; independent verdict per item; preview conflicts and before/after changes; one confirmation and reversible changes |
-| 3 | Hierarchical reading map | First usable version implemented and isolated-browser verified; uncommitted | Book, source chapter, graph-concept candidate theme, evidence-anchored reading priorities and original quotation navigation; derived views never merge canonical nodes or turn summaries into source facts |
-| 4 | Saved task perspectives | First usable version implemented and isolated-browser verified; uncommitted | Persist filters, focus and expansion/reading state rather than copying the graph; test reload, revision changes and missing nodes |
-| 5 | Cross-book concept dossiers | First usable version implemented and isolated-browser verified; uncommitted | Candidate alignment only; retain each source, conditions, time and disagreements; distinguish faithful attribution from real-world truth |
-| 6 | Learning mode | First usable version implemented and isolated-browser verified; uncommitted | Concept discrimination, mechanism explanation and transfer to new situations; separate progress and generated tasks from canonical source knowledge |
-| 7 | Expanded quality benchmark | Offline evaluator and draft adversarial fixture implemented; independent human labels and measured model runs pending | Human-confirmed cases for negation, conditions, cross-paragraph evidence, homonyms, unsafe merges and distant dependencies; evaluate false positives/negatives, unsafe repair, cost and time |
+| 1 | Incremental audit reuse | First version verified, committed and deployed to 3099 | Explicit plan, complete coverage, content/ontology/model/prompt dependencies, durable independent results, local checks rerun, no stale patch authority |
+| 2 | Issue work packages | First version isolated-browser verified, committed and deployed to 3099 | Group by rule/problem family and source/context; independent verdict per item; preview conflicts and before/after changes; one confirmation and reversible changes |
+| 3 | Hierarchical reading map | First usable version isolated-browser verified and deployed to 3099 | Book, source chapter, graph-concept candidate theme, evidence-anchored reading priorities and original quotation navigation; derived views never merge canonical nodes or turn summaries into source facts |
+| 4 | Saved task perspectives | First usable version isolated-browser verified and deployed to 3099 | Persist filters, focus and expansion/reading state rather than copying the graph; test reload, revision changes and missing nodes |
+| 5 | Cross-book concept dossiers | First usable version isolated-browser verified and deployed to 3099 | Candidate alignment only; retain each source, conditions, time and disagreements; distinguish faithful attribution from real-world truth |
+| 6 | Learning mode | First usable version isolated-browser verified and deployed to 3099 | Concept discrimination, mechanism explanation and transfer to new situations; separate progress and generated tasks from canonical source knowledge |
+| 7 | Expanded quality benchmark | Offline evaluator and draft fixture committed; independent human labels and measured model runs still pending | Human-confirmed cases for negation, conditions, cross-paragraph evidence, homonyms, unsafe merges and distant dependencies; evaluate false positives/negatives, unsafe repair, cost and time |
 
 Existing QA/quality gates remain mandatory throughout. Their current fixture
 scores are not a substitute for new human-labelled semantic evaluation.
 Do not claim draft benchmark labels or controlled predictions are measured model
-quality. The first six capabilities have their own verification records below;
-none of items 3-6 is committed or deployed.
+quality. The first six capabilities have their own isolated verification records
+below. Item 7's evaluator is available as offline tooling, but its draft
+labels and controlled model fixtures do not establish measured quality.
 
 ## Item 1: Incremental Audit Reuse
 
@@ -783,3 +787,42 @@ false positives, missed issues, unsafe repairs, token cost and time.
   and the full Node 24 `npm test` passed. Full log:
   `output/review-benchmark-request-binding-full-test-20260927.log`;
   extension payload parity and stale-payload rejection remained green.
+
+## Local Main Deployment (2026-09-27)
+
+- The user authorized merging and deploying the current work. Items 3-6 and
+  the offline item 7 evaluator were committed on the isolated branch as
+  `dc4a44d3b701f58a93fc49d487b8ca7bea1120e7`. The complete Node 24
+  `npm test` passed on that exact commit before the merge; see
+  `output/premerge-20260927.log` in the isolated checkout. The production
+  checkout fast-forwarded from `39812f2` through the existing item 1 and 2
+  commits to `dc4a44d`. There were no merge conflicts. `origin/main` was an
+  ancestor of the old local `main`; no remote push was requested or performed.
+- Authenticated `task-active` returned `busy: false` immediately before the
+  controlled stop. A consistent online SQLite backup was saved outside the
+  repository at `/mnt/d/github/.dsh-kgsrc-before-workbench-20260927.sqlite`
+  (6,579,458,048 bytes); its `PRAGMA quick_check` returned `ok`. The service
+  was stopped, local `main` fast-forwarded, and the service started with the
+  existing Node 24 safe-runtime configuration. The new user-service main PID
+  was 3009927, started at 2026-09-27 18:24:38 Asia/Shanghai.
+- After startup, authenticated ontology and document-list endpoints returned
+  HTTP 200, and `task-active` remained idle. Read-only requests to the new
+  perspectives, concept-dossier, learning-attempts, reading-map and learning
+  plan endpoints returned HTTP 200 without errors. The existing document's
+  reading map reported revision 249 and the plan returned three tasks. The
+  web boot manifest's knowledge-graph asset contained the exact generated
+  `lib/client.js` module, including all four new feature markers. Packaging
+  validation still passed payload parity and stale-payload rejection.
+- Hashes of every row in nine legacy data tables, including `documents`,
+  `document_units`, `graph_nodes`, `graph_edges` and
+  `verification_batch_results`, matched the pre-deploy backup. Their counts
+  remained one document, 5,413 source units, 4,645 nodes, 8,539 edges and
+  974 saved batch results; `graph_revisions` still had 249 rows. Four new
+  sidecar tables were created for dossiers, perspectives and learning
+  attempts; no user graph or review was edited by the deployment check.
+- The first authenticated `document-list` request during cold startup timed
+  out after 10 seconds, while a later request returned HTTP 200 in under a
+  second. This is recorded as a cold-start observation, not proof of a steady
+  performance regression. Item 7 still lacks independent human labels and
+  measured model runs. No paid model call, task start, cancellation or
+  automatic review continuation was part of deployment verification.
