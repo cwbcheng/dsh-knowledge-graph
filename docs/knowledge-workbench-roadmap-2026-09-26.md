@@ -2031,3 +2031,30 @@ false positives, missed issues, unsafe repairs, token cost and time.
   3119 restart, production change, or commit was made.
   Fresh complete Node 24 `npm test` passed, including the signed extension
   packaging check; `git diff --check` and generated source/lib parity passed.
+
+## Local Main Deployment (2026-09-28)
+
+- The user explicitly authorized merging the current isolated work into local
+  `main` and deploying it to 3099. The isolated branch committed the item 7
+  benchmark, evidence-repair guards and tests as `92c7938cee0fc70723214cbbfd1b4d5f82d9c5a2`.
+  The complete Node 24 `npm test` passed on the exact staged content before
+  commit, including generated artifacts and signed-extension validation.
+  Temporary `output/`, `.playwright-cli/` and `node_modules` were excluded.
+- The production user service reported `task-active` idle. A consistent online
+  backup of its SQLite database was saved outside the repository at
+  `/mnt/d/github/.dsh-kgsrc-before-review-benchmark-20260928.sqlite`
+  (6,652,379,136 bytes; `PRAGMA quick_check = ok`). Only after a second idle
+  check was the service stopped, local `main` fast-forwarded from `8c82a89`
+  to `92c7938`, and the existing user service restarted. It became active at
+  2026-09-28 10:52:27 Asia/Shanghai.
+- The running 3099 `engine-identity` hash
+  `d623916404c1099ee238a5be76d03aea6facf1da7f2d8c89a944290a0ebe5d83`
+  matched the deployed `lib/index.js`. `ontology-list`, `document-list` and
+  `task-active` returned HTTP 200; the latter remained idle. The live database
+  passed `quick_check`; before/after counts matched for ten legacy tables,
+  and row digests matched for documents, source units, nodes, edges and saved
+  verification batches. No user graph or review task was edited or resumed.
+- This was a local merge and deployment, **not a push**. `origin/main` remains
+  eight commits behind local `main`; local test success is not remote CI.
+  The benchmark results remain small, source-reviewable samples with Codex
+  labels, not independent human truth or a book-level accuracy claim.
