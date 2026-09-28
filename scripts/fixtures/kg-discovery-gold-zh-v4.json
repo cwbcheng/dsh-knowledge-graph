@@ -1,0 +1,333 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v4",
+  "description": "Invented table with a subgroup reversal. Tests whether full-graph discovery preserves column headers and row-specific qualifiers. Not from the user's book.",
+  "graph": {
+    "summary": "",
+    "warnings": [],
+    "source": {
+      "id": "source-discovery-zh-synthetic-v4",
+      "documentId": "discovery-zh-synthetic-v4",
+      "title": "合成分组策略对照表",
+      "paragraphCount": 6,
+      "chars": 164,
+      "chunkCount": 0,
+      "sectionCount": 0,
+      "revision": 1
+    },
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "claim",
+        "text": "策略甲在已学过规则和首次接触规则两组中，达标人数均高于策略乙。",
+        "quote": "| 已学过规则 | 8/10 | 7/10 |",
+        "paragraph": 3,
+        "evidence": [
+          {
+            "paragraph": 1,
+            "quote": "策略甲达标人数 | 策略乙达标人数"
+          },
+          {
+            "paragraph": 3,
+            "quote": "| 已学过规则 | 8/10 | 7/10 |"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v4",
+        "sourceId": "source-discovery-zh-synthetic-v4",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n2",
+        "type": "fact",
+        "text": "已学过规则组中，策略甲八人达标，策略乙七人达标。",
+        "quote": "| 已学过规则 | 8/10 | 7/10 |",
+        "paragraph": 3,
+        "evidence": [
+          {
+            "paragraph": 1,
+            "quote": "策略甲达标人数 | 策略乙达标人数"
+          },
+          {
+            "paragraph": 3,
+            "quote": "| 已学过规则 | 8/10 | 7/10 |"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v4",
+        "sourceId": "source-discovery-zh-synthetic-v4",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n3",
+        "type": "fact",
+        "text": "首次接触规则组中，策略甲一人达标，策略乙三人达标。",
+        "quote": "| 首次接触规则 | 1/10 | 3/10 |",
+        "paragraph": 4,
+        "evidence": [
+          {
+            "paragraph": 1,
+            "quote": "策略甲达标人数 | 策略乙达标人数"
+          },
+          {
+            "paragraph": 4,
+            "quote": "| 首次接触规则 | 1/10 | 3/10 |"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v4",
+        "sourceId": "source-discovery-zh-synthetic-v4",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      }
+    ],
+    "edges": [],
+    "staging": {
+      "sourceId": "source-discovery-zh-synthetic-v4",
+      "documentId": "discovery-zh-synthetic-v4",
+      "chunkCount": 0,
+      "chunks": []
+    },
+    "graphOntology": {
+      "id": "proposition-v1",
+      "label": "命题知识图",
+      "summary": "把资料拆成命题与关系的通用抽取本体。",
+      "nodeTypes": [
+        {
+          "id": "fact",
+          "zh": "事实",
+          "label": "事实",
+          "color": "#3b82f6",
+          "fill": "rgba(59,130,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "claim",
+          "zh": "主张",
+          "label": "主张",
+          "color": "#0f766e",
+          "fill": "rgba(15,118,110,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "inference",
+          "zh": "推论",
+          "label": "推论",
+          "color": "#8b5cf6",
+          "fill": "rgba(139,92,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "concept",
+          "zh": "概念",
+          "label": "概念",
+          "color": "#10b981",
+          "fill": "rgba(16,185,129,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "definition",
+          "zh": "定义",
+          "label": "定义",
+          "color": "#f59e0b",
+          "fill": "rgba(245,158,11,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "label": "例子",
+          "color": "#06b6d4",
+          "fill": "rgba(6,182,212,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "label": "反例",
+          "color": "#ef4444",
+          "fill": "rgba(239,68,68,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "rule",
+          "zh": "规则",
+          "label": "规则",
+          "color": "#7c3aed",
+          "fill": "rgba(124,58,237,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        }
+      ],
+      "relationTypes": [
+        {
+          "id": "supports",
+          "zh": "支持",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "defines",
+          "zh": "定义",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "infers",
+          "zh": "推断",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "causes",
+          "zh": "因果",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "is_a",
+          "zh": "属于",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "contains",
+          "zh": "包含",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "driven_by",
+          "zh": "受驱动于",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "not_is",
+          "zh": "不是",
+          "family": "neutral",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "analogy",
+          "zh": "类比说明",
+          "family": "satellite",
+          "weight": 5,
+          "hint": ""
+        },
+        {
+          "id": "aims_at",
+          "zh": "旨在",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        }
+      ],
+      "diagnostics": []
+    },
+    "graphDiagnostics": []
+  },
+  "sourceUnits": [
+    {
+      "paragraph": 0,
+      "text": "同周测验记录了两种学习策略的达标人数，每组每种策略各有十名学生。"
+    },
+    {
+      "paragraph": 1,
+      "text": "| 学生组别 | 策略甲达标人数 | 策略乙达标人数 |"
+    },
+    {
+      "paragraph": 2,
+      "text": "| --- | ---: | ---: |"
+    },
+    {
+      "paragraph": 3,
+      "text": "| 已学过规则 | 8/10 | 7/10 |"
+    },
+    {
+      "paragraph": 4,
+      "text": "| 首次接触规则 | 1/10 | 3/10 |"
+    },
+    {
+      "paragraph": 5,
+      "text": "表中的达标人数只反映同周测验；材料没有检验长期保持。"
+    }
+  ],
+  "revision": 1,
+  "findings": [
+    {
+      "id": "subgroup-reversal-overclaim",
+      "targetKind": "node",
+      "targetId": "n1",
+      "summary": "n1 将已学过规则组的比较推广到两组，忽略首次接触规则组中策略甲低于策略乙。",
+      "evidence": [
+        {
+          "paragraph": 1,
+          "quote": "策略甲达标人数 | 策略乙达标人数"
+        },
+        {
+          "paragraph": 3,
+          "quote": "| 已学过规则 | 8/10 | 7/10 |"
+        },
+        {
+          "paragraph": 4,
+          "quote": "| 首次接触规则 | 1/10 | 3/10 |"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source audit)",
+        "rationale": "表头固定甲、乙两列。P3 的 8/10 大于 7/10，但 P4 的 1/10 小于 3/10；n1 的‘两组均高于’与 P4 直接冲突。P5 另限制测验时点，但 n1 未声称长期效果，不能再为它虚构第二条缺陷。"
+      }
+    }
+  ]
+}

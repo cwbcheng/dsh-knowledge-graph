@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-public-domain-v13",
+  "description": "Short excerpt of Sunzi Bingfa, Mou Gong, from https://zh.wikisource.org/zh-hans/孙子兵法 (section 谋攻第三, consulted 2026-09-28). The three original semicolon clauses are separated into Host source units without changing their wording. This is a public-domain excerpt, not the user's book, and the defect label is same-thread Codex review.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "故曰：知彼知己，百战不殆" },
+    { "paragraph": 1, "text": "不知彼而知己，一胜一负" },
+    { "paragraph": 2, "text": "不知彼不知己，每战必殆。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-public-domain-v13", "documentId": "discovery-zh-public-domain-v13", "title": "《孙子兵法·谋攻》节选：知彼知己", "paragraphCount": 3 },
+    "summary": "这段原文分别论述知彼知己、不知彼而知己、两者皆不知三种情形；仅知己、不知彼对应一胜一负。",
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "不知彼而知己，也能百战不殆。", "paragraph": 1, "quote": "不知彼而知己，一胜一负", "evidence": [{ "paragraph": 1, "quote": "不知彼而知己，一胜一负" }] },
+      { "id": "n2", "type": "claim", "text": "知彼知己，百战不殆。", "paragraph": 0, "quote": "知彼知己，百战不殆", "evidence": [{ "paragraph": 0, "quote": "知彼知己，百战不殆" }] },
+      { "id": "n3", "type": "claim", "text": "不知彼也不知己，每战必殆。", "paragraph": 2, "quote": "不知彼不知己，每战必殆", "evidence": [{ "paragraph": 2, "quote": "不知彼不知己，每战必殆" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "self-only-promoted-to-both-known-safety", "targetKind": "node", "targetId": "n1", "summary": "n1 把原文对仅知己、不知彼的‘一胜一负’，误写成对知彼知己才说的‘百战不殆’。", "evidence": [{ "paragraph": 0, "quote": "知彼知己，百战不殆" }, { "paragraph": 1, "quote": "不知彼而知己，一胜一负" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "原文把两种条件并列区分：P0 同时知彼知己才称‘百战不殆’，P1 仅知己而不知彼则为‘一胜一负’。n1 把 P0 的结论套用到 P1，虽引用了真实 P1 原文，文本仍与其相反。n2 和 n3 分别忠于 P0、P2；未把对古文历史真伪的判断混入作者观点核实。" } }
+  ]
+}

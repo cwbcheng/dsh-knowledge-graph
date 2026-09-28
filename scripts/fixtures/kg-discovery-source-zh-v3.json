@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v3",
+  "description": "Invented Chinese source contrasting learning transfer with equipment transfer and a distant scope exception. Not from the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "一项试点记录，完成无提示新题练习的学生，迁移测验得分提高。" },
+    { "paragraph": 1, "text": "教师让学生先解题，答错后才展示答案，这里的“迁移”指把判别规则用于新题型。" },
+    { "paragraph": 2, "text": "设备组也说“迁移”，指把教具从甲教室搬到乙教室，这与学习中的规则应用不是同一概念。" },
+    { "paragraph": 3, "text": "未完成无提示新题练习的学生，迁移测验得分没有提高。" },
+    { "paragraph": 4, "text": "试点没有纳入小学低年级学生，也没有检验长期保持。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v3", "documentId": "discovery-zh-synthetic-v3", "title": "合成迁移试点材料", "paragraphCount": 5 },
+    "nodes": [
+      { "id": "n1", "type": "concept", "text": "学习迁移是把判别规则用于新题型", "paragraph": 1, "quote": "这里的“迁移”指把判别规则用于新题型", "evidence": [{ "paragraph": 1, "quote": "这里的“迁移”指把判别规则用于新题型" }] },
+      { "id": "n2", "type": "concept", "text": "设备迁移是把教具从甲教室搬到乙教室", "paragraph": 2, "quote": "把教具从甲教室搬到乙教室", "evidence": [{ "paragraph": 2, "quote": "把教具从甲教室搬到乙教室" }] },
+      { "id": "n3", "type": "claim", "text": "无提示新题练习让所有学生长期提高迁移测验得分。", "paragraph": 0, "quote": "完成无提示新题练习的学生，迁移测验得分提高", "evidence": [{ "paragraph": 0, "quote": "完成无提示新题练习的学生，迁移测验得分提高" }] },
+      { "id": "n4", "type": "fact", "text": "完成无提示新题练习的学生迁移测验得分提高", "paragraph": 0, "quote": "完成无提示新题练习的学生，迁移测验得分提高", "evidence": [{ "paragraph": 0, "quote": "完成无提示新题练习的学生，迁移测验得分提高" }] },
+      { "id": "n5", "type": "fact", "text": "未完成无提示新题练习的学生迁移测验得分没有提高", "paragraph": 3, "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高", "evidence": [{ "paragraph": 3, "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高" }] }
+    ],
+    "edges": [
+      { "fromNodeId": "n1", "toNodeId": "n2", "relation": "is_a", "evidence": [{ "paragraph": 2, "quote": "这与学习中的规则应用不是同一概念" }] }
+    ]
+  },
+  "findings": [
+    { "id": "homonym-false-is-a", "targetKind": "edge", "targetId": "n1>n2", "targetRelation": "is_a", "summary": "学习迁移与设备迁移仅同名，错误关系把两者混为一类。", "evidence": [{ "paragraph": 2, "quote": "这与学习中的规则应用不是同一概念" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P2 明确区分搬运教具和应用规则；n1→n2 的 is_a 将两个不同概念错误地归为一类。" } },
+    { "id": "scope-and-duration-overclaim", "targetKind": "node", "targetId": "n3", "summary": "n3 把受试练习组的短期观察写成所有学生的长期效果。", "evidence": [{ "paragraph": 0, "quote": "完成无提示新题练习的学生，迁移测验得分提高" }, { "paragraph": 3, "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高" }, { "paragraph": 4, "quote": "也没有检验长期保持" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P0 只描述完成练习的组；P3 说明未完成者没有提升，P4 又声明未检验长期保持。n3 的‘所有学生’和‘长期’均超出证据。" } }
+  ]
+}

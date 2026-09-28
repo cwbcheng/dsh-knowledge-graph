@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "datasetId": "kg-review-adversarial-draft-v1",
-  "goldHash": "f9d8820855f99521c9e2453fb8c58c2a9fdc588e6914be5a1f83a322d67a734c",
+  "datasetId": "kg-review-adversarial-codex-v1",
+  "goldHash": "2c47eb753e3e431819ca80ef793290cb7024231e548b2b9ba3d2097ab9a3fb7d",
   "runId": "controlled-regressed-v1",
   "model": "controlled-fixture-not-a-model",
   "promptVersion": "synthetic-regressed-v1",
@@ -13,6 +13,11 @@
     { "caseId": "homonym-not-duplicate", "verdict": "confirmed", "proposedFix": { "action": "merge_nodes", "nodePatch": { "id": "n2" }, "mergeIntoId": "n1" }, "usage": { "inputTokens": 170, "outputTokens": 55, "elapsedMs": 270 } },
     { "caseId": "unsafe-existing-merge", "verdict": "confirmed", "proposedFix": { "action": "delete_node", "nodePatch": { "id": "n1" } }, "usage": { "inputTokens": 155, "outputTokens": 40, "elapsedMs": 250 } },
     { "caseId": "distant-qualifier", "verdict": "uncertain", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 190, "outputTokens": 35, "elapsedMs": 300 } },
-    { "caseId": "insufficient-source", "verdict": "confirmed", "proposedFix": { "action": "delete_node", "nodePatch": { "id": "n1" } }, "usage": { "inputTokens": 145, "outputTokens": 45, "elapsedMs": 230 } }
+    { "caseId": "insufficient-source", "verdict": "confirmed", "proposedFix": { "action": "delete_node", "nodePatch": { "id": "n1" } }, "usage": { "inputTokens": 145, "outputTokens": 45, "elapsedMs": 230 } },
+    { "caseId": "zh-condition-negation", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 170, "outputTokens": 40, "elapsedMs": 270 } },
+    { "caseId": "lv-description-not-feature", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "type": "feature" } } }, "usage": { "inputTokens": 175, "outputTokens": 45, "elapsedMs": 280 } },
+    { "caseId": "lv-negative-example-mislabeled", "verdict": "confirmed", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 180, "outputTokens": 42, "elapsedMs": 290 } },
+    { "caseId": "zh-causal-relation-mislabeled", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 180, "outputTokens": 43, "elapsedMs": 310 } },
+    { "caseId": "zh-correlation-not-causal", "verdict": "confirmed", "proposedFix": { "action": "update_edge", "edgePatch": { "fromNodeId": "n1", "toNodeId": "n2", "oldRelation": "supports", "relation": "causes", "evidence": [{ "paragraph": 0, "quote": "练习次数与回忆成绩相关" }] } }, "usage": { "inputTokens": 185, "outputTokens": 48, "elapsedMs": 320 } }
   ]
 }

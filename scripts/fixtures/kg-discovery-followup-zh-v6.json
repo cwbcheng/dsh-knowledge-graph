@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v6-followup",
+  "discoveryGoldHash": "03c86a03057262e2476e74d6706dae3935557cd3ab123efa6e35dd44c79de3a1",
+  "reportHash": "0415755032b74890e8ea6f3efd214a9d269ab74034741deea4d4cbdc3cc840b2",
+  "issueId": "b1:v1",
+  "category": "quoted-speaker-vs-editor",
+  "label": {
+    "status": "codex-reviewed",
+    "reviewer": "Codex (same-thread source and discovery-report audit)",
+    "reviewedAt": "2026-09-28",
+    "rationale": "P1 attributes the claim to teacher Lin, P0 separates quotation from endorsement, and P2 rejects treating Lin's opinion as established. The n1 attribution is false. Removing n1 is a source-safe repair because n2 already retains Lin's attributed opinion; a different rewrite needs separate review."
+  },
+  "question": "请独立核对 n1 是否把教师林的引述错误归给编辑。若成立，只提出有原文支持且不与 n2 重复的修复。",
+  "approvedFixes": [
+    { "action": "delete_node", "nodePatch": { "id": "n1" } }
+  ]
+}

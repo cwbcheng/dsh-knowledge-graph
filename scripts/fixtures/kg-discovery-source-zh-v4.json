@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v4",
+  "description": "Invented table with a subgroup reversal. Tests whether full-graph discovery preserves column headers and row-specific qualifiers. Not from the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "同周测验记录了两种学习策略的达标人数，每组每种策略各有十名学生。" },
+    { "paragraph": 1, "text": "| 学生组别 | 策略甲达标人数 | 策略乙达标人数 |" },
+    { "paragraph": 2, "text": "| --- | ---: | ---: |" },
+    { "paragraph": 3, "text": "| 已学过规则 | 8/10 | 7/10 |" },
+    { "paragraph": 4, "text": "| 首次接触规则 | 1/10 | 3/10 |" },
+    { "paragraph": 5, "text": "表中的达标人数只反映同周测验；材料没有检验长期保持。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v4", "documentId": "discovery-zh-synthetic-v4", "title": "合成分组策略对照表", "paragraphCount": 6 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "策略甲在已学过规则和首次接触规则两组中，达标人数均高于策略乙。", "paragraph": 3, "quote": "| 已学过规则 | 8/10 | 7/10 |", "evidence": [{ "paragraph": 1, "quote": "策略甲达标人数 | 策略乙达标人数" }, { "paragraph": 3, "quote": "| 已学过规则 | 8/10 | 7/10 |" }] },
+      { "id": "n2", "type": "fact", "text": "已学过规则组中，策略甲八人达标，策略乙七人达标。", "paragraph": 3, "quote": "| 已学过规则 | 8/10 | 7/10 |", "evidence": [{ "paragraph": 1, "quote": "策略甲达标人数 | 策略乙达标人数" }, { "paragraph": 3, "quote": "| 已学过规则 | 8/10 | 7/10 |" }] },
+      { "id": "n3", "type": "fact", "text": "首次接触规则组中，策略甲一人达标，策略乙三人达标。", "paragraph": 4, "quote": "| 首次接触规则 | 1/10 | 3/10 |", "evidence": [{ "paragraph": 1, "quote": "策略甲达标人数 | 策略乙达标人数" }, { "paragraph": 4, "quote": "| 首次接触规则 | 1/10 | 3/10 |" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "subgroup-reversal-overclaim", "targetKind": "node", "targetId": "n1", "summary": "n1 将已学过规则组的比较推广到两组，忽略首次接触规则组中策略甲低于策略乙。", "evidence": [{ "paragraph": 1, "quote": "策略甲达标人数 | 策略乙达标人数" }, { "paragraph": 3, "quote": "| 已学过规则 | 8/10 | 7/10 |" }, { "paragraph": 4, "quote": "| 首次接触规则 | 1/10 | 3/10 |" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "表头固定甲、乙两列。P3 的 8/10 大于 7/10，但 P4 的 1/10 小于 3/10；n1 的‘两组均高于’与 P4 直接冲突。P5 另限制测验时点，但 n1 未声称长期效果，不能再为它虚构第二条缺陷。" } }
+  ]
+}

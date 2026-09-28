@@ -18,11 +18,12 @@ function deferred() {
 
 // Exercise the real runner with controlled streams, including retries and the
 // separate evidence verifier. No provider or production database is involved.
-const handlers = new Map(), streams = []
+const handlers = new Map(), streams = [], modelRequests = []
 globalThis.harness = { handle(name, fn) { handlers.set(name, fn) } }
 hostPlugin().apply({ interval() {}, get(name) {
   if (name !== 'llm') return null
-  return { stream() {
+  return { stream(request) {
+    modelRequests.push(request)
     const pending = [], values = []
     let closed = false
     const stream = {
@@ -38,7 +39,7 @@ hostPlugin().apply({ interval() {}, get(name) {
 } })
 const text = 'Evidence for the fixture.'
 const graph = {
-  nodes: Array.from({ length: 13 }, (_, i) => ({ id: 'n' + i, type: 'fact', text, quote: text, paragraph: 0 })),
+  nodes: Array.from({ length: 13 }, (_, i) => ({ id: 'n' + i, type: 'fact', text: i === 0 ? 'Graph proposition under review' : text, quote: text, paragraph: 0 })),
   edges: [{ fromNodeId: 'n0', toNodeId: 'n12', relation: 'supports', evidence: [{ paragraph: 0, quote: text }] }],
 }
 const submit = () => handlers.get('verify-graph')({ text, graph, mode: 'standard', concurrency: 1, model: { provider: 'fixture', model: 'controlled' } })
@@ -64,6 +65,8 @@ assert.equal(progress.verification.completedBatches, 0, 'a retry is not a comple
 assert.ok(progress.stage.includes('重试 1/2'))
 streams[1].finish(JSON.stringify({ issues: [{ id: 'one', severity: 'warning', category: 'other', targetKind: 'node', targetId: 'n0', title: 'Fixture issue', detail: 'Fixture detail', evidence: [{ paragraph: 0, quote: text }], confidence: 0.9, proposedFix: { action: 'none' } }] }))
 await until(() => streams.length === 3)
+assert.ok(modelRequests[2].messages[0].content[0].text.includes('Graph proposition under review'),
+  'independent verifier needs the exact graph proposition to adjudicate a node allegation')
 progress = (await status()).progress
 assert.equal(progress.verification.phase, 'confirm')
 assert.equal(progress.verification.completedBatches, 0, 'the batch is unfinished until independent confirmation returns')

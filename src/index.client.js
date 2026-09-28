@@ -3016,20 +3016,28 @@ export default function clientPlugin() {
       function batchReviewIssueSignature(issue) {
         return JSON.stringify([reviewIssueSignature(issue), issue?.category || 'other', issue?.proposedFix || { action: 'none' }])
       }
-      function batchSafeFix(issue, fix, evidence = []) {
+      function batchSafeFix(issue, fix, evidence = [], graph) {
         if (issue?.targetKind !== 'node' || fix?.action !== 'update_node'
           || fix.nodePatch?.id !== issue.targetId) return false
         const patch = fix.nodePatch.patch
-        return patch && Object.keys(patch).length > 0 && Object.keys(patch).every(key => key === 'text' || key === 'quote')
+        const node = graph?.nodes?.find(item => item?.id === issue.targetId)
+        const retainedQuote = patch?.quote === undefined ? node?.quote : patch.quote
+        const resultingText = patch?.text === undefined ? node?.text : patch.text
+        // A structural commit can authenticate a quote but cannot prove that
+        // a paraphrase is entailed by it. The resulting text must be grounded
+        // even when the patch changes only the quote.
+        return Boolean(node && patch) && Object.keys(patch).length > 0 && Object.keys(patch).every(key => key === 'text' || key === 'quote')
           && (patch.text === undefined || typeof patch.text === 'string' && patch.text.trim().length > 0)
           && (patch.quote === undefined || typeof patch.quote === 'string' && patch.quote.trim().length > 0
             && evidence.some(ev => ev.quote === patch.quote))
+          && typeof resultingText === 'string' && resultingText.trim().length > 0
+          && typeof retainedQuote === 'string' && retainedQuote.trim().includes(resultingText.trim())
       }
-      function batchReviewCounts(rows, report) {
+      function batchReviewCounts(rows, report, graph) {
         const openIds = new Set((report?.issues || []).filter(issue => issue.status === 'open').map(issue => issue.id))
         const valid = (rows || []).filter(row => openIds.has(row.issueId))
         const safe = valid.filter(row => row.verdict === 'confirmed'
-          && batchSafeFix(report.issues.find(issue => issue.id === row.issueId), row.proposedFix, row.evidence)).length
+          && batchSafeFix(report.issues.find(issue => issue.id === row.issueId), row.proposedFix, row.evidence, graph)).length
         return { total: valid.length, safe, falsePositive: valid.filter(row => row.verdict === 'false_positive').length,
           confirmedManual: valid.filter(row => row.verdict === 'confirmed').length - safe,
           uncertain: valid.filter(row => row.verdict === 'uncertain').length,
@@ -3072,7 +3080,7 @@ export default function clientPlugin() {
             nextReport = updateIssueStatus(nextReport, issue.id, 'rejected', '批量 AI 核实认为原问题不成立：' + String(row.answer || '').slice(0, 300))
             counts.falsePositive++
             outcomes.push({ issueId: row.issueId, kind: 'false_positive', reason: '标记原问题为误报，不修改知识图' })
-          } else if (row.verdict === 'confirmed' && batchSafeFix(issue, row.proposedFix, row.evidence)
+          } else if (row.verdict === 'confirmed' && batchSafeFix(issue, row.proposedFix, row.evidence, current)
             && nodeTypeFixConflicts(current, row.proposedFix).length === 0) {
             const patched = applyPatch(current, { ...issue, proposedFix: row.proposedFix, reportId: report.reportId })
             if (patched !== current || patchAlreadySatisfied(current, { ...issue, proposedFix: row.proposedFix })) {
@@ -3084,7 +3092,9 @@ export default function clientPlugin() {
             } else { counts.conflicts++; outcomes.push({ issueId: row.issueId, kind: 'conflict', reason: '补丁无法安全应用' }) }
           } else {
             counts.manual++
-            outcomes.push({ issueId: row.issueId, kind: 'manual', reason: row.verdict === 'uncertain' ? '证据不足，保留待处理' : '问题成立，但补丁不满足批量安全条件' })
+            outcomes.push({ issueId: row.issueId, kind: 'manual', reason: row.verdict === 'uncertain' ? '证据不足，保留待处理'
+              : row.proposedFix?.action === 'update_node' ? '问题成立，但节点文字或摘录无法逐字核对，需单项确认'
+                : '问题成立，但补丁不满足批量安全条件' })
           }
         }
         return { graph: current, report: nextReport, counts, outcomes }
@@ -6605,12 +6615,55 @@ export default function clientPlugin() {
       }
 
       // --------------------- verification panel ---------------------
+      function repairSourcePeerIds(graph, fix) {
+        if (fix?.action !== 'update_node' || !Array.isArray(graph?.nodes)) return []
+        const target = graph.nodes.find(node => node.id === fix.nodePatch?.id)
+        const patch = fix.nodePatch?.patch
+        if (!target || typeof patch?.text !== 'string' || !patch.text.trim()
+          || patch.text.trim() === String(target.text || '').trim()) return []
+        const paragraph = patch.paragraph == null ? target.paragraph : Number(patch.paragraph)
+        const quote = patch.quote == null ? target.quote : patch.quote
+        if (!Number.isInteger(paragraph) || typeof quote !== 'string' || !quote.trim()) return []
+        return graph.nodes.filter(node => node.id !== target.id && node.paragraph === paragraph
+          && String(node.quote || '').trim() === quote.trim()).slice(0, 3).map(node => node.id)
+      }
+
+      function repairRetainedCitationWarning(graph, fix) {
+        if (fix?.action !== 'update_node') return null
+        const patch = fix.nodePatch?.patch
+        if (typeof patch?.text !== 'string' || !patch.text.trim()) return null
+        const target = graph?.nodes?.find(node => node.id === fix.nodePatch?.id)
+        if (!target) return '当前图窗口未载入目标节点的原引文；保存前请核对完整节点证据。'
+        if (patch.text.trim() === String(target.text || '').trim()) return null
+        const samePrimary = (patch.quote == null || patch.quote === target.quote)
+          && (patch.paragraph == null || Number(patch.paragraph) === target.paragraph)
+        const oldEvidence = (target.evidence || []).map(item => [item.paragraph, item.quote])
+        const newEvidence = Array.isArray(patch.evidence)
+          ? patch.evidence.map(item => [item.paragraph, item.quote]) : oldEvidence
+        const sameEvidence = JSON.stringify(newEvidence) === JSON.stringify(oldEvidence)
+        if (!samePrimary && !sameEvidence) return null
+        const location = item => '第' + (Number.isInteger(item.paragraph) ? item.paragraph + 1 : '?')
+          + '段「' + String(item.quote || '').slice(0, 100) + '」'
+        const retained = []
+        if (samePrimary) retained.push('主引文仍为' + location(target))
+        if (sameEvidence && oldEvidence.length) retained.push('证据仍有' + target.evidence.slice(0, 3).map(location).join('、'))
+        if (!retained.length) return null
+        return '拟议文字已改变，但' + retained.join('；') + '。这些引文未随修改更新，请逐项核对是否支持新表述。'
+      }
+
       function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [workPackageMode, setWorkPackageMode] = useState('family')
         const [workPackageKey, setWorkPackageKey] = useState(null)
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
+        const [sourcePeerCheck, setSourcePeerCheck] = useState(null)
+        const [sourcePeerError, setSourcePeerError] = useState('')
+        const [sourcePeerChecking, setSourcePeerChecking] = useState(false)
+        const sourcePeerRequestRef = useRef(0)
+        const sourcePeerBusyRef = useRef(false)
+        const sourcePeerGraphRef = useRef(graph)
+        sourcePeerGraphRef.current = graph
         const [flashIssueId, setFlashIssueId] = useState(null)
         const prevActiveIssueRef = useRef(null)
         const questionBarRef = useRef(null)
@@ -6638,7 +6691,7 @@ export default function clientPlugin() {
         const workPackage = typeof onStartBulkReview !== 'function' || workPackageKey === 'all' ? null
           : workPackages.find(group => group.key === workPackageKey) || workPackages.find(group => group.remaining > 0) || workPackages[0]
         const workPackageIds = workPackage ? new Set(workPackage.issues.map(issue => issue.id)) : null
-        const bulkCounts = batchReviewCounts(bulkReview?.rows, report)
+        const bulkCounts = batchReviewCounts(bulkReview?.rows, report, graph)
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
@@ -6654,7 +6707,14 @@ export default function clientPlugin() {
           const group = workPackages.find(item => item.issues.some(issue => issue.id === activeIssueId))
           if (group) setWorkPackageKey(group.key)
         }, [activeIssueId, report?.reportId, issueFilter, workPackageMode])
-        useEffect(() => { setPendingDestructiveFix(null) }, [questionResult, activeIssueId])
+        useEffect(() => {
+          sourcePeerRequestRef.current += 1
+          sourcePeerBusyRef.current = false
+          setPendingDestructiveFix(null)
+          setSourcePeerCheck(null)
+          setSourcePeerError('')
+          setSourcePeerChecking(false)
+        }, [questionResult, activeIssueId, graph])
         useEffect(() => {
           const index = shown.findIndex(issue => issue.id === activeIssueId)
           if (index >= 40) setIssueLimit(limit => Math.max(limit, Math.ceil((index + 1) / 40) * 40))
@@ -6679,6 +6739,8 @@ export default function clientPlugin() {
         const qFix = questionResult && questionResult.proposedFix &&
           (!isReviewResult || (issueReview && questionResult.verdict === 'confirmed')) ? questionResult.proposedFix : null
         const qFixConflicts = nodeTypeFixConflicts(graph, qFix)
+        const qSourcePeers = repairSourcePeerIds(graph, qFix)
+        const qRetainedCitationWarning = repairRetainedCitationWarning(graph, qFix)
         const qAction = qFix ? qFix.action : 'none'
         const qVerdict = questionResult ? questionResult.verdict : ''
         const recheckedIssue = issueReview && questionTarget?.sourceIssueId
@@ -6694,7 +6756,7 @@ export default function clientPlugin() {
           if (fix.action === 'update_node') {
             const changes = []
             if (patch.type && patch.type !== node?.type) changes.push('类型 ' + typeLabel(node?.type || '?') + ' → ' + typeLabel(patch.type))
-            if (patch.text && patch.text !== node?.text) changes.push('文字 → ' + patch.text.slice(0, 120))
+            if (patch.text && patch.text !== node?.text) changes.push('文字 → ' + patch.text)
             if (patch.quote != null && patch.quote !== node?.quote) changes.push('原文摘录 → ' + patch.quote.slice(0, 80))
             if (patch.paragraph != null && patch.paragraph !== node?.paragraph) changes.push('段落 → P' + (patch.paragraph + 1))
             return '更新节点 ' + nodeId + '：' + (changes.join('；') || '无可见变化')
@@ -6712,16 +6774,56 @@ export default function clientPlugin() {
           if (fix.action === 'update_summary') return '更新图总结：' + String(fix.summaryPatch || '').slice(0, 120)
           return '修复操作：' + fix.action
         }
-        const applyReviewedIssue = (issue) => {
+        const confirmationKey = (id, fix) => JSON.stringify([documentIdOfGraph(graph), graph?.revision, id, fix])
+        const applyReviewedIssue = async (issue, confirmationId = issue?.id) => {
           const action = issue?.proposedFix?.action
           if (bulkRunning) return
           if (archivedIssueNeedsFreshReview(report, graph, issue)) return
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
-          if (['delete_node', 'delete_edge', 'merge_nodes'].includes(action)) {
-            const key = JSON.stringify(issue.proposedFix)
+          const key = confirmationKey(confirmationId, issue.proposedFix)
+          const patch = issue?.proposedFix?.nodePatch?.patch
+          const needsSourceCheck = action === 'update_node' && typeof patch?.text === 'string' && patch.text.trim()
+            && patch.text !== graph?.nodes?.find(node => node.id === issue.proposedFix.nodePatch.id)?.text
+          if (needsSourceCheck && sourcePeerCheck?.key !== key) {
+            if (sourcePeerBusyRef.current) return
+            sourcePeerBusyRef.current = true
+            const request = ++sourcePeerRequestRef.current
+            setSourcePeerError('')
+            setSourcePeerChecking(true)
+            try {
+              const documentId = documentIdOfGraph(graph)
+              const checked = await host.call('graph-source-peers', {
+                documentId, expectedRevision: graph?.revision,
+                nodeId: issue.proposedFix.nodePatch.id, patch,
+              })
+              if (sourcePeerRequestRef.current !== request || sourcePeerGraphRef.current !== graph) return
+              if (checked?.error || checked?.documentId !== documentId || checked?.revision !== graph?.revision
+                || !Array.isArray(checked.peerIds) || !Number.isSafeInteger(checked.additionalPeers)) {
+                throw new Error(checked?.error?.message || '无法核对完整知识图中的同源节点')
+              }
+              setSourcePeerCheck({ key, peerIds: checked.peerIds, additionalPeers: checked.additionalPeers })
+              if (checked.peerIds.length > 0 || checked.additionalPeers > 0) {
+                setPendingDestructiveFix(key)
+                return
+              }
+            } catch (error) {
+              if (sourcePeerRequestRef.current === request && sourcePeerGraphRef.current === graph) {
+                setSourcePeerError((error?.message || '来源核对失败') + '；未提交修复，请重试')
+              }
+              return
+            } finally {
+              if (sourcePeerRequestRef.current === request) {
+                sourcePeerBusyRef.current = false
+                setSourcePeerChecking(false)
+              }
+            }
+          }
+          if (needsSourceCheck || ['delete_node', 'delete_edge', 'merge_nodes', 'add_edge', 'update_edge'].includes(action)
+            || (sourcePeerCheck?.key === key && (sourcePeerCheck.peerIds.length > 0 || sourcePeerCheck.additionalPeers > 0))) {
             if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }
           }
           setPendingDestructiveFix(null)
+          setSourcePeerCheck(null)
           onApplyIssue(issue, issue?.source === 'issue_review' ? questionTarget?.reviewSnapshot || questionTarget?.reviewSignature : undefined)
         }
         // A contradicted/insufficient answer without a structured fix is not a
@@ -6783,14 +6885,31 @@ export default function clientPlugin() {
                 qFix && qFix.action !== 'none'
                   ? h('div', null,
                       h('p', { className: 'kg-fix-preview' }, '拟议修改：' + fixLabel(qFix)),
-                      pendingDestructiveFix === JSON.stringify(qFix)
+                      qSourcePeers.length > 0 ? h('p', { className: 'kg-question-error' },
+                        '拟议修改将与当前图窗口中的节点 ' + qSourcePeers.join('、') + ' 使用同一段原文摘录；请核对是否重复，系统不会自动合并。') : null,
+                      sourcePeerCheck?.key === confirmationKey(questionTarget?.sourceIssueId || 'qfix', qFix)
+                        && sourcePeerCheck.peerIds.length > 0
+                        ? h('p', { className: 'kg-question-error', role: 'alert' },
+                            '完整知识图中另有节点 ' + sourcePeerCheck.peerIds.join('、')
+                              + (sourcePeerCheck.additionalPeers ? ' 等 ' + (sourcePeerCheck.peerIds.length + sourcePeerCheck.additionalPeers) + ' 个节点' : '')
+                              + ' 使用同一段原文摘录；请核对是否重复，系统不会自动合并。') : null,
+                      ['add_edge', 'update_edge'].includes(qFix.action)
+                        ? h('p', { className: 'kg-question-error', role: 'alert' },
+                            '原文定位和本体类型校验不等于关系成立；关系方向和语义尚未独立验证，请核对引文中的否定、条件和方向。') : null,
+                      qFix.action === 'update_node' && typeof qFix.nodePatch?.patch?.text === 'string'
+                        && qFix.nodePatch.patch.text !== graph?.nodes?.find(node => node.id === qFix.nodePatch.id)?.text
+                        ? h('p', { className: 'kg-question-error', role: 'alert' },
+                            '节点表述的原文定位不等于语义成立；请核对引文中的猜测、否定、条件、人群和数量。') : null,
+                      qRetainedCitationWarning
+                        ? h('p', { className: 'kg-question-error', role: 'alert' }, qRetainedCitationWarning) : null,
+                      pendingDestructiveFix === confirmationKey(questionTarget?.sourceIssueId || 'qfix', qFix)
                         ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
                       reviewGraphChanged ? h('p', { className: 'kg-question-error' }, '知识图已变化，这项复核不能用于当前图；请重新核实。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
                         '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
                       h('button', {
-                        type: 'button', className: 'kg-primary', disabled: bulkRunning || reviewGraphChanged || qFixConflicts.length > 0,
+                        type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0,
                         onClick: () => applyReviewedIssue({
                           id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: issueReview ? 'issue_review' : 'question', severity: 'warning', category: 'other',
                           targetKind: issueReview ? recheckedIssue?.targetKind || 'graph' : questionTarget ? questionTarget.kind : 'graph',
@@ -6798,8 +6917,8 @@ export default function clientPlugin() {
                           title: '采纳质疑建议：' + qFix.action, detail: questionResult.answer || '',
                           evidence: questionResult.evidence || [], confidence: 1,
                           proposedFix: qFix, status: 'open',
-                        }),
-                      }, pendingDestructiveFix === JSON.stringify(qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复')
+                        }, questionTarget?.sourceIssueId || 'qfix'),
+                      }, pendingDestructiveFix === confirmationKey(questionTarget?.sourceIssueId || 'qfix', qFix) ? '确认' + (qFix.action === 'delete_edge' ? '删除关系' : '执行修复')
                         : issueReview ? '确认修复并保存' : '采纳修复建议'),
                       ),
                     )
@@ -6938,10 +7057,10 @@ export default function clientPlugin() {
                               return h('div', { key: row.issueId, className: 'kg-issue' },
                                 h('strong', null, row.issueId + ' · ' + (issue?.title || '问题')),
                                 h('div', { className: 'kg-issue-detail' }, row.error ||
-                                  (row.verdict === 'confirmed' ? batchSafeFix(issue, row.proposedFix, row.evidence) ? '问题成立 · 可批量修复' : '问题成立 · 需单独处理'
+                                  (row.verdict === 'confirmed' ? batchSafeFix(issue, row.proposedFix, row.evidence, graph) ? '问题成立 · 可批量修复' : '问题成立 · 需单独处理'
                                     : row.verdict === 'false_positive' ? '疑似误报' : '证据不足')),
                                 row.answer ? h('div', { className: 'kg-issue-detail' }, row.answer) : null,
-                                batchSafeFix(issue, row.proposedFix, row.evidence)
+                                batchSafeFix(issue, row.proposedFix, row.evidence, graph)
                                   ? h('div', { className: 'kg-fix-preview' }, fixLabel(row.proposedFix)) : null)
                             }))) : null,
                       h('div', { className: 'kg-issue-actions' },
@@ -6966,6 +7085,7 @@ export default function clientPlugin() {
                 h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
                   onClick: onUndoBulkReview, title: '仅当本组保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上一组修改')) : null,
           questionContent,
+          sourcePeerError ? h('p', { className: 'kg-question-error', role: 'alert' }, sourcePeerError) : null,
           h('div', { className: 'kg-verify-filters' },
             ['all', ...SEVERITY_ORDER].map((s) => h('button', {
               key: s, type: 'button',
@@ -6987,6 +7107,8 @@ export default function clientPlugin() {
                     ? { ...it, proposedFix: { action: 'update_node', nodePatch: { id: relationSourceNode.id, patch: { type: relationRequiredSource } } } }
                     : null
                   const hasFix = it.proposedFix && it.proposedFix.action && it.proposedFix.action !== 'none'
+                  const sourcePeers = repairSourcePeerIds(graph, it.proposedFix)
+                  const retainedCitationWarning = repairRetainedCitationWarning(graph, it.proposedFix)
                   return h('div', {
                     key: it.id,
                     className: 'kg-issue kg-sev-' + it.severity + (activeIssueId === it.id ? ' on' : '') + (flashIssueId === it.id ? ' kg-issue-flash' : '') + (it.status === 'applied' ? ' kg-applied' : it.status === 'rejected' ? ' kg-rejected' : ''),
@@ -7016,6 +7138,24 @@ export default function clientPlugin() {
                           }))
                       : null,
                     hasFix ? h('p', { className: 'kg-fix-preview' }, (reportStale ? '旧版拟议修改（需重新核实）：' : '拟议修改：') + fixLabel(it.proposedFix)) : null,
+                    hasFix && sourcePeers.length > 0 ? h('p', { className: 'kg-question-error' },
+                      '拟议修改将与当前图窗口中的节点 ' + sourcePeers.join('、') + ' 使用同一段原文摘录；请核对是否重复，系统不会自动合并。') : null,
+                    hasFix && sourcePeerCheck?.key === confirmationKey(it.id, it.proposedFix)
+                      && sourcePeerCheck.peerIds.length > 0
+                      ? h('p', { className: 'kg-question-error', role: 'alert' },
+                          '完整知识图中另有节点 ' + sourcePeerCheck.peerIds.join('、')
+                            + (sourcePeerCheck.additionalPeers ? ' 等 ' + (sourcePeerCheck.peerIds.length + sourcePeerCheck.additionalPeers) + ' 个节点' : '')
+                            + ' 使用同一段原文摘录；请核对是否重复，系统不会自动合并。') : null,
+                    hasFix && ['add_edge', 'update_edge'].includes(it.proposedFix.action)
+                      ? h('p', { className: 'kg-question-error' },
+                          '原文定位和本体类型校验不等于关系成立；关系方向和语义尚未独立验证，请核对引文中的否定、条件和方向。') : null,
+                    hasFix && it.proposedFix.action === 'update_node'
+                      && typeof it.proposedFix.nodePatch?.patch?.text === 'string'
+                      && it.proposedFix.nodePatch.patch.text !== graph?.nodes?.find(node => node.id === it.proposedFix.nodePatch.id)?.text
+                      ? h('p', { className: 'kg-question-error' },
+                          '节点表述的原文定位不等于语义成立；请核对引文中的猜测、否定、条件、人群和数量。') : null,
+                    hasFix && retainedCitationWarning
+                      ? h('p', { className: 'kg-question-error', role: 'alert' }, retainedCitationWarning) : null,
                     hasFix && nodeTypeFixConflicts(graph, it.proposedFix).length > 0
                       ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点类型或关联关系不符合本体约束。') : null,
                     h('div', { className: 'kg-issue-actions' },
@@ -7028,7 +7168,7 @@ export default function clientPlugin() {
                             onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === JSON.stringify(it.proposedFix) ? '确认执行修复' : '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
                         ? h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
@@ -10401,7 +10541,8 @@ export default function clientPlugin() {
             ? '本组有 ' + changedIssues + ' 项问题内容已变化；未保存任何修改，核实结果已保留，请重新核实变化的问题'
             : unprovenIssues ? '本组有 ' + unprovenIssues + ' 项旧结果缺少问题校验凭据；未保存任何修改，结果已保留，请重新核实这些问题'
               : '没有可保存的核实结论；目标可能已变化')
-          const next = withVerification(planned.graph, { ...planned.report, stale: true }, true)
+          const reportStaleAfterPlan = verificationReportStale(report, baseline) || planned.graph !== baseline
+          const next = withVerification(planned.graph, { ...planned.report, stale: reportStaleAfterPlan }, reportStaleAfterPlan)
           const request = graphCommitRequest(next, baseline, loaded.revision)
           const fingerprint = await reviewSignatureHash(JSON.stringify({ revision: loaded.revision,
             sourceHash: session.sourceHash, reportId: report.reportId, rows: session.rows,

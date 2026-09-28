@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-review-adversarial-codex-v1",
+  "description": "Synthetic, inspectable allegations for targeted AI issue review. Labels received a Codex same-thread evidence pass, not independent human confirmation or validation on a live book/model.",
+  "cases": [
+    {
+      "id": "negation-reversed",
+      "category": "negation",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "P1 says the trial did not show improvement, while n1 says it did. Replacing n1 text with the exact source sentence preserves the negative result without claiming the intervention was proven ineffective." },
+      "sourceUnits": [{ "paragraph": 0, "text": "The trial did not show that the intervention improved memory." }],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "The trial showed that the intervention improved memory.", "paragraph": 0, "quote": "The trial did not show that the intervention improved memory." }], "edges": [] },
+      "allegation": { "issueId": "negation-reversed", "targetKind": "node", "targetId": "n1", "title": "The node reverses the negation in the source." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Check whether the node reverses the source negation.", "evidence": [{ "paragraph": 0, "quote": "did not show" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "The trial did not show that the intervention improved memory." } } }] }
+    },
+    {
+      "id": "condition-already-present",
+      "category": "applicability-condition",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "P1 and n1 both restrict the observed benefit to adults and state that children were not studied. The allegation of overgeneralization is false; no edit is supported." },
+      "sourceUnits": [{ "paragraph": 0, "text": "In the adult sample, the program improved test scores; children were not studied." }],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "In the adult sample, the program improved test scores; children were not studied.", "paragraph": 0, "quote": "In the adult sample, the program improved test scores; children were not studied." }], "edges": [] },
+      "allegation": { "issueId": "condition-already-present", "targetKind": "node", "targetId": "n1", "title": "The node supposedly overgeneralizes the study to children." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Check whether the node already includes the adult-only condition.", "evidence": [{ "paragraph": 0, "quote": "In the adult sample" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "cross-paragraph-exception",
+      "category": "cross-paragraph-evidence",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "P1 supports only an adult-group improvement and P2 says the child effect is unknown, so n1 overstates the population. A single n1 text repair must retain its P1 quote and therefore state only the adult result, not copy P2's separate conclusion into the same node." },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "The program improved test scores in the adult group." },
+        { "paragraph": 1, "text": "Children were not included, so the effect on children remains unknown." }
+      ],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "The program improved test scores for all learners.", "paragraph": 0, "quote": "The program improved test scores in the adult group." }], "edges": [] },
+      "allegation": { "issueId": "cross-paragraph-exception", "targetKind": "node", "targetId": "n1", "title": "The all-learners claim ignores a later exception." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Check the later paragraph before deciding whether the claim covers children.", "evidence": [{ "paragraph": 1, "quote": "Children were not included" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "The program improved test scores in the adult group." } } }] }
+    },
+    {
+      "id": "homonym-not-duplicate",
+      "category": "same-name-different-meaning",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "P1 defines transfer in learning and P2 defines transfer in databases. The shared word does not make these two source-grounded concepts duplicates; merging would lose the domain distinction." },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "Transfer in learning means applying knowledge in a new situation." },
+        { "paragraph": 1, "text": "Transfer in databases means moving records between storage systems." }
+      ],
+      "graph": { "nodes": [
+        { "id": "n1", "type": "concept", "text": "Transfer in learning means applying knowledge in a new situation.", "paragraph": 0, "quote": "Transfer in learning means applying knowledge in a new situation." },
+        { "id": "n2", "type": "concept", "text": "Transfer in databases means moving records between storage systems.", "paragraph": 1, "quote": "Transfer in databases means moving records between storage systems." }
+      ], "edges": [] },
+      "allegation": { "issueId": "homonym-not-duplicate", "targetKind": "graph", "targetId": "graph", "title": "Two nodes named transfer should be merged as duplicates." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Compare the two uses of transfer before proposing any merge.", "evidence": [{ "paragraph": 0, "quote": "Transfer in learning" }, { "paragraph": 1, "quote": "Transfer in databases" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "unsafe-existing-merge",
+      "category": "incorrect-merge",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "n1 combines learning-theory experience from P1 with experiment-log experience from P2 under one P1 quote. The conflation is real, but deletion or a single text edit would discard one meaning; the repair requires separately grounded nodes and any dependent relations to be reviewed." },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "In learning theory, experience is the learner's prior encounters." },
+        { "paragraph": 1, "text": "In an experiment log, experience means a recorded trial." }
+      ],
+      "graph": { "nodes": [{ "id": "n1", "type": "concept", "text": "Experience is both a learner's prior encounters and a recorded trial.", "paragraph": 0, "quote": "In learning theory, experience is the learner's prior encounters." }], "edges": [] },
+      "allegation": { "issueId": "unsafe-existing-merge", "targetKind": "node", "targetId": "n1", "title": "This node merged two incompatible meanings from different contexts." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Compare the two source-specific meanings before choosing a repair.", "evidence": [{ "paragraph": 0, "quote": "learner's prior encounters" }, { "paragraph": 1, "quote": "a recorded trial" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "distant-qualifier",
+      "category": "distant-dependency",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "P1 says feedback often helps mistake correction, not that it always improves every learner's performance; P10 adds an anxiety exception. n1 can be repaired to its own P1 wording while n9 retains the separately quoted exception." },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "Rapid feedback often helps people correct mistakes." },
+        { "paragraph": 1, "text": "The chapter next describes practice schedules." },
+        { "paragraph": 2, "text": "It distinguishes spaced and massed practice." },
+        { "paragraph": 3, "text": "The author gives a classroom timetable example." },
+        { "paragraph": 4, "text": "A separate section discusses student motivation." },
+        { "paragraph": 5, "text": "The source then compares two study routines." },
+        { "paragraph": 6, "text": "The next example concerns written exercises." },
+        { "paragraph": 7, "text": "Another paragraph discusses teacher planning." },
+        { "paragraph": 8, "text": "The chapter turns to individual differences." },
+        { "paragraph": 9, "text": "For learners in severe anxiety, immediate feedback may worsen performance." }
+      ],
+      "graph": { "nodes": [
+        { "id": "n1", "type": "claim", "text": "Rapid feedback always improves performance for every learner.", "paragraph": 0, "quote": "Rapid feedback often helps people correct mistakes." },
+        { "id": "n9", "type": "claim", "text": "For learners in severe anxiety, immediate feedback may worsen performance.", "paragraph": 9, "quote": "For learners in severe anxiety, immediate feedback may worsen performance." }
+      ], "edges": [] },
+      "allegation": { "issueId": "distant-qualifier", "targetKind": "node", "targetId": "n1", "title": "The universal feedback claim ignores a distant qualifier." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Check the distant exception at paragraph 9 before judging n1.", "evidence": [{ "paragraph": 9, "quote": "immediate feedback may worsen performance" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "Rapid feedback often helps people correct mistakes." } } }] }
+    },
+    {
+      "id": "insufficient-source",
+      "category": "uncertainty-calibration",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "n1 faithfully attributes the claim to the author. P1 supplies no trial data to decide the separate allegation of real-world ineffectiveness, so neither deletion nor a factual verdict is justified from this source alone." },
+      "sourceUnits": [{ "paragraph": 0, "text": "The author claims the method improves children's memory; no external trial data are provided." }],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "The author claims the method improves children's memory.", "paragraph": 0, "quote": "The author claims the method improves children's memory; no external trial data are provided." }], "edges": [] },
+      "allegation": { "issueId": "insufficient-source", "targetKind": "node", "targetId": "n1", "title": "The method is ineffective in reality." },
+      "input": { "text": "", "question": "Independently verify this allegation against the source.", "detail": "Separate faithful attribution from independent real-world efficacy.", "evidence": [{ "paragraph": 0, "quote": "no external trial data are provided" }] },
+      "gold": { "verdict": "uncertain", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "zh-condition-negation",
+      "category": "chinese-condition-negation",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "合成原文明确限定为完成间隔练习的成人，且明确否定儿童结论；n1 删除了两个限制并声称儿童有效。只把节点文本还原为本段原句，不推断该方法对儿童无效。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "研究只观察到完成两次间隔练习的成人成绩提高，不能据此断言儿童也会受益。" }],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "该方法能提高所有学习者的成绩，包括儿童。", "paragraph": 0, "quote": "研究只观察到完成两次间隔练习的成人成绩提高，不能据此断言儿童也会受益。" }], "edges": [] },
+      "allegation": { "issueId": "zh-condition-negation", "targetKind": "node", "targetId": "n1", "title": "节点把成人条件与儿童否定结论改写为普遍有效。" },
+      "input": { "text": "", "question": "请独立核对这一问题是否成立。", "detail": "分别检查适用人群、练习条件和对儿童的否定性表述。", "evidence": [{ "paragraph": 0, "quote": "不能据此断言儿童也会受益" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "研究只观察到完成两次间隔练习的成人成绩提高，不能据此断言儿童也会受益。" } } }] }
+    },
+    {
+      "id": "lv-description-not-feature",
+      "category": "learning-view-material-vs-knowledge",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "合成原文将句子作为教材中的判别材料呈现；n1 保留原句和出处，作为 feature_description 并没有错。句子提到特征不等于必须把承载原文的材料节点替换为抽象 feature；后者若需要，应另建可追溯的知识节点。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "教材给出判别材料：正方形有四条相等的边，且四个角都是直角。" }],
+      "graph": { "ontology": "learning-view-v1", "nodes": [{ "id": "n1", "type": "feature_description", "modelKind": "discrimination", "layer": "upper", "text": "正方形有四条相等的边，且四个角都是直角。", "paragraph": 0, "quote": "正方形有四条相等的边，且四个角都是直角。" }], "edges": [] },
+      "allegation": { "issueId": "lv-description-not-feature", "targetKind": "node", "targetId": "n1", "title": "句子提到特征，节点必须改成 feature。" },
+      "input": { "text": "", "question": "请独立核对这一类型错误是否成立。", "detail": "区分承载原文的特征描述材料与抽象的特征知识。", "evidence": [{ "paragraph": 0, "quote": "教材给出判别材料" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "lv-negative-example-mislabeled",
+      "category": "learning-view-example-polarity",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "合成原文把图形明确判为非正方形，n1 的文字和引文忠实但 positive_example 类型反转了判别结果；仅把类型改为同属判别下料的 negative_example，保留原文和锚点。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "这不是正方形：虽然四条边相等，但其中一个角不是直角。" }],
+      "graph": { "ontology": "learning-view-v1", "nodes": [{ "id": "n1", "type": "positive_example", "modelKind": "discrimination", "layer": "lower", "text": "这不是正方形：虽然四条边相等，但其中一个角不是直角。", "paragraph": 0, "quote": "这不是正方形：虽然四条边相等，但其中一个角不是直角。" }], "edges": [] },
+      "allegation": { "issueId": "lv-negative-example-mislabeled", "targetKind": "node", "targetId": "n1", "title": "非正方形材料误标为正例。" },
+      "input": { "text": "", "question": "请独立核对这一类型错误是否成立。", "detail": "核对判别结果的正负极性，不改写原文。", "evidence": [{ "paragraph": 0, "quote": "这不是正方形" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "type": "negative_example" } } }] }
+    },
+    {
+      "id": "zh-causal-relation-mislabeled",
+      "category": "relation-causality",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "合成原文使用了明确的‘直接导致’，现有 supports 只表达支持而未保留因果方向。把 n1→n2 的关系改为 causes 并保留同一句证据；不改动两个节点。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "重复练习直接导致回忆成绩提高。" }],
+      "graph": { "nodes": [
+        { "id": "n1", "type": "fact", "text": "重复练习", "paragraph": 0, "quote": "重复练习" },
+        { "id": "n2", "type": "fact", "text": "回忆成绩提高", "paragraph": 0, "quote": "回忆成绩提高" }
+      ], "edges": [{ "fromNodeId": "n1", "toNodeId": "n2", "relation": "supports", "evidence": [{ "paragraph": 0, "quote": "重复练习直接导致回忆成绩提高。" }] }] },
+      "allegation": { "issueId": "zh-causal-relation-mislabeled", "targetKind": "edge", "targetId": "n1>n2", "title": "明确的因果关系误标为一般支持关系。" },
+      "input": { "text": "", "question": "请独立核对这一关系类型错误是否成立。", "detail": "区分原文中的直接因果与一般支持，并核对方向。", "evidence": [{ "paragraph": 0, "quote": "直接导致" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_edge", "edgePatch": { "fromNodeId": "n1", "toNodeId": "n2", "oldRelation": "supports", "relation": "causes", "evidence": [{ "paragraph": 0, "quote": "重复练习直接导致回忆成绩提高。" }] } }] }
+    },
+    {
+      "id": "zh-correlation-not-causal",
+      "category": "relation-causality-false-alarm",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-27", "rationale": "合成原文只报告相关性并明确说因果关系未证实。n1→n2 的 supports 不能被升级为 causes；所谓缺少因果关系是误报。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "练习次数与回忆成绩相关，但研究未证明因果关系。" }],
+      "graph": { "nodes": [
+        { "id": "n1", "type": "fact", "text": "练习次数", "paragraph": 0, "quote": "练习次数" },
+        { "id": "n2", "type": "fact", "text": "回忆成绩", "paragraph": 0, "quote": "回忆成绩" }
+      ], "edges": [{ "fromNodeId": "n1", "toNodeId": "n2", "relation": "supports", "evidence": [{ "paragraph": 0, "quote": "练习次数与回忆成绩相关" }] }] },
+      "allegation": { "issueId": "zh-correlation-not-causal", "targetKind": "edge", "targetId": "n1>n2", "title": "关系应升级为因果。" },
+      "input": { "text": "", "question": "请独立核对这一关系类型错误是否成立。", "detail": "不要把相关性自动当成因果。", "evidence": [{ "paragraph": 0, "quote": "未证明因果关系" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    }
+  ]
+}

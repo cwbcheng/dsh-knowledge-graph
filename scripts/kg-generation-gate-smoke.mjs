@@ -185,6 +185,29 @@ const acceptedCommit = await handlers.get('graph-commit')({
 assert(acceptedCommit && !acceptedCommit.error && acceptedCommit.revision === (completed.result.source.revision + 1), 'valid add_edge repair was rejected by the canonical invariant gate: ' + JSON.stringify(acceptedCommit))
 const updated = await handlers.get('document-export')({ documentId })
 assert(updated && updated.graph && updated.graph.edges.some((edge) => edge.fromNodeId === 'n2' && edge.toNodeId === 'n1' && edge.relation === 'supports'), 'accepted add_edge repair did not update canonical graph')
+const invalidCitationPayload = (nodes, edges) => ({ documentId, expectedRevision: updated.revision,
+  graph: { ...updated.graph, nodes, edges }, baseNodeIds: updated.graph.nodes.map(node => node.id),
+  baseEdgeKeys: updated.graph.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation) })
+const forgedNodeEvidence = invalidCitationPayload(updated.graph.nodes.map(node => node.id === 'n1'
+  ? { ...node, evidence: [...node.evidence, { paragraph: 0, quote: '没有出现在原文的新增证据' }] }
+  : node), updated.graph.edges)
+const forgedPrimaryQuote = invalidCitationPayload(updated.graph.nodes.map(node => node.id === 'n1'
+  ? { ...node, quote: '没有出现在原文的主引文' } : node), updated.graph.edges)
+const forgedEdgeEvidence = invalidCitationPayload(updated.graph.nodes, updated.graph.edges.map(edge => edge.fromNodeId === 'n2'
+  ? { ...edge, evidence: [...edge.evidence, { paragraph: 1, quote: '没有出现在原文的关系证据' }] }
+  : edge))
+const malformedEvidence = invalidCitationPayload(updated.graph.nodes.map(node => node.id === 'n1'
+  ? { ...node, evidence: '被误传为字符串的引文' } : node), updated.graph.edges)
+const malformedPrimary = invalidCitationPayload(updated.graph.nodes.map(node => node.id === 'n1'
+  ? { ...node, quote: { text: '伪造主引文' } } : node), updated.graph.edges)
+for (const payload of [forgedNodeEvidence, forgedPrimaryQuote, forgedEdgeEvidence, malformedEvidence, malformedPrimary]) {
+  assert((await handlers.get('graph-commit-preview')(payload)).error?.code === 'invalid_evidence_quote',
+    'dynamic preview must reject an added fabricated citation')
+  assert((await handlers.get('graph-commit')(payload)).error?.code === 'invalid_evidence_quote',
+    'dynamic commit must reject an added fabricated citation')
+}
+assert((await handlers.get('document-export')({ documentId })).revision === updated.revision,
+  'rejected citations must not change the dynamic graph revision')
 const groupPayload = { documentId, expectedRevision: updated.revision, commitKind: 'bulk_review',
   graph: { summary: 'reviewed group', nodes: updated.graph.nodes, edges: updated.graph.edges,
     verification: { lastReport: { reportId: 'dynamic-group', issues: [{ id: 'one', status: 'applied' }] } } },
@@ -206,6 +229,55 @@ assert(undoExport.revision === dynamicUndo.revision && undoExport.graph.summary 
 const repeatDynamicUndo = await handlers.get('graph-undo-bulk-review')({ documentId, expectedRevision: grouped.revision,
   parentRevision: updated.revision, reportId: 'dynamic-group' })
 assert(repeatDynamicUndo?.error, 'an already undone dynamic group must not be undone again')
+
+// The merge keeps only eight relation citations. A ninth submitted citation
+// must not disappear before the source-authenticity gate sees it.
+const cappedEdge = undoExport.graph.edges.find(edge => edge.fromNodeId === 'n2' && edge.toNodeId === 'n1')
+assert(cappedEdge, 'citation-cap fixture relation is missing')
+const cappedCitationPayload = { documentId, expectedRevision: undoExport.revision,
+  graph: { ...undoExport.graph, edges: [{ ...cappedEdge, evidence: [
+    { paragraph: 0, quote: '规则节点' }, { paragraph: 0, quote: '规则' },
+    { paragraph: 0, quote: '规' }, { paragraph: 0, quote: '则' },
+    { paragraph: 1, quote: '事实' }, { paragraph: 1, quote: '事' },
+    { paragraph: 1, quote: '实' }, { paragraph: 1, quote: '不存在的第九项证据' },
+  ] }] }, baseNodeIds: undoExport.graph.nodes.map(node => node.id), baseEdgeKeys: [] }
+assert((await handlers.get('graph-commit-preview')(cappedCitationPayload)).error?.code === 'invalid_evidence_quote',
+  'a fabricated relation citation must not be hidden by the merge evidence cap')
+assert((await handlers.get('graph-commit')(cappedCitationPayload)).error?.code === 'invalid_evidence_quote',
+  'dynamic commit must reject a fabricated citation hidden by the cap')
+const validOverflow = { ...cappedCitationPayload, graph: { ...cappedCitationPayload.graph,
+  edges: cappedCitationPayload.graph.edges.map(edge => ({ ...edge, evidence: edge.evidence.map((item, index) =>
+    index === 7 ? { paragraph: 0, quote: '节' } : item) })) } }
+const validOverflowPreview = await handlers.get('graph-commit-preview')(validOverflow)
+assert(validOverflowPreview.error?.code === 'evidence_limit',
+  'a valid ninth relation citation must not be silently discarded: ' + JSON.stringify(validOverflowPreview))
+assert((await handlers.get('graph-commit')(validOverflow)).error?.code === 'evidence_limit',
+  'dynamic commit must reject silently discarded valid evidence')
+assert((await handlers.get('document-export')({ documentId })).revision === undoExport.revision,
+  'citation-cap preview mutated the graph')
+
+const eightQuotes = word => [word, word.slice(0, 2), word.slice(2), word[0], word[1], word[2], word[3], word.slice(0, 3)]
+const evidenceRichNodes = undoExport.graph.nodes.map(node => ({ ...node,
+  evidence: eightQuotes(node.id === 'n1' ? '规则节点' : '事实节点')
+    .map(quote => ({ paragraph: node.id === 'n1' ? 0 : 1, quote })) }))
+const richCommit = await handlers.get('graph-commit')({ documentId, expectedRevision: undoExport.revision,
+  graph: { ...undoExport.graph, nodes: evidenceRichNodes }, baseNodeIds: evidenceRichNodes.map(node => node.id),
+  baseEdgeKeys: undoExport.graph.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation) })
+assert(!richCommit.error, 'valid eight-citation node fixture could not be committed: ' + JSON.stringify(richCommit))
+const richExport = await handlers.get('document-export')({ documentId })
+assert(richExport.graph.nodes.every(node => node.evidence.length === 8), 'node evidence cap fixture is not full')
+const intoNode = richExport.graph.nodes.find(node => node.id === 'n1')
+const mergeOverflow = { documentId, expectedRevision: richExport.revision,
+  operations: [{ kind: 'merge_node', fromNodeId: 'n2', intoNodeId: 'n1' }],
+  graph: { ...richExport.graph, nodes: [intoNode], edges: [] },
+  baseNodeIds: richExport.graph.nodes.map(node => node.id),
+  baseEdgeKeys: richExport.graph.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation) }
+assert((await handlers.get('graph-commit-preview')(mergeOverflow)).error?.code === 'evidence_limit',
+  'merge_node must not silently discard the source node citations')
+assert((await handlers.get('graph-commit')(mergeOverflow)).error?.code === 'evidence_limit',
+  'merge_node commit must not silently discard the source node citations')
+assert((await handlers.get('document-export')({ documentId })).revision === richExport.revision,
+  'merge-node preview mutated the canonical graph')
 
 const qualityStarted = await handlers.get('extract')({ title: 'gate-quality', text: '孤立事实' })
 const qualityCompleted = await waitTask(qualityStarted.taskId)

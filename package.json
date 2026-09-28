@@ -100,7 +100,7 @@
     "test:kg-semantic-role": "node scripts/kg-semantic-role-hardening-smoke.mjs",
     "test:kg-worked-example": "node scripts/kg-worked-example-coverage-smoke.mjs",
     "test:kg-semantic-layout": "node scripts/kg-semantic-layout-smoke.mjs",
-    "test:kg-qa-benchmark": "node scripts/kg-qa-benchmark-smoke.mjs && node scripts/kg-review-benchmark-smoke.mjs",
+    "test:kg-qa-benchmark": "node scripts/kg-qa-benchmark-smoke.mjs && node scripts/kg-review-benchmark-smoke.mjs && node scripts/kg-review-benchmark-persistence-smoke.mjs && node scripts/kg-review-benchmark-live-smoke.mjs && node scripts/kg-review-repair-adjudication-smoke.mjs && node scripts/kg-discovery-benchmark-smoke.mjs && node scripts/kg-discovery-benchmark-seed-smoke.mjs && node scripts/kg-discovery-benchmark-live-smoke.mjs && node scripts/kg-discovery-followup-gold-smoke.mjs && node scripts/kg-discovery-repair-persistence-smoke.mjs && node scripts/kg-discovery-table-repair-smoke.mjs && node scripts/kg-discovery-dialogue-repair-smoke.mjs && node scripts/kg-discovery-followup-repair-smoke.mjs && node scripts/kg-discovery-followup-provenance-smoke.mjs && node scripts/kg-discovery-article-repair-smoke.mjs && node scripts/kg-discovery-article-repair-smoke.mjs --approved-delete && node scripts/kg-discovery-versioned-repair-smoke.mjs",
     "test:kg-quality-gate": "node scripts/kg-quality-regression-smoke.mjs",
     "kg:validate-lv-book": "node scripts/kg-ontology-book-validate.mjs",
     "test:kg-ontology-checkpoint": "node scripts/kg-ontology-checkpoint-smoke.mjs && node scripts/kg-ontology-persistence-smoke.mjs",

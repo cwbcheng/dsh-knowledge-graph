@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v8",
+  "description": "Invented training-program revision notice with a grandfathered cohort. Tests effective date and continuing applicability, not the user's book.",
+  "graph": {
+    "summary": "",
+    "warnings": [],
+    "source": {
+      "id": "source-discovery-zh-synthetic-v8",
+      "documentId": "discovery-zh-synthetic-v8",
+      "title": "合成培训流程版本与过渡条款",
+      "paragraphCount": 8,
+      "chars": 227,
+      "chunkCount": 0,
+      "sectionCount": 0,
+      "revision": 1
+    },
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "claim",
+        "text": "2024年2月所有在读学员都要在第一次测验提交后才能查看标准答案。",
+        "quote": "第一次测验提交后才展示标准答案",
+        "paragraph": 3,
+        "evidence": [
+          {
+            "paragraph": 3,
+            "quote": "第一次测验提交后才展示标准答案"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v8",
+        "sourceId": "source-discovery-zh-synthetic-v8",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n2",
+        "type": "fact",
+        "text": "2024年2月新入学的甲班第一次测验结束后才看到答案",
+        "quote": "2024年2月新入学的甲班，第一次测验结束后才看到答案",
+        "paragraph": 6,
+        "evidence": [
+          {
+            "paragraph": 6,
+            "quote": "2024年2月新入学的甲班，第一次测验结束后才看到答案"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v8",
+        "sourceId": "source-discovery-zh-synthetic-v8",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n3",
+        "type": "fact",
+        "text": "2023年12月入学的乙班在2024年2月仍按旧流程提前查看答案",
+        "quote": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案",
+        "paragraph": 7,
+        "evidence": [
+          {
+            "paragraph": 7,
+            "quote": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v8",
+        "sourceId": "source-discovery-zh-synthetic-v8",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      }
+    ],
+    "edges": [],
+    "staging": {
+      "sourceId": "source-discovery-zh-synthetic-v8",
+      "documentId": "discovery-zh-synthetic-v8",
+      "chunkCount": 0,
+      "chunks": []
+    },
+    "graphOntology": {
+      "id": "proposition-v1",
+      "label": "命题知识图",
+      "summary": "把资料拆成命题与关系的通用抽取本体。",
+      "nodeTypes": [
+        {
+          "id": "fact",
+          "zh": "事实",
+          "label": "事实",
+          "color": "#3b82f6",
+          "fill": "rgba(59,130,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "claim",
+          "zh": "主张",
+          "label": "主张",
+          "color": "#0f766e",
+          "fill": "rgba(15,118,110,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "inference",
+          "zh": "推论",
+          "label": "推论",
+          "color": "#8b5cf6",
+          "fill": "rgba(139,92,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "concept",
+          "zh": "概念",
+          "label": "概念",
+          "color": "#10b981",
+          "fill": "rgba(16,185,129,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "definition",
+          "zh": "定义",
+          "label": "定义",
+          "color": "#f59e0b",
+          "fill": "rgba(245,158,11,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "label": "例子",
+          "color": "#06b6d4",
+          "fill": "rgba(6,182,212,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "label": "反例",
+          "color": "#ef4444",
+          "fill": "rgba(239,68,68,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "rule",
+          "zh": "规则",
+          "label": "规则",
+          "color": "#7c3aed",
+          "fill": "rgba(124,58,237,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        }
+      ],
+      "relationTypes": [
+        {
+          "id": "supports",
+          "zh": "支持",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "defines",
+          "zh": "定义",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "infers",
+          "zh": "推断",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "causes",
+          "zh": "因果",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "is_a",
+          "zh": "属于",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "contains",
+          "zh": "包含",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "driven_by",
+          "zh": "受驱动于",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "not_is",
+          "zh": "不是",
+          "family": "neutral",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "analogy",
+          "zh": "类比说明",
+          "family": "satellite",
+          "weight": 5,
+          "hint": ""
+        },
+        {
+          "id": "aims_at",
+          "zh": "旨在",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        }
+      ],
+      "diagnostics": []
+    },
+    "graphDiagnostics": []
+  },
+  "sourceUnits": [
+    {
+      "paragraph": 0,
+      "text": "2023版培训流程规定学员在第一次测验前可以查看标准答案。"
+    },
+    {
+      "paragraph": 1,
+      "text": "该版本适用于2024年1月1日前入学的旧班。"
+    },
+    {
+      "paragraph": 2,
+      "text": "2024版自2024年1月1日起对新入学班级生效。"
+    },
+    {
+      "paragraph": 3,
+      "text": "新流程改为第一次测验提交后才展示标准答案。"
+    },
+    {
+      "paragraph": 4,
+      "text": "过渡条款规定旧班继续采用2023版流程，新班采用2024版流程。"
+    },
+    {
+      "paragraph": 5,
+      "text": "发布日期较晚不改变旧班的适用版本。"
+    },
+    {
+      "paragraph": 6,
+      "text": "2024年2月新入学的甲班，第一次测验结束后才看到答案。"
+    },
+    {
+      "paragraph": 7,
+      "text": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案。"
+    }
+  ],
+  "revision": 1,
+  "findings": [
+    {
+      "id": "new-policy-applied-to-grandfathered-cohort",
+      "targetKind": "node",
+      "targetId": "n1",
+      "summary": "n1 把只对新入学班级生效的2024版流程推广到所有在读学员，违背旧班继续适用2023版的过渡条款。",
+      "evidence": [
+        {
+          "paragraph": 2,
+          "quote": "对新入学班级生效"
+        },
+        {
+          "paragraph": 4,
+          "quote": "旧班继续采用2023版流程"
+        },
+        {
+          "paragraph": 7,
+          "quote": "继续在第一次测验前查看答案"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source audit)",
+        "rationale": "P2 把新版的生效对象限定为新入学班级；P4 明确保留旧班原流程；P7 给出2024年2月仍在读却于测验前看答案的反例。n1 的“所有在读学员”跨越了版本适用边界。n2 和 n3 分别忠实记录两个班级，不是本例缺陷。"
+      }
+    }
+  ]
+}

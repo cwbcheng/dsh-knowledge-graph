@@ -98,12 +98,17 @@ function fakeLlm() {
 
 async function waitDynamic(handlers, taskId, timeoutMs = 1200) {
   const startedAt = Date.now()
+  let lastStatus = null
   while (Date.now() - startedAt < timeoutMs) {
     const status = await handlers.get('task-status')({ taskId })
+    lastStatus = status
     if (status.status !== 'running') return { ...status, elapsedMs: Date.now() - startedAt }
     await sleep(5)
   }
-  throw new Error('dynamic task did not settle: ' + taskId)
+  throw new Error('dynamic task did not settle: ' + taskId + ' ' + JSON.stringify({
+    elapsedMs: Date.now() - startedAt, progress: lastStatus?.progress,
+    error: lastStatus?.error,
+  }))
 }
 
 async function startDynamicAnswer(handlers, input) {

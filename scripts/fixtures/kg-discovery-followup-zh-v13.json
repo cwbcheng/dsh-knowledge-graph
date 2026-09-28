@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-review-public-domain-v13-missed-condition",
+  "discoveryGoldHash": "8ae6a531182321f383ecf943dec8e51a81e0b0dca63e7dcb1c5aeb04a9ce5044",
+  "reportHash": "fcd3e1cced9dd13b015ffd135e2c0745fa6791ab2f6ba9130d2e344e514d6011",
+  "findingId": "self-only-promoted-to-both-known-safety",
+  "category": "conditional-claim-source-fidelity",
+  "label": {
+    "status": "codex-reviewed",
+    "reviewer": "Codex (same-thread source audit)",
+    "reviewedAt": "2026-09-28",
+    "rationale": "The frozen full audit missed n1. P0 reserves 百战不殆 for knowing both sides; P1 assigns 一胜一负 to knowing only oneself. Replacing n1 with the verbatim P1 proposition preserves that distinction and its existing citation. Deleting the false node is also source-safe but loses the P1 graph proposition. These alternatives judge fidelity to the excerpt, not historical efficacy."
+  },
+  "question": "请独立核实 n1 把‘不知彼而知己’写成‘百战不殆’是否忠于原文。比较 P0 与 P1 的条件和结果，不要仅因 n1 的引文真实就认定其结论受到支持；只提出有原文支持的修复。",
+  "approvedFixes": [
+    {
+      "action": "update_node",
+      "nodePatch": {
+        "id": "n1",
+        "patch": { "text": "不知彼而知己，一胜一负。" }
+      }
+    },
+    {
+      "action": "delete_node",
+      "nodePatch": { "id": "n1" }
+    }
+  ]
+}

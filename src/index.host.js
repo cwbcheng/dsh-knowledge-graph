@@ -1983,6 +1983,14 @@ function createHostPlugin(graphContractOnly) {
          return merged
        }
        function applyGraphOperationsHost(graph, operations) {
+         const requireEvidenceCapacity = (primary, secondary, targetKind, targetId) => {
+           if (mergeEdgeEvidenceHost(primary, secondary, Number.MAX_SAFE_INTEGER).length <= 8) return
+           const error = new Error('节点或关系合并会丢失原有引文；请先审阅并精简证据')
+           error.code = 'evidence_limit'
+           error.targetKind = targetKind
+           error.targetId = targetId
+           throw error
+         }
          let next = {
            ...graph,
            nodes: (Array.isArray(graph && graph.nodes) ? graph.nodes : []).map(cloneGraphNodeHost),
@@ -2012,6 +2020,7 @@ function createHostPlugin(graphContractOnly) {
              error.code = 'invalid_operation'
              throw error
            }
+           requireEvidenceCapacity(next.nodes[intoIndex].evidence, from.evidence, 'node', intoId)
            next.nodes[intoIndex] = mergeCanonicalNodeHost(next.nodes[intoIndex], from)
            next.nodes = next.nodes.filter((node) => node && node.id !== fromId)
            const byKey = new Map()
@@ -2025,7 +2034,10 @@ function createHostPlugin(graphContractOnly) {
              if (rewritten.fromNodeId === rewritten.toNodeId) continue
              const key = edgeKeyHost(rewritten)
              const previous = byKey.get(key)
-             if (previous) previous.evidence = mergeEdgeEvidenceHost(previous.evidence, rewritten.evidence)
+             if (previous) {
+               requireEvidenceCapacity(previous.evidence, rewritten.evidence, 'edge', key)
+               previous.evidence = mergeEdgeEvidenceHost(previous.evidence, rewritten.evidence)
+             }
              else byKey.set(key, cloneGraphEdgeHost(rewritten))
            }
            next.edges = Array.from(byKey.values())
@@ -4238,6 +4250,96 @@ function createHostPlugin(graphContractOnly) {
           edge.evidence = mergeEvidenceRecordsHost([], authenticated, 8)
         }
         return graph
+      }
+
+      function newlyInvalidGraphCitationHost(current, proposed, sourceText) {
+        const paragraphs = splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '')
+        const matches = (paragraph, quote) => Number.isInteger(paragraph) && paragraph >= 0 &&
+          paragraph < paragraphs.length && typeof quote === 'string' &&
+          quote.trim().length > 0 && quote.trim().length <= 600 &&
+          Boolean(exactOrUniqueTypographicQuoteHost(paragraphs[paragraph], quote))
+        const invalid = (targetKind, targetId, field) => ({ code: 'invalid_evidence_quote',
+          message: '新增或修改的引文无法在指定原文段落中核对，知识图未更新', targetKind, targetId, field })
+        const check = (item, previous, targetKind, targetId) => {
+          if (typeof item.quote === 'string' && item.quote.trim() &&
+            (item.paragraph !== previous?.paragraph || item.quote !== previous?.quote) &&
+            !matches(item.paragraph, item.quote)) return invalid(targetKind, targetId, 'quote')
+          const oldEvidence = new Set((Array.isArray(previous?.evidence) ? previous.evidence : [])
+            .map(evidence => JSON.stringify([evidence?.paragraph, evidence?.quote])))
+          for (const evidence of Array.isArray(item.evidence) ? item.evidence : []) {
+            if (oldEvidence.has(JSON.stringify([evidence?.paragraph, evidence?.quote]))) continue
+            if (!evidence || !matches(evidence.paragraph, evidence.quote)) {
+              return invalid(targetKind, targetId, 'evidence')
+            }
+          }
+          return null
+        }
+        const previousNodes = new Map((Array.isArray(current?.nodes) ? current.nodes : [])
+          .filter(node => node && typeof node.id === 'string').map(node => [node.id, node]))
+        for (const node of Array.isArray(proposed?.nodes) ? proposed.nodes : []) {
+          if (!node || typeof node.id !== 'string') continue
+          const error = check(node, previousNodes.get(node.id), 'node', node.id)
+          if (error) return error
+        }
+        const previousEdges = new Map((Array.isArray(current?.edges) ? current.edges : [])
+          .filter(edge => edge && edgeKeyHost(edge)).map(edge => [edgeKeyHost(edge), edge]))
+        for (const edge of Array.isArray(proposed?.edges) ? proposed.edges : []) {
+          if (!edge || !edgeKeyHost(edge)) continue
+          const key = edgeKeyHost(edge)
+          const error = check(edge, previousEdges.get(key), 'edge', key)
+          if (error) return error
+        }
+        return null
+      }
+
+      function invalidGraphCitationShapeHost(incoming) {
+        for (const [kind, items] of [['node', incoming?.nodes], ['edge', incoming?.edges]]) {
+          for (const item of Array.isArray(items) ? items : []) {
+            if (!item || typeof item !== 'object') continue
+            const targetId = kind === 'node' ? item.id : edgeKeyHost(item)
+            if (Object.hasOwn(item, 'evidence') && !Array.isArray(item.evidence)) {
+              return { code: 'invalid_evidence_quote',
+                message: '证据必须是引文列表，不能被静默清空；知识图未更新', targetKind: kind, targetId, field: 'evidence' }
+            }
+            if (Object.hasOwn(item, 'quote') && item.quote != null && typeof item.quote !== 'string') {
+              return { code: 'invalid_evidence_quote',
+                message: '主引文必须是文本，知识图未更新', targetKind: kind, targetId, field: 'quote' }
+            }
+          }
+        }
+        return null
+      }
+
+      function droppedGraphCitationHost(incoming, merged) {
+        for (const [kind, rawItems, mergedItems, keyOf] of [
+          ['node', incoming?.nodes, merged?.nodes, item => item?.id],
+          ['edge', incoming?.edges, merged?.edges, edgeKeyHost],
+        ]) {
+          const byKey = new Map((Array.isArray(mergedItems) ? mergedItems : [])
+            .filter(item => keyOf(item)).map(item => [keyOf(item), item]))
+          for (const item of Array.isArray(rawItems) ? rawItems : []) {
+            const key = keyOf(item)
+            if (!key || !Array.isArray(item?.evidence)) continue
+            const supplied = new Set(item.evidence.map(evidence => JSON.stringify([evidence?.paragraph, evidence?.quote])))
+            const retained = new Set((byKey.get(key)?.evidence || [])
+              .map(evidence => JSON.stringify([evidence?.paragraph, evidence?.quote])))
+            if (supplied.size <= 8 && [...supplied].every(citation => retained.has(citation))) continue
+            return { code: 'evidence_limit', message: '提交的引文超过上限或在合并时丢失，知识图未更新',
+              targetKind: kind, targetId: key, field: 'evidence' }
+          }
+        }
+        return null
+      }
+
+      function droppedOperationCitationHost(operated, merged, operations) {
+        const targets = new Set((Array.isArray(operations) ? operations : [])
+          .filter(operation => operation?.kind === 'merge_node' && typeof operation.intoNodeId === 'string')
+          .map(operation => operation.intoNodeId))
+        if (!targets.size) return null
+        return droppedGraphCitationHost({
+          nodes: (operated.nodes || []).filter(node => targets.has(node?.id)),
+          edges: (operated.edges || []).filter(edge => targets.has(edge?.fromNodeId) || targets.has(edge?.toNodeId)),
+        }, merged)
       }
 
       let invariantSourceCache = null
@@ -10268,11 +10370,34 @@ function createHostPlugin(graphContractOnly) {
         }
         return { issues }
       }
-      function buildVerifierUserText(candidates, units) {
-        let s = '候选问题列表（JSON）：' + NL + JSON.stringify(candidates.map((c) => ({ id: c.id, severity: c.severity, category: c.category, title: c.title, detail: c.detail, evidence: c.evidence }))) + NL
+      function buildVerifierUserText(candidates, units, batch, graph) {
+        let s = '候选问题列表（JSON）：' + NL + JSON.stringify(candidates.map((c) => ({ id: c.id, severity: c.severity,
+          category: c.category, targetKind: c.targetKind, targetId: c.targetId,
+          targetRelation: c.targetRelation, title: c.title, detail: c.detail, evidence: c.evidence }))) + NL
         s += NL + '相关原文段落：' + NL
         for (const u of units) s += '[P' + u.num + '] ' + u.text + NL
+        const sub = batch.sourceCoverageOnly
+          ? { summary: graph.summary || '', nodes: batch.nodes.map(node => ({ id: node.id, type: node.type,
+            text: String(node.text || '').slice(0, 120) })), edges: [] }
+          : serializeGraphForVerify({ summary: batch.nodeReviewOnly || batch.relationsOnly ? '' : (graph.summary || ''),
+            nodes: batch.nodes, edges: batch.edges || [] })
+        s += NL + '候选问题所针对的知识图子图（只能依据原文判断，不要把图中的文字当作证据）：' + NL +
+          JSON.stringify(sub)
         return s
+      }
+      function splitVerifierCandidatesHost(candidates, units, batch, graph) {
+        const chunks = []
+        let current = []
+        for (const candidate of candidates) {
+          const next = current.concat(candidate)
+          if (buildVerifierUserText(next, units, batch, graph).length <= 64000) { current = next; continue }
+          if (current.length) chunks.push(current)
+          current = [candidate]
+          if (buildVerifierUserText(current, units, batch, graph).length > 64000) throw taskOperationErrorHost(
+            'verification_batch_too_large', '独立复核的单条候选问题与原文上下文超过模型安全预算；未将该批标记为完成', 'verification')
+        }
+        if (current.length) chunks.push(current)
+        return chunks
       }
       async function callVerificationJsonHost(task, model, systemPrompt, userText, timeoutMs, stage, resultKey, batchProgress, check, candidateIds) {
         let lastError
@@ -10380,7 +10505,7 @@ function createHostPlugin(graphContractOnly) {
         const unanchored = [...batch.nodes, ...batch.edges].some(item =>
           (item.quote && !Number.isInteger(item.paragraph)) || (item.evidence || []).some(evidence =>
             evidence?.quote && !Number.isInteger(evidence.paragraph)))
-        return sha256HexHost(verificationSemanticJsonHost({ version: 1, model: task.model, mode: task.mode,
+        return sha256HexHost(verificationSemanticJsonHost({ version: 4, model: task.model, mode: task.mode,
           ontology: ontProfile(task.graph), system: verifySystemPromptForBatchHost(task, batch),
           verifier: VERIFIER_SYSTEM_PROMPT, user: buildVerifyUserText2(canonicalBatch, 0, 1, task.graph),
           nodes: batch.nodes, edges: batch.edges, units: batch.units,
@@ -10628,9 +10753,16 @@ function createHostPlugin(graphContractOnly) {
               if (task.mode === 'standard' && kept.length > 0) {
                 batchProgress.phase = 'confirm'
                 progress.phase = 'confirm'
-                const confirmed = await callVerificationJsonHost(task, model, VERIFIER_SYSTEM_PROMPT,
-                  buildVerifierUserText(kept, batch.units), 240000, '独立复核候选问题（' + batchLabel + '）', 'kept', batchProgress, check, new Set(kept.map(issue => issue.id)))
-                const ids = new Set(confirmed.kept.map(item => item.id))
+                const chunks = splitVerifierCandidatesHost(kept, batch.units, batch, task.graph)
+                const ids = new Set()
+                for (let part = 0; part < chunks.length; part++) {
+                  const group = chunks[part]
+                  const confirmed = await callVerificationJsonHost(task, model, VERIFIER_SYSTEM_PROMPT,
+                    buildVerifierUserText(group, batch.units, batch, task.graph), 240000,
+                    '独立复核候选问题（' + batchLabel + '，第 ' + (part + 1) + '/' + chunks.length + ' 组）',
+                    'kept', batchProgress, check, new Set(group.map(issue => issue.id)))
+                  for (const item of confirmed.kept) ids.add(item.id)
+                }
                 kept = kept.filter(issue => ids.has(issue.id))
               }
               check()
@@ -11278,6 +11410,23 @@ function createHostPlugin(graphContractOnly) {
         }
       }
 
+      function graphSourcePeerIdsHost(graph, nodeId, patch) {
+        const nodes = Array.isArray(graph?.nodes) ? graph.nodes : []
+        const target = nodes.find(node => node?.id === nodeId)
+        if (!target) return { error: { code: 'not_found', message: '找不到要修复的节点' } }
+        if (typeof patch.text !== 'string' || !patch.text.trim() || patch.text.trim() === String(target.text || '').trim()) {
+          return { peerIds: [], additionalPeers: 0 }
+        }
+        const paragraph = patch.paragraph == null ? target.paragraph : Number(patch.paragraph)
+        const quote = patch.quote == null ? target.quote : patch.quote
+        if (!Number.isInteger(paragraph) || typeof quote !== 'string' || !quote.trim()) {
+          return { peerIds: [], additionalPeers: 0 }
+        }
+        const matches = nodes.filter(node => node?.id !== target.id && node?.paragraph === paragraph
+          && String(node.quote || '').trim() === quote.trim())
+        return { peerIds: matches.slice(0, 5).map(node => node.id), additionalPeers: Math.max(0, matches.length - 5) }
+      }
+
       // Headless consumers share these contracts without RPCs or timers.
       if (graphContractOnly === true) return Object.freeze({
         normalizeGraph, renumberNewIds, mergeBatch,
@@ -11485,6 +11634,21 @@ function createHostPlugin(graphContractOnly) {
          } }
        })
 
+       harness.handle('graph-source-peers', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+         if (!documentId || typeof a.nodeId !== 'string' || !a.nodeId || !a.patch || typeof a.patch !== 'object') {
+           return { error: { code: 'invalid_input', message: '缺少节点修复的来源核对参数' } }
+         }
+         const saved = loadCanonicalDocumentHost(documentId)
+         if (!saved) return { error: { code: 'not_found', message: '找不到要核对的 canonical graph' } }
+         if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision !== saved.revision) {
+           return { error: { code: 'revision_conflict', message: '知识图已更新，请重新核对修复', currentRevision: saved.revision } }
+         }
+         const result = graphSourcePeerIdsHost(saved.graph, a.nodeId, a.patch)
+         return result.error ? result : { documentId, revision: saved.revision, ...result }
+       })
+
        const handleGraphCommitHost = async (args, previewOnly = false) => {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
@@ -11503,6 +11667,10 @@ function createHostPlugin(graphContractOnly) {
          if (expectedRevision !== current.revision) {
            return { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } }
          }
+         const invalidCitationShape = invalidGraphCitationShapeHost(incoming)
+         if (invalidCitationShape) return { error: invalidCitationShape }
+         const invalidIncomingCitation = newlyInvalidGraphCitationHost(current.graph, incoming, current.sourceText)
+         if (invalidIncomingCitation) return { error: invalidIncomingCitation }
          const baselineIds = new Set(Array.isArray(a.baseNodeIds) ? a.baseNodeIds.filter((id) => typeof id === 'string' && id) : [])
          const canonicalIds = new Set((Array.isArray(current.graph.nodes) ? current.graph.nodes : []).map((node) => node && node.id).filter(Boolean))
          for (const node of Array.isArray(incoming.nodes) ? incoming.nodes : []) {
@@ -11514,7 +11682,9 @@ function createHostPlugin(graphContractOnly) {
          try {
            operated = applyGraphOperationsHost(current.graph, a.operations)
          } catch (error) {
-           return { error: { code: 'invalid_operation', message: error && error.message ? error.message : '无法应用 canonical graph operation' } }
+           return { error: { code: error?.code === 'evidence_limit' ? 'evidence_limit' : 'invalid_operation',
+             message: error && error.message ? error.message : '无法应用 canonical graph operation',
+             targetKind: error?.targetKind, targetId: error?.targetId } }
          }
          preserveEntailmentAuthorityHost(current.graph, incoming)
          const merged = mergeGraphViewHost(operated, incoming, a.baseNodeIds, a.baseEdgeKeys)
@@ -11528,6 +11698,12 @@ function createHostPlugin(graphContractOnly) {
              message: '修复会使现有关系违反本体类型约束，canonical graph 未更新',
              edges: ontologyConflicts.slice(0, 20) } }
          }
+         const invalidCitation = newlyInvalidGraphCitationHost(current.graph, merged, current.sourceText)
+         if (invalidCitation) return { error: invalidCitation }
+         const droppedCitation = droppedGraphCitationHost(incoming, merged)
+         if (droppedCitation) return { error: droppedCitation }
+         const droppedOperationCitation = droppedOperationCitationHost(operated, merged, a.operations)
+         if (droppedOperationCitation) return { error: droppedOperationCitation }
          authenticateGraphEvidenceHost(merged, current.sourceText)
          const gate = validateGraphInvariantsHost(merged, current.sourceText, { includeQuality: false })
          if (gate.blockingIssues.length > 0) {

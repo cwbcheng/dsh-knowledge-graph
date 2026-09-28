@@ -1,4 +1,5 @@
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
 // ---------- HOST ----------
 // Extract the plugin body directly from the source file (previously the
@@ -468,6 +469,23 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { documentId, revision, graph,
                 ...(payload.includeSourceText === true ? { sourceText: saved.sourceText || '' } : {}) })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/graph-source-peers') {
+              const raw = await readBody(req, 512 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              if (!documentId || typeof a.nodeId !== 'string' || !a.nodeId || !a.patch || typeof a.patch !== 'object') {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少节点修复的来源核对参数' } })
+              }
+              const saved = (await getSqliteStore()).getDocument(documentId)
+              if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要核对的 canonical graph' } })
+              if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision !== saved.revision) {
+                return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新核对修复', currentRevision: saved.revision } })
+              }
+              const result = graphSourcePeerIdsHost(saved, a.nodeId, a.patch)
+              return writeJson(res, 200, result.error ? result : { documentId, revision: saved.revision, ...result })
+            }
             if (req.method === 'POST' && (pathname === '/api/dsh-knowledge-graph/graph-commit' || pathname === '/api/dsh-knowledge-graph/graph-commit-preview')) {
               const previewOnly = pathname.endsWith('/graph-commit-preview')
               const raw = await readBody(req, 4 * 1024 * 1024)
@@ -485,6 +503,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (expectedRevision !== current.revision) {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
                 }
+                const invalidCitationShape = invalidGraphCitationShapeHost(a.graph)
+                if (invalidCitationShape) return writeJson(res, 200, { error: invalidCitationShape })
+                const invalidIncomingCitation = newlyInvalidGraphCitationHost(current, a.graph, current.sourceText || '')
+                if (invalidIncomingCitation) return writeJson(res, 200, { error: invalidIncomingCitation })
                 const baseNodeIds = new Set(Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [])
                 const canonicalNodeIds = new Set((current.nodes || []).map(node => node.id))
                 for (const node of Array.isArray(a.graph.nodes) ? a.graph.nodes : []) {
@@ -506,8 +528,16 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   edges: Array.isArray(a.graph.edges) ? a.graph.edges.map((edge) => ({ ...edge, evidence: Array.isArray(edge && edge.evidence) ? edge.evidence.map((item) => ({ ...item })) : [] })) : [],
                 }
                 preserveEntailmentAuthorityHost(current, incomingGraph)
-                authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '')
                 const preview = mergeGraphViewHost(operated, incomingGraph, a.baseNodeIds, a.baseEdgeKeys)
+                const invalidCitation = newlyInvalidGraphCitationHost(current, preview, current.sourceText || '')
+                if (invalidCitation) return writeJson(res, 200, { error: invalidCitation })
+                const droppedCitation = droppedGraphCitationHost(incomingGraph, preview)
+                if (droppedCitation) return writeJson(res, 200, { error: droppedCitation })
+                const droppedOperationCitation = droppedOperationCitationHost(operated, preview, a.operations)
+                if (droppedOperationCitation) return writeJson(res, 200, { error: droppedOperationCitation })
+                // The store commits incomingGraph, not preview; authenticate both after
+                // checking the raw proposed citations so neither path silently drops them.
+                authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '')
                 const ontologyConflicts = newlyInvalidOntologyEdgesHost(current, preview)
                 if (ontologyConflicts.length > 0) {
                   return writeJson(res, 200, { error: { code: 'ontology_relation_conflict',
@@ -551,6 +581,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 }
                 if (error && error.code === 'invalid_operation') {
                   return writeJson(res, 200, { error: { code: 'invalid_operation', message: error.message || '无法应用 canonical graph operation' } })
+                }
+                if (error && error.code === 'evidence_limit') {
+                  return writeJson(res, 200, { error: { code: 'evidence_limit', message: error.message,
+                    targetKind: error.targetKind, targetId: error.targetId } })
                 }
                 if (error && error.code === 'not_found') return writeJson(res, 200, { error: { code: 'not_found', message: error.message } })
                 throw error
@@ -862,6 +896,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
             }
             if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/task-active') {
               return writeJson(res, 200, activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }))
+            }
+            if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/engine-identity') {
+              return writeJson(res, 200, { hostBuildSha256 })
             }
             if (pathname === '/api/dsh-knowledge-graph/task-status' || pathname === '/api/dsh-knowledge-graph/trajectory-status') {
               const taskId = url.searchParams.get('taskId') ?? ''
@@ -1394,6 +1431,13 @@ function writeJson(res, status, body) {
 
 // insert helpers before the purge interval comment
 host = host.replace('      // Periodically purge finished tasks (kept for 2h after completion).', helpers + '\n      // Periodically purge finished tasks (kept for 2h after completion).')
+
+const buildHash = createHash('sha256').update(host)
+for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs']) {
+  buildHash.update('\0').update(source).update('\0')
+    .update(readFileSync(new URL('../src/' + source, import.meta.url)))
+}
+host = `export const hostBuildSha256 = '${buildHash.digest('hex')}'\n` + host
 
 writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))

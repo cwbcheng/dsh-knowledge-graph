@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v11-clean",
+  "description": "Re-reviewed zero-defect control after the v10 same-thread Codex clean label was falsified; invented teaching observation, not a real study or independent human truth.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "30名已完成四周课程的成年志愿者参加了一段虚构的教学观察。" },
+    { "paragraph": 1, "text": "这30人的结课测验平均分为72分，训练前平均分为60分。" },
+    { "paragraph": 2, "text": "记录没有设置对照组。" },
+    { "paragraph": 3, "text": "记录没有纳入儿童或中途退出者。" },
+    { "paragraph": 4, "text": "这些观察只描述上述30人的分数变化，不能证明训练造成了变化，也不能推广到未观察人群。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v11", "documentId": "discovery-zh-synthetic-v11", "title": "合成教学观察的阴性对照", "paragraphCount": 5 },
+    "summary": "一段虚构教学观察记录了30名完成四周课程的成年志愿者：结课测验平均分72分，训练前60分。记录没有对照组，也未纳入儿童或中途退出者；它只描述这30人的分数变化，不能证明训练造成变化或推广到未观察人群。",
+    "nodes": [
+      { "id": "n1", "type": "fact", "text": "30名已完成四周课程的成年志愿者参加了一段虚构的教学观察。", "paragraph": 0, "quote": "30名已完成四周课程的成年志愿者参加了一段虚构的教学观察", "evidence": [{ "paragraph": 0, "quote": "30名已完成四周课程的成年志愿者参加了一段虚构的教学观察" }] },
+      { "id": "n2", "type": "fact", "text": "这30人的结课测验平均分为72分，训练前平均分为60分。", "paragraph": 1, "quote": "结课测验平均分为72分，训练前平均分为60分", "evidence": [{ "paragraph": 1, "quote": "结课测验平均分为72分，训练前平均分为60分" }] },
+      { "id": "n3", "type": "fact", "text": "这段观察没有设置对照组。", "paragraph": 2, "quote": "没有设置对照组", "evidence": [{ "paragraph": 2, "quote": "没有设置对照组" }] },
+      { "id": "n4", "type": "fact", "text": "这段观察没有纳入儿童或中途退出者。", "paragraph": 3, "quote": "没有纳入儿童或中途退出者", "evidence": [{ "paragraph": 3, "quote": "没有纳入儿童或中途退出者" }] },
+      { "id": "n5", "type": "claim", "text": "这些观察不能证明训练造成了分数变化。", "paragraph": 4, "quote": "不能证明训练造成了变化", "evidence": [{ "paragraph": 4, "quote": "不能证明训练造成了变化" }] },
+      { "id": "n6", "type": "claim", "text": "这些观察不能推广到未观察人群。", "paragraph": 4, "quote": "不能推广到未观察人群", "evidence": [{ "paragraph": 4, "quote": "不能推广到未观察人群" }] },
+      { "id": "n7", "type": "claim", "text": "这些观察只描述上述30人的分数变化。", "paragraph": 4, "quote": "这些观察只描述上述30人的分数变化", "evidence": [{ "paragraph": 4, "quote": "这些观察只描述上述30人的分数变化" }] }
+    ],
+    "edges": []
+  },
+  "findings": [],
+  "negativeReview": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "重新逐段核对五个合成原文单元、摘要和七个节点。n1 与摘要保留虚构、四周课程、成年且完成课程的限定；n2 精确记录两个平均分；n3、n4 记录无对照与未观察人群；n5、n6、n7 分别保留因果、外推和仅描述30人的限制。每个节点有原文锚点，没有边或额外因果主张。v10 的无缺陷判断已被否定，本次仍只是同线程 AI 复核。" }
+}

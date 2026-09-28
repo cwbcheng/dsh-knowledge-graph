@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v6-followup",
+  "description": "Targeted review of one frozen AI discovery issue; approval remains a separate Codex source judgement.",
+  "discoveryGoldHash": "03c86a03057262e2476e74d6706dae3935557cd3ab123efa6e35dd44c79de3a1",
+  "discoveryReportHash": "0415755032b74890e8ea6f3efd214a9d269ab74034741deea4d4cbdc3cc840b2",
+  "cases": [
+    {
+      "id": "b1:v1",
+      "category": "quoted-speaker-vs-editor",
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source and discovery-report audit)",
+        "reviewedAt": "2026-09-28",
+        "rationale": "P1 attributes the claim to teacher Lin, P0 separates quotation from endorsement, and P2 rejects treating Lin's opinion as established. The n1 attribution is false. Removing n1 is a source-safe repair because n2 already retains Lin's attributed opinion; a different rewrite needs separate review."
+      },
+      "sourceUnits": [
+        {
+          "paragraph": 0,
+          "text": "这份访谈记录把教师林的发言与编辑的评注分开记录；引述不等于编辑赞同。"
+        },
+        {
+          "paragraph": 1,
+          "text": "教师林说：“先展示答案会削弱学生独立判断。”这是林的经验判断，访谈未附测验数据。"
+        },
+        {
+          "paragraph": 2,
+          "text": "编辑写道：“我们不能把林的经验判断当成已证实结论，也不据此建议所有课堂先展示答案。”"
+        },
+        {
+          "paragraph": 3,
+          "text": "编辑当前只建议在本试点中先让学生独立作答，再展示答案；"
+        },
+        {
+          "paragraph": 4,
+          "text": "是否改善成绩尚未测量。"
+        }
+      ],
+      "graph": {
+        "summary": "",
+        "warnings": [],
+        "source": {
+          "id": "source-discovery-zh-synthetic-v6",
+          "documentId": "discovery-zh-synthetic-v6",
+          "title": "合成访谈与编辑评注",
+          "paragraphCount": 5,
+          "chars": 162,
+          "chunkCount": 0,
+          "sectionCount": 0,
+          "revision": 1
+        },
+        "revision": 1,
+        "nodes": [
+          {
+            "id": "n1",
+            "type": "claim",
+            "text": "编辑确认先展示答案会削弱学生独立判断。",
+            "quote": "先展示答案会削弱学生独立判断",
+            "paragraph": 1,
+            "evidence": [
+              {
+                "paragraph": 1,
+                "quote": "先展示答案会削弱学生独立判断"
+              }
+            ],
+            "documentId": "discovery-zh-synthetic-v6",
+            "sourceId": "source-discovery-zh-synthetic-v6",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          },
+          {
+            "id": "n2",
+            "type": "fact",
+            "text": "教师林认为先展示答案会削弱学生独立判断",
+            "quote": "教师林说：“先展示答案会削弱学生独立判断。”",
+            "paragraph": 1,
+            "evidence": [
+              {
+                "paragraph": 1,
+                "quote": "教师林说：“先展示答案会削弱学生独立判断。”"
+              }
+            ],
+            "documentId": "discovery-zh-synthetic-v6",
+            "sourceId": "source-discovery-zh-synthetic-v6",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          },
+          {
+            "id": "n3",
+            "type": "claim",
+            "text": "编辑建议在本试点中先让学生独立作答，再展示答案",
+            "quote": "编辑当前只建议在本试点中先让学生独立作答，再展示答案",
+            "paragraph": 3,
+            "evidence": [
+              {
+                "paragraph": 3,
+                "quote": "编辑当前只建议在本试点中先让学生独立作答，再展示答案"
+              }
+            ],
+            "documentId": "discovery-zh-synthetic-v6",
+            "sourceId": "source-discovery-zh-synthetic-v6",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          }
+        ],
+        "edges": [],
+        "staging": {
+          "sourceId": "source-discovery-zh-synthetic-v6",
+          "documentId": "discovery-zh-synthetic-v6",
+          "chunkCount": 0,
+          "chunks": []
+        },
+        "graphOntology": {
+          "id": "proposition-v1",
+          "label": "命题知识图",
+          "summary": "把资料拆成命题与关系的通用抽取本体。",
+          "nodeTypes": [
+            {
+              "id": "fact",
+              "zh": "事实",
+              "label": "事实",
+              "color": "#3b82f6",
+              "fill": "rgba(59,130,246,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "claim",
+              "zh": "主张",
+              "label": "主张",
+              "color": "#0f766e",
+              "fill": "rgba(15,118,110,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "inference",
+              "zh": "推论",
+              "label": "推论",
+              "color": "#8b5cf6",
+              "fill": "rgba(139,92,246,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "concept",
+              "zh": "概念",
+              "label": "概念",
+              "color": "#10b981",
+              "fill": "rgba(16,185,129,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "definition",
+              "zh": "定义",
+              "label": "定义",
+              "color": "#f59e0b",
+              "fill": "rgba(245,158,11,0.16)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "example",
+              "zh": "例子",
+              "label": "例子",
+              "color": "#06b6d4",
+              "fill": "rgba(6,182,212,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "counter_example",
+              "zh": "反例",
+              "label": "反例",
+              "color": "#ef4444",
+              "fill": "rgba(239,68,68,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "rule",
+              "zh": "规则",
+              "label": "规则",
+              "color": "#7c3aed",
+              "fill": "rgba(124,58,237,0.16)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            }
+          ],
+          "relationTypes": [
+            {
+              "id": "supports",
+              "zh": "支持",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            },
+            {
+              "id": "example",
+              "zh": "例子",
+              "family": "satellite",
+              "weight": 6,
+              "hint": ""
+            },
+            {
+              "id": "counter_example",
+              "zh": "反例",
+              "family": "satellite",
+              "weight": 6,
+              "hint": ""
+            },
+            {
+              "id": "defines",
+              "zh": "定义",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "infers",
+              "zh": "推断",
+              "family": "backbone",
+              "weight": 9,
+              "hint": ""
+            },
+            {
+              "id": "causes",
+              "zh": "因果",
+              "family": "backbone",
+              "weight": 9,
+              "hint": ""
+            },
+            {
+              "id": "is_a",
+              "zh": "属于",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "contains",
+              "zh": "包含",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "driven_by",
+              "zh": "受驱动于",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            },
+            {
+              "id": "not_is",
+              "zh": "不是",
+              "family": "neutral",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "analogy",
+              "zh": "类比说明",
+              "family": "satellite",
+              "weight": 5,
+              "hint": ""
+            },
+            {
+              "id": "aims_at",
+              "zh": "旨在",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            }
+          ],
+          "diagnostics": []
+        },
+        "graphDiagnostics": []
+      },
+      "allegation": {
+        "issueId": "b1:v1",
+        "targetKind": "node",
+        "targetId": "n1",
+        "title": "n1把林的经验判断说成编辑的确认，与原文明确纠偏相反"
+      },
+      "input": {
+        "text": "",
+        "question": "请独立核对 n1 是否把教师林的引述错误归给编辑。若成立，只提出有原文支持且不与 n2 重复的修复。",
+        "detail": "原文P0说明引述不等于编辑赞同，P2中编辑明确表示不能把林的经验判断当成已证实结论。n1却称“编辑确认”该主张，属对原文的曲解，且与原文立场直接矛盾。",
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "我们不能把林的经验判断当成已证实结论，也不据此建议所有课堂先展示答案。"
+          },
+          {
+            "paragraph": 0,
+            "quote": "这份访谈记录把教师林的发言与编辑的评注分开记录；引述不等于编辑赞同。"
+          }
+        ]
+      },
+      "gold": {
+        "verdict": "confirmed",
+        "allowedFixes": [
+          {
+            "action": "delete_node",
+            "nodePatch": {
+              "id": "n1"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

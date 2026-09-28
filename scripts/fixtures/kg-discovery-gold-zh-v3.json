@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v3",
+  "description": "Invented Chinese source contrasting learning transfer with equipment transfer and a distant scope exception. Not from the user's book.",
+  "graph": {
+    "summary": "",
+    "warnings": [],
+    "source": {
+      "id": "source-discovery-zh-synthetic-v3",
+      "documentId": "discovery-zh-synthetic-v3",
+      "title": "合成迁移试点材料",
+      "paragraphCount": 5,
+      "chars": 164,
+      "chunkCount": 0,
+      "sectionCount": 0,
+      "revision": 1
+    },
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "n3",
+        "type": "claim",
+        "text": "无提示新题练习让所有学生长期提高迁移测验得分。",
+        "quote": "完成无提示新题练习的学生，迁移测验得分提高",
+        "paragraph": 0,
+        "evidence": [
+          {
+            "paragraph": 0,
+            "quote": "完成无提示新题练习的学生，迁移测验得分提高"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n4",
+        "type": "fact",
+        "text": "完成无提示新题练习的学生迁移测验得分提高",
+        "quote": "完成无提示新题练习的学生，迁移测验得分提高",
+        "paragraph": 0,
+        "evidence": [
+          {
+            "paragraph": 0,
+            "quote": "完成无提示新题练习的学生，迁移测验得分提高"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n1",
+        "type": "concept",
+        "text": "学习迁移是把判别规则用于新题型",
+        "quote": "这里的“迁移”指把判别规则用于新题型",
+        "paragraph": 1,
+        "evidence": [
+          {
+            "paragraph": 1,
+            "quote": "这里的“迁移”指把判别规则用于新题型"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n2",
+        "type": "concept",
+        "text": "设备迁移是把教具从甲教室搬到乙教室",
+        "quote": "把教具从甲教室搬到乙教室",
+        "paragraph": 2,
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "把教具从甲教室搬到乙教室"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n5",
+        "type": "fact",
+        "text": "未完成无提示新题练习的学生迁移测验得分没有提高",
+        "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高",
+        "paragraph": 3,
+        "evidence": [
+          {
+            "paragraph": 3,
+            "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      }
+    ],
+    "edges": [
+      {
+        "fromNodeId": "n1",
+        "toNodeId": "n2",
+        "relation": "is_a",
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "这与学习中的规则应用不是同一概念"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v3",
+        "sourceId": "source-discovery-zh-synthetic-v3",
+        "chunkId": null,
+        "state": "candidate"
+      }
+    ],
+    "staging": {
+      "sourceId": "source-discovery-zh-synthetic-v3",
+      "documentId": "discovery-zh-synthetic-v3",
+      "chunkCount": 0,
+      "chunks": []
+    },
+    "graphOntology": {
+      "id": "proposition-v1",
+      "label": "命题知识图",
+      "summary": "把资料拆成命题与关系的通用抽取本体。",
+      "nodeTypes": [
+        {
+          "id": "fact",
+          "zh": "事实",
+          "label": "事实",
+          "color": "#3b82f6",
+          "fill": "rgba(59,130,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "claim",
+          "zh": "主张",
+          "label": "主张",
+          "color": "#0f766e",
+          "fill": "rgba(15,118,110,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "inference",
+          "zh": "推论",
+          "label": "推论",
+          "color": "#8b5cf6",
+          "fill": "rgba(139,92,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "concept",
+          "zh": "概念",
+          "label": "概念",
+          "color": "#10b981",
+          "fill": "rgba(16,185,129,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "definition",
+          "zh": "定义",
+          "label": "定义",
+          "color": "#f59e0b",
+          "fill": "rgba(245,158,11,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "label": "例子",
+          "color": "#06b6d4",
+          "fill": "rgba(6,182,212,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "label": "反例",
+          "color": "#ef4444",
+          "fill": "rgba(239,68,68,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "rule",
+          "zh": "规则",
+          "label": "规则",
+          "color": "#7c3aed",
+          "fill": "rgba(124,58,237,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        }
+      ],
+      "relationTypes": [
+        {
+          "id": "supports",
+          "zh": "支持",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "defines",
+          "zh": "定义",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "infers",
+          "zh": "推断",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "causes",
+          "zh": "因果",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "is_a",
+          "zh": "属于",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "contains",
+          "zh": "包含",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "driven_by",
+          "zh": "受驱动于",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "not_is",
+          "zh": "不是",
+          "family": "neutral",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "analogy",
+          "zh": "类比说明",
+          "family": "satellite",
+          "weight": 5,
+          "hint": ""
+        },
+        {
+          "id": "aims_at",
+          "zh": "旨在",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        }
+      ],
+      "diagnostics": []
+    },
+    "graphDiagnostics": []
+  },
+  "sourceUnits": [
+    {
+      "paragraph": 0,
+      "text": "一项试点记录，完成无提示新题练习的学生，迁移测验得分提高。"
+    },
+    {
+      "paragraph": 1,
+      "text": "教师让学生先解题，答错后才展示答案，这里的“迁移”指把判别规则用于新题型。"
+    },
+    {
+      "paragraph": 2,
+      "text": "设备组也说“迁移”，指把教具从甲教室搬到乙教室，这与学习中的规则应用不是同一概念。"
+    },
+    {
+      "paragraph": 3,
+      "text": "未完成无提示新题练习的学生，迁移测验得分没有提高。"
+    },
+    {
+      "paragraph": 4,
+      "text": "试点没有纳入小学低年级学生，也没有检验长期保持。"
+    }
+  ],
+  "revision": 1,
+  "findings": [
+    {
+      "id": "homonym-false-is-a",
+      "targetKind": "edge",
+      "targetId": "n1>n2",
+      "targetRelation": "is_a",
+      "summary": "学习迁移与设备迁移仅同名，错误关系把两者混为一类。",
+      "evidence": [
+        {
+          "paragraph": 2,
+          "quote": "这与学习中的规则应用不是同一概念"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source audit)",
+        "rationale": "P2 明确区分搬运教具和应用规则；n1→n2 的 is_a 将两个不同概念错误地归为一类。"
+      }
+    },
+    {
+      "id": "scope-and-duration-overclaim",
+      "targetKind": "node",
+      "targetId": "n3",
+      "summary": "n3 把受试练习组的短期观察写成所有学生的长期效果。",
+      "evidence": [
+        {
+          "paragraph": 0,
+          "quote": "完成无提示新题练习的学生，迁移测验得分提高"
+        },
+        {
+          "paragraph": 3,
+          "quote": "未完成无提示新题练习的学生，迁移测验得分没有提高"
+        },
+        {
+          "paragraph": 4,
+          "quote": "也没有检验长期保持"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source audit)",
+        "rationale": "P0 只描述完成练习的组；P3 说明未完成者没有提升，P4 又声明未检验长期保持。n3 的‘所有学生’和‘长期’均超出证据。"
+      }
+    }
+  ]
+}

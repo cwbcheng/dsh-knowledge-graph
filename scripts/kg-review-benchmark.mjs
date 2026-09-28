@@ -4,8 +4,11 @@ import { createHash } from 'node:crypto'
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { findOntology, nodeCoordinatesMap, nodeTypeSet, relationTypeSet } from '../src/kg-ontology.mjs'
 
 const VERDICTS = new Set(['confirmed', 'false_positive', 'uncertain'])
+const FIX_ACTIONS = new Set(['none', 'update_node', 'delete_node', 'add_node',
+  'update_edge', 'delete_edge', 'add_edge', 'merge_nodes', 'update_summary'])
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical)
@@ -19,6 +22,74 @@ function fail(message) { throw new Error('review benchmark: ' + message) }
 function nonnegativeInteger(value) { return Number.isSafeInteger(value) && value >= 0 }
 function existingPathOrResolved(path) {
   try { return realpathSync(path) } catch { return resolve(path) }
+}
+
+function validateAllowedFix(item, fix, paragraphs, nodes) {
+  const error = () => fail('invalid allowed repair in ' + item.id + ': ' + fix?.action)
+  if (!FIX_ACTIONS.has(fix?.action)) error()
+  if (fix.action === 'none') {
+    if (Object.keys(fix).length !== 1) error()
+    return
+  }
+  const ontology = item.graph.ontology || 'proposition-v1'
+  const types = nodeTypeSet(ontology)
+  const relations = relationTypeSet(ontology)
+  const anchorValid = (paragraph, quote) => nonnegativeInteger(paragraph) &&
+    typeof quote === 'string' && !!quote && paragraphs.get(paragraph)?.includes(quote)
+  if (fix.action === 'update_node' || fix.action === 'delete_node' || fix.action === 'merge_nodes') {
+    const node = nodes.get(fix.nodePatch?.id)
+    if (!node) error()
+    if (fix.action === 'delete_node') return
+    if (fix.action === 'merge_nodes') {
+      const destination = nodes.get(fix.mergeIntoId)
+      if (!destination || destination.id === node.id || destination.type !== node.type) error()
+      return
+    }
+    const patch = fix.nodePatch?.patch
+    if (!patch || typeof patch !== 'object' || !Object.keys(patch).length ||
+        Object.keys(patch).some(key => !['type', 'text', 'quote', 'paragraph'].includes(key))) error()
+    if (patch.type != null && (!types.has(patch.type) ||
+        nodeCoordinatesMap(ontology)[patch.type].modelKind !== nodeCoordinatesMap(ontology)[node.type]?.modelKind ||
+        nodeCoordinatesMap(ontology)[patch.type].layer !== nodeCoordinatesMap(ontology)[node.type]?.layer)) error()
+    if (patch.text != null && (typeof patch.text !== 'string' || !patch.text.trim())) error()
+    if (patch.quote != null && typeof patch.quote !== 'string') error()
+    if (patch.paragraph != null && !nonnegativeInteger(patch.paragraph)) error()
+    const updated = { ...node, ...patch }
+    if (updated.quote && !anchorValid(updated.paragraph, updated.quote)) error()
+    if (Object.keys(patch).every(key => patch[key] === node[key])) error()
+    return
+  }
+  if (fix.action === 'add_node') {
+    const patch = fix.nodePatch?.patch
+    if (!patch || !types.has(patch.type) || typeof patch.text !== 'string' || !patch.text.trim() ||
+        (fix.nodePatch.id && nodes.has(fix.nodePatch.id)) ||
+        !anchorValid(patch.paragraph, patch.quote)) error()
+    return
+  }
+  if (fix.action === 'update_summary') {
+    if (typeof fix.summaryPatch !== 'string' || !fix.summaryPatch.trim() ||
+        fix.summaryPatch === item.graph.summary) error()
+    return
+  }
+  const edge = fix.edgePatch
+  if (!edge || !nodes.has(edge.fromNodeId) || !nodes.has(edge.toNodeId) ||
+      !relations.has(edge.relation) || edge.fromNodeId === edge.toNodeId) error()
+  const newFrom = edge.newFromNodeId || edge.fromNodeId
+  const newTo = edge.newToNodeId || edge.toNodeId
+  if (!nodes.has(newFrom) || !nodes.has(newTo) || newFrom === newTo) error()
+  const existing = item.graph.edges.filter(row => row.fromNodeId === edge.fromNodeId &&
+    row.toNodeId === edge.toNodeId && row.relation === (edge.oldRelation || edge.relation))
+  if ((fix.action === 'delete_edge' || fix.action === 'update_edge') && existing.length !== 1) error()
+  if (fix.action === 'add_edge' && existing.length) error()
+  if (fix.action === 'update_edge' && existing[0].relation === edge.relation &&
+      newFrom === edge.fromNodeId && newTo === edge.toNodeId) error()
+  if (fix.action !== 'delete_edge') {
+    const rule = findOntology(ontology).relationTypes.find(row => row.id === edge.relation)
+    if (Array.isArray(rule.from) && !rule.from.includes(nodes.get(newFrom).type) ||
+        Array.isArray(rule.to) && !rule.to.includes(nodes.get(newTo).type)) error()
+  }
+  if (fix.action !== 'delete_edge' && (!Array.isArray(edge.evidence) || !edge.evidence.length ||
+      edge.evidence.some(citation => !anchorValid(citation.paragraph, citation.quote)))) error()
 }
 
 function validateGold(gold) {
@@ -42,10 +113,13 @@ function validateGold(gold) {
         !VERDICTS.has(item.gold?.verdict) || !Array.isArray(item.gold?.allowedFixes) ||
         item.gold.allowedFixes.length === 0 ||
         item.gold.allowedFixes.some(fix => typeof fix?.action !== 'string' || !fix.action) ||
-        !['draft', 'human-reviewed'].includes(item.label?.status) ||
+        !['draft', 'codex-reviewed', 'human-reviewed'].includes(item.label?.status) ||
         typeof item.label?.rationale !== 'string' || !item.label.rationale) fail('invalid case ' + item.id)
-    if (item.label.status === 'human-reviewed' &&
-        (!item.label.reviewer || !item.label.reviewedAt)) fail('human-reviewed case needs reviewer and reviewedAt: ' + item.id)
+    if (item.label.status !== 'draft' &&
+        (typeof item.label.reviewer !== 'string' || !item.label.reviewer.trim() ||
+          typeof item.label.reviewedAt !== 'string' || !item.label.reviewedAt.trim())) {
+      fail('reviewed case needs reviewer and reviewedAt: ' + item.id)
+    }
     if (item.gold.verdict !== 'confirmed' &&
         item.gold.allowedFixes.some(fix => fix.action !== 'none')) fail('unconfirmed case cannot approve a repair: ' + item.id)
     const paragraphs = new Map()
@@ -68,6 +142,13 @@ function validateGold(gold) {
     if (item.graph.edges.some(edge => !nodeIds.has(edge?.fromNodeId) || !nodeIds.has(edge?.toNodeId))) {
       fail('edge endpoint is missing: ' + item.id)
     }
+    const ontology = item.graph.ontology || 'proposition-v1'
+    if (!findOntology(ontology) || item.graph.nodes.some(node => !nodeTypeSet(ontology).has(node.type)) ||
+        item.graph.edges.some(edge => !relationTypeSet(ontology).has(edge.relation))) {
+      fail('invalid graph ontology type in ' + item.id)
+    }
+    const nodesById = new Map(item.graph.nodes.map(node => [node.id, node]))
+    for (const fix of item.gold.allowedFixes) validateAllowedFix(item, fix, paragraphs, nodesById)
     if (item.allegation.targetKind === 'node' && !nodeIds.has(item.allegation.targetId)) {
       fail('allegation target node is missing: ' + item.id)
     }
@@ -115,8 +196,16 @@ function validateRun(gold, run) {
 
 function rate(numerator, denominator) { return denominator ? numerator / denominator : null }
 
-function expectedRequest(item, model) {
-  return { graph: item.graph, text: item.input.text, sourceUnits: item.sourceUnits,
+export function expectedRequest(item, model) {
+  const wholeGraph = item.allegation.targetKind === 'graph'
+  if (wholeGraph && item.sourceUnits.some((unit, index) => unit.paragraph !== index)) {
+    fail('whole-graph source units must be contiguous from zero: ' + item.id)
+  }
+  // The Host deliberately rejects scoped source units for whole-graph review.
+  // Preserve all frozen paragraphs as one complete source instead of clipping.
+  return { graph: item.graph,
+    text: wholeGraph ? item.sourceUnits.map(unit => unit.text).join('\n\n') : item.input.text,
+    sourceUnits: wholeGraph ? [] : item.sourceUnits,
     question: item.input.question,
     target: { kind: item.allegation.targetKind, id: item.allegation.targetId },
     reviewIssue: { id: item.allegation.issueId, title: item.allegation.title,
@@ -192,7 +281,7 @@ export function evaluateReviewRun(gold, run) {
   validateRun(gold, run)
   const byId = new Map(run.predictions.map(item => [item.caseId, item]))
   const confusion = { tp: 0, fp: 0, fn: 0, tn: 0, positiveAbstain: 0, negativeAbstain: 0 }
-  let goldUncertain = 0, unsafeRepairProposals = 0, unmatchedConfirmedRepairs = 0, missedApprovedRepairs = 0
+  let goldUncertain = 0, unsafeRepairProposals = 0, unmatchedConfirmedRepairs = 0, unapprovedRepairProposals = 0, missedApprovedRepairs = 0
   const cost = { complete: true, observedCases: 0, totalCases: gold.cases.length,
     inputTokens: 0, outputTokens: 0, elapsedMs: 0, cachedInputTokens: 0, cachedComplete: true }
   const results = gold.cases.map(item => {
@@ -211,10 +300,12 @@ export function evaluateReviewRun(gold, run) {
     const approved = item.gold.allowedFixes.some(fix => stableJson(fix) === stableJson(predicted.proposedFix))
     const unsafe = expected !== 'confirmed' && hasFix
     const unmatched = expected === 'confirmed' && hasFix && !approved
+    const unapproved = hasFix && !approved
     const missedRepair = expected === 'confirmed' && !hasFix &&
       item.gold.allowedFixes.some(fix => fix.action !== 'none')
     if (unsafe) unsafeRepairProposals++
     if (unmatched) unmatchedConfirmedRepairs++
+    if (unapproved) unapprovedRepairProposals++
     if (missedRepair) missedApprovedRepairs++
     if (predicted.usage == null) cost.complete = false
     else {
@@ -227,6 +318,7 @@ export function evaluateReviewRun(gold, run) {
     }
     return { caseId: item.id, category: item.category, expected, predicted: predicted.verdict,
       proposedFix: predicted.proposedFix, approvedFix: approved, unsafeRepair: unsafe,
+      unapprovedRepair: unapproved,
       unmatchedConfirmedRepair: unmatched, missedApprovedRepair: missedRepair,
       requestHash: predicted.requestHash ?? null, traceHash: predicted.traceHash ?? null,
       usage: predicted.usage ?? null }
@@ -236,11 +328,12 @@ export function evaluateReviewRun(gold, run) {
   const negatives = confusion.tn + confusion.fp + confusion.negativeAbstain
   const metrics = { confusion, goldUncertain, precision: rate(confusion.tp, confusion.tp + confusion.fp),
     recall: rate(confusion.tp, positives), falsePositiveRate: rate(confusion.fp, negatives),
-    unsafeRepairProposals, unmatchedConfirmedRepairs, missedApprovedRepairs, cost }
+    unsafeRepairProposals, unmatchedConfirmedRepairs, unapprovedRepairProposals, missedApprovedRepairs, cost }
   return { datasetId: gold.datasetId, goldHash: run.goldHash, runId: run.runId,
     model: run.model, promptVersion: run.promptVersion, measurementStatus: run.measurementStatus,
     labelState: gold.cases.every(item => item.label.status === 'human-reviewed') ?
-      'human_reviewed_self_reported' : 'draft_not_human_confirmed', metrics, results }
+      'human_reviewed_self_reported' : gold.cases.every(item => item.label.status !== 'draft') ?
+        'codex_reviewed_not_human_confirmed' : 'draft_not_human_confirmed', metrics, results }
 }
 
 export function compareReviewRuns(gold, baseline, candidate) {
@@ -258,6 +351,7 @@ export function compareReviewRuns(gold, baseline, candidate) {
       missedPositiveCases: a.confusion.fn + a.confusion.positiveAbstain - b.confusion.fn - b.confusion.positiveAbstain,
       unsafeRepairProposals: a.unsafeRepairProposals - b.unsafeRepairProposals,
       unmatchedConfirmedRepairs: a.unmatchedConfirmedRepairs - b.unmatchedConfirmedRepairs,
+      unapprovedRepairProposals: a.unapprovedRepairProposals - b.unapprovedRepairProposals,
       missedApprovedRepairs: a.missedApprovedRepairs - b.missedApprovedRepairs,
       inputTokens: costComparable ? a.cost.inputTokens - b.cost.inputTokens : null,
       outputTokens: costComparable ? a.cost.outputTokens - b.cost.outputTokens : null,
@@ -273,13 +367,14 @@ export function renderReviewSheet(gold, report) {
     '# Knowledge Graph Review Benchmark', '',
     `Dataset: ${gold.datasetId}  `, `Gold SHA-256: ${fingerprintReviewGold(gold)}  `,
     `Label state: ${candidate.labelState}  `,
-    'Draft labels and self-reported reviewer metadata are not independent human confirmation.', '',
+    'Codex-reviewed labels are model judgments, not independent human ground truth; reviewer metadata is self-reported.', '',
     `Candidate measurement: ${candidate.measurementStatus}; baseline measurement: ${baseline?.measurementStatus || 'none'}.`,
     'Controlled fixture usage is synthetic and must not be reported as actual model cost.', '',
     '## Summary', '', code({ baseline: baseline?.metrics || null, candidate: candidate.metrics,
       delta: report.delta || null, costComparable: report.costComparable ??
         (candidate.metrics.cost.complete && candidate.measurementStatus === 'reported_real_run') }),
     'Token counts and elapsed milliseconds are reported by the run; elapsedMs is a sum of case latencies, not wall-clock time.',
+    'Unapproved repairs include both fixes to non-confirmed allegations and fixes outside the approved set for confirmed allegations; an unmatched fix may warrant further adjudication rather than being objectively unsafe.',
     'Incomplete usage is not zero cost, and token/time savings do not excuse unsafe repairs.', '',
   ]
   const current = new Map(candidate.results.map(item => [item.caseId, item]))
@@ -289,7 +384,7 @@ export function renderReviewSheet(gold, report) {
       `Label: ${item.label.status}; rationale: ${item.label.rationale}`, '',
       '- [ ] Independently check every source paragraph and complete graph context.',
       '- [ ] Confirm the verdict and each allowed repair, including whether no safe single edit exists.',
-      '- [ ] Record reviewer, review date, and any corrected rationale in the gold JSON before using --require-reviewed.', '',
+      '- [ ] Check reviewer, review date, rationale and the label tier; Codex review does not satisfy --require-reviewed.', '',
       'Source units:', '', code(item.sourceUnits), 'Graph:', '', code(item.graph),
       'Allegation:', '', code(item.allegation), 'Frozen review input:', '', code(item.input),
       'Gold verdict and allowed repairs:', '', code(item.gold),
@@ -305,7 +400,7 @@ function argsOf(argv) {
     const value = argv[i]
     if (!value.startsWith('--')) fail('unexpected argument: ' + value)
     const key = value.slice(2)
-    if (key === 'require-reviewed' || key === 'fingerprint') { args[key] = true; continue }
+    if (key === 'require-reviewed' || key === 'require-adjudicated' || key === 'fingerprint') { args[key] = true; continue }
     if (!argv[i + 1] || argv[i + 1].startsWith('--')) fail('missing value for ' + value)
     args[key] = argv[++i]
   }
@@ -315,14 +410,19 @@ function argsOf(argv) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = argsOf(process.argv.slice(2))
-    if (!args.gold) fail('usage: --gold GOLD.json [--fingerprint | --capture RAW.json --run OUT.json | --candidate RUN.json [--baseline RUN.json] [--json OUT.json] [--markdown OUT.md] [--require-reviewed]]')
+    if (!args.gold) fail('usage: --gold GOLD.json [--fingerprint | --capture RAW.json --run OUT.json | --candidate RUN.json [--baseline RUN.json] [--json OUT.json] [--markdown OUT.md] [--require-adjudicated | --require-reviewed]]')
     const gold = JSON.parse(readFileSync(args.gold, 'utf8'))
     const fingerprint = fingerprintReviewGold(gold)
     if (args.fingerprint && (args.capture || args.run || args.candidate || args.baseline || args.json || args.markdown)) {
       fail('fingerprint mode cannot be combined with capture or comparison arguments')
     }
     if (args['require-reviewed'] && gold.cases.some(item => item.label.status !== 'human-reviewed')) {
-      fail('draft labels cannot be used with --require-reviewed')
+      fail(gold.cases.some(item => item.label.status === 'draft') ?
+        'draft labels cannot be used with --require-reviewed' :
+        '--require-reviewed needs human-reviewed labels; Codex review is not human confirmation')
+    }
+    if (args['require-adjudicated'] && gold.cases.some(item => item.label.status === 'draft')) {
+      fail('draft labels cannot be used with --require-adjudicated')
     }
     if (args.fingerprint) process.stdout.write(fingerprint + '\n')
     else if (args.capture) {

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-open-article-v7",
+  "description": "Curated, whitespace-normalized Chinese abstract and subgroup-results excerpts from Dai Shengjun et al., The Impacts of the Feynman Learning Method on Students' Learning Outcomes: A Meta-Analysis of 41 Empirical Studies, DOI 10.12677/ae.2026.1691896, https://pdf.hanspub.org/ae_1883852.pdf (CC BY 4.0). The graph and its erroneous comparison are manually seeded for this benchmark, not extracted from the full article or the user's books. The abstract and body disagree about which learning organization is more stable; the gold finding is limited to the graph's incorrect numerical comparison.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "亚组分析结果显示：费曼学习法在K12与在职教育阶段、自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定" },
+    { "paragraph": 1, "text": "大学阶段、合作学习模式、STEM学科、程序性知识场景下虽仍存在正向效果，但研究间异质性更高。" },
+    { "paragraph": 2, "text": "自主学习模式组共18个效应量，中度异质性(I²=58.988%)，效应值g=0.333 (95% CI [0.168, 0.498])，正向效应偏弱、研究间差异明显。" },
+    { "paragraph": 3, "text": "合作学习模式组共26个效应量，低异质性(I²=25.528%)，效应值g=0.530 (95% CI [0.436, 0.625])，效应强度更高，不同研究结论高度统一。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-open-article-v7", "documentId": "discovery-zh-open-article-v7", "title": "费曼学习法元分析：摘要与学习组织形式亚组", "paragraphCount": 4 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "自主学习模式的效应值高于合作学习模式，研究间异质性也更低。", "paragraph": 0, "quote": "自主学习模式", "evidence": [{ "paragraph": 0, "quote": "自主学习模式" }, { "paragraph": 1, "quote": "合作学习模式" }] },
+      { "id": "n2", "type": "fact", "text": "文章摘要把自主学习模式列为效应更显著且稳定的场景。", "paragraph": 0, "quote": "自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定", "evidence": [{ "paragraph": 0, "quote": "自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定" }] },
+      { "id": "n3", "type": "fact", "text": "亚组结果报告自主学习模式g=0.333，合作学习模式g=0.530。", "paragraph": 2, "quote": "效应值g=0.333", "evidence": [{ "paragraph": 2, "quote": "效应值g=0.333" }, { "paragraph": 3, "quote": "效应值g=0.530" }] },
+      { "id": "n4", "type": "fact", "text": "亚组结果中合作学习模式的研究间异质性低于自主学习模式。", "paragraph": 3, "quote": "低异质性(I²=25.528%)", "evidence": [{ "paragraph": 2, "quote": "中度异质性(I²=58.988%)" }, { "paragraph": 3, "quote": "低异质性(I²=25.528%)" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "subgroup-comparison-reversed", "targetKind": "node", "targetId": "n1", "summary": "n1 将亚组数据的效应值与异质性方向同时写反。", "evidence": [{ "paragraph": 2, "quote": "中度异质性(I²=58.988%)，效应值g=0.333" }, { "paragraph": 3, "quote": "低异质性(I²=25.528%)，效应值g=0.530" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "正文的亚组数值中，自主学习g=0.333低于合作学习g=0.530；自主学习I²=58.988%高于合作学习I²=25.528%。摘要另把自主学习列为更显著稳定情境，这是原文内部张力，不能据此覆写正文具体数值。n2只忠实描述摘要的说法，n3/n4忠实描述正文数据，均不列为本例图节点错误。" } }
+  ]
+}

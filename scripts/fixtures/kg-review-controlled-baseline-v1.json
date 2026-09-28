@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "datasetId": "kg-review-adversarial-draft-v1",
-  "goldHash": "f9d8820855f99521c9e2453fb8c58c2a9fdc588e6914be5a1f83a322d67a734c",
+  "datasetId": "kg-review-adversarial-codex-v1",
+  "goldHash": "2c47eb753e3e431819ca80ef793290cb7024231e548b2b9ba3d2097ab9a3fb7d",
   "runId": "controlled-baseline-v1",
   "model": "controlled-fixture-not-a-model",
   "promptVersion": "synthetic-baseline-v1",
@@ -9,10 +9,15 @@
   "predictions": [
     { "caseId": "negation-reversed", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "The trial did not show that the intervention improved memory." } } }, "usage": { "inputTokens": 250, "outputTokens": 80, "elapsedMs": 420 } },
     { "caseId": "condition-already-present", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 210, "outputTokens": 65, "elapsedMs": 380 } },
-    { "caseId": "cross-paragraph-exception", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "The program improved test scores in the adult group; its effect on children is unknown." } } }, "usage": { "inputTokens": 300, "outputTokens": 90, "elapsedMs": 500 } },
+    { "caseId": "cross-paragraph-exception", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "The program improved test scores in the adult group." } } }, "usage": { "inputTokens": 300, "outputTokens": 90, "elapsedMs": 500 } },
     { "caseId": "homonym-not-duplicate", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 270, "outputTokens": 70, "elapsedMs": 430 } },
     { "caseId": "unsafe-existing-merge", "verdict": "confirmed", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 290, "outputTokens": 80, "elapsedMs": 470 } },
-    { "caseId": "distant-qualifier", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "Rapid feedback often helps error correction, but immediate feedback may worsen performance for learners in severe anxiety." } } }, "usage": { "inputTokens": 410, "outputTokens": 110, "elapsedMs": 620 } },
-    { "caseId": "insufficient-source", "verdict": "uncertain", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 230, "outputTokens": 55, "elapsedMs": 350 } }
+    { "caseId": "distant-qualifier", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "Rapid feedback often helps people correct mistakes." } } }, "usage": { "inputTokens": 410, "outputTokens": 110, "elapsedMs": 620 } },
+    { "caseId": "insufficient-source", "verdict": "uncertain", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 230, "outputTokens": 55, "elapsedMs": 350 } },
+    { "caseId": "zh-condition-negation", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "研究只观察到完成两次间隔练习的成人成绩提高，不能据此断言儿童也会受益。" } } }, "usage": { "inputTokens": 280, "outputTokens": 75, "elapsedMs": 480 } },
+    { "caseId": "lv-description-not-feature", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 240, "outputTokens": 60, "elapsedMs": 400 } },
+    { "caseId": "lv-negative-example-mislabeled", "verdict": "confirmed", "proposedFix": { "action": "update_node", "nodePatch": { "id": "n1", "patch": { "type": "negative_example" } } }, "usage": { "inputTokens": 250, "outputTokens": 70, "elapsedMs": 430 } },
+    { "caseId": "zh-causal-relation-mislabeled", "verdict": "confirmed", "proposedFix": { "action": "update_edge", "edgePatch": { "fromNodeId": "n1", "toNodeId": "n2", "oldRelation": "supports", "relation": "causes", "evidence": [{ "paragraph": 0, "quote": "重复练习直接导致回忆成绩提高。" }] } }, "usage": { "inputTokens": 260, "outputTokens": 72, "elapsedMs": 450 } },
+    { "caseId": "zh-correlation-not-causal", "verdict": "false_positive", "proposedFix": { "action": "none" }, "usage": { "inputTokens": 250, "outputTokens": 65, "elapsedMs": 420 } }
   ]
 }

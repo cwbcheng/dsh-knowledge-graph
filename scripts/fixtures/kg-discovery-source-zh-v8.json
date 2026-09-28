@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v8",
+  "description": "Invented training-program revision notice with a grandfathered cohort. Tests effective date and continuing applicability, not the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "2023版培训流程规定学员在第一次测验前可以查看标准答案。" },
+    { "paragraph": 1, "text": "该版本适用于2024年1月1日前入学的旧班。" },
+    { "paragraph": 2, "text": "2024版自2024年1月1日起对新入学班级生效。" },
+    { "paragraph": 3, "text": "新流程改为第一次测验提交后才展示标准答案。" },
+    { "paragraph": 4, "text": "过渡条款规定旧班继续采用2023版流程，新班采用2024版流程。" },
+    { "paragraph": 5, "text": "发布日期较晚不改变旧班的适用版本。" },
+    { "paragraph": 6, "text": "2024年2月新入学的甲班，第一次测验结束后才看到答案。" },
+    { "paragraph": 7, "text": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v8", "documentId": "discovery-zh-synthetic-v8", "title": "合成培训流程版本与过渡条款", "paragraphCount": 8 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "2024年2月所有在读学员都要在第一次测验提交后才能查看标准答案。", "paragraph": 3, "quote": "第一次测验提交后才展示标准答案", "evidence": [{ "paragraph": 3, "quote": "第一次测验提交后才展示标准答案" }] },
+      { "id": "n2", "type": "fact", "text": "2024年2月新入学的甲班第一次测验结束后才看到答案", "paragraph": 6, "quote": "2024年2月新入学的甲班，第一次测验结束后才看到答案", "evidence": [{ "paragraph": 6, "quote": "2024年2月新入学的甲班，第一次测验结束后才看到答案" }] },
+      { "id": "n3", "type": "fact", "text": "2023年12月入学的乙班在2024年2月仍按旧流程提前查看答案", "paragraph": 7, "quote": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案", "evidence": [{ "paragraph": 7, "quote": "2024年2月仍在读的乙班于2023年12月入学，继续在第一次测验前查看答案" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "new-policy-applied-to-grandfathered-cohort", "targetKind": "node", "targetId": "n1", "summary": "n1 把只对新入学班级生效的2024版流程推广到所有在读学员，违背旧班继续适用2023版的过渡条款。", "evidence": [{ "paragraph": 2, "quote": "对新入学班级生效" }, { "paragraph": 4, "quote": "旧班继续采用2023版流程" }, { "paragraph": 7, "quote": "继续在第一次测验前查看答案" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P2 把新版的生效对象限定为新入学班级；P4 明确保留旧班原流程；P7 给出2024年2月仍在读却于测验前看答案的反例。n1 的“所有在读学员”跨越了版本适用边界。n2 和 n3 分别忠实记录两个班级，不是本例缺陷。" } }
+  ]
+}

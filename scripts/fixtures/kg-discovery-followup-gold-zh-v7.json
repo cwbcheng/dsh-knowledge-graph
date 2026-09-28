@@ -1,0 +1,364 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-review-open-article-v7-missed-numeric",
+  "description": "Targeted review of one frozen, adjudicated discovery miss; the allegation is known and is not a second full-graph discovery run.",
+  "discoveryGoldHash": "504a95a966ba39d405b80862bdda7296d6789d415bad07c6adeec9d2f93f9e71",
+  "discoveryReportHash": "9093dc8f1e445cc988ba1ddf3d58888490044de26eb5215f30a1911c4a525295",
+  "cases": [
+    {
+      "id": "subgroup-comparison-reversed",
+      "category": "numeric-comparison-cross-section",
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread source audit)",
+        "reviewedAt": "2026-09-28",
+        "rationale": "The frozen full audit missed n1. The body gives autonomous learning g=0.333 and I2=58.988%, versus cooperative learning g=0.530 and I2=25.528%. Deleting the redundant false comparison is approved for this benchmark; n2 separately preserves the abstract's wording and n3/n4 preserve the body's numbers. This does not resolve the article's internal discrepancy."
+      },
+      "sourceUnits": [
+        {
+          "paragraph": 0,
+          "text": "亚组分析结果显示：费曼学习法在K12与在职教育阶段、自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定"
+        },
+        {
+          "paragraph": 1,
+          "text": "大学阶段、合作学习模式、STEM学科、程序性知识场景下虽仍存在正向效果，但研究间异质性更高。"
+        },
+        {
+          "paragraph": 2,
+          "text": "自主学习模式组共18个效应量，中度异质性(I²=58.988%)，效应值g=0.333 (95% CI [0.168, 0.498])，正向效应偏弱、研究间差异明显。"
+        },
+        {
+          "paragraph": 3,
+          "text": "合作学习模式组共26个效应量，低异质性(I²=25.528%)，效应值g=0.530 (95% CI [0.436, 0.625])，效应强度更高，不同研究结论高度统一。"
+        }
+      ],
+      "graph": {
+        "summary": "",
+        "warnings": [],
+        "source": {
+          "id": "source-discovery-zh-open-article-v7",
+          "documentId": "discovery-zh-open-article-v7",
+          "title": "费曼学习法元分析：摘要与学习组织形式亚组",
+          "paragraphCount": 4,
+          "chars": 280,
+          "chunkCount": 0,
+          "sectionCount": 0,
+          "revision": 1
+        },
+        "revision": 1,
+        "nodes": [
+          {
+            "id": "n1",
+            "type": "claim",
+            "text": "自主学习模式的效应值高于合作学习模式，研究间异质性也更低。",
+            "quote": "自主学习模式",
+            "paragraph": 0,
+            "evidence": [
+              {
+                "paragraph": 0,
+                "quote": "自主学习模式"
+              },
+              {
+                "paragraph": 1,
+                "quote": "合作学习模式"
+              }
+            ],
+            "documentId": "discovery-zh-open-article-v7",
+            "sourceId": "source-discovery-zh-open-article-v7",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          },
+          {
+            "id": "n2",
+            "type": "fact",
+            "text": "文章摘要把自主学习模式列为效应更显著且稳定的场景。",
+            "quote": "自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定",
+            "paragraph": 0,
+            "evidence": [
+              {
+                "paragraph": 0,
+                "quote": "自主学习模式、非STEM学科、陈述性知识教学场景下，效应更显著且稳定"
+              }
+            ],
+            "documentId": "discovery-zh-open-article-v7",
+            "sourceId": "source-discovery-zh-open-article-v7",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          },
+          {
+            "id": "n3",
+            "type": "fact",
+            "text": "亚组结果报告自主学习模式g=0.333，合作学习模式g=0.530。",
+            "quote": "效应值g=0.333",
+            "paragraph": 2,
+            "evidence": [
+              {
+                "paragraph": 2,
+                "quote": "效应值g=0.333"
+              },
+              {
+                "paragraph": 3,
+                "quote": "效应值g=0.530"
+              }
+            ],
+            "documentId": "discovery-zh-open-article-v7",
+            "sourceId": "source-discovery-zh-open-article-v7",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          },
+          {
+            "id": "n4",
+            "type": "fact",
+            "text": "亚组结果中合作学习模式的研究间异质性低于自主学习模式。",
+            "quote": "低异质性(I²=25.528%)",
+            "paragraph": 3,
+            "evidence": [
+              {
+                "paragraph": 2,
+                "quote": "中度异质性(I²=58.988%)"
+              },
+              {
+                "paragraph": 3,
+                "quote": "低异质性(I²=25.528%)"
+              }
+            ],
+            "documentId": "discovery-zh-open-article-v7",
+            "sourceId": "source-discovery-zh-open-article-v7",
+            "chunkId": null,
+            "sectionId": null,
+            "sectionTitle": null,
+            "groundingStatus": "candidate",
+            "entailmentStatus": "unverified",
+            "state": "candidate"
+          }
+        ],
+        "edges": [],
+        "staging": {
+          "sourceId": "source-discovery-zh-open-article-v7",
+          "documentId": "discovery-zh-open-article-v7",
+          "chunkCount": 0,
+          "chunks": []
+        },
+        "graphOntology": {
+          "id": "proposition-v1",
+          "label": "命题知识图",
+          "summary": "把资料拆成命题与关系的通用抽取本体。",
+          "nodeTypes": [
+            {
+              "id": "fact",
+              "zh": "事实",
+              "label": "事实",
+              "color": "#3b82f6",
+              "fill": "rgba(59,130,246,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "claim",
+              "zh": "主张",
+              "label": "主张",
+              "color": "#0f766e",
+              "fill": "rgba(15,118,110,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "inference",
+              "zh": "推论",
+              "label": "推论",
+              "color": "#8b5cf6",
+              "fill": "rgba(139,92,246,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "concept",
+              "zh": "概念",
+              "label": "概念",
+              "color": "#10b981",
+              "fill": "rgba(16,185,129,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "definition",
+              "zh": "定义",
+              "label": "定义",
+              "color": "#f59e0b",
+              "fill": "rgba(245,158,11,0.16)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "example",
+              "zh": "例子",
+              "label": "例子",
+              "color": "#06b6d4",
+              "fill": "rgba(6,182,212,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "counter_example",
+              "zh": "反例",
+              "label": "反例",
+              "color": "#ef4444",
+              "fill": "rgba(239,68,68,0.15)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            },
+            {
+              "id": "rule",
+              "zh": "规则",
+              "label": "规则",
+              "color": "#7c3aed",
+              "fill": "rgba(124,58,237,0.16)",
+              "layer": "none",
+              "modelKind": "none",
+              "hint": ""
+            }
+          ],
+          "relationTypes": [
+            {
+              "id": "supports",
+              "zh": "支持",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            },
+            {
+              "id": "example",
+              "zh": "例子",
+              "family": "satellite",
+              "weight": 6,
+              "hint": ""
+            },
+            {
+              "id": "counter_example",
+              "zh": "反例",
+              "family": "satellite",
+              "weight": 6,
+              "hint": ""
+            },
+            {
+              "id": "defines",
+              "zh": "定义",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "infers",
+              "zh": "推断",
+              "family": "backbone",
+              "weight": 9,
+              "hint": ""
+            },
+            {
+              "id": "causes",
+              "zh": "因果",
+              "family": "backbone",
+              "weight": 9,
+              "hint": ""
+            },
+            {
+              "id": "is_a",
+              "zh": "属于",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "contains",
+              "zh": "包含",
+              "family": "satellite",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "driven_by",
+              "zh": "受驱动于",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            },
+            {
+              "id": "not_is",
+              "zh": "不是",
+              "family": "neutral",
+              "weight": 7,
+              "hint": ""
+            },
+            {
+              "id": "analogy",
+              "zh": "类比说明",
+              "family": "satellite",
+              "weight": 5,
+              "hint": ""
+            },
+            {
+              "id": "aims_at",
+              "zh": "旨在",
+              "family": "directional",
+              "weight": 4,
+              "hint": ""
+            }
+          ],
+          "diagnostics": []
+        },
+        "graphDiagnostics": []
+      },
+      "allegation": {
+        "issueId": "subgroup-comparison-reversed",
+        "targetKind": "node",
+        "targetId": "n1",
+        "title": "n1 将亚组数据的效应值与异质性方向同时写反。"
+      },
+      "input": {
+        "text": "",
+        "question": "请独立核实 n1 声称自主学习模式的效应值高于合作学习模式、研究间异质性更低，是否符合亚组数据。请同时比较两组的 g 和 I²，并区分摘要说法与正文数值。",
+        "detail": "n1 将亚组数据的效应值与异质性方向同时写反。",
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "中度异质性(I²=58.988%)，效应值g=0.333"
+          },
+          {
+            "paragraph": 3,
+            "quote": "低异质性(I²=25.528%)，效应值g=0.530"
+          }
+        ]
+      },
+      "gold": {
+        "verdict": "confirmed",
+        "allowedFixes": [
+          {
+            "action": "delete_node",
+            "nodePatch": {
+              "id": "n1"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

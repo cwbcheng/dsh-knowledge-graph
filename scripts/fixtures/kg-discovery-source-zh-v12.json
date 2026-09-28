@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v12-connected-clean",
+  "description": "Invented connected zero-finding control with an explicit taxonomy relation; not a real book or independent human truth.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "以下只是虚构术语的分类说明，不报告任何学习效果。" },
+    { "paragraph": 1, "text": "先答后看流程指学生先独立作答，再由教师展示标准答案的课堂流程。" },
+    { "paragraph": 2, "text": "甲式练习是一种先答后看流程，限定在本说明中的虚构课堂。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v12", "documentId": "discovery-zh-synthetic-v12", "title": "合成课堂流程分类的关系阴性对照", "paragraphCount": 3 },
+    "summary": "虚构术语说明：先答后看流程是先独立作答、再展示答案的课堂流程；甲式练习是这种流程的一种，限定在本说明的虚构课堂，不声称学习效果。",
+    "nodes": [
+      { "id": "n1", "type": "concept", "text": "甲式练习是本说明虚构课堂中的一种先答后看流程。", "paragraph": 2, "quote": "甲式练习是一种先答后看流程，限定在本说明中的虚构课堂", "evidence": [{ "paragraph": 2, "quote": "甲式练习是一种先答后看流程，限定在本说明中的虚构课堂" }] },
+      { "id": "n2", "type": "concept", "text": "先答后看流程是学生先独立作答、再由教师展示标准答案的课堂流程。", "paragraph": 1, "quote": "先答后看流程指学生先独立作答，再由教师展示标准答案的课堂流程", "evidence": [{ "paragraph": 1, "quote": "先答后看流程指学生先独立作答，再由教师展示标准答案的课堂流程" }] }
+    ],
+    "edges": [
+      { "fromNodeId": "n1", "toNodeId": "n2", "relation": "is_a", "evidence": [{ "paragraph": 2, "quote": "甲式练习是一种先答后看流程" }] }
+    ]
+  },
+  "findings": [],
+  "negativeReview": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "逐段核对虚构身份、定义和限定范围。n1 对应 P2 的明确分类且保留虚构课堂限制；n2 对应 P1 的流程定义；n1→n2 的 is_a 有 P2 直接支持，方向为具体项到上位类别。摘要只陈述虚构分类及 P1 的流程定义，未声称学习效果。此零缺陷标签仅是同线程 AI 复核，不是人工真值。" }
+}

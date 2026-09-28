@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v9",
+  "description": "Invented superiority trial excerpt. Tests whether a nonsignificant superiority result is falsely promoted to proven equivalence; not real study data or the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "一项合成训练试验比较方法甲与方法乙，预设目标是检验方法甲是否优于方法乙。" },
+    { "paragraph": 1, "text": "两组平均分差为2分，95%置信区间为负3分至7分，优势检验未见统计显著差异。" },
+    { "paragraph": 2, "text": "研究没有预设等效性界值，也没有实施等效性检验。" },
+    { "paragraph": 3, "text": "因此，未证明方法甲优于方法乙，不等于已经证明两种方法效果相同。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v9", "documentId": "discovery-zh-synthetic-v9", "title": "合成优势试验与等效性判断", "paragraphCount": 4 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "方法甲与方法乙的效果相同。", "paragraph": 1, "quote": "优势检验未见统计显著差异", "evidence": [{ "paragraph": 1, "quote": "优势检验未见统计显著差异" }] },
+      { "id": "n2", "type": "fact", "text": "该研究没有实施等效性检验。", "paragraph": 2, "quote": "没有实施等效性检验", "evidence": [{ "paragraph": 2, "quote": "没有实施等效性检验" }] },
+      { "id": "n3", "type": "claim", "text": "未证明方法甲优于方法乙，不等于证明两种方法效果相同。", "paragraph": 3, "quote": "未证明方法甲优于方法乙，不等于已经证明两种方法效果相同", "evidence": [{ "paragraph": 3, "quote": "未证明方法甲优于方法乙，不等于已经证明两种方法效果相同" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "nonsignificance-misread-as-equivalence", "targetKind": "node", "targetId": "n1", "summary": "n1 把优势检验未见显著差异当成两方法已证明等效，超出了研究设计和结果。", "evidence": [{ "paragraph": 1, "quote": "优势检验未见统计显著差异" }, { "paragraph": 2, "quote": "没有实施等效性检验" }, { "paragraph": 3, "quote": "不等于已经证明两种方法效果相同" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P1 只报告优势检验没有达到显著性；P2 明确没有等效性设计和检验；P3 直接区分未证实优势与证实等效。n1 却作出等效结论。n2 和 n3 与原文一致，不属于本例缺陷。" } }
+  ]
+}

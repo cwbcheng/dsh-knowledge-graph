@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-review-open-article-v7-missed-numeric",
+  "discoveryGoldHash": "504a95a966ba39d405b80862bdda7296d6789d415bad07c6adeec9d2f93f9e71",
+  "reportHash": "9093dc8f1e445cc988ba1ddf3d58888490044de26eb5215f30a1911c4a525295",
+  "findingId": "subgroup-comparison-reversed",
+  "category": "numeric-comparison-cross-section",
+  "label": {
+    "status": "codex-reviewed",
+    "reviewer": "Codex (same-thread source audit)",
+    "reviewedAt": "2026-09-28",
+    "rationale": "The frozen full audit missed n1. The body gives autonomous learning g=0.333 and I2=58.988%, versus cooperative learning g=0.530 and I2=25.528%. Deleting the redundant false comparison is approved for this benchmark; n2 separately preserves the abstract's wording and n3/n4 preserve the body's numbers. This does not resolve the article's internal discrepancy."
+  },
+  "question": "请独立核实 n1 声称自主学习模式的效应值高于合作学习模式、研究间异质性更低，是否符合亚组数据。请同时比较两组的 g 和 I²，并区分摘要说法与正文数值。",
+  "approvedFixes": [
+    {
+      "action": "delete_node",
+      "nodePatch": { "id": "n1" }
+    }
+  ]
+}

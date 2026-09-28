@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v6",
+  "description": "Invented interview excerpt separating a teacher's quoted opinion from the editor's own conclusion. Not from the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "这份访谈记录把教师林的发言与编辑的评注分开记录；引述不等于编辑赞同。" },
+    { "paragraph": 1, "text": "教师林说：“先展示答案会削弱学生独立判断。”这是林的经验判断，访谈未附测验数据。" },
+    { "paragraph": 2, "text": "编辑写道：“我们不能把林的经验判断当成已证实结论，也不据此建议所有课堂先展示答案。”" },
+    { "paragraph": 3, "text": "编辑当前只建议在本试点中先让学生独立作答，再展示答案；" },
+    { "paragraph": 4, "text": "是否改善成绩尚未测量。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v6", "documentId": "discovery-zh-synthetic-v6", "title": "合成访谈与编辑评注", "paragraphCount": 5 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "编辑确认先展示答案会削弱学生独立判断。", "paragraph": 1, "quote": "先展示答案会削弱学生独立判断", "evidence": [{ "paragraph": 1, "quote": "先展示答案会削弱学生独立判断" }] },
+      { "id": "n2", "type": "fact", "text": "教师林认为先展示答案会削弱学生独立判断", "paragraph": 1, "quote": "教师林说：“先展示答案会削弱学生独立判断。”", "evidence": [{ "paragraph": 1, "quote": "教师林说：“先展示答案会削弱学生独立判断。”" }] },
+      { "id": "n3", "type": "claim", "text": "编辑建议在本试点中先让学生独立作答，再展示答案", "paragraph": 3, "quote": "编辑当前只建议在本试点中先让学生独立作答，再展示答案", "evidence": [{ "paragraph": 3, "quote": "编辑当前只建议在本试点中先让学生独立作答，再展示答案" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "quoted-speaker-as-editor-conclusion", "targetKind": "node", "targetId": "n1", "summary": "n1 把教师林的引述归给编辑，并把未证实的经验判断写成编辑已确认的结论。", "evidence": [{ "paragraph": 0, "quote": "引述不等于编辑赞同" }, { "paragraph": 1, "quote": "这是林的经验判断，访谈未附测验数据" }, { "paragraph": 2, "quote": "不能把林的经验判断当成已证实结论" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P1 明确说话人是教师林，且没有测验数据；P0 明确引述不等于编辑赞同，P2 明确编辑拒绝把该经验判断当成已证实结论。n1 的主体和确定性均与原文冲突。n2 仅陈述林说过什么，n3 的试点建议可在 P3 找到，不是本例缺陷。" } }
+  ]
+}

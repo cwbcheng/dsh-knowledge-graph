@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-review-zh-learning-codex-v1",
+  "description": "Invented Chinese source snippets for targeted issue review. Same-thread Codex evidence labels, not excerpts from the user's book or independent human truth.",
+  "cases": [
+    {
+      "id": "lv-necessary-not-sufficient",
+      "category": "learning-view-feature-sufficiency",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-28", "rationale": "原文说四边相等是必要特征，并以菱形说明它不足以判定正方形。节点文字与引文正确，但 intension_description 在本体中表示具备该内涵即可判定，因而类型过强；只改为同坐标的 feature_description。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "四条边相等是正方形的一个必要特征，但菱形也可能四边相等；只凭这一点不能判为正方形。" }],
+      "graph": { "ontology": "learning-view-v1", "nodes": [{ "id": "n1", "type": "intension_description", "modelKind": "discrimination", "layer": "upper", "text": "四条边相等是正方形的一个必要特征", "paragraph": 0, "quote": "四条边相等是正方形的一个必要特征" }], "edges": [] },
+      "allegation": { "issueId": "lv-necessary-not-sufficient", "targetKind": "node", "targetId": "n1", "title": "必要但不充分的特征材料被标成内涵描述。" },
+      "input": { "text": "", "question": "请独立核对这个本体类型问题。", "detail": "区分必要特征与足以判定概念的内涵，并保留原文材料。", "evidence": [{ "paragraph": 0, "quote": "只凭这一点不能判为正方形" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "type": "feature_description" } } }] }
+    },
+    {
+      "id": "lv-new-task-not-recycled",
+      "category": "learning-view-transfer-false-alarm",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-28", "rationale": "讲解明确把一个圆形判为正例，测验则改用此前未见的圆角矩形；原文不支持‘把旧例原样复用’的指控。verification_material 仍是验证材料，不因题目形式相近就自动变成旧例。" },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "课堂展示一个圆形，并指出它是圆形的正例。" },
+        { "paragraph": 1, "text": "测验采用此前未见过的圆角矩形，先请学生判断它是不是圆形，再公布答案。" }
+      ],
+      "graph": { "ontology": "learning-view-v1", "nodes": [
+        { "id": "n1", "type": "positive_example", "modelKind": "discrimination", "layer": "lower", "text": "课堂展示一个圆形，并指出它是圆形的正例。", "paragraph": 0, "quote": "课堂展示一个圆形，并指出它是圆形的正例。" },
+        { "id": "n2", "type": "verification_material", "modelKind": "none", "layer": "lower", "text": "测验采用此前未见过的圆角矩形，先请学生判断它是不是圆形，再公布答案。", "paragraph": 1, "quote": "测验采用此前未见过的圆角矩形，先请学生判断它是不是圆形，再公布答案。" }
+      ], "edges": [] },
+      "allegation": { "issueId": "lv-new-task-not-recycled", "targetKind": "node", "targetId": "n2", "title": "测验只是原样复用课堂旧例，应删除验证材料。" },
+      "input": { "text": "", "question": "请独立核对是否复用了旧例。", "detail": "比较课堂示范和测验输入，不要仅凭都涉及图形就认定题目相同。", "evidence": [{ "paragraph": 1, "quote": "此前未见过的圆角矩形" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "zh-confounded-causality",
+      "category": "chinese-cross-paragraph-causality",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-28", "rationale": "首段只报告练习与成绩同时变化，后段指出额外辅导的混杂因素；节点声称‘直接导致’超出了两个段落。安全的单节点修复只还原首段的观察，不把后段结论塞进首段引文。" },
+      "sourceUnits": [
+        { "paragraph": 0, "text": "在观察班中，增加练习次数与成绩提高同时出现。" },
+        { "paragraph": 1, "text": "研究者随后比较了不同班级的学习时间。" },
+        { "paragraph": 2, "text": "但这些学生同时接受额外辅导，不能确认练习次数是成绩提高的原因。" }
+      ],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "增加练习次数直接导致成绩提高。", "paragraph": 0, "quote": "在观察班中，增加练习次数与成绩提高同时出现。" }], "edges": [] },
+      "allegation": { "issueId": "zh-confounded-causality", "targetKind": "node", "targetId": "n1", "title": "节点把伴随变化写成直接因果，并忽略额外辅导。" },
+      "input": { "text": "", "question": "请独立核对这一因果断言。", "detail": "同时检查观察结果和后文的混杂因素；修复时保持节点引文与文本同段。", "evidence": [{ "paragraph": 0, "quote": "同时出现" }, { "paragraph": 2, "quote": "不能确认练习次数是成绩提高的原因" }] },
+      "gold": { "verdict": "confirmed", "allowedFixes": [{ "action": "update_node", "nodePatch": { "id": "n1", "patch": { "text": "在观察班中，增加练习次数与成绩提高同时出现。" } } }] }
+    },
+    {
+      "id": "zh-attributed-not-proven",
+      "category": "chinese-attribution-vs-truth",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-28", "rationale": "节点忠实记录‘作者提出’及‘通常’这一限定，没有把观点写成外部已证实的普遍规律。缺少对照实验限制现实效力判断，不构成删除作者观点的理由。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "作者提出：先形成判别模型，通常更容易理解随后介绍的联结模型；本节没有报告对照实验。" }],
+      "graph": { "nodes": [{ "id": "n1", "type": "claim", "text": "作者提出：先形成判别模型，通常更容易理解随后介绍的联结模型", "paragraph": 0, "quote": "作者提出：先形成判别模型，通常更容易理解随后介绍的联结模型" }], "edges": [] },
+      "allegation": { "issueId": "zh-attributed-not-proven", "targetKind": "node", "targetId": "n1", "title": "缺少外部实验，作者观点应该从知识图删除。" },
+      "input": { "text": "", "question": "请独立核对删除要求是否成立。", "detail": "区分忠实记录作者观点和证实该观点在现实中正确。", "evidence": [{ "paragraph": 0, "quote": "本节没有报告对照实验" }] },
+      "gold": { "verdict": "false_positive", "allowedFixes": [{ "action": "none" }] }
+    },
+    {
+      "id": "lv-exercise-status-unknown",
+      "category": "learning-view-insufficient-source",
+      "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread evidence pass)", "reviewedAt": "2026-09-28", "rationale": "记录只说做了练习，未交代学生是否先预测再见结果，也未说明题目是否为旧例；不能仅凭‘练习’一词把 data_or_experience 改为 verification_material。材料性质仍待来源补充。" },
+      "sourceUnits": [{ "paragraph": 0, "text": "课堂记录只说学生做了练习，没有记载题目是否先要求预测，也没有说明是否复用讲解过的例子。" }],
+      "graph": { "ontology": "learning-view-v1", "nodes": [{ "id": "n1", "type": "data_or_experience", "modelKind": "none", "layer": "lower", "text": "学生做了练习", "paragraph": 0, "quote": "学生做了练习" }], "edges": [] },
+      "allegation": { "issueId": "lv-exercise-status-unknown", "targetKind": "node", "targetId": "n1", "title": "这段练习材料应改成验证材料。" },
+      "input": { "text": "", "question": "请独立核对这个材料类型修改。", "detail": "检查是否真的提供了先预测后看结果的验证流程；证据不足时不要猜测。", "evidence": [{ "paragraph": 0, "quote": "没有记载题目是否先要求预测" }] },
+      "gold": { "verdict": "uncertain", "allowedFixes": [{ "action": "none" }] }
+    }
+  ]
+}

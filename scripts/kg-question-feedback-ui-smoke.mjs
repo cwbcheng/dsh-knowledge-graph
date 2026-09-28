@@ -48,6 +48,60 @@ const panelStart = client.indexOf('      function VerificationPanel(')
 const panelEnd = client.indexOf('      function ', panelStart + 10)
 assert(panelStart >= 0 && panelEnd > panelStart)
 const panel = client.slice(panelStart, panelEnd)
+const sourcePeerStart = client.indexOf('      function repairSourcePeerIds(')
+assert(sourcePeerStart >= 0 && sourcePeerStart < panelStart,
+  'a source-backed text repair needs a testable peer-node comparison before the panel renders')
+const repairSourcePeerIds = new Function(client.slice(sourcePeerStart, panelStart) + '; return repairSourcePeerIds')()
+const repairRetainedCitationWarning = new Function(client.slice(sourcePeerStart, panelStart)
+  + '; return repairRetainedCitationWarning')()
+const articleGraph = JSON.parse(readFileSync(new URL('./fixtures/kg-discovery-gold-zh-v7.json', import.meta.url), 'utf8')).graph
+const articleFix = { action: 'update_node', nodePatch: { id: 'n1', patch: {
+  text: '按正文亚组数据，合作学习的效应值和稳定性均高于自主学习。' } } }
+assert.match(repairRetainedCitationWarning(articleGraph, articleFix), /第1段.*自主学习模式.*第2段.*合作学习模式/,
+  'a text-only model rewrite must reveal that old, potentially contradictory citations remain attached')
+assert.equal(repairRetainedCitationWarning(articleGraph, { ...articleFix,
+  nodePatch: { id: 'n1', patch: { ...articleFix.nodePatch.patch, quote: '合作学习模式组', paragraph: 3,
+    evidence: [{ paragraph: 2, quote: '效应值g=0.333' }, { paragraph: 3, quote: '效应值g=0.530' }] } } }), null)
+assert.equal(repairRetainedCitationWarning(articleGraph, { action: 'update_node',
+  nodePatch: { id: 'n1', patch: { type: 'fact' } } }), null)
+assert(panel.includes('repairRetainedCitationWarning(graph, qFix)')
+  && panel.includes('repairRetainedCitationWarning(graph, it.proposedFix)'),
+  'both single-item repair surfaces must disclose unchanged source citations')
+assert(!client.includes("changes.push('文字 → ' + patch.text.slice(0, 120))"),
+  'the proposed node text must not be truncated before a user confirms it')
+const tableGraph = JSON.parse(readFileSync(new URL('./fixtures/kg-discovery-source-zh-v4.json', import.meta.url), 'utf8')).graph
+const tableFix = { action: 'update_node', nodePatch: { id: 'n1', patch: {
+  text: '已学过规则组中，策略甲达标人数（8/10）高于策略乙（7/10）。',
+  quote: tableGraph.nodes[1].quote, paragraph: tableGraph.nodes[1].paragraph } } }
+assert.deepEqual(repairSourcePeerIds(tableGraph, tableFix), ['n2'],
+  'the table repair must expose n2 as an existing node using the same exact row and quote')
+const offWindowGraph = { ...tableGraph, nodes: [tableGraph.nodes[0],
+  ...Array.from({ length: 800 }, (_, index) => ({ id: 'filler-' + index, paragraph: index + 1, quote: '' })),
+  { ...tableGraph.nodes[1], id: 'n801' }] }
+assert.deepEqual(repairSourcePeerIds({ ...offWindowGraph, nodes: offWindowGraph.nodes.slice(0, 800) }, tableFix), [],
+  'the current client window cannot detect a source peer beyond the first 800 nodes')
+assert.deepEqual(repairSourcePeerIds(offWindowGraph, tableFix), ['n801'],
+  'the same proposal has a peer in the full canonical graph')
+assert(panel.includes("host.call('graph-source-peers'") && panel.includes('sourcePeerCheck'),
+  'the repair click must check full canonical peers before submitting an off-window update')
+assert.deepEqual(repairSourcePeerIds(tableGraph, { ...tableFix, nodePatch: { id: 'n1', patch: {
+  text: tableGraph.nodes[0].text, quote: tableGraph.nodes[1].quote, paragraph: tableGraph.nodes[1].paragraph } } }), [],
+  'an unchanged text must not trigger a new duplicate advisory')
+assert.deepEqual(repairSourcePeerIds(tableGraph, { action: 'add_edge' }), [],
+  'the node advisory must not be applied to unrelated relation operations')
+assert.deepEqual(repairSourcePeerIds({ ...tableGraph, nodes: tableGraph.nodes.map(node => node.id === 'n2'
+  ? { ...node, quote: '8/10', paragraph: 3 } : node) }, tableFix), [],
+  'sharing only a source row is not enough to claim the same exact excerpt')
+assert(panel.includes('repairSourcePeerIds(graph, qFix)') && panel.includes('repairSourcePeerIds(graph, it.proposedFix)')
+  && panel.includes('使用同一段原文摘录'),
+  'both reviewed and report fixes must expose existing same-source peers before the user saves')
+assert(panel.includes("host.call('graph-source-peers'")
+  && panel.includes('sourcePeerCheck?.key === key')
+  && panel.includes('sourcePeerGraphRef.current !== graph')
+  && panel.includes('confirmationKey(confirmationId, issue.proposedFix)')
+  && panel.includes('confirmationKey(it.id, it.proposedFix)')
+  && panel.includes("}, questionTarget?.sourceIssueId || 'qfix')"),
+  'a same-source edit needs a current full-graph check and issue-scoped second confirmation')
 const auditDiffLines = new Function('TYPE_META', 'REL_LABEL', client.slice(
   client.indexOf('      function auditDiffLines('), client.indexOf('      function compactAuditSnapshots('))
   + '; return auditDiffLines')({}, {})
@@ -73,11 +127,19 @@ assert(panel.includes('questionFeedbackRef.current?.scrollIntoView'),
   'completed feedback must be brought into the visible scroll region')
 assert(panel.includes("'拟议修改：' + fixLabel(qFix)") && panel.includes("+ fixLabel(it.proposedFix)"),
   'question and review fixes must show the actual mutation before acceptance')
-assert(panel.includes("['delete_node', 'delete_edge', 'merge_nodes'].includes(action)")
+assert(panel.includes("['add_edge', 'update_edge'].includes(qFix.action)")
+  && panel.includes("['add_edge', 'update_edge'].includes(it.proposedFix.action)")
+  && panel.includes('关系方向和语义尚未独立验证'),
+  'a structurally valid relation preview must not be presented as semantic approval')
+assert(panel.includes('节点表述的原文定位不等于语义成立')
+  && panel.includes("qFix.action === 'update_node'")
+  && panel.includes("it.proposedFix.action === 'update_node'"),
+  'single-item text rewrites must disclose that a quoted source does not prove the proposed wording')
+assert(panel.includes("['delete_node', 'delete_edge', 'merge_nodes', 'add_edge', 'update_edge'].includes(action)")
   && panel.includes('if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }')
   && panel.includes('再次点击确认'),
   'destructive fixes must require an accessible second click without a blocking native dialog')
-assert(panel.includes('disabled: bulkRunning || reviewGraphChanged || qFixConflicts.length > 0'),
+assert(panel.includes('disabled: bulkRunning || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0'),
   'a type fix that would invalidate an incident relation must not be clickable')
 assert(panel.includes("qVerdict === 'false_positive' && recheckedIssue")
   && panel.includes("'标记原问题为误报'") && panel.includes("'处理说明：' + it.userNote"),
@@ -101,7 +163,7 @@ assert(panel.includes('无需重新跑完整审校') && panel.includes('可批�
   && panel.includes('旧补丁不能直接采纳'),
   'a stale full-graph report must remain an actionable issue queue without implying a full rerun')
 assert(panel.includes('const reportStale = verificationReportStale(report, graph)')
-  && panel.includes('disabled: bulkRunning || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0')
+  && panel.includes('disabled: bulkRunning || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0')
   && panel.includes("disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实'"),
   'archived AI and deterministic proposals must not be directly applied to a changed graph')
 const staleStart = client.indexOf('      function verificationReportStale(')
@@ -119,6 +181,8 @@ const afterFirstRepair = { createdAt: 100, stale: true, issues: [
 ] }
 const currentGraph = { verification: { auditLog: [{ ts: 101 }] } }
 assert.equal(verificationReportStale(afterFirstRepair, currentGraph), true)
+assert(client.includes('const reportStaleAfterPlan = verificationReportStale(report, baseline) || planned.graph !== baseline'),
+  'saving only a batch review verdict must not say the knowledge graph changed')
 assert.equal(afterFirstRepair.issues.filter(issue => issue.status === 'open').length, 1,
   'repairing one issue must preserve the remaining issue queue')
 assert.equal(archivedIssueNeedsFreshReview(afterFirstRepair, currentGraph, afterFirstRepair.issues[1]), true,
@@ -202,7 +266,10 @@ const { batchSafeFix, batchReviewCounts, planBulkReviewedFixes } = new Function(
       ? { ...node, text: issue.proposedFix.nodePatch.patch.text } : node) }), () => false)
 const reportIssues = ['a', 'b', 'c', 'd'].map((id, index) => ({ id, source: 'ai', targetKind: 'node',
   targetId: index === 0 ? 'n1' : index === 1 ? 'n2' : 'n3', severity: 'warning', status: 'open' }))
-const batchBase = { ...reviewBase, edges: [], verification: { lastReport: { reportId: 'report-1' } } }
+const batchBase = { ...reviewBase, edges: [],
+  nodes: reviewBase.nodes.map(node => node.id === 'n1' ? { ...node, quote: 'A fixed' }
+    : node.id === 'n2' ? { ...node, quote: 'B fixed' } : node),
+  verification: { lastReport: { reportId: 'report-1' } } }
 const linkedBatchBase = { ...batchBase, edges: reviewBase.edges }
 const batchReport = { reportId: 'report-1', issues: reportIssues, metrics: {} }
 const patchFor = (id, text) => ({ action: 'update_node', nodePatch: { id, patch: { text } } })
@@ -218,12 +285,48 @@ assert.deepEqual(batchPlan.counts, { applied: 2, falsePositive: 1, manual: 1, co
 assert.deepEqual(batchPlan.report.issues.map(issue => issue.status), ['applied', 'applied', 'rejected', 'open'])
 assert.equal(batchPlan.report.issues[3].batchReview.verdict, 'uncertain',
   'unresolved decisions must remain visible but not be repeatedly selected as new work')
-assert.equal(batchReviewCounts(batchRows, batchReport).safe, 2)
+assert.equal(batchReviewCounts(batchRows, batchReport, batchBase).safe, 2)
+assert.equal((client.match(/batchSafeFix\(issue, row\.proposedFix, row\.evidence, graph\)/g) || []).length, 2,
+  'both per-item verdict and repair preview must use the current graph, not classify every safe fix as manual')
 assert.equal(batchSafeFix(reportIssues[0], { action: 'delete_node', nodePatch: { id: 'n1' } }), false,
   'destructive fixes must never enter the bulk apply set')
 assert.equal(batchSafeFix(reportIssues[0], { action: 'update_node', nodePatch: { id: 'n1', patch: { quote: 'invented' } } },
   [{ paragraph: 0, quote: 'actual' }]), false,
   'a bulk quote replacement must exactly match verified source evidence')
+const unsupportedQuoteOnly = { action: 'update_node', nodePatch: { id: 'n1', patch: { quote: 'The source states a narrower claim.' } } }
+const unsupportedQuoteEvidence = [{ paragraph: 0, quote: 'The source states a narrower claim.' }]
+assert.equal(batchSafeFix(reportIssues[0], unsupportedQuoteOnly, unsupportedQuoteEvidence, batchBase), false,
+  'reanchoring a node to a real quote must not automatically preserve unsupported existing text')
+const unsupportedQuotePlan = planBulkReviewedFixes(batchBase, batchReport,
+  [{ issueId: 'a', verdict: 'confirmed', proposedFix: unsupportedQuoteOnly,
+    evidence: unsupportedQuoteEvidence, answer: 'The old citation is wrong' }], { a: true })
+assert.equal(unsupportedQuotePlan.counts.manual, 1,
+  'a quote-only repair that leaves unsupported text must require individual review')
+const supportedQuote = 'The source explicitly says A.'
+assert.equal(batchSafeFix(reportIssues[0],
+  { action: 'update_node', nodePatch: { id: 'n1', patch: { quote: supportedQuote } } },
+  [{ paragraph: 0, quote: supportedQuote }], batchBase), true,
+  'a verified quote-only repair remains eligible when it contains the entire resulting node text')
+const unsafeMerge = JSON.parse(readFileSync(new URL('./fixtures/kg-review-benchmark-codex-v1.json', import.meta.url), 'utf8'))
+  .cases.find(item => item.id === 'unsafe-existing-merge')
+const mergedMeaning = "In learning theory, experience is the learner's prior encounters; in an experiment log, experience means a recorded trial."
+const unsafeFix = patchFor('n1', mergedMeaning)
+const unsafeIssue = { id: 'unsafe', targetKind: 'node', targetId: 'n1', status: 'open', source: 'ai' }
+assert.equal(batchSafeFix(unsafeIssue, unsafeFix, unsafeMerge.allegation.evidence, unsafeMerge.graph), false,
+  'a model text repair combining P1 and P2 cannot be batch-applied while retaining only the P1 quote')
+const unsafePlan = planBulkReviewedFixes(unsafeMerge.graph, { reportId: 'unsafe-report', issues: [unsafeIssue] },
+  [{ issueId: 'unsafe', verdict: 'confirmed', proposedFix: unsafeFix, evidence: [], answer: 'Problem confirmed' }],
+  { unsafe: true })
+assert.equal(unsafePlan.counts.manual, 1, 'the unmatched model proposal must remain a manual repair')
+assert.equal(unsafePlan.graph.nodes[0].text, unsafeMerge.graph.nodes[0].text,
+  'a batch preview must not silently write the unsupported merged meaning')
+const confounded = JSON.parse(readFileSync(new URL('./fixtures/kg-review-benchmark-zh-v1.json', import.meta.url), 'utf8'))
+  .cases.find(item => item.id === 'zh-confounded-causality')
+const crossParagraphChineseFix = patchFor('n1',
+  '在观察班中，增加练习次数与成绩提高同时出现，但因学生同时接受额外辅导，不能确认练习次数是成绩提高的原因。')
+assert.equal(batchSafeFix({ ...confounded.allegation, status: 'open' }, crossParagraphChineseFix,
+  confounded.input.evidence, confounded.graph), false,
+  'a real Flash proposal merging two Chinese paragraphs cannot auto-save under a P0-only quote')
 const collidingRows = [batchRows[0], { ...batchRows[0], issueId: 'b', proposedFix: patchFor('n1', 'another change') }]
 const collisionReport = { ...batchReport, issues: reportIssues.map(issue => issue.id === 'b' ? { ...issue, targetId: 'n1' } : issue) }
 const collision = planBulkReviewedFixes(batchBase, collisionReport, collidingRows, { a: true, b: true })
@@ -383,7 +486,7 @@ async function applyBulkFixture(rows, saveRevision = 247, options = {}) {
   const currentResultRef = { current: view }, busy = { current: false }
   const names = ['bulkReview', 'bulkReviewPreview', 'setBulkReviewPreview', 'resultView', 'bulkRunRef', 'documentIdOfGraph', 'verification',
     'toastStore', 'saveBulkReview', 'host', 'asAllNodesGraph', 'reviewContextSignature',
-    'reviewSignatureHash', 'buildReviewContextIndex', 'reviewIssueContextTarget', 'planBulkReviewedFixes', 'withVerification', 'persistGraph',
+    'reviewSignatureHash', 'buildReviewContextIndex', 'reviewIssueContextTarget', 'planBulkReviewedFixes', 'withVerification', 'verificationReportStale', 'persistGraph',
     'clearBulkReview', 'graphViewMetadata', 'loadGraphDocument', 'currentResultRef',
     'setResultView', 'makeView', 'setVerification', 'setQuestionResult', 'setError', 'graphCommitQueueRef',
     'verifyBusyRef', 'questionPhase', 'graphRevisionRef', 'setFullText', 'batchReviewIssueSignature',
@@ -404,7 +507,7 @@ async function applyBulkFixture(rows, saveRevision = 247, options = {}) {
         revision: saves.length ? saveRevision : options.revisionAfterPreview && previewCalls.length ? 247 : 246,
         sourceText: options.sourceText ?? 'source text' }
     } }, graph => graph, reviewContextSignature, async value => digest(value), buildReviewContextIndex, reviewIssueContextTarget, planBulkReviewedFixes,
-    (graph, report, stale) => ({ ...graph, verification: { lastReport: report, stale } }),
+    (graph, report, stale) => ({ ...graph, verification: { lastReport: report, stale } }), verificationReportStale,
     async (next, baseline, revision) => {
       saves.push({ next, baseline, revision })
       return saveRevision == null ? null : { revision: saveRevision }
@@ -429,6 +532,12 @@ const committedBulk = await applyBulkFixture(batchRows.map(row => ({ ...row, con
 assert.equal(committedBulk.previewCalls.length, 1, 'the group must pass a distinct read-only server preflight before saving')
 assert.equal(committedBulk.saves.length, 1, 'one confirmation must make exactly one canonical graph commit: ' + JSON.stringify(committedBulk))
 assert.equal(committedBulk.saves[0].revision, 246, 'the commit must be fenced to the exported revision')
+const manualOnlyBulk = await applyBulkFixture([{ ...batchRows[0], proposedFix: patchFor('n1', 'unquoted merged meaning'), contextHash: 'ok' }])
+assert.equal(manualOnlyBulk.saves.length, 1)
+assert.equal(manualOnlyBulk.saves[0].next.verification.stale, false,
+  'a report-only save must not mark unchanged graph claims and coverage as stale')
+assert.equal(manualOnlyBulk.saves[0].next.verification.lastReport.issues[0].status, 'open',
+  'an ungrounded proposal stays in the issue queue for individual review')
 const changedAfterPreview = await applyBulkFixture([{ ...batchRows[0], contextHash: 'ok' }], 247, { revisionAfterPreview: true })
 assert.equal(changedAfterPreview.saves.length, 0, 'an external graph revision between preview and confirmation must stop the group')
 assert(changedAfterPreview.states.at(-1).error.includes('预览后已变化'))
@@ -558,16 +667,55 @@ for (const match of recheckHandlers) {
 const reviewStart = panel.indexOf('        const applyReviewedIssue =')
 const reviewEnd = panel.indexOf('        // A contradicted/insufficient answer', reviewStart)
 assert(reviewStart >= 0 && reviewEnd > reviewStart)
-const destructiveIssue = { proposedFix: { action: 'delete_edge', edgePatch: { fromNodeId: 'n2052', toNodeId: 'n2087' } } }
+const destructiveIssue = { id: 'issue-one', proposedFix: { action: 'delete_edge', edgePatch: { fromNodeId: 'n2052', toNodeId: 'n2087' } } }
 const applied = [], pending = []
-const reviewFix = (current) => new Function('nodeTypeFixConflicts', 'archivedIssueNeedsFreshReview', 'report', 'graph', 'pendingDestructiveFix', 'setPendingDestructiveFix', 'onApplyIssue', 'bulkRunning',
+const reviewFix = (current) => new Function('nodeTypeFixConflicts', 'archivedIssueNeedsFreshReview', 'report', 'graph', 'pendingDestructiveFix', 'setPendingDestructiveFix', 'onApplyIssue', 'bulkRunning', 'confirmationKey', 'repairSourcePeerIds', 'sourcePeerCheck', 'setSourcePeerCheck',
   panel.slice(reviewStart, reviewEnd) + '; return applyReviewedIssue')(
-  () => [], () => false, null, {}, current, value => pending.push(value), issue => applied.push(issue), false)
-reviewFix(null)(destructiveIssue)
+  () => [], () => false, null, {}, current, value => pending.push(value), issue => applied.push(issue), false,
+  (id, fix) => JSON.stringify([id, fix]), () => [], null, () => {})
+await reviewFix(null)(destructiveIssue)
 assert.equal(applied.length, 0, 'the first destructive click must not mutate the graph')
-assert.equal(pending.at(-1), JSON.stringify(destructiveIssue.proposedFix))
-reviewFix(pending.at(-1))(destructiveIssue)
+assert.equal(pending.at(-1), JSON.stringify([destructiveIssue.id, destructiveIssue.proposedFix]))
+await reviewFix(pending.at(-1))({ ...destructiveIssue, id: 'issue-two' })
+assert.equal(applied.length, 0, 'a second card with the same patch cannot consume the first card confirmation')
+await reviewFix(pending.at(-1))(destructiveIssue)
+assert.equal(applied.length, 0, 'switching back to the first card must require its own confirmation again')
+await reviewFix(pending.at(-1))(destructiveIssue)
 assert.deepEqual(applied, [destructiveIssue], 'the matching second click must apply exactly that reviewed fix')
+
+const textGraph = { revision: 1, source: { documentId: 'synthetic-text' },
+  nodes: [{ id: 'n1', text: '先展示答案减少了错误' }] }
+const textIssue = { id: 'text-one', proposedFix: { action: 'update_node', nodePatch: {
+  id: 'n1', patch: { text: '教师猜测先展示答案可能减少错误', paragraph: 0, quote: '教师猜测可能减少错误' } } } }
+let textPending = null, textSourceCheck = null, textPeerCalls = 0
+const textApplied = []
+const textRequestRef = { current: 0 }, textBusyRef = { current: false }, textGraphRef = { current: textGraph }
+const textReviewFix = () => {
+  const env = {
+    nodeTypeFixConflicts: () => [], archivedIssueNeedsFreshReview: () => false,
+    report: null, graph: textGraph, pendingDestructiveFix: textPending,
+    setPendingDestructiveFix: value => { textPending = value },
+    onApplyIssue: issue => textApplied.push(issue), bulkRunning: false,
+    confirmationKey: (id, fix) => JSON.stringify([textGraph.source.documentId, textGraph.revision, id, fix]),
+    sourcePeerCheck: textSourceCheck, setSourcePeerCheck: value => { textSourceCheck = value },
+    sourcePeerBusyRef: textBusyRef, sourcePeerRequestRef: textRequestRef, sourcePeerGraphRef: textGraphRef,
+    setSourcePeerError: () => {}, setSourcePeerChecking: () => {},
+    documentIdOfGraph: graph => graph.source.documentId,
+    host: { async call(name) {
+      assert.equal(name, 'graph-source-peers')
+      textPeerCalls++
+      return { documentId: textGraph.source.documentId, revision: 1, peerIds: [], additionalPeers: 0 }
+    } },
+  }
+  return new Function(...Object.keys(env), panel.slice(reviewStart, reviewEnd) + '; return applyReviewedIssue')(...Object.values(env))
+}
+await textReviewFix()(textIssue)
+assert.equal(textPeerCalls, 1)
+assert.equal(textApplied.length, 0, 'an anchored AI text rewrite must not save on the first click')
+assert.equal(textPending, JSON.stringify([textGraph.source.documentId, textGraph.revision, textIssue.id, textIssue.proposedFix]))
+await textReviewFix()(textIssue)
+assert.equal(textPeerCalls, 1, 'confirmation must reuse the revision-fenced full-graph peer check')
+assert.deepEqual(textApplied, [textIssue], 'only a second issue-scoped click may submit the text rewrite')
 
 const labelStart = panel.indexOf('        const fixLabel = (fix) => {')
 const labelEnd = panel.indexOf('        const applyReviewedIssue =', labelStart)

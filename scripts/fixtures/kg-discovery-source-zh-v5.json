@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v5",
+  "description": "Invented classroom dialogue distinguishing an untested conditional proposal from an observed workflow. Not from the user's book.",
+  "sourceUnits": [
+    { "paragraph": 0, "text": "以下是课堂复盘对话。甲组实际采用先独立作答、再展示答案的流程，乙方案只在讨论中提出，没有实施。" },
+    { "paragraph": 1, "text": "研究员问：如果改为先展示答案、再让学生作答，会怎样？教师答：我猜可能减少错误，但没有安排乙方案，也没有测量这种顺序下的错误数。" },
+    { "paragraph": 2, "text": "实际观察的甲组有六名学生，其中四人在当周测验中答对了新题。" },
+    { "paragraph": 3, "text": "记录没有比较其他流程。" }
+  ],
+  "graph": {
+    "source": { "id": "source-discovery-zh-synthetic-v5", "documentId": "discovery-zh-synthetic-v5", "title": "合成课堂复盘对话", "paragraphCount": 4 },
+    "nodes": [
+      { "id": "n1", "type": "claim", "text": "先展示答案再让学生作答减少了错误。", "paragraph": 1, "quote": "我猜可能减少错误", "evidence": [{ "paragraph": 1, "quote": "我猜可能减少错误" }] },
+      { "id": "n2", "type": "fact", "text": "甲组实际采用先独立作答、再展示答案的流程", "paragraph": 0, "quote": "甲组实际采用先独立作答、再展示答案的流程", "evidence": [{ "paragraph": 0, "quote": "甲组实际采用先独立作答、再展示答案的流程" }] },
+      { "id": "n3", "type": "fact", "text": "甲组有六名学生，其中四人在当周测验中答对了新题", "paragraph": 2, "quote": "甲组有六名学生，其中四人在当周测验中答对了新题", "evidence": [{ "paragraph": 2, "quote": "甲组有六名学生，其中四人在当周测验中答对了新题" }] }
+    ],
+    "edges": []
+  },
+  "findings": [
+    { "id": "hypothesis-as-observed-result", "targetKind": "node", "targetId": "n1", "summary": "n1 把未实施、未测量的假设写成已观察到的效果。", "evidence": [{ "paragraph": 0, "quote": "乙方案只在讨论中提出，没有实施" }, { "paragraph": 1, "quote": "我猜可能减少错误，但没有安排乙方案，也没有测量这种顺序下的错误数" }], "label": { "status": "codex-reviewed", "reviewer": "Codex (same-thread source audit)", "rationale": "P0 明确乙方案未实施，P1 中教师只猜测可能减少错误，并明确没有测量。n1 去掉条件和不确定性，把未检验的设想写成既成结果。P2 的甲组数字不涉及乙方案，不能作为该效果的证明。" } }
+  ]
+}

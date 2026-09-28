@@ -19,6 +19,10 @@ const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
 const graphReviewMode = process.argv.includes('--graph-review')
+const relationSemanticMode = process.argv.includes('--relation-semantic')
+const textSemanticMode = process.argv.includes('--text-semantic')
+const sourcePeersMode = process.argv.includes('--source-peers')
+const offWindowPeerMode = process.argv.includes('--source-peers-off-window')
 const repairContextLimitMode = process.argv.includes('--review-repair-limit')
 const repairPatchLimitMode = process.argv.includes('--repair-patch-limit')
 const repairQualification = 'The conclusion applies only to adults, not for children.'
@@ -31,8 +35,11 @@ const trajectoryQueueMode = process.argv.includes('--trajectory-queue')
 const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
-const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
+const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+if (relationSemanticMode) paragraphs[0] = 'The two outcomes were correlated, but no causal direction was established.'
+if (textSemanticMode) paragraphs[0] = 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.'
+if (sourcePeersMode || offWindowPeerMode) paragraphs[0] = 'In the trained subgroup, strategy A reached 8 of 10 and strategy B reached 7 of 10.'
 if (reviewSaveMode) paragraphs[0] = 'Fixture observation 0 supports fixture observation 801 in the source.'
 if (repairPatchLimitMode) paragraphs[0] = paragraphs[1] = '> ' + completeRepairText
 if (reviewFieldsMode) paragraphs[0] = '> ' + 'The study compared groups under the same controlled conditions. '.repeat(5)
@@ -65,6 +72,60 @@ if (reviewMode) {
       proposedFix: { action: 'none' } })),
   } }
 }
+if (relationSemanticMode) {
+  graph.edges = [{ fromNodeId: 'n0', toNodeId: 'n1', relation: 'supports',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }] }]
+  for (const node of graph.nodes.slice(0, 2)) {
+    node.quote = paragraphs[Number(node.id.slice(1))]
+    node.evidence = [{ documentId, sourceId: documentId, paragraph: Number(node.id.slice(1)), quote: node.quote }]
+    node.groundingStatus = 'grounded'
+  }
+  graph.verification.stale = false
+  graph.verification.lastReport.stale = false
+  graph.verification.lastReport.issues = [{ id: 'relation-semantic-issue', source: 'ai', status: 'open',
+    targetKind: 'edge', targetId: 'n0>n1', targetRelation: 'supports', severity: 'warning',
+    category: 'relation', title: 'Contradictory relation proposal',
+    detail: 'The exact source quote denies a causal direction; structural anchoring alone cannot approve causes.',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }],
+    proposedFix: { action: 'update_edge', edgePatch: { fromNodeId: 'n0', toNodeId: 'n1',
+      oldRelation: 'supports', relation: 'causes', evidence: [{ paragraph: 0, quote: paragraphs[0] }] } } }]
+}
+if (textSemanticMode) {
+  Object.assign(graph.nodes[0], { type: 'claim', text: 'Answer-first reduced errors.', quote: paragraphs[0],
+    evidence: [{ documentId, sourceId: documentId, paragraph: 0, quote: paragraphs[0] }], groundingStatus: 'grounded' })
+  graph.verification.stale = false
+  graph.verification.lastReport.stale = false
+  graph.verification.lastReport.issues = [{ id: 'text-semantic-issue', source: 'ai', status: 'open',
+    targetKind: 'node', targetId: 'n0', severity: 'error', category: 'grounding',
+    title: 'An untested guess became an observed result',
+    detail: 'The teacher only guessed a possible effect and the sequence was never tested.',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }],
+    proposedFix: { action: 'update_node', nodePatch: { id: 'n0', patch: {
+      text: 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.',
+      quote: paragraphs[0], paragraph: 0 } } } }]
+}
+if (sourcePeersMode || offWindowPeerMode) {
+  Object.assign(graph.nodes[0], { text: 'Strategy A outperformed B in both subgroups.', quote: paragraphs[0], paragraph: 0,
+    evidence: [{ documentId, sourceId: documentId, paragraph: 0, quote: paragraphs[0] }], groundingStatus: 'grounded' })
+  Object.assign(graph.nodes[offWindowPeerMode ? 801 : 1], { text: 'In the trained subgroup, A reached 8 of 10 and B reached 7 of 10.',
+    quote: paragraphs[0], paragraph: 0,
+    evidence: [{ documentId, sourceId: documentId, paragraph: 0, quote: paragraphs[0] }], groundingStatus: 'grounded' })
+  graph.verification.stale = false
+  graph.verification.lastReport.stale = false
+  graph.verification.lastReport.issues = [{ id: 'source-peer-issue', source: 'ai', status: 'open',
+    targetKind: 'node', targetId: 'n0', severity: 'error', category: 'grounding',
+    title: 'Cross-subgroup overclaim', detail: 'The source only describes the trained subgroup.',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }], proposedFix: { action: 'update_node',
+      nodePatch: { id: 'n0', patch: { text: 'In the trained subgroup, strategy A reached 8 of 10 and strategy B reached 7 of 10.',
+        quote: paragraphs[0], paragraph: 0 } } } }]
+}
+if (offWindowPeerMode) for (const node of graph.nodes.slice(1, 801)) {
+  node.paragraph = 0
+  node.quote = ''
+  node.evidence = []
+  node.groundingStatus = 'unverified'
+}
+if (offWindowPeerMode) graph.nodes[801].id = 'zz-peer'
 if (contextLimitMode) {
   graph.edges = [{ fromNodeId: 'n0', toNodeId: 'n1', relation: 'supports' },
     ...Array.from({ length: 94 }, (_, i) => ({ fromNodeId: 'n801', toNodeId: 'n' + (i + 2), relation: 'supports' }))]
@@ -122,7 +183,7 @@ ctx.provide('llm', { stream(request) {
   stats.modelCalls++
   if (snapshotMode) stats.sourceParagraph0 = String(request.messages?.[0]?.content?.[0]?.text || '')
     .split('\n').find(line => line.startsWith('[P0]')) || null
-  const reviewedIndex = Number(JSON.stringify(request).match(/review-n(\d+)/)?.[1])
+  const reviewedIndex = relationSemanticMode || textSemanticMode ? 0 : Number(JSON.stringify(request).match(/review-n(\d+)/)?.[1])
   const wholeGraphReview = graphReviewMode && reviewedIndex === 0
   if (wholeGraphReview) {
     const prompt = String(request.messages?.[0]?.content?.[0]?.text || '')
@@ -142,6 +203,17 @@ ctx.provide('llm', { stream(request) {
     proposedFix: reviewedIndex < 2 && !wholeGraphReview && !(reviewDismissMode && reviewedIndex === 0) ? { action: 'update_node', nodePatch: { id: 'n' + reviewedIndex,
       patch: { quote: paragraphs[reviewedIndex] } } } : { action: 'none' },
   } : { issues: [] }
+  if (relationSemanticMode) reply = { verdict: 'confirmed',
+    answer: 'The source explicitly denies a causal direction; this proposed relation is an adversarial fixture.',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }],
+    proposedFix: { action: 'update_edge', edgePatch: { fromNodeId: 'n0', toNodeId: 'n1',
+      oldRelation: 'supports', relation: 'causes', evidence: [{ paragraph: 0, quote: paragraphs[0] }] } } }
+  if (textSemanticMode) reply = { verdict: 'confirmed',
+    answer: 'The source frames the effect as an untested teacher guess, not an observed result.',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }],
+    proposedFix: { action: 'update_node', nodePatch: { id: 'n0', patch: {
+      text: 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.',
+      quote: paragraphs[0], paragraph: 0 } } } }
   if (reviewFieldsMode && reviewedIndex === 0) {
     const prompt = String(request.messages?.[0]?.content?.[0]?.text || '')
     const subgraph = JSON.parse(prompt.split('\n').find(line => line.startsWith('{"summary":')))

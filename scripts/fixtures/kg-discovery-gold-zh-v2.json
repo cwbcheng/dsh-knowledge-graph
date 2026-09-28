@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "kg-discovery-zh-synthetic-v2",
+  "description": "Invented Chinese source and graph for full-graph issue discovery. Not from the user's book or an accuracy sample.",
+  "graph": {
+    "summary": "",
+    "warnings": [],
+    "source": {
+      "id": "source-discovery-zh-synthetic-v2",
+      "documentId": "discovery-zh-synthetic-v2",
+      "title": "合成课堂观察材料",
+      "paragraphCount": 4,
+      "chars": 140,
+      "chunkCount": 0,
+      "sectionCount": 0,
+      "revision": 1
+    },
+    "revision": 1,
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "claim",
+        "text": "间隔练习能提高所有学习者的测验分数。",
+        "quote": "在这项课堂观察中，完成两次间隔练习的成年人测验分数提高，研究没有纳入儿童。",
+        "paragraph": 0,
+        "evidence": [
+          {
+            "paragraph": 0,
+            "quote": "在这项课堂观察中，完成两次间隔练习的成年人测验分数提高，研究没有纳入儿童。"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n2",
+        "type": "fact",
+        "text": "完成两次间隔练习的成年人测验分数提高",
+        "quote": "完成两次间隔练习的成年人测验分数提高",
+        "paragraph": 0,
+        "evidence": [
+          {
+            "paragraph": 0,
+            "quote": "完成两次间隔练习的成年人测验分数提高"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n5",
+        "type": "fact",
+        "text": "教师用未见过的三角形题目检验学生能否运用判别规则，先让学生判断再展示答案。",
+        "quote": "教师用未见过的三角形题目检验学生能否运用判别规则，先让学生判断再展示答案。",
+        "paragraph": 1,
+        "evidence": [
+          {
+            "paragraph": 1,
+            "quote": "教师用未见过的三角形题目检验学生能否运用判别规则，先让学生判断再展示答案。"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n3",
+        "type": "fact",
+        "text": "练习次数增加",
+        "quote": "练习次数增加",
+        "paragraph": 2,
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "练习次数增加"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      },
+      {
+        "id": "n4",
+        "type": "fact",
+        "text": "成绩提高",
+        "quote": "成绩提高",
+        "paragraph": 2,
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "成绩提高"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "sectionId": null,
+        "sectionTitle": null,
+        "groundingStatus": "candidate",
+        "entailmentStatus": "unverified",
+        "state": "candidate"
+      }
+    ],
+    "edges": [
+      {
+        "fromNodeId": "n3",
+        "toNodeId": "n4",
+        "relation": "causes",
+        "evidence": [
+          {
+            "paragraph": 2,
+            "quote": "练习次数增加与成绩提高同时出现，但学生还接受了额外辅导，研究没有确认因果关系。"
+          }
+        ],
+        "documentId": "discovery-zh-synthetic-v2",
+        "sourceId": "source-discovery-zh-synthetic-v2",
+        "chunkId": null,
+        "state": "candidate"
+      }
+    ],
+    "staging": {
+      "sourceId": "source-discovery-zh-synthetic-v2",
+      "documentId": "discovery-zh-synthetic-v2",
+      "chunkCount": 0,
+      "chunks": []
+    },
+    "graphOntology": {
+      "id": "proposition-v1",
+      "label": "命题知识图",
+      "summary": "把资料拆成命题与关系的通用抽取本体。",
+      "nodeTypes": [
+        {
+          "id": "fact",
+          "zh": "事实",
+          "label": "事实",
+          "color": "#3b82f6",
+          "fill": "rgba(59,130,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "claim",
+          "zh": "主张",
+          "label": "主张",
+          "color": "#0f766e",
+          "fill": "rgba(15,118,110,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "inference",
+          "zh": "推论",
+          "label": "推论",
+          "color": "#8b5cf6",
+          "fill": "rgba(139,92,246,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "concept",
+          "zh": "概念",
+          "label": "概念",
+          "color": "#10b981",
+          "fill": "rgba(16,185,129,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "definition",
+          "zh": "定义",
+          "label": "定义",
+          "color": "#f59e0b",
+          "fill": "rgba(245,158,11,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "label": "例子",
+          "color": "#06b6d4",
+          "fill": "rgba(6,182,212,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "label": "反例",
+          "color": "#ef4444",
+          "fill": "rgba(239,68,68,0.15)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        },
+        {
+          "id": "rule",
+          "zh": "规则",
+          "label": "规则",
+          "color": "#7c3aed",
+          "fill": "rgba(124,58,237,0.16)",
+          "layer": "none",
+          "modelKind": "none",
+          "hint": ""
+        }
+      ],
+      "relationTypes": [
+        {
+          "id": "supports",
+          "zh": "支持",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "example",
+          "zh": "例子",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "counter_example",
+          "zh": "反例",
+          "family": "satellite",
+          "weight": 6,
+          "hint": ""
+        },
+        {
+          "id": "defines",
+          "zh": "定义",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "infers",
+          "zh": "推断",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "causes",
+          "zh": "因果",
+          "family": "backbone",
+          "weight": 9,
+          "hint": ""
+        },
+        {
+          "id": "is_a",
+          "zh": "属于",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "contains",
+          "zh": "包含",
+          "family": "satellite",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "driven_by",
+          "zh": "受驱动于",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        },
+        {
+          "id": "not_is",
+          "zh": "不是",
+          "family": "neutral",
+          "weight": 7,
+          "hint": ""
+        },
+        {
+          "id": "analogy",
+          "zh": "类比说明",
+          "family": "satellite",
+          "weight": 5,
+          "hint": ""
+        },
+        {
+          "id": "aims_at",
+          "zh": "旨在",
+          "family": "directional",
+          "weight": 4,
+          "hint": ""
+        }
+      ],
+      "diagnostics": []
+    },
+    "graphDiagnostics": []
+  },
+  "sourceUnits": [
+    {
+      "paragraph": 0,
+      "text": "在这项课堂观察中，完成两次间隔练习的成年人测验分数提高，研究没有纳入儿童。"
+    },
+    {
+      "paragraph": 1,
+      "text": "教师用未见过的三角形题目检验学生能否运用判别规则，先让学生判断再展示答案。"
+    },
+    {
+      "paragraph": 2,
+      "text": "练习次数增加与成绩提高同时出现，但学生还接受了额外辅导，研究没有确认因果关系。"
+    },
+    {
+      "paragraph": 3,
+      "text": "对于焦虑严重的学生，即时反馈可能降低表现。"
+    }
+  ],
+  "revision": 1,
+  "findings": [
+    {
+      "id": "adult-result-overgeneralized",
+      "targetKind": "node",
+      "targetId": "n1",
+      "summary": "成人观察结果被写成适用于所有学习者。",
+      "evidence": [
+        {
+          "paragraph": 0,
+          "quote": "成年人测验分数提高，研究没有纳入儿童"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread evidence pass)",
+        "rationale": "P1 只观察了完成两次练习的成年人，还明确说未纳入儿童；n1 的‘所有学习者’没有原文依据。"
+      }
+    },
+    {
+      "id": "correlation-as-causation",
+      "targetKind": "edge",
+      "targetId": "n3>n4",
+      "targetRelation": "causes",
+      "summary": "只观察到伴随变化的关系被标成因果。",
+      "evidence": [
+        {
+          "paragraph": 2,
+          "quote": "研究没有确认因果关系"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread evidence pass)",
+        "rationale": "P3 报告相关并指出额外辅导混杂，明确未确认因果；n3→n4 的 causes 超出原文。"
+      }
+    },
+    {
+      "id": "anxiety-exception-omitted",
+      "targetKind": "graph",
+      "targetId": "graph",
+      "summary": "焦虑严重学生的反馈例外没有任何图节点。",
+      "evidence": [
+        {
+          "paragraph": 3,
+          "quote": "即时反馈可能降低表现"
+        }
+      ],
+      "label": {
+        "status": "codex-reviewed",
+        "reviewer": "Codex (same-thread evidence pass)",
+        "rationale": "P4 给出与学习效果有关的否定性例外；当前 5 个节点和 1 条边都未表述它，属于原文覆盖缺口，而不是要求凭空补新事实。"
+      }
+    }
+  ]
+}
