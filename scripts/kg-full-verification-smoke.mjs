@@ -384,6 +384,92 @@ try {
     'node-only confirmation must not reintroduce a full-graph summary excluded from initial review')
   assert(scopedReviewStatus.result.issues.some(issue => issue.id === 'b2:node-issue'))
 
+  const truncatedText = 'Alpha is distinct from Beta.'
+  const truncatedGraph = { source: { documentId: 'full-review-truncated', sourceId: 'truncated-source' },
+    nodes: ['Alpha', 'Beta'].map((name, index) => ({ id: 'n' + index, type: 'concept', text: name,
+      quote: name, paragraph: 0, evidence: [{ paragraph: 0, quote: name }] })),
+    edges: [{ fromNodeId: 'n0', toNodeId: 'n1', relation: 'supports',
+      evidence: [{ paragraph: 0, quote: 'Alpha is distinct from Beta.' }] }] }
+  store.saveGraph(truncatedGraph, { sourceText: truncatedText })
+  let truncatedCalls = 0
+  const truncatedApi = createHost(async function* ({ messages }) {
+    truncatedCalls++
+    const prompt = messages[0].content[0].text
+    if (prompt.includes('"n0","n1"')) {
+      yield { type: 'reasoning-delta', index: 0, text: 'unfinished reasoning' }
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: '{"issues":[]}' }
+  })
+  const truncatedRun = await truncatedApi('verify-graph', { documentId: 'full-review-truncated', expectedRevision: 1,
+    canonicalFull: true, mode: 'standard', concurrency: 1, model })
+  assert.ok(truncatedRun.taskId, JSON.stringify(truncatedRun))
+  const truncatedStatus = await until(async () => {
+    const value = await truncatedApi('task-status', { taskId: truncatedRun.taskId }, 'GET')
+    return value.status === 'succeeded' || value.status === 'failed' ? value : null
+  }, 'truncated full review did not finish')
+  assert.equal(truncatedStatus.status, 'succeeded', JSON.stringify(truncatedStatus.error))
+  assert.equal(store.loadVerificationBatches(truncatedRun.taskId).length, 1,
+    'adaptive requests must commit the original checkpoint batch once')
+  assert.equal(truncatedStatus.result.coverage.completedEdges, 1)
+  assert.equal(store.getDocumentRevision('full-review-truncated'), 1)
+  assert(truncatedCalls > 1, 'the truncated request must be split rather than accepted')
+
+  const singletonGraph = { source: { documentId: 'full-review-singleton-truncated', sourceId: 'singleton-source' },
+    nodes: [{ id: 'n0', type: 'concept', text: 'Alpha', quote: 'Alpha', paragraph: 0,
+      evidence: [{ paragraph: 0, quote: 'Alpha' }] }], edges: [] }
+  store.saveGraph(singletonGraph, { sourceText: 'Alpha' })
+  let singletonCalls = 0
+  const singletonApi = createHost(async function* () {
+    singletonCalls++
+    yield { type: 'finish', reason: { kind: 'max-tokens' } }
+  })
+  const singletonRun = await singletonApi('verify-graph', { documentId: 'full-review-singleton-truncated',
+    expectedRevision: 1, canonicalFull: true, mode: 'standard', concurrency: 1, model })
+  const singletonStatus = await until(async () => {
+    const value = await singletonApi('task-status', { taskId: singletonRun.taskId }, 'GET')
+    return value.status === 'failed' ? value : null
+  }, 'unsplittable truncated review did not fail closed')
+  assert.match(singletonStatus.error.message, /最小目标仍达到模型输出上限/)
+  assert.equal(store.loadVerificationBatches(singletonRun.taskId).length, 0)
+  assert.equal(store.getDocumentRevision('full-review-singleton-truncated'), 1)
+  assert(singletonCalls <= 2, 'the same truncated prompt must not be retried three times')
+
+  const confirmTruncGraph = { source: { documentId: 'full-review-confirm-truncated', sourceId: 'confirm-source' },
+    nodes: ['Alpha', 'Beta'].map((name, index) => ({ id: 'n' + index, type: 'concept', text: name,
+      quote: name, paragraph: 0, evidence: [{ paragraph: 0, quote: name }] })), edges: [] }
+  store.saveGraph(confirmTruncGraph, { sourceText: truncatedText })
+  let confirmationTruncations = 0
+  const confirmTruncApi = createHost(async function* ({ system, messages }) {
+    if (!system.includes('知识图审校复核员')) {
+      yield { type: 'text-delta', index: 0, text: JSON.stringify({ issues: [0, 1].map(index => ({
+        id: 'issue-' + index, severity: 'warning', category: 'grounding', targetKind: 'node',
+        targetId: 'n' + index, title: 'Check concept ' + index, detail: 'Independent confirmation required',
+        evidence: [{ paragraph: 0, quote: index ? 'Beta' : 'Alpha' }], confidence: 0.9,
+        proposedFix: { action: 'none' },
+      })) }) }
+      return
+    }
+    const ids = [...messages[0].content[0].text.matchAll(/"id":"(b1:[^"]+)"/g)].map(match => match[1])
+    if (ids.length > 1) {
+      confirmationTruncations++
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: JSON.stringify({ kept: ids.map(id => ({ id })) }) }
+  })
+  const confirmTruncRun = await confirmTruncApi('verify-graph', { documentId: 'full-review-confirm-truncated',
+    expectedRevision: 1, canonicalFull: true, mode: 'standard', concurrency: 1, model })
+  const confirmTruncStatus = await until(async () => {
+    const value = await confirmTruncApi('task-status', { taskId: confirmTruncRun.taskId }, 'GET')
+    return value.status === 'succeeded' || value.status === 'failed' ? value : null
+  }, 'truncated independent confirmation did not finish')
+  assert.equal(confirmTruncStatus.status, 'succeeded', JSON.stringify(confirmTruncStatus.error))
+  assert.equal(confirmationTruncations, 1, 'truncated confirmation must split, not repeat')
+  assert.equal(confirmTruncStatus.result.issues.filter(issue => issue.source === 'ai').length, 2)
+  assert.equal(store.loadVerificationBatches(confirmTruncRun.taskId).length, 1)
+
   const oversizedText = 'Dense source paragraph.'
   const oversizedGraph = { source: { documentId: 'full-review-oversized-unit', sourceId: 'oversized-source' },
     nodes: Array.from({ length: 600 }, (_, i) => ({ id: 'n' + i, type: 'fact',
