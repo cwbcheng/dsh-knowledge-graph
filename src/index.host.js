@@ -5704,6 +5704,24 @@ function createHostPlugin(graphContractOnly) {
         await assertImageModelSupportHost(selected)
         return selected
       }
+      function selectMarkdownImagesForInterpretationHost(canonical, imageIds, expectedRevision) {
+        if (!canonical || !Number.isSafeInteger(expectedRevision) || expectedRevision !== canonical.revision) {
+          return { error: { code: 'revision_conflict', message: '知识图已更新，请重新选择待解读图片', currentRevision: canonical?.revision } }
+        }
+        const visual = canonical.source?.visualSource
+        if (visual?.kind !== 'markdown-assets' || !Array.isArray(visual.images)
+          || imageIds.length > MAX_IMAGE_INPUTS_HOST || new Set(imageIds).size !== imageIds.length
+          || imageIds.some((id) => typeof id !== 'string' || !id)) {
+          return { error: { code: 'image_invalid', message: '待解读图片清单无效' } }
+        }
+        const byId = new Map(visual.images.map((image) => [image.id, image]))
+        const selected = imageIds.map((id) => byId.get(id))
+        if (selected.some((image) => !image || image.interpretationStatus !== 'not_requested'
+          || !image.attachment?.attachmentId || !IMAGE_MEDIA_TYPES_HOST.has(image.attachment.mediaType))) {
+          return { error: { code: 'image_invalid', message: '图片不存在、已解读或缺少可信附件' } }
+        }
+        return { imageAttachments: selected.map((image) => ({ id: image.id, name: image.name, attachment: image.attachment })) }
+      }
       function visualTextHost(value, max) {
         const text = typeof value === 'string' ? value.replace(/\r\n?/g, NL).replace(/[ \t]+/g, ' ').replace(/\n{4,}/g, NL + NL + NL).trim() : ''
         return text.slice(0, max)
@@ -5800,8 +5818,28 @@ function createHostPlugin(graphContractOnly) {
           raw = await callExtractionModel(model, VISUAL_TRANSCRIPTION_SYSTEM_PROMPT, prompt, '图片转录', 0.05, content)
         }
         const normalized = normalizeVisualTranscriptHost(raw, task.imageAttachments, task.text)
-        task.text = normalized.text
-        task.imageSource = normalized.imageSource
+        const provenanceParagraphs = task.imageInterpretation ? 1 : 0
+        task.text = task.imageInterpretation
+          ? '【AI 视觉转写；非原书文字，待对照原图复核】' + NL + NL + normalized.text
+          : normalized.text
+        if (task.imageInterpretation) {
+          const original = task.baseSource?.visualSource
+          const interpreted = new Map(normalized.imageSource.images.map((image) => [image.id, image]))
+          task.imageSource = {
+            ...original,
+            transcriptMethod: 'original-markdown+multimodal-model',
+            images: original.images.map((image) => {
+              const next = interpreted.get(image.id)
+              return next ? {
+                ...image, summary: next.summary, unitCount: next.unitCount,
+                startParagraph: task.paragraphOffset + provenanceParagraphs + next.startParagraph,
+                endParagraph: task.paragraphOffset + provenanceParagraphs + next.endParagraph,
+                interpretationStatus: 'ai_unverified', warnings: next.warnings,
+              } : image
+            }),
+            warnings: [...(original.warnings || []), ...normalized.imageSource.warnings].slice(0, 40),
+          }
+        } else task.imageSource = normalized.imageSource
         task.imageAttachments = []
         taskStage('图片已转写为 ' + splitParagraphsHost(task.text).length + ' 个可引用内容单元，开始生成知识图…', normalized.imageSource.warnings.length > 0 ? normalized.imageSource.warnings.join('；').slice(0, 800) : null)
       }
@@ -8156,7 +8194,9 @@ function createHostPlugin(graphContractOnly) {
                ? serializeExistingGraph({ nodes: Array.from(acc.nodes.values()) }, 24, batchQuery, acc.lookupTokens)
                : ''
              let userText = buildUserPrompt(task.title, batch, i, batches.length)
-            if (task.imageSource?.kind === 'markdown-assets') userText += NL + '图片链接、文件名和图号只是原文定位信息，不是知识命题。你没有收到图片像素，禁止猜测图中内容或依据文件名建立节点。仅从可见正文提取知识，保留原文段落编号。'
+            if (task.imageSource?.kind === 'markdown-assets') userText += task.imageInterpretation
+              ? NL + '本批内容是 AI 对已保存图片的视觉转写，不是原书正文或已核实事实。只能从转写中明确可见的文字、表格和图示关系提出候选节点；引用转写段落，不能依据文件名、图号或常识补全图中未写明的内容。候选结论保持待复核。'
+              : NL + '图片链接、文件名和图号只是原文定位信息，不是知识命题。你没有收到图片像素，禁止猜测图中内容或依据文件名建立节点。仅从可见正文提取知识，保留原文段落编号。'
             if (existingDigest) {
               userText += NL + NL + '已有知识图节点清单（id|类型|文本，引用边时只能用这些 id）：' + NL + existingDigest
             }
@@ -12161,7 +12201,10 @@ function createHostPlugin(graphContractOnly) {
         const a = args && typeof args === 'object' ? args : {}
         const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
         const text = typeof a.text === 'string' ? a.text.trim() : ''
-        if (!text) return { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } }
+        const imageIds = Array.isArray(a.imageIds) ? a.imageIds : []
+        const interpretingImages = imageIds.length > 0
+        if (!text && !interpretingImages) return { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文或选择待解读图片' } }
+        if (text && interpretingImages) return { error: { code: 'invalid_input', message: '图片视觉解读不能混入客户端正文' } }
         if (text.length > MAX_TEXT) return { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } }
         const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
         const canonical = documentId ? loadCanonicalDocumentHost(documentId) : null
@@ -12170,6 +12213,12 @@ function createHostPlugin(graphContractOnly) {
           : (a.existing && typeof a.existing === 'object' ? a.existing : null)
         if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
           return { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } }
+        }
+        let imageAttachments = []
+        if (interpretingImages) {
+          const selected = selectMarkdownImagesForInterpretationHost({ ...canonical.graph, revision: canonical.revision }, imageIds, a.expectedRevision)
+          if (selected.error) return { error: selected.error }
+          imageAttachments = selected.imageAttachments
         }
         // An append extends an existing document, so it must continue that
          // document's ontology: mixing profiles in one graph would leave half
@@ -12181,12 +12230,19 @@ function createHostPlugin(graphContractOnly) {
           ? splitParagraphsHost(canonical.sourceText).length
           : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
         if (busy) return busyTaskResponseHost()
-        const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+        let model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+        if (interpretingImages) {
+          busy = true
+          try { model = await preflightImageModelHost(model) }
+          catch (error) { return { error: { code: error?.code || 'model_image_unsupported', message: error?.message || '模型不支持图片输入' } } }
+          finally { busy = false }
+        }
         seq += 1
         const task = {
           id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
           concurrency: a.concurrency,
-          title, text, existing, existingSourceText: canonical ? canonical.sourceText : '', documentId, paragraphOffset,
+          title, text, imageAttachments, imageInterpretation: interpretingImages,
+          existing, existingSourceText: canonical ? canonical.sourceText : '', documentId, paragraphOffset,
           ontology: existingOntology,
           baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : 0,
           baseSource: existing && existing.source ? existing.source : null,

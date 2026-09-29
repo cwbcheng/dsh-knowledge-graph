@@ -20,6 +20,7 @@ const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
 const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
+const markdownImageMode = process.argv.includes('--markdown-image')
 const textSemanticMode = process.argv.includes('--text-semantic')
 const sourcePeersMode = process.argv.includes('--source-peers')
 const offWindowPeerMode = process.argv.includes('--source-peers-off-window')
@@ -61,6 +62,10 @@ const graph = {
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
 }
+if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
+  images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
+    startParagraph: 1, endParagraph: 1, interpretationStatus: 'not_requested',
+    attachment: { attachmentId: 'fixture-diagram-1', mediaType: 'image/png', width: 1, height: 1, bytes: 68 } }], warnings: [] }
 if (reviewMode) {
   for (const node of graph.nodes.slice(0, 2)) { node.quote = ''; node.evidence = []; node.groundingStatus = 'unverified' }
   graph.verification = { stale: true, lastReport: {
@@ -171,7 +176,7 @@ if (documentQueueMode) {
 const routes = new Map(), ctx = new Context(), pending = new Set()
 const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0, questionRequests: 0, snapshotExports: 0 }
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
-let dropStatus = 0, rejectSave = false, finishAutomatically = false
+let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
 let holdNextVerification = false, releaseHeldVerification = null
 class Timer extends Service {
@@ -254,6 +259,20 @@ ctx.provide('llm', { stream(request) {
   return stream
 } })
 ctx.provide('webServer', { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } })
+if (markdownImageMode) {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  ctx.provide('attachments', { async readImage(ref) {
+    if (ref?.attachmentId !== 'fixture-diagram-1') throw new Error('unknown fixture image')
+    return { ref, data: Buffer.from(png, 'base64') }
+  } })
+  ctx.provide('kgExtractor', {
+    async extractImages() { stats.visualCalls = (stats.visualCalls || 0) + 1
+      return { images: [{ imageIndex: 1, summary: '图片有从 A 指向 B 的箭头。',
+        units: [{ kind: 'diagram', text: '关系：A → B；图中依据：可见箭头。' }] }] } },
+    async extractChunk() { return { summary: '箭头图', nodes: [{ id: 'visual-1', type: 'fact', text: 'A 指向 B',
+      quote: '关系：A → B；图中依据：可见箭头。', paragraph: 3 }], edges: [] } },
+  })
+}
 await ctx.plugin(plugin).await()
 const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Isolated verification fixture</title><style>body{margin:0;font:14px system-ui}main{max-width:1280px;margin:auto;padding:12px;box-sizing:border-box}nav{display:flex;gap:8px;padding:8px;flex-wrap:wrap;background:#e5e7eb;color:#111}#fixture-state{white-space:pre-wrap;overflow-wrap:anywhere}</style>

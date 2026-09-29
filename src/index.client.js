@@ -5795,7 +5795,14 @@ export default function clientPlugin() {
         })
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function visualTranscriptImageAt(visualSource, paragraph) {
+        if (visualSource?.kind !== 'markdown-assets' || !Number.isSafeInteger(paragraph)) return null
+        return (visualSource.images || []).find(image => image.interpretationStatus === 'ai_unverified' &&
+          Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
+          paragraph >= image.startParagraph && paragraph <= image.endParagraph) || null
+      }
+
+      function GraphScene({ nodes, edges, anchors, visualSource, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -6394,7 +6401,8 @@ export default function clientPlugin() {
           const degree = nodeDegree.get(node.id) || 0
           const hub = degree >= 4
           const off = anchors[node.id]
-          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
+          const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
+          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || ''))
           return h('g', {
             key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
             'aria-pressed': sel, 'aria-label': aria,
@@ -6430,7 +6438,7 @@ export default function clientPlugin() {
               : null,
             nodeLabels.get(node.id),
           )
-        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -6438,7 +6446,7 @@ export default function clientPlugin() {
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                '原文摘录：' + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链原文）' : '')),
+                (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
             )
           : null
 
@@ -6457,7 +6465,7 @@ export default function clientPlugin() {
               ),
               h('div', { className: 'kg-node-detail-text' }, detail.text),
               detail.quote
-                ? h('div', { className: 'kg-node-detail-quote' }, '原文摘录：' + detail.quote)
+                ? h('div', { className: 'kg-node-detail-quote' }, (visualTranscriptImageAt(visualSource, detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
                 : null,
               h('div', { className: 'kg-node-detail-actions' },
                 onGather ? h('button', { type: 'button', className: 'kg-secondary',
@@ -6466,7 +6474,8 @@ export default function clientPlugin() {
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
                   disabled: anchors[detail.id] == null,
                   onClick: () => onSelectNode(detail.id),
-                }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                }, anchors[detail.id] == null ? '无法回链来源' :
+                  (visualTranscriptImageAt(visualSource, detail.paragraph) ? '定位视觉转写' : '定位原文')),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
@@ -8274,7 +8283,9 @@ export default function clientPlugin() {
           error ? h('button', { type: 'button', onClick: e => { e.stopPropagation(); setRetry(retry + 1) } }, error + ' · 重试')
             : h(large ? 'div' : 'button', { type: large ? undefined : 'button', onClick: large ? undefined : e => { e.stopPropagation(); onOpen(image) }, title: '查看原图', style: { border: 0, padding: 0, background: 'transparent', width: '100%', minHeight: large ? 120 : 110, cursor: large ? 'default' : 'zoom-in' } },
               url ? h('img', { src: url, alt: image.caption || image.name, onError: () => setError('图片解码失败'), style: { display: 'block', objectFit: 'contain', width: '100%', maxHeight: large ? '72vh' : 190 } }) : h('span', { role: 'status' }, visible ? '正在读取图片…' : '插图')),
-          h('figcaption', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, (image.caption || image.id) + (image.interpretationStatus === 'not_requested' ? ' · 原图，未进行视觉解读' : '')))
+          h('figcaption', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, (image.caption || image.id)
+            + (image.interpretationStatus === 'not_requested' ? ' · 原图，未进行视觉解读'
+              : image.interpretationStatus === 'ai_unverified' ? ' · AI 视觉解读，待对照原图复核' : '')))
       }
 
       function ModelPicker({ value, onChange, requiresImage }) {
@@ -9773,6 +9784,45 @@ export default function clientPlugin() {
           } catch (e) {
             setPhase('idle')
             setError({ message: '无法提交追加任务：' + (e && e.message ? e.message : '未知错误') })
+          }
+        }
+
+        const appendImagesSubmit = async () => {
+          const graph = resultView?.graph
+          const documentId = documentIdOfGraph(graph)
+          const remaining = graph?.source?.visualSource?.kind === 'markdown-assets'
+            ? (graph.source.visualSource.images || []).filter(image => image.interpretationStatus === 'not_requested') : []
+          if (!documentId || !remaining.length || taskId || phase === 'extracting') return
+          if (effectiveModelImageSupport === false) {
+            setError({ message: '当前模型不支持图片输入；请先选择带“图像”标记的模型' })
+            return
+          }
+          const imageIds = remaining.slice(0, 4).map(image => image.id)
+          const payload = {
+            documentId, expectedRevision: graphRevisionRef.current, imageIds,
+            title: graph.source?.title || title, concurrency: extractionConcurrency,
+            ...(effectiveModelArg ? { model: effectiveModelArg } : {}),
+          }
+          cancelVerifyTasks()
+          setError(null)
+          resumeAttemptRef.current = false
+          submittedRef.current = { title: payload.title, text: '', append: true, imageAppend: true,
+            baseText: fullText || '', documentId, imageIds }
+          setExtractProgress(null)
+          setPhase('extracting')
+          try {
+            const res = await host.call('append-extract', payload)
+            if (res?.error || !res?.taskId) {
+              setPhase('idle')
+              setError(res?.error || { message: '无法提交图片视觉解读任务' })
+              return
+            }
+            setTaskId(res.taskId)
+            try { localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title: payload.title,
+              append: true, documentId, ts: Date.now() })) } catch (e) {}
+          } catch (e) {
+            setPhase('idle')
+            setError({ message: '无法提交图片视觉解读任务：' + (e?.message || '未知错误') })
           }
         }
 
@@ -11434,14 +11484,17 @@ export default function clientPlugin() {
           if (table && i !== table.first && visibleParagraphIds.has(table.first)) return null
           const indices = table ? Array.from({ length: table.last - table.first + 1 }, (_, n) => table.first + n) : [i]
           const badges = indices.flatMap((index) => displayView.paraTypes[index] || [])
+          const visualSource = resultView.graph.source?.visualSource
+          const transcriptImage = visualTranscriptImageAt(visualSource, i)
           return h('div', {
             key: i, id: table ? undefined : 'kg-para-' + i,
             className: 'kg-para' + (indices.includes(activePara) ? ' kg-active' : '') + (indices.includes(flashPara) ? ' kg-flash' : ''),
             role: 'group',
-            'aria-label': '原文第 ' + (i + 1) + (table && table.last > i ? ' 至 ' + (table.last + 1) : '') + ' 段' + (table ? '的表格' : '') + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t]?.label || t).join('、') : '') + '，点击段落编号可在图中聚焦对应节点',
+            'aria-label': (transcriptImage ? 'AI 视觉转写第 ' : '原文第 ') + (i + 1) + (table && table.last > i ? ' 至 ' + (table.last + 1) : '') + ' 段' + (table ? '的表格' : '') + (badges.length > 0 ? '，包含类型：' + badges.map((t) => TYPE_META[t]?.label || t).join('、') : '') + '，点击段落编号可在图中聚焦对应节点',
             onClick: () => handleParagraphClick(i),
           },
             h('div', { className: table ? 'kg-source-refs' : 'kg-para-badges' }, indices.map((index) => paragraphRef(index, Boolean(table)))),
+            transcriptImage ? h('div', { className: 'kg-source-table-label' }, 'AI 视觉转写 · ' + (transcriptImage.name || transcriptImage.id) + ' · 非原书文字，请对照下方原图复核') : null,
             table
               ? h(React.Fragment, null,
                   table.prefix ? h('p', null, table.prefix) : null,
@@ -11452,7 +11505,8 @@ export default function clientPlugin() {
                       h('tbody', null, table.rows.slice(1).map((row, rowIndex) => h('tr', { key: rowIndex }, row.map((cell, column) => h('td', { key: column, colSpan: cell.colspan, rowSpan: cell.rowspan }, cell.text))))))),
                   table.suffix ? h('p', null, table.suffix) : null)
               : h('p', null, p.text),
-            ...(resultView.graph.source?.visualSource?.kind === 'markdown-assets' ? resultView.graph.source.visualSource.images.filter(image => (image.paragraphs || []).some((index) => indices.includes(index))).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
+            ...(visualSource?.kind === 'markdown-assets' ? visualSource.images.filter(image => (image.paragraphs || []).some((index) => indices.includes(index)) ||
+              (image.interpretationStatus === 'ai_unverified' && indices.includes(image.startParagraph))).map(image => h(SourceFigure, { key: image.id, image, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })) : []),
           )
         }
 
@@ -11525,6 +11579,8 @@ export default function clientPlugin() {
               const windowMeta = graphViewMetadata(resultView.graph)
               const visualMeta = graph.source && graph.source.visualSource && typeof graph.source.visualSource === 'object' ? graph.source.visualSource : null
               const visualImages = visualMeta && Array.isArray(visualMeta.images) ? visualMeta.images : []
+              const unreviewedImages = visualMeta?.kind === 'markdown-assets'
+                ? visualImages.filter(image => image.interpretationStatus === 'not_requested') : []
               const resolvedCount = graph.nodes.filter((node) => displayView.anchors[node.id] != null).length
               const diagCount = (graph.warnings ? graph.warnings.length : 0) + displayView.unresolved.length
                const sourceMeta = graph.source && typeof graph.source === 'object' ? graph.source : null
@@ -11548,6 +11604,15 @@ export default function clientPlugin() {
                   h('span', { className: 'kg-verify-spinner', 'aria-hidden': true }), removingParagraphType) : null,
                 h('p', { className: 'kg-summary' },
                   h('strong', null, '一句话总结：'), ' ', graph.summary || '（无）'),
+                visualMeta?.kind === 'markdown-assets' ? h('div', { className: 'kg-issue-actions' },
+                  h('span', { role: 'status' }, '原图 ' + visualImages.length + ' 张 · 未解读 ' + unreviewedImages.length + ' 张'),
+                  unreviewedImages.length > 0 ? h('button', { type: 'button', className: 'kg-secondary',
+                    disabled: !!taskId || phase === 'extracting' || effectiveModelImageSupport === false,
+                    title: effectiveModelImageSupport === false ? '请先选择支持图像输入的模型' : '原图保留；AI 视觉转写将追加为来源段落和候选节点，结果需对照原图复核',
+                    onClick: appendImagesSubmit }, '视觉解读下一批（' + Math.min(4, unreviewedImages.length) + ' 张）') : null,
+                  unreviewedImages.length > 0 && effectiveModelImageSupport === false
+                    ? h('span', { className: 'kg-visual-note' }, '当前模型仅支持文本') : null,
+                ) : null,
                 documentIdOfGraph(resultView.graph) ? h(React.Fragment, null,
                   h('button', { type: 'button', className: 'kg-secondary', 'aria-expanded': readingMapOpen,
                     onClick: () => setReadingMapOpen(!readingMapOpen) }, readingMapOpen ? '收起阅读地图' : '阅读地图'),
@@ -11668,7 +11733,7 @@ export default function clientPlugin() {
                       allNodesLoading ? h('span', { role: 'status' }, '正在读取全部节点…') : null)
                   : null,
                 showDiag ? h('div', { className: 'kg-diag-list' }, diagLines.join(NL)) : null,
-                h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应原文段落；拖拽平移画布，Ctrl+滚轮缩放，长按节点查看原文摘录。'),
+                h('p', { className: 'kg-hint' }, '点击来源段落 → 图中聚焦该段节点；点击图中节点 → 弹出详情卡片（含完整内容）并滚动到对应来源段落；拖拽平移画布，Ctrl+滚轮缩放，长按节点查看证据摘录。'),
                 h('div', {
                   className: 'kg-cols',
                   ref: colsRef,
@@ -11706,11 +11771,13 @@ export default function clientPlugin() {
                     h('div', { className: 'kg-split-bar' })),
                   h('div', { className: 'kg-graph-col' },
                     visualMeta?.kind === 'markdown-assets' && activePara >= 0 ? h('div', { 'aria-label': '原文邻近插图', style: { display: 'flex', gap: 8, maxHeight: 150, overflow: 'auto' } },
-                      visualImages.filter(image => (image.paragraphs || []).some(p => Math.abs(p - activePara) <= 1)).map(image => h('div', { key: image.id, style: { flex: '0 0 140px' } }, h(SourceFigure, { image, documentId: graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })))) : null,
+                      visualImages.filter(image => (image.paragraphs || []).some(p => Math.abs(p - activePara) <= 1) ||
+                        (image.interpretationStatus === 'ai_unverified' && activePara >= image.startParagraph && activePara <= image.endParagraph)).map(image => h('div', { key: image.id, style: { flex: '0 0 140px' } }, h(SourceFigure, { image, documentId: graph.source.documentId, revision: resultView.graph.revision, onOpen: setOpenFigure })))) : null,
                     h(GraphViewer, {
                       nodes: graph.nodes, edges: graph.edges, anchors: displayView.anchors,
                       documentId: documentIdOfGraph(resultView.graph), revision: resultView.graph.revision ?? resultView.graph.source?.revision,
                       sourceText: displayView.sourceText,
+                      visualSource: visualMeta,
                       loadNeighborhood: async (args, signal) => {
                         await graphCommitQueueRef.current.catch(() => {})
                         signal.throwIfAborted()

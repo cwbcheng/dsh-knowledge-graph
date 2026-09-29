@@ -1224,7 +1224,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const a = payload && typeof payload === 'object' ? payload : {}
               const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
               const text = typeof a.text === 'string' ? a.text.trim() : ''
-              if (!text) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文' } })
+              const imageIds = Array.isArray(a.imageIds) ? a.imageIds : []
+              const interpretingImages = imageIds.length > 0
+              if (!text && !interpretingImages) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文或选择待解读图片' } })
+              if (text && interpretingImages) return writeJson(res, 200, { error: { code: 'invalid_input', message: '图片视觉解读不能混入客户端正文' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } })
               const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
               let canonical = null
@@ -1238,19 +1241,32 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!existing || !Array.isArray(existing.nodes) || existing.nodes.length === 0) {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前没有可追加的已有图，请先完成一次拆分' } })
               }
+              let imageAttachments = []
+              if (interpretingImages) {
+                const selected = selectMarkdownImagesForInterpretationHost(canonical, imageIds, a.expectedRevision)
+                if (selected.error) return writeJson(res, 200, { error: selected.error })
+                imageAttachments = selected.imageAttachments
+              }
               const existingSourceText = canonical && typeof canonical.sourceText === 'string' ? canonical.sourceText : ''
               const paragraphOffset = existingSourceText
                 ? splitParagraphsHost(existingSourceText).length
                 : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
-              const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              let model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
+              if (interpretingImages) {
+                busy = true
+                try { model = await preflightImageModelHost(model) }
+                catch (error) { return writeJson(res, 200, { error: { code: error?.code || 'model_image_unsupported', message: error?.message || '模型不支持图片输入' } }) }
+                finally { busy = false }
+              }
               seq += 1
               const appendContinuity = continueOntologyHost(existing, a.ontology)
               if (appendContinuity.error) return writeJson(res, 200, { error: appendContinuity.error })
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
                 concurrency: a.concurrency,
-                title, text, existing, existingSourceText, documentId, paragraphOffset,
+                title, text, imageAttachments, imageInterpretation: interpretingImages,
+                existing, existingSourceText, documentId, paragraphOffset,
                 ontology: appendContinuity.ontology,
                 baseRevision: canonical && Number.isInteger(canonical.revision) ? canonical.revision : 0,
                 baseSource: existing && existing.source ? existing.source : null,

@@ -5015,7 +5015,14 @@
         })
       }
 
-      function GraphScene({ nodes, edges, anchors, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function visualTranscriptImageAt(visualSource, paragraph) {
+        if (visualSource?.kind !== 'markdown-assets' || !Number.isSafeInteger(paragraph)) return null
+        return (visualSource.images || []).find(image => image.interpretationStatus === 'ai_unverified' &&
+          Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
+          paragraph >= image.startParagraph && paragraph <= image.endParagraph) || null
+      }
+
+      function GraphScene({ nodes, edges, anchors, visualSource, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -5614,7 +5621,8 @@
           const degree = nodeDegree.get(node.id) || 0
           const hub = degree >= 4
           const off = anchors[node.id]
-          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链原文' : '，原文摘录：' + (node.quote || ''))
+          const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
+          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || ''))
           return h('g', {
             key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
             'aria-pressed': sel, 'aria-label': aria,
@@ -5650,7 +5658,7 @@
               : null,
             nodeLabels.get(node.id),
           )
-        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -5658,7 +5666,7 @@
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                '原文摘录：' + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链原文）' : '')),
+                (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
             )
           : null
 
@@ -5677,7 +5685,7 @@
               ),
               h('div', { className: 'kg-node-detail-text' }, detail.text),
               detail.quote
-                ? h('div', { className: 'kg-node-detail-quote' }, '原文摘录：' + detail.quote)
+                ? h('div', { className: 'kg-node-detail-quote' }, (visualTranscriptImageAt(visualSource, detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
                 : null,
               h('div', { className: 'kg-node-detail-actions' },
                 onGather ? h('button', { type: 'button', className: 'kg-secondary',
@@ -5686,7 +5694,8 @@
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
                   disabled: anchors[detail.id] == null,
                   onClick: () => onSelectNode(detail.id),
-                }, anchors[detail.id] == null ? '无法回链原文' : '定位原文'),
+                }, anchors[detail.id] == null ? '无法回链来源' :
+                  (visualTranscriptImageAt(visualSource, detail.paragraph) ? '定位视觉转写' : '定位原文')),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
