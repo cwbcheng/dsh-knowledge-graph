@@ -61,7 +61,7 @@ window.__ModuleLoader__.load({
         const res = await fetch("/api/dsh-knowledge-graph/" + method, { cache: "no-store" })
         return res.json()
       }
-      if (method === "document-import" || method === "markdown-import" || method === "image-nodes") {
+      if (method === "document-import" || method === "markdown-import" || method === "image-nodes" || method === "image-review") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -205,6 +205,7 @@ c = c.split("host.call('concept-dossier'").join("rpc('concept-dossier'")
 c = c.split("host.call('learning-mode'").join("rpc('learning-mode'")
 c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('image-inspect'").join("rpc('image-inspect'")
+c = c.split("host.call('image-review'").join("rpc('image-review'")
 c = c.split("host.call('image-nodes'").join("rpc('image-nodes'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")

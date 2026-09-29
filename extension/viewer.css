@@ -137,6 +137,12 @@
 .kg-visual-node-list button { text-align: left; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .kg-visual-message { font-size: 13px; overflow-wrap: anywhere; }
 .kg-visual-message[role="alert"] { color: #b42318; }
+.kg-image-review { border-block: 1px solid var(--kg-border); padding: 12px 0; margin: 12px 0; min-width: 0; }
+.kg-image-review fieldset { border: 0; padding: 0; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 12px; }
+.kg-image-review label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.kg-image-review .kg-image-review-note { display: block; margin: 8px 0; }
+.kg-image-review textarea { display: block; box-sizing: border-box; width: 100%; min-height: 72px; margin-top: 6px; padding: 8px; resize: vertical; border: 1px solid var(--kg-border); border-radius: 4px; background: var(--kg-edge-label-bg); color: var(--kg-text); font: inherit; font-size: 13px; }
+.kg-image-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 @media (max-width: 700px) { .kg-visual-inspector-grid { grid-template-columns: minmax(0, 1fr); } .kg-visual-image-list { max-height: 280px; overflow: auto; } }
 .kg-review-launcher { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--kg-border); }
 .kg-review-launcher .kg-verify-actions { margin: 0; }

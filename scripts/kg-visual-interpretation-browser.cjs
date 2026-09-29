@@ -170,7 +170,7 @@ async function main() {
     assert.equal(await page.getByRole('tab', { name: '检索与学习', exact: true }).getAttribute('aria-selected'), 'true', 'Completion must not force a different tab')
     await page.getByRole('tab', { name: '图文阅读', exact: true }).click()
     await panel().waitFor({ timeout: 30000 })
-    await panel().getByText('14 张原图 · 未解读 12 张 · 已转写 2 张（待核对）', { exact: true }).waitFor()
+    await panel().getByText('14 张原图 · 未解读 12 张 · 已转写 2 张 · 待核对 2 · 人工核对一致 0 · 有转写问题 0', { exact: true }).waitFor()
     const expectedRevision = before.revision + (initialGraph.verification?.lastReport ? 2 : 1)
     const after = await waitStats(value => value.revision === expectedRevision)
     assert.equal(after.revision, expectedRevision, 'Append plus existing report staleness metadata only')

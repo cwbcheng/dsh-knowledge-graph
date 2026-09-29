@@ -82,9 +82,9 @@ for (const file of ['../src/index.client.js', '../lib/client.js']) {
   const panelEnd = text.indexOf('      function ModelPicker(', panelStart)
   assert(panelStart >= 0 && panelEnd > panelStart)
   const h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) })
-  const Panel = new Function('h', 'React', 'useState', 'useEffect', 'SourceFigure',
+  const Panel = new Function('h', 'React', 'useState', 'useEffect', 'SourceFigure', 'useRef',
     text.slice(panelStart, panelEnd) + '; return VisualInterpretationPanel')(
-    h, { Fragment: 'fragment' }, initial => [initial, () => {}], () => {}, () => {})
+    h, { Fragment: 'fragment' }, initial => [initial, () => {}], () => {}, () => {}, current => ({ current }))
   const images = Array.from({ length: 5 }, (_, index) => ({ id: 'figure-' + index,
     name: 'figure-' + index, interpretationStatus: 'not_requested' }))
   const updates = []

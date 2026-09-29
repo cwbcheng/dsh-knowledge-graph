@@ -20,7 +20,8 @@ const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
 const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
-const visualInspectorMode = process.argv.includes('--visual-inspector')
+const imageReviewMode = process.argv.includes('--image-review')
+const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
 const sourcePeersMode = process.argv.includes('--source-peers')
@@ -76,6 +77,11 @@ if (visualInspectorMode) graph.source.visualSource.images = Array.from({ length:
   paragraphs: [i + 1], startParagraph: i + 1, endParagraph: i + 1, interpretationStatus: 'not_requested',
   attachment: { attachmentId: 'fixture-visual-' + (i + 1), mediaType: 'image/png', width: 128, height: 128, bytes: visualFixtureBytes.length },
 }))
+if (imageReviewMode) for (const image of graph.source.visualSource.images.slice(0, 2)) {
+  image.interpretationStatus = 'ai_unverified'
+  image.summary = '受控转写，尚未经人工核对'
+  image.warnings = ['图像为隔离测试素材，不代表真实书籍']
+}
 if (reviewMode) {
   for (const node of graph.nodes.slice(0, 2)) { node.quote = ''; node.evidence = []; node.groundingStatus = 'unverified' }
   graph.verification = { stale: true, lastReport: {
@@ -334,7 +340,7 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
-      ...(visualInspectorMode ? { visualInspectorFixture: true, visualHeld: !!releaseVisual,
+      ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),
         originalNodeContentPreserved: JSON.stringify(nodeContent(store.getDocument(documentId).nodes.filter(node => /^n\d+$/.test(node.id)))) === JSON.stringify(nodeContent(graph.nodes)),
         originalTextPreserved: store.getDocument(documentId).sourceText.startsWith(sourceText) } : {}),

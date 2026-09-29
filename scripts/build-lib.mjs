@@ -425,6 +425,28 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-review') {
+              res.setHeader('Cache-Control', 'no-store')
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { a = {} }
+              const documentId = typeof a?.documentId === 'string' && a.documentId.length <= 160 ? a.documentId : ''
+              const store = await getSqliteStore()
+              if (a?.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
+              const saved = documentId ? store.getDocument(documentId) : null
+              const prepared = prepareImageReviewHost(saved, a, store.listImageReviews(documentId))
+              if (!prepared.record) return writeJson(res, 200, prepared)
+              try {
+                store.saveImageReview(prepared.record, a.expectedRevision, a.expectedVersion)
+                return writeJson(res, 200, { documentId, revision: saved.revision,
+                  review: imageReviewsHost(saved, store.listImageReviews(documentId)).find(review => review.imageId === a.imageId) })
+              } catch (error) {
+                if (['invalid_input', 'revision_conflict', 'image_review_conflict', 'not_found'].includes(error?.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message } })
+                }
+                throw error
+              }
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-inspect') {
               res.setHeader('Cache-Control', 'no-store')
               const raw = await readBody(req, 256 * 1024)

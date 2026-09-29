@@ -94,6 +94,7 @@ function createHostPlugin(graphContractOnly) {
        const hasKgCoverageReviewer = Boolean(kgExtractor && typeof kgExtractor.reviewCoverage === 'function')
        const hasKgRelationWeaver = Boolean(kgExtractor && typeof kgExtractor.weaveRelations === 'function')
        const candidateReviewState = new Map()
+       const imageReviewState = new Map()
        // Dynamic-package mode has no SQLite store, so retain the canonical
        // full graph in Host memory. Persistent builds additionally mirror this
        // state into SQLite and can recover it after a process restart.
@@ -5863,6 +5864,52 @@ function createHostPlugin(graphContractOnly) {
           return { error: { code: 'image_invalid', message: '图片不存在、已解读或缺少可信附件' } }
         }
         return { imageAttachments: selected.map((image) => ({ id: image.id, name: image.name, attachment: image.attachment })) }
+      }
+      function imageReviewsHost(saved, records = []) {
+        const graph = saved?.graph || saved
+        const visual = graph.source?.visualSource
+        const paragraphs = splitParagraphsHost(saved.sourceText || '')
+        const byId = new Map(records.map(record => [record.imageId, record]))
+        return (visual?.images || []).map(image => {
+          const interpreted = visual.kind === 'image-derived' || image.interpretationStatus === 'ai_unverified'
+          const validRange = Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph)
+            && image.startParagraph >= 0 && image.endParagraph >= image.startParagraph && image.endParagraph < paragraphs.length
+          const transcript = interpreted && validRange ? paragraphs.slice(image.startParagraph, image.endParagraph + 1) : []
+          const reviewable = Boolean(interpreted && image.attachment?.attachmentId && transcript.some(text => text.trim()))
+          // Review is about these pixels and this transcript, never the truth of derived nodes.
+          const fingerprint = sha256HexHost(JSON.stringify([1, canonicalDocumentIdHost(graph), visual.kind,
+            image.id, image.attachment || null, image.caption || '', image.summary || '', image.warnings || [],
+            image.startParagraph, image.endParagraph, transcript]))
+          const previous = byId.get(image.id)
+          const stale = Boolean(previous && previous.fingerprint !== fingerprint)
+          return { imageId: image.id, reviewable, fingerprint, version: previous?.version || 0,
+            status: !interpreted ? 'not_requested' : stale || !reviewable ? 'pending' : previous?.status || 'pending', stale,
+            note: previous?.note || '', updatedAt: previous?.updatedAt || null, reviewer: previous ? 'user' : null }
+        })
+      }
+      function prepareImageReviewHost(saved, args, records = []) {
+        const fail = (code, message) => ({ error: { code, message } })
+        if (!saved) return fail('not_found', '找不到图片所属文档')
+        if (!args || typeof args !== 'object' || Array.isArray(args)
+          || Object.keys(args).some(key => !['action', 'documentId', 'imageId', 'expectedRevision', 'expectedVersion', 'fingerprint', 'status', 'note', 'confirmed'].includes(key))
+          || !['list', 'save'].includes(args.action)) return fail('invalid_input', '图片核对请求无效')
+        if (!Number.isSafeInteger(args.expectedRevision) || args.expectedRevision !== saved.revision) {
+          return fail('revision_conflict', '知识图已更新，请重新载入后核对图片；未保存核对结果')
+        }
+        const reviews = imageReviewsHost(saved, records)
+        if (args.action === 'list') return { documentId: args.documentId, revision: saved.revision, reviews }
+        const current = reviews.find(review => review.imageId === args.imageId)
+        if (!current) return fail('not_found', '图片不属于当前文档')
+        if (!current.reviewable) return fail('image_not_interpreted', '这张图片尚无完整转写，不能标记为已核对')
+        if (!['pending', 'matched', 'needs_correction'].includes(args.status)
+          || (args.status !== 'pending' && args.confirmed !== true)
+          || typeof args.note !== 'string' || args.note.length > 2000
+          || (args.status === 'needs_correction' && !args.note.trim())) return fail('invalid_input', '请对照原图确认核对结果；发现问题时须填写备注（最多 2000 字）')
+        if (args.fingerprint !== current.fingerprint || !Number.isSafeInteger(args.expectedVersion)
+          || args.expectedVersion !== current.version) return fail('image_review_conflict', '图片转写或核对记录已变化，请刷新核对状态后重试；未覆盖已有记录')
+        return { record: { documentId: args.documentId, imageId: current.imageId, fingerprint: current.fingerprint,
+          status: args.status, note: args.status === 'pending' ? '' : args.note.trim(),
+          version: current.version + 1, updatedAt: Date.now(), reviewer: 'user' } }
       }
       function visualTextHost(value, max) {
         const text = typeof value === 'string' ? value.replace(/\r\n?/g, NL).replace(/[ \t]+/g, ' ').replace(/\n{4,}/g, NL + NL + NL).trim() : ''
@@ -11901,6 +11948,19 @@ function createHostPlugin(graphContractOnly) {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
          return inspectImageHost(documentId ? loadCanonicalDocumentHost(documentId) : null, a)
+       })
+       harness.handle('image-review', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         if (a.action === 'save' && busy) return busyTaskResponseHost()
+         const documentId = typeof a.documentId === 'string' && a.documentId.length <= 160 ? a.documentId : ''
+         const saved = documentId ? loadCanonicalDocumentHost(documentId) : null
+         const records = imageReviewState.get(documentId) || []
+         const prepared = prepareImageReviewHost(saved, a, records)
+         if (!prepared.record) return prepared
+         const next = records.filter(record => record.imageId !== a.imageId).concat(prepared.record)
+         imageReviewState.set(documentId, next)
+         return { documentId, revision: saved.revision,
+           review: imageReviewsHost(saved, next).find(review => review.imageId === a.imageId) }
        })
        harness.handle('image-nodes', async (args) => {
          const a = args && typeof args === 'object' ? args : {}
