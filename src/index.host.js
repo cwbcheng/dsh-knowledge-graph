@@ -5869,7 +5869,9 @@ function createHostPlugin(graphContractOnly) {
         return text.slice(0, max)
       }
       function normalizeVisualTranscriptHost(raw, admittedImages, userText) {
-        const obj = raw && typeof raw === 'object' ? raw : parseJson(raw)
+        let obj
+        try { obj = raw && typeof raw === 'object' ? raw : parseJson(raw) }
+        catch { throw imageInputErrorHost('visual_json_invalid', '模型返回的 JSON 有语法错误或不完整，未接纳本次图片解读') }
         if (!obj || !Array.isArray(obj.images)) throw imageInputErrorHost('visual_schema_invalid', '视觉模型没有返回合法的 images 数组')
         if (obj.images.length !== admittedImages.length) throw imageInputErrorHost('visual_schema_invalid', '视觉结果的图片数量不符；未接纳不完整结果，请减少所选图片后重试')
         const checkedText = (value, max, label) => {
@@ -5952,28 +5954,48 @@ function createHostPlugin(graphContractOnly) {
       }
       async function transcribeTaskImagesHost(task, model) {
         if (!task || !Array.isArray(task.imageAttachments) || task.imageAttachments.length === 0 || task.imageSource) return
-        taskStage('正在识别图片中的文字、图示和表格…')
-        let raw = null
-        if (hasKgImageExtractor) {
-          raw = await kgExtractor.extractImages({
-            title: task.title,
-            text: task.text,
-            images: task.imageAttachments.map((image) => ({ id: image.id, name: image.name, attachment: image.attachment })),
-            systemPrompt: VISUAL_TRANSCRIPTION_SYSTEM_PROMPT,
-          })
-        } else {
+        if (!hasKgImageExtractor) {
           if (!model) throw imageInputErrorHost('no_model', '图片生成知识图需要可接收图像的多模态模型')
           await assertImageModelSupportHost(model)
-          const prompt = '请按出现顺序转写以下 ' + task.imageAttachments.length + ' 张图片。' + (task.title ? '资料标题：' + visualTextHost(task.title, 500) + '。' : '') + (task.text ? '用户补充说明：' + visualTextHost(task.text, 6000) : '用户未提供补充说明。')
-          const content = [{ type: 'text', text: prompt }]
-          for (let index = 0; index < task.imageAttachments.length; index++) {
-            const image = task.imageAttachments[index]
-            content.push({ type: 'text', text: '图片 ' + (index + 1) + '，文件名：' + image.name })
-            content.push({ type: 'image', attachment: image.attachment })
-          }
-          raw = await callExtractionModel(model, VISUAL_TRANSCRIPTION_SYSTEM_PROMPT, prompt, '图片转录', 0.05, content)
         }
-        const normalized = normalizeVisualTranscriptHost(raw, task.imageAttachments, task.text)
+        const basePrompt = '请按出现顺序转写以下 ' + task.imageAttachments.length + ' 张图片。' + (task.title ? '资料标题：' + visualTextHost(task.title, 500) + '。' : '') + (task.text ? '用户补充说明：' + visualTextHost(task.text, 6000) : '用户未提供补充说明。')
+        let normalized, feedback = ''
+        // Retry complete image-grounded responses, never repaired JSON fragments.
+        // Nothing enters the task source/checkpoint until every image validates.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          throwIfTaskCancelledHost(task)
+          taskStage(attempt ? '图片解读结果未通过校验，重新识别（' + (attempt + 1) + '/3）…' : '正在识别图片中的文字、图示和表格…', feedback || null)
+          const prompt = basePrompt + (feedback ? NL + '上次结果未通过校验：' + feedback + NL
+            + '请重新对照全部原图，返回完整合法的 JSON 对象，包含每张图片的 imageIndex、summary、units、warnings。只返回完整结果，不要接续旧输出或只返回补丁；不要靠删去图片、独立关系、限定条件或疑点缩短结果。结束反复思考后直接输出 JSON，检查键名后的冒号、字符串中的双引号和换行转义。' : '')
+          try {
+            let raw
+            if (hasKgImageExtractor) {
+              raw = await kgExtractor.extractImages({
+                title: task.title, text: task.text,
+                images: task.imageAttachments.map((image) => ({ id: image.id, name: image.name, attachment: image.attachment })),
+                systemPrompt: VISUAL_TRANSCRIPTION_SYSTEM_PROMPT, prompt, attempt,
+              })
+            } else {
+              const content = [{ type: 'text', text: prompt }]
+              for (let index = 0; index < task.imageAttachments.length; index++) {
+                const image = task.imageAttachments[index]
+                content.push({ type: 'text', text: '图片 ' + (index + 1) + '，文件名：' + image.name })
+                content.push({ type: 'image', attachment: image.attachment })
+              }
+              raw = await callExtractionModel(model, VISUAL_TRANSCRIPTION_SYSTEM_PROMPT, prompt, '图片转录（第 ' + (attempt + 1) + '/3 次）', 0.05, content)
+            }
+            throwIfTaskCancelledHost(task)
+            normalized = normalizeVisualTranscriptHost(raw, task.imageAttachments, task.text)
+            break
+          } catch (error) {
+            throwIfTaskCancelledHost(task)
+            const code = error?.code
+            if (!['visual_json_invalid', 'visual_schema_invalid', 'visual_too_large', 'visual_empty', 'output_truncated', 'reasoning_only'].includes(code)) throw error
+            feedback = error.message
+            if (attempt === 2) throw imageInputErrorHost(code.startsWith('visual_') ? code : 'visual_' + code,
+              '图片视觉解读失败（已尝试 3 次）：' + feedback + '。未保存本轮转写，原图与已有知识图未改动；可减少所选图片后重试。')
+          }
+        }
         const provenanceParagraphs = task.imageInterpretation ? 1 : 0
         task.text = task.imageInterpretation
           ? '【AI 视觉转写；非原书文字，待对照原图复核】' + NL + NL + normalized.text

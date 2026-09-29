@@ -58,6 +58,7 @@ let badTerminal
 for (let i=0; i<500; i++) { badTerminal=await handlers.get('task-status')({taskId:badVisual.taskId}); if(badTerminal.status!=='running')break; await new Promise(r=>setTimeout(r,5)) }
 assert.equal(badTerminal.status, 'failed', 'conflicting visual attribution must fail the entire task')
 assert.equal(badTerminal.error.code, 'visual_schema_invalid')
+assert.equal(visualCalls, 3, 'schema failures must stop after three complete attempts')
 assert.deepEqual(await handlers.get('document-export')({ documentId: result.result.source.documentId, includeSourceText: true }), beforeVisual, 'failed interpretation must preserve source, nodes, image status and revision')
 malformedVisual = false
 const visualAppend = await handlers.get('append-extract')({
@@ -189,6 +190,7 @@ async function persistentVisualAppend() {
     const rejectedResult = await settled(api, rejectedAppend.taskId)
     assert.equal(rejectedResult.status, 'failed')
     assert.equal(rejectedResult.error.code, 'visual_too_large', 'never silently remove the final qualifier from a visual unit')
+    assert.equal(visualRequests, 3, 'bounded retries must not accept an oversized qualifier or run indefinitely')
     assert.deepEqual(await invoke(api, 'document-export', { documentId, includeSourceText: true }), before, 'SQLite must remain unchanged on a rejected visual transcript')
     oversized = false
     const append = await invoke(api, 'append-extract', { documentId, expectedRevision: first.result.revision, imageIds: ['figure-1'] })
@@ -211,7 +213,7 @@ async function persistentVisualAppend() {
         node.paragraph >= image.startParagraph && node.paragraph <= image.endParagraph))
       assert(persisted.nodes.some(node => node.text === '温度升高'), 'visual append must not replace older nodes')
     } finally { store.close() }
-    assert.equal(visualRequests, 2, 'explicit retry, not an automatic extra model call')
+    assert.equal(visualRequests, 4, 'three rejected attempts followed by one explicitly requested successful run')
   } finally {
     for (const cleanup of cleanups.reverse()) { try { cleanup() } catch {} }
     if (previousDb === undefined) delete process.env.DSH_KG_DB

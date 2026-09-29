@@ -189,7 +189,7 @@ if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagra
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
 let holdNextVerification = false, releaseHeldVerification = null
-let rejectVisual = visualInspectorMode, holdVisual = false, releaseVisual = null
+let rejectVisual = visualInspectorMode ? 3 : 0, malformedVisual = false, holdVisual = false, releaseVisual = null
 class Timer extends Service {
   constructor(context) { super(context, 'timer'); context.mixin('timer', ['interval']) }
   interval(fn, ms) { return this.ctx.effect(() => { const id = setInterval(fn, ms); return () => clearInterval(id) }) }
@@ -278,13 +278,15 @@ if (markdownImageMode) {
     return { ref, data: Buffer.from(png, 'base64') }
   } })
   ctx.provide('kgExtractor', {
-    async extractImages({ images }) { stats.visualCalls = (stats.visualCalls || 0) + 1
+    async extractImages({ images, attempt, prompt }) { stats.visualCalls = (stats.visualCalls || 0) + 1
       if (visualInspectorMode) {
         ;(stats.visualSelections ||= []).push(images.map(image => image.id))
+        ;(stats.visualAttempts ||= []).push({ attempt, feedback: prompt?.includes('上次结果未通过校验') || false })
         if (holdVisual) { await new Promise(resolve => { releaseVisual = resolve }); releaseVisual = null; holdVisual = false }
         const reply = { images: images.map((image, i) => ({ imageIndex: i + 1, summary: '受控视觉样本 ' + image.id,
           units: [{ kind: 'text', text: '受控视觉内容 ' + image.id + '。' }], warnings: ['受控测试替身，不代表实际图片识别质量'] })) }
-        if (rejectVisual) { rejectVisual = false; reply.images.push({ ...reply.images[0], summary: '冲突编号' }) }
+        if (rejectVisual > 0) { rejectVisual -= 1; reply.images.push({ ...reply.images[0], summary: '冲突编号' }) }
+        if (malformedVisual) { malformedVisual = false; return '{"images":[{"imageIndex":1,"units" []}]}' }
         return reply
       }
       return { images: [{ imageIndex: 1, summary: '图片有从 A 指向 B 的箭头。',
@@ -355,6 +357,7 @@ const server = createServer(async (req, res) => {
       if (url.pathname.endsWith('/offline')) dropStatus = 2
       if (url.pathname.endsWith('/reject-save')) rejectSave = true
       if (visualInspectorMode && url.pathname.endsWith('/hold-visual')) holdVisual = true
+      if (visualInspectorMode && url.pathname.endsWith('/malformed-visual')) malformedVisual = true
       if (visualInspectorMode && url.pathname.endsWith('/release-visual')) releaseVisual?.()
       if (heldSaveMode && url.pathname.endsWith('/hold-next-save')) holdNextSave = true
       if (heldSaveMode && url.pathname.endsWith('/reject-held-save')) releaseHeldSave?.()
