@@ -37,14 +37,21 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const zoomAround = new Function('clamp', 'GRAPH_MIN_SCALE', 'return (' + extractFunction(source, 'zoomAround') + ')')(clamp, minScale)
 const fitSource = source.slice(source.indexOf('const fitView = useCallback('), source.indexOf('useEffect(() => { fitView() }'))
 let fitted
-const fitView = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', fitSource + '; return fitView')(
-  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'layered', value => { fitted = value }, clamp, minScale,
+const viewport = { current: null }, element = { clientWidth: 1000, clientHeight: 600 }
+const fitView = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', 'viewportSizeRef', fitSource + '; return fitView')(
+  fn => fn, { current: element }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'layered', value => { fitted = value }, clamp, minScale, viewport,
 )
 fitView()
 assert.equal(fitted.k, minScale)
+assert.deepEqual(viewport.current, { width: 1000, height: 600 })
+const priorFit = fitted
+element.clientWidth = 0
+fitView()
+assert.equal(fitted, priorFit, 'Fitting a hidden graph must not reset the camera')
+assert.deepEqual(viewport.current, { width: 1000, height: 600 }, 'Keep the last visible size until reveal')
 let overviewFitted
-const fitOverview = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', fitSource + '; return fitView')(
-  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'overview', value => { overviewFitted = value }, clamp, 0.02,
+const fitOverview = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', 'viewportSizeRef', fitSource + '; return fitView')(
+  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'overview', value => { overviewFitted = value }, clamp, 0.02, { current: null },
 )
 fitOverview()
 assert.equal(overviewFitted.k, 0.03, 'Overview must fit below the editor zoom floor')

@@ -5029,6 +5029,8 @@
           return () => controller.abort()
         }, [prepared, onReady])
         const containerRef = useRef(null)
+        const viewportSizeRef = useRef(null)
+        const pendingFocusRef = useRef(null)
         const [view, commitView] = useState({ k: layoutMode === 'overview' ? 0.02 : 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)
         if (!viewScheduler.current) viewScheduler.current = createGraphViewScheduler(view, commitView, requestAnimationFrame, cancelAnimationFrame)
@@ -5184,6 +5186,7 @@
           const cw = el.clientWidth
           const ch = el.clientHeight
           if (cw <= 0 || ch <= 0) return
+          viewportSizeRef.current = { width: cw, height: ch }
           const k = clamp(Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1), minScale, 1)
           setView({ k, tx: cw / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cx * k), ty: ch / 2 - (layoutMode === 'neighborhood' ? 0 : bbox.cy * k) })
         }, [bbox, layoutMode, minScale])
@@ -5196,13 +5199,16 @@
           const el = containerRef.current
           if (!el || typeof ResizeObserver === 'undefined') return
           let timer = null
-          let width = el.clientWidth, height = el.clientHeight
           const syncChangedSize = () => {
             if (el.closest('[data-kg-geometry-drag]')) return
             const nextWidth = el.clientWidth, nextHeight = el.clientHeight
-            if (nextWidth === width && nextHeight === height) return
-            const dx = (nextWidth - width) / 2, dy = (nextHeight - height) / 2
-            width = nextWidth; height = nextHeight
+            if (nextWidth <= 0 || nextHeight <= 0) return
+            if (pendingFocusRef.current) { pendingFocusRef.current(); return }
+            const previous = viewportSizeRef.current
+            if (!previous) { fitView(); return }
+            if (nextWidth === previous.width && nextHeight === previous.height) return
+            const dx = (nextWidth - previous.width) / 2, dy = (nextHeight - previous.height) / 2
+            viewportSizeRef.current = { width: nextWidth, height: nextHeight }
             // Keep the same graph location and zoom under the viewport center.
             setView(current => ({ ...current, tx: current.tx + dx, ty: current.ty + dy }))
           }
@@ -5233,15 +5239,27 @@
           const el = containerRef.current
           const p = layout.pos.get(focusReq.nodeId)
           if (!el || !p) return
-          const cw = el.clientWidth
-          const ch = el.clientHeight
-          setView((v) => {
-            const k = overview ? Math.max(v.k, 0.7) : v.k
-            return { ...v, k, tx: cw / 2 - p.x * k, ty: ch / 2 - p.y * k }
-          })
+          const applyFocus = () => {
+            const cw = el.clientWidth, ch = el.clientHeight
+            if (cw <= 0 || ch <= 0) return false
+            // Share the size baseline so a trailing observer cannot move a
+            // freshly focused node again after its workspace becomes visible.
+            viewportSizeRef.current = { width: cw, height: ch }
+            pendingFocusRef.current = null
+            setView((v) => {
+              const k = overview ? Math.max(v.k, 0.7) : v.k
+              return { ...v, k, tx: cw / 2 - p.x * k, ty: ch / 2 - p.y * k }
+            })
+            return true
+          }
+          if (!applyFocus()) pendingFocusRef.current = applyFocus
           if (overview) setDetail(nodes.find(node => node.id === focusReq.nodeId) || null)
           setFlashId(focusReq.nodeId)
-          return ctx.timeout(() => setFlashId(null), 2000)
+          const stopFlash = ctx.timeout(() => setFlashId(null), 2000)
+          return () => {
+            stopFlash()
+            if (pendingFocusRef.current === applyFocus) pendingFocusRef.current = null
+          }
         }, [focusReq.seq])
 
         useEffect(() => {
@@ -5906,7 +5924,7 @@
         return '拟议文字已改变，但' + retained.join('；') + '。这些引文未随修改更新，请逐项核对是否支持新表述。'
       }
 
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onLocateIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [workPackageMode, setWorkPackageMode] = useState('family')
@@ -6433,6 +6451,8 @@
                     hasFix && nodeTypeFixConflicts(graph, it.proposedFix).length > 0
                       ? h('p', { className: 'kg-question-error' }, '暂不可采纳：节点类型或关联关系不符合本体约束。') : null,
                     h('div', { className: 'kg-issue-actions' },
+                      onLocateIssue ? h('button', { type: 'button', className: 'kg-secondary',
+                        onClick: e => { e.stopPropagation(); onLocateIssue(it) } }, '查看图文') : null,
                       it.status === 'open' && relationTypeFix
                         ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
                         : null,

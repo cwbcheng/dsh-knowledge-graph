@@ -83,6 +83,42 @@
 .kg-body-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .kg-body-toolbar-text { flex: 1 1 260px; min-width: 0; }
 .kg-body-toolbar .kg-subtitle { margin: 4px 0 0; }
+.kg-workbench { min-width: 0; container-type: inline-size; }
+.kg-workbench [hidden] { display: none !important; }
+.kg-workbench .kg-card { border: 0; border-radius: 0; background: transparent; padding: 14px 0; margin: 0; }
+.kg-workbench .kg-card + .kg-card { border-top: 1px solid var(--kg-border); }
+.kg-workbench .kg-kicker { letter-spacing: 0; }
+.kg-workbench-title { margin: 0; font-size: 17px; line-height: 1.45; font-weight: 650; overflow-wrap: anywhere; }
+.kg-workbench-header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; }
+.kg-workbench .kg-secondary, .kg-workbench .kg-primary { border-radius: 6px; min-height: 32px; }
+.kg-workbench .kg-secondary:disabled { opacity: .5; cursor: not-allowed; }
+.kg-workbench .kg-model-picker { min-width: 0; }
+.kg-workbench .kg-model-select { flex: 1; height: 32px; }
+.kg-workbench .kg-model-select, .kg-workbench .kg-textarea, .kg-workbench .kg-input-title { border-radius: 6px; }
+.kg-workbench-settings { padding: 8px 0; border-block: 1px solid var(--kg-border); font-size: 12px; margin-bottom: 10px; }
+.kg-workbench-settings > summary, .kg-workbench-tools > summary { cursor: pointer; width: fit-content; color: var(--kg-text-dim); }
+.kg-workbench-settings > div { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding-top: 10px; }
+.kg-workbench-settings label { display: flex; align-items: center; gap: 6px; }
+.kg-workbench-settings select { min-height: 32px; max-width: 100%; font: inherit; color: var(--kg-text); background: var(--kg-edge-label-bg); border: 1px solid var(--kg-border); border-radius: 6px; }
+.kg-workspace-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--kg-border); margin: 8px 0 0; }
+.kg-workspace-tab { position: relative; min-width: 0; min-height: 44px; padding: 8px 6px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--kg-text-dim); font: inherit; font-size: 13px; cursor: pointer; }
+.kg-workspace-tab[aria-selected='true'] { color: var(--kg-text); font-weight: 650; border-bottom-color: #2563eb; }
+.kg-workspace-tab:hover { background: var(--kg-panel); }
+.kg-workspace-tab:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.kg-workspace-count { display: inline-block; margin-left: 5px; color: var(--kg-text-dim); font-size: 11px; font-weight: 400; }
+.kg-workspace-panel { min-width: 0; outline: none; }
+.kg-workspace-panel > .kg-workspace-section { padding: 12px 0; border-bottom: 1px solid var(--kg-border); }
+.kg-workbench-tools { margin: 8px 0; font-size: 12px; }
+.kg-workbench-tools[open] > summary { margin-bottom: 10px; }
+.kg-reading-toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--kg-border); margin-bottom: 10px; }
+.kg-reading-toolbar > .kg-workbench-tools { margin: 0; }
+.kg-reading-toolbar .kg-export-actions { margin: 0; }
+.kg-figure-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12px; margin-bottom: 8px; }
+.kg-review-launcher { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--kg-border); }
+.kg-review-launcher .kg-verify-actions { margin: 0; }
+.kg-review-extras { border-top: 1px solid var(--kg-border); padding: 12px 0; }
+.kg-review-extras > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+@container (max-width: 540px) { .kg-workbench-header-actions { width: 100%; } .kg-workbench-header-actions .kg-model-picker { flex: 1 1 100%; } .kg-workspace-tab { font-size: 12px; } .kg-workspace-count { display: block; margin: 0; } .kg-workbench .kg-window-nav { padding: 8px 0; border: 0; border-block: 1px solid var(--kg-border); border-radius: 0; } }
 .kg-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 84px 20px; }
 .kg-relation-progress { margin: 0 0 14px; padding: 12px 16px; border-bottom: 1px solid var(--kg-border); background: var(--kg-panel); }
 .kg-relation-progress-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }

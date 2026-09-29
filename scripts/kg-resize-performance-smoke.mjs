@@ -168,6 +168,7 @@ for (const prefix of ['dsh-kg', 'dsh-kg-trajectory']) {
   const doc = new Target(), surface = new Target(), timers = new Set()
   let resizing = true, fitCount = 0, observer, cleanup, camera = { k: 0.8, tx: 100, ty: 120 }
   const el = { clientWidth: 600, clientHeight: 560, ownerDocument: doc, closest: () => resizing ? surface : null }
+  const viewportSizeRef = { current: { width: 600, height: 560 } }, pendingFocusRef = { current: null }
   surface.contains = candidate => candidate === el
   class Observer {
     constructor(fn) { this.callback = fn; observer = this }
@@ -175,9 +176,9 @@ for (const prefix of ['dsh-kg', 'dsh-kg-trajectory']) {
     disconnect() { this.disconnected = true }
   }
   const effect = section('// Resize previews change CSS only.', '// Focus a node (paragraph click -> graph).')
-  new Function('useEffect', 'containerRef', 'ResizeObserver', 'ctx', 'fitView', 'setView', effect)(fn => { cleanup = fn() }, { current: el }, Observer,
+  new Function('useEffect', 'containerRef', 'ResizeObserver', 'ctx', 'fitView', 'setView', 'viewportSizeRef', 'pendingFocusRef', effect)(fn => { cleanup = fn() }, { current: el }, Observer,
     { timeout: fn => { timers.add(fn); return () => timers.delete(fn) } }, () => assert.fail('resize must not reset zoom or location'),
-    update => { camera = update(camera); fitCount++ })
+    update => { camera = update(camera); fitCount++ }, viewportSizeRef, pendingFocusRef)
   const tick = () => { for (const fn of [...timers]) { timers.delete(fn); fn() } }
   for (let i = 0; i < 20; i++) { el.clientWidth++; observer.callback(); tick() }
   assert.equal(fitCount, 0)
@@ -196,8 +197,25 @@ for (const prefix of ['dsh-kg', 'dsh-kg-trajectory']) {
   assert.equal(fitCount, 1)
   observer.callback(); tick()
   assert.equal(fitCount, 2, 'ordinary responsive resizing still fits')
+  el.clientWidth = 0; el.clientHeight = 0
+  observer.callback(); tick()
+  assert.equal(fitCount, 2, 'a hidden workspace must not translate the camera toward zero dimensions')
+  el.clientWidth = 360; el.clientHeight = 560
+  observer.callback(); tick()
+  assert.deepEqual(camera, { k: 0.8, tx: -20, ty: 120 }, 'revealing in a narrower viewport preserves the original graph center')
+  assert.equal(fitCount, 3)
+  pendingFocusRef.current = () => {
+    viewportSizeRef.current = { width: el.clientWidth, height: el.clientHeight }
+    camera = { k: 0.8, tx: 42, ty: 43 }
+    pendingFocusRef.current = null
+  }
+  el.clientWidth = 800
+  observer.callback(); tick()
+  assert.deepEqual(camera, { k: 0.8, tx: 42, ty: 43 }, 'deferred node focus takes precedence over resize translation')
+  observer.callback(); tick()
+  assert.equal(fitCount, 3, 'observer after focus does not add a second camera offset')
   observer.callback(); cleanup(); tick()
-  assert.equal(fitCount, 2)
+  assert.equal(fitCount, 3)
   assert.equal(observer.disconnected, true)
   assert.equal(doc.listenerCount, 0)
 }

@@ -87,7 +87,10 @@ function makeFixture(kind, replyForCall) {
   const historyLoadSeqRef = { current: 0 }
   const navigate = async (graph, failed = false, loadOverride = null, entryOverride = null) => {
     const deps = { ...refs, makeView, setResultView, toastStore: { clear() {} }, localStorage: { setItem() {} }, LS_RESULT: 'result',
-      historyLoadSeqRef, setFocusReq: () => {},
+      historyLoadSeqRef, setFocusReq: () => {}, navigateWorkspace: (tab, targetId) => {
+        assert.equal(tab, 'read')
+        assert.equal(targetId, 'kg-workspace-read')
+      },
       loadGraphDocument: loadOverride || (async () => failed ? { error: { message: 'Fixture document load failed' } }
         : { graph, revision: graph.revision, sourceText: 'navigated source' }),
       setError: error => { if (error) errors.push(error) } }
