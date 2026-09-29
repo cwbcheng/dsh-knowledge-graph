@@ -75,4 +75,46 @@ assert.equal(imageAt(canonical.source.visualSource, 0), null, 'original image an
 assert.equal(imageAt(canonical.source.visualSource, 2).id, 'figure-1')
 assert.equal(imageAt({ kind: 'image-derived', images: [{ id: 'legacy-upload', startParagraph: 1, endParagraph: 2 }] }, 2).id,
   'legacy-upload', 'legacy direct image imports must not be presented as original book prose')
-console.log(JSON.stringify({ ok: true, strictTranscript: true, canonicalImageInspection: true, revisionFenced: true }))
+
+for (const file of ['../src/index.client.js', '../lib/client.js']) {
+  const text = readFileSync(new URL(file, import.meta.url), 'utf8')
+  const panelStart = text.indexOf('      function VisualInterpretationPanel(')
+  const panelEnd = text.indexOf('      function ModelPicker(', panelStart)
+  assert(panelStart >= 0 && panelEnd > panelStart)
+  const h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) })
+  const Panel = new Function('h', 'React', 'useState', 'useEffect', 'SourceFigure',
+    text.slice(panelStart, panelEnd) + '; return VisualInterpretationPanel')(
+    h, { Fragment: 'fragment' }, initial => [initial, () => {}], () => {}, () => {})
+  const images = Array.from({ length: 5 }, (_, index) => ({ id: 'figure-' + index,
+    name: 'figure-' + index, interpretationStatus: 'not_requested' }))
+  const updates = []
+  const render = (selected = [], busy = false) => Panel({ visualSource: { kind: 'markdown-assets', images },
+    documentId: 'isolated', revision: 1, selected, busy, setSelected: update => updates.push(update) })
+  const find = (node, predicate) => node && typeof node === 'object'
+    ? predicate(node) ? node : node.children.map(child => find(child, predicate)).find(Boolean) : null
+  const checkbox = (tree, index) => find(tree, node => node.props['aria-label'] === '选择图片 figure-' + index)
+  const dispatch = (tree, index, checked) => {
+    const target = { checked }
+    checkbox(tree, index).props.onChange({ target, currentTarget: target })
+    // React can restore the controlled DOM before a queued state updater runs.
+    target.checked = !checked
+  }
+  let selected = []
+  const flush = () => { while (updates.length) { const update = updates.shift(); selected = typeof update === 'function' ? update(selected) : update } }
+  dispatch(render(selected), 0, true)
+  flush()
+  assert.deepEqual(selected, ['figure-0'], file + ': deferred checkbox selection must capture the event value')
+  const tree = render(selected)
+  dispatch(tree, 1, true)
+  dispatch(tree, 2, true)
+  flush()
+  assert.deepEqual(selected, ['figure-0', 'figure-1', 'figure-2'], 'Queued selections must not overwrite each other')
+  dispatch(render(selected), 0, false)
+  flush()
+  assert.deepEqual(selected, ['figure-1', 'figure-2'], 'Deferred unchecking must not read restored DOM state')
+  selected = images.slice(0, 4).map(image => image.id)
+  assert.equal(checkbox(render(selected), 4).props.disabled, true, 'Keep the four-image admission limit')
+  assert.equal(checkbox(render(selected), 0).props.disabled, false, 'Selected images remain removable at the limit')
+  assert.equal(checkbox(render([], true), 0).props.disabled, true, 'Busy tasks still lock selection')
+}
+console.log(JSON.stringify({ ok: true, strictTranscript: true, canonicalImageInspection: true, revisionFenced: true, deferredCheckboxSelection: true }))
