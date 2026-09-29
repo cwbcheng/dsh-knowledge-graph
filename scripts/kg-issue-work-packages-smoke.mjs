@@ -82,6 +82,10 @@ reveal(useEffect, [{ id: 'other' }], 'selected-74', report, 'all', { key: 'old-g
 assert.equal(issueLimit, 40)
 reveal(useEffect, selectedGroup, 'selected-74', report, 'all', { key: 'selected-group' }, 'family', setIssueLimit)
 assert.equal(issueLimit, 80, 'switching groups must reveal an active issue beyond the first page, even when the issue ID did not change')
+assert(source.includes("const [workPackageKey, setWorkPackageKey] = useState('all')")
+  && source.includes("setWorkPackageKey('all')"), 'opening or regrouping a report must show all issues instead of silently choosing the first group')
+assert(source.includes('扫描完成不代表逐条问题已经核实')
+  && source.includes('当前显示 '), 'the report must distinguish completed scanning from pending issue decisions and scoped list counts')
 const large = { issues: Array.from({ length: 5000 }, (_, index) => issue(String(index), 'Missing quote', index)) }
 const then = performance.now()
 assert.equal(buildIssueWorkPackages(large).length, 1)

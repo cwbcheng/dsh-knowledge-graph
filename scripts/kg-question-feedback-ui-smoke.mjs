@@ -364,7 +364,7 @@ assert.equal(changedVerdict.counts.conflicts, 1,
 const outdated = planBulkReviewedFixes(batchBase, batchReport, batchRows, { a: false, b: true, c: true, d: true })
 assert.equal(outdated.counts.applied, 1)
 assert.equal(outdated.counts.conflicts, 1, 'a changed review context cannot be batch-applied')
-assert(panel.includes('AI 核实本组下一批') && panel.includes('查看逐项核实结果')
+assert(panel.includes('逐项 AI 核实本组') && panel.includes('查看逐项核实结果')
   && panel.includes('检查冲突与修改') && panel.includes('确认保存本组处理') && client.includes('activeContextHash')
   && client.includes("persistGraph(next, baseline, loaded.revision, 'bulk_review')")
   && client.includes('localStorage.getItem(bulkReviewStorageKey(documentId))'),

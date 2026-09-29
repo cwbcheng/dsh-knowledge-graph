@@ -5890,7 +5890,7 @@
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [workPackageMode, setWorkPackageMode] = useState('family')
-        const [workPackageKey, setWorkPackageKey] = useState(null)
+        const [workPackageKey, setWorkPackageKey] = useState('all')
         const [pendingDestructiveFix, setPendingDestructiveFix] = useState(null)
         const [sourcePeerCheck, setSourcePeerCheck] = useState(null)
         const [sourcePeerError, setSourcePeerError] = useState('')
@@ -5919,6 +5919,7 @@
         }, [questionPhase])
         const issues = (report && Array.isArray(report.issues) ? report.issues : [])
         const openIssues = issues.filter((it) => it.status === 'open')
+        const pendingIssueCount = issues.filter(it => it.status === 'open' || it.status === 'accepted').length
         const resolvedIssues = issues.filter((it) => it.status === 'applied').length
         const bulkCandidates = openIssues.filter(issue => !issue.batchReview
           && (!issueFilter || issueFilter === 'all' || issue.severity === issueFilter))
@@ -5931,8 +5932,8 @@
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
-        const shown = issues.filter((it) => {
-          if (issueFilter && issueFilter !== 'all' && it.severity !== issueFilter) return false
+        const severityIssues = issues.filter(it => !issueFilter || issueFilter === 'all' || it.severity === issueFilter)
+        const shown = severityIssues.filter((it) => {
           if (workPackageIds && !workPackageIds.has(it.id)) return false
           return true
         })
@@ -6175,19 +6176,14 @@
               )
             : null,
         )
-        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '验证与质疑', tabIndex: -1 },
+        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '审校结果与处理', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
-              h('h3', { className: 'kg-verify-title' }, '验证与质疑'),
-              report && typeof report.summary === 'string'
-                ? h('p', { className: 'kg-verify-summary' }, report.summary)
-                : null,
-              report && Array.isArray(report.modelsUsed) && report.modelsUsed.length > 1
-                ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
-                  item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；'))
-                : null,
-              report?.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '增量审校：复用 ' + report.reuse.reusedBatches +
-                ' 批 · 本次新审校 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
+              h('h3', { className: 'kg-verify-title' }, '审校结果与处理'),
+              report ? h('div', { className: 'kg-review-overview', role: 'status' },
+                h('strong', null, reportStale ? '旧版审校报告' : report.mode === 'quick' ? '规则检查已完成' : '全图审校已完成'),
+                h('span', null, '发现 ' + issues.length + ' 条审校线索，' + pendingIssueCount + ' 条尚待处理。扫描完成不代表逐条问题已经核实；知识图不会因这份报告自动修改。' +
+                  (manualFixCount ? ' 其中 ' + manualFixCount + ' 项拟议修改需逐条复核。' : ''))) : null,
               report && reportStale
                 ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原审校结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 核实，确认后依据当前图修复；无需重新跑完整审校。旧补丁不能直接采纳。')
                 : null,
@@ -6201,8 +6197,6 @@
                   title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 审校问题',
                 }, '修复本地规则 ' + fixableCount + ' 项')
               : null,
-            manualFixCount > 0
-              ? h('span', { className: 'kg-fact-note' }, manualFixCount + ' 项拟议修改需逐条复核') : null,
             verifying
               ? h('div', { style: { minWidth: 0, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', overflowWrap: 'anywhere' } },
                   h('span', { className: 'kg-verify-spinner', 'aria-label': '验证进行中' }),
@@ -6219,7 +6213,15 @@
               : null,
           ),
           report
-            ? h('div', { className: 'kg-verify-metrics' },
+            ? h('details', { className: 'kg-review-details' },
+              h('summary', null, '审校范围与质量指标'),
+              typeof report.summary === 'string' ? h('p', { className: 'kg-verify-summary' }, report.summary) : null,
+              Array.isArray(report.modelsUsed) && report.modelsUsed.length > 1
+                ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
+                  item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；')) : null,
+              report.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '增量审校：复用 ' + report.reuse.reusedBatches +
+                ' 批 · 本次新审校 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
+              h('div', { className: 'kg-verify-metrics' },
                 report.coverage ? h('span', null, '全图批次覆盖 ' + report.coverage.completedNodes + '/' + report.coverage.nodeCount + ' 节点 · ' +
                   report.coverage.completedEdges + '/' + report.coverage.edgeCount + ' 关系 · ' +
                   report.coverage.completedSourceUnits + '/' + report.coverage.sourceUnitCount + ' 原文单元' +
@@ -6233,29 +6235,33 @@
                 h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
                 report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '语义已验证 ' + report.metrics.entailmentCoverage + '%') : null,
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
-              )
+              ))
             : null,
           typeof onStartBulkReview === 'function' && report
             ? h('div', { className: 'kg-bulk-review' },
-                h('div', { className: 'kg-issue-actions' },
+                h('h4', { className: 'kg-review-subtitle' }, '按组二次核实'),
+                h('p', { className: 'kg-verify-summary' }, '同组问题共享原文上下文，但每条问题分别判断；核实后仍需检查修改预览并确认保存。'),
+                h('div', { className: 'kg-issue-actions kg-work-package-controls' },
+                  h('label', null, '归类方式',
                   h('select', { value: workPackageMode, disabled: bulkRunning, 'aria-label': '问题分组方式',
-                    onChange: event => { setWorkPackageMode(event.target.value); setWorkPackageKey(null) } },
-                    h('option', { value: 'family' }, '同类问题'), h('option', { value: 'source' }, '同类问题与原文')),
+                    onChange: event => { setWorkPackageMode(event.target.value); setWorkPackageKey('all') } },
+                    h('option', { value: 'family' }, '按问题类型'), h('option', { value: 'source' }, '按问题类型和原文'))),
+                  h('label', { className: 'kg-work-package-label' }, '问题组',
                   h('select', { className: 'kg-work-package-picker', value: workPackage?.key || 'all', disabled: bulkRunning,
                     'aria-label': '选择问题组', title: workPackage?.label || '全部问题', onChange: event => setWorkPackageKey(event.target.value) },
-                    h('option', { value: 'all' }, '全部问题（' + issues.length + ' 项）'),
+                    h('option', { value: 'all' }, '显示全部问题（' + severityIssues.length + ' 项）'),
                     workPackages.map(group => h('option', { key: group.key, value: group.key },
-                      group.label + '（待核实 ' + group.remaining + '/' + group.issues.length + ' 项）'))),
-                  h('span', { className: 'kg-meta' }, workPackages.length + ' 组 · 待核实 ' + bulkCandidates.length + ' 项')),
+                      group.label + '（待二次核实 ' + group.remaining + '/' + group.issues.length + ' 项）')))),
+                  h('span', { className: 'kg-meta' }, '当前筛选：' + workPackages.length + ' 组，' + bulkCandidates.length + ' 项可二次核实')),
                 !bulkReview && bulkCandidates.length > 0
                   ? h('div', { className: 'kg-issue-actions' },
                       h('select', { value: bulkLimit, disabled: verifying || questionPhase === 'running',
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
-                        [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每组 ' + count + ' 项'))),
+                        [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
                         disabled: verifying || questionPhase === 'running' || !workPackage?.remaining,
                         onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key, workPackageMode) },
-                        'AI 核实本组下一批（' + Math.min(bulkLimit, workPackage?.remaining || 0) + ' 项）'))
+                        workPackage ? '逐项 AI 核实本组（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）' : '先选择问题组'))
                   : null,
                 bulkReview
                   ? h('div', null,
@@ -6319,12 +6325,20 @@
             ? h('div', { className: 'kg-issue-actions' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
                   onClick: onUndoBulkReview, title: '仅当本组保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上一组修改')) : null,
-          questionContent,
+          h('details', { className: 'kg-review-question',
+            open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
+            h('summary', null, targetLabel ? '核实与提问 · ' + targetLabel : '对知识图提问'),
+            questionContent),
           sourcePeerError ? h('p', { className: 'kg-question-error', role: 'alert' }, sourcePeerError) : null,
+          h('div', { className: 'kg-review-list-head' },
+            h('h4', { className: 'kg-review-subtitle' }, '问题清单'),
+            h('span', { className: 'kg-meta' }, '当前显示 ' + shown.length + ' / ' + severityIssues.length + ' 项' +
+              (workPackage ? ' · ' + workPackage.label : ' · 全部问题组'))),
           h('div', { className: 'kg-verify-filters' },
             ['all', ...SEVERITY_ORDER].map((s) => h('button', {
               key: s, type: 'button',
               className: 'kg-filter-chip' + (issueFilter === s ? ' on' : ''),
+              'aria-pressed': issueFilter === s,
               onClick: () => setIssueFilter(s),
             }, s === 'all' ? '全部 ' + issues.length : (SEVERITY_META[s].label + ' ' + issues.filter((it) => it.severity === s).length))),
           ),
@@ -6356,7 +6370,9 @@
                       h('span', { className: 'kg-issue-cat' }, ISSUE_CATEGORY_LABEL[it.category] || it.category),
                       nodeTarget ? h('span', { className: 'kg-issue-cat' }, it.targetId) : null,
                       edgeTarget ? h('span', { className: 'kg-issue-cat' }, '关系 ' + it.targetId) : null,
-                      typeof it.confidence === 'number' ? h('span', { className: 'kg-issue-cat' }, '置信 ' + Math.round(it.confidence * 100) + '%') : null,
+                      typeof it.confidence === 'number' ? h('span', { className: 'kg-issue-cat',
+                        title: '审校器给出的置信分数，不代表问题已被独立核实，也不是实际正确率' },
+                        '审校置信 ' + Math.round(it.confidence * 100) + '%') : null,
                       it.source === 'local' ? h('span', { className: 'kg-issue-cat' }, '本地规则') : null,
                       it.batchReview ? h('span', { className: 'kg-issue-cat' }, '批量核实：' +
                         ({ confirmed: '问题成立', false_positive: '疑似误报', uncertain: '证据不足' }[it.batchReview.verdict] || '待人工')) : null,
