@@ -692,7 +692,7 @@ assert(clientSource.includes('function KnowledgeConsumePanel'), 'shared knowledg
 assert((clientSource.match(/h\(KnowledgeConsumePanel/g) || []).length === 2, 'consumption panel is not mounted in both document and trajectory views')
 assert(clientSource.includes("host.call('graph-query'") && clientSource.includes("host.call('answer-graph'"), 'dynamic client does not call consumption RPCs')
 assert(clientSource.includes("loadGraphDocument({ documentId, query: nodeId") && clientSource.includes("host.call('document-load', body)"), 'citation locator cannot load nodes outside the renderer window')
-assert(clientSource.includes("if (askState.phase === 'submitting' || askState.phase === 'running') return") && clientSource.includes("disabled: askState.phase === 'submitting' || askState.phase === 'running'"), 'answer input can abandon polling by submitting while a task is running')
+assert(clientSource.includes("if (readOnly || askState.phase === 'submitting' || askState.phase === 'running') return") && clientSource.includes("disabled: readOnly || askState.phase === 'submitting' || askState.phase === 'running'"), 'answer input can abandon polling by submitting while a task is running')
 assert(builtClient.includes("rpc('graph-query'") && builtClient.includes("rpc('answer-graph'"), 'persistent client RPC bridge is missing consumption methods')
 assert(!builtClient.includes("host.call('graph-query'") && !builtClient.includes("host.call('answer-graph'"), 'persistent client still contains dynamic consumption calls')
 assert(hostSource.includes('buildConsumptionEvidenceCatalogHost') && hostSource.includes('evidenceIds'), 'evidence-ID answer admission is missing')

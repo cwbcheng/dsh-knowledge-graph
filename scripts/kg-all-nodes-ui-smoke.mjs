@@ -82,9 +82,9 @@ assert.deepEqual(metadataOnly, { nodes: [], edges: [], baseNodeIds: [], baseEdge
 
 assert(client.includes("h('option', { value: 'all' }, '全部节点')"))
 assert(client.includes('await restoreDocument(pending.documentId, pending.title)')
-  && client.includes('const relationTaskViewing = relationTaskActive && !!resultView')
-  && client.includes('relationTaskViewing ? resultPanel : null')
-  && client.includes('onDeleteEdge: relationTaskActive ? undefined : handleDeleteEdge'),
+  && client.includes('const generationTaskViewing = generationTaskActive && canBrowseSavedTaskGraph(submittedRef.current, resultView?.graph)')
+  && client.includes('generationTaskActive && !generationTaskViewing ? null : historyOpen')
+  && client.includes('onDeleteEdge: generationTaskActive ? undefined : guardGenerationAction(handleDeleteEdge)'),
   'relation completion must restore and display a read-only saved graph while polling continues')
 assert(client.includes("const allNodesActive = resultView?.graph?.view?.kind === 'all'"))
 assert(client.includes('const displayView = resultView'))

@@ -2861,7 +2861,7 @@ export default function clientPlugin() {
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
-        if (graph?.nodes?.some(node => node.type === 'image')) {
+        if (graph?.nodes?.some(node => node.type === 'image') || graph?.source?.visualSource?.images?.length) {
           TYPE_META = { ...TYPE_META, image: { label: '图片', color: '#0f766e', fill: '#ecfdf5' } }
           REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片' }
           TYPE_ORDER = [...TYPE_ORDER, 'image']
@@ -6690,7 +6690,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- candidate review panel ---------------------
-      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate }) {
+      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate, readOnly = false }) {
         const [statusFilter, setStatusFilter] = useState('candidate')
         const sections = chapterSectionsOf(graph)
         const activeSectionId = chapterFilter && chapterFilter !== 'all' && sections.some((section) => section.id === chapterFilter) ? chapterFilter : 'all'
@@ -6760,7 +6760,8 @@ export default function clientPlugin() {
                     REVIEW_STATUS_ORDER.map((nextStatus) => h('button', {
                       key: nextStatus, type: 'button',
                       className: nextStatus === status ? 'kg-primary' : 'kg-secondary',
-                      onClick: (event) => { event.stopPropagation(); onSetReview(key, nextStatus) },
+                      disabled: readOnly,
+                      onClick: (event) => { event.stopPropagation(); if (!readOnly) onSetReview(key, nextStatus) },
                     }, REVIEW_STATUS_LABEL[nextStatus])),
                     h('span', { className: 'kg-candidate-status' }, REVIEW_STATUS_LABEL[status]),
                   ),
@@ -6806,7 +6807,7 @@ export default function clientPlugin() {
         return '拟议文字已改变，但' + retained.join('；') + '。这些引文未随修改更新，请逐项核对是否支持新表述。'
       }
 
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onLocateIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onLocateIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false, readOnly = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [workPackageMode, setWorkPackageMode] = useState('family')
@@ -6850,6 +6851,7 @@ export default function clientPlugin() {
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report, graph)
         const crossGroupReview = bulkReview?.workPackage?.key === 'all'
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
+        const actionsDisabled = readOnly || bulkRunning
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
@@ -6934,7 +6936,7 @@ export default function clientPlugin() {
         const confirmationKey = (id, fix) => JSON.stringify([documentIdOfGraph(graph), graph?.revision, id, fix])
         const applyReviewedIssue = async (issue, confirmationId = issue?.id) => {
           const action = issue?.proposedFix?.action
-          if (bulkRunning) return
+          if (actionsDisabled) return
           if (archivedIssueNeedsFreshReview(report, graph, issue)) return
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
           const key = confirmationKey(confirmationId, issue.proposedFix)
@@ -6998,14 +7000,14 @@ export default function clientPlugin() {
               placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
               value: questionDraft,
               maxLength: 600,
-              disabled: questionPhase === 'running' || bulkRunning,
+              disabled: questionPhase === 'running' || actionsDisabled,
               onChange: (e) => setQuestionDraft(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !actionsDisabled && questionPhase !== 'running') { e.preventDefault(); onSubmitQuestion() } },
               'aria-label': '质疑或提问输入框',
             }),
             h('button', {
               type: 'button', className: 'kg-primary',
-              disabled: questionPhase === 'running' || bulkRunning || !questionDraft.trim(),
+              disabled: questionPhase === 'running' || actionsDisabled || !questionDraft.trim(),
               onClick: onSubmitQuestion,
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
@@ -7035,7 +7037,7 @@ export default function clientPlugin() {
                   : null,
                 issueReview && !reviewGraphChanged && qVerdict === 'false_positive' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
-                      h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning,
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled,
                         onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持'),
                           questionTarget.reviewSnapshot || questionTarget.reviewSignature) },
                         '标记原问题为误报')) : null,
@@ -7066,7 +7068,7 @@ export default function clientPlugin() {
                         '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
                       h('button', {
-                        type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0,
+                        type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0,
                         onClick: () => applyReviewedIssue({
                           id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: issueReview ? 'issue_review' : 'question', severity: 'warning', category: 'other',
                           targetKind: issueReview ? recheckedIssue?.targetKind || 'graph' : questionTarget ? questionTarget.kind : 'graph',
@@ -7092,7 +7094,7 @@ export default function clientPlugin() {
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
                 issueReview && qNeedsManualRepair && questionResult.repairStatus !== 'context_limit' && !reviewGraphChanged && recheckedIssue
-                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
+                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
                   : null,
               )
             : null,
@@ -7113,7 +7115,7 @@ export default function clientPlugin() {
               ? h('button', {
                   type: 'button', className: 'kg-primary',
                   style: { flex: 'none', marginLeft: 'auto' },
-                  disabled: verifying || bulkRunning,
+                  disabled: verifying || actionsDisabled,
                   onClick: onApplyAll,
                   title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 审校问题',
                 }, '修复本地规则 ' + fixableCount + ' 项')
@@ -7180,7 +7182,7 @@ export default function clientPlugin() {
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
-                        disabled: verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
+                        disabled: readOnly || verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
                         onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key || 'all', workPackageMode) },
                         workPackage ? '逐项 AI 核实本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
                           : '逐项 AI 核实当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
@@ -7230,23 +7232,23 @@ export default function clientPlugin() {
                         bulkReview.phase === 'running'
                           ? h('button', { type: 'button', className: 'kg-secondary', onClick: onStopBulkReview }, '暂停批量核实') : null,
                         bulkReview.phase === 'paused'
-                          ? h('button', { type: 'button', className: 'kg-primary', onClick: onContinueBulkReview }, '继续批量核实') : null,
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly, onClick: onContinueBulkReview }, '继续批量核实') : null,
                         bulkReview.phase === 'ready'
-                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly || verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
                               '检查冲突与修改') : null,
                         bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
                           && bulkReviewPreview.documentId === bulkReview.documentId
-                          ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || verifying || questionPhase === 'running', onClick: onApplyBulkReview },
                               crossGroupReview ? '确认保存本批处理' : '确认保存本组处理') : null,
                         bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
-                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly, onClick: onDiscardBulkReview },
                               crossGroupReview ? '放弃本批结果' : '放弃本组结果') : null))
                   : null)
             : null,
           bulkReviewUndo?.documentId === documentIdOfGraph(graph) && bulkReviewUndo?.reportId === report?.reportId
             && bulkReviewUndo?.revision === graph?.revision
             ? h('div', { className: 'kg-issue-actions' },
-                h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
+                h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || actionsDisabled || questionPhase === 'running',
                   onClick: onUndoBulkReview, title: '仅当上次批量保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上次批量修改')) : null,
           h('details', { className: 'kg-review-question',
             open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
@@ -7336,21 +7338,21 @@ export default function clientPlugin() {
                       onLocateIssue ? h('button', { type: 'button', className: 'kg-secondary',
                         onClick: e => { e.stopPropagation(); onLocateIssue(it) } }, '查看图文') : null,
                       it.status === 'open' && relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
                         : null,
                       it.status === 'open' && relationTypeFix && typeof onDeleteTarget === 'function'
-                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: bulkRunning || reportStale,
+                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: actionsDisabled || reportStale,
                             title: reportStale ? '旧报告的关系问题需先对当前图重新核实' : undefined,
                             onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || bulkRunning, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || actionsDisabled, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
                         : null,
                       h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
                     ),
@@ -7384,7 +7386,7 @@ export default function clientPlugin() {
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
+      function FactCheckPanel({ report, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel, readOnly = false }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -7422,7 +7424,7 @@ export default function clientPlugin() {
                   'aria-label': '领域规则来源',
                 }),
                 h('div', { className: 'kg-fact-actions', style: { marginTop: 8 } },
-                  h('button', { type: 'button', className: 'kg-primary', disabled: verifying, onClick: onStartFactCheck },
+                  h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || verifying, onClick: onStartFactCheck },
                     verifying ? '核查中…' : (report ? '重新核查' : '开始外部核查')),
                   (rulesDraft || '').trim() ? h('span', { className: 'kg-fact-status', style: { marginLeft: 0 } }, '将附带 ' + rulesDraft.trim().split(/\n+/).length + ' 段规则') : null),
               )
@@ -7468,7 +7470,7 @@ export default function clientPlugin() {
               h('div', { className: 'kg-fact-actions' },
                 h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onSelectClaim(c) } }, '在图中定位'),
                 c.status === 'open'
-                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectClaim(c) } }, '忽略')
+                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly, onClick: (e) => { e.stopPropagation(); if (!readOnly) onRejectClaim(c) } }, '忽略')
                   : null,
                 h('span', { className: 'kg-fact-status' }, c.status === 'rejected' ? '已忽略' : c.status === 'accepted' ? '已确认' : ''),
               ),
@@ -7479,7 +7481,7 @@ export default function clientPlugin() {
 
       // --------------------------- window floor ---------------------------
       // ---------------- knowledge consumption: search + evidence answer ----------------
-      function KnowledgeConsumePanel({ ctx, graph, sourceText, mode, model, onLocateReference, onNotify, restoreState, onStateChange }) {
+      function KnowledgeConsumePanel({ ctx, graph, sourceText, mode, model, onLocateReference, onNotify, restoreState, onStateChange, readOnly = false }) {
         const documentId = documentIdOfGraph(graph)
         const revision = Number.isInteger(graph && graph.revision)
           ? graph.revision
@@ -7626,7 +7628,7 @@ export default function clientPlugin() {
           }, delay)
         }
         const startAsk = async (overrideQuestion) => {
-          if (askState.phase === 'submitting' || askState.phase === 'running') return
+          if (readOnly || askState.phase === 'submitting' || askState.phase === 'running') return
           const draft = typeof overrideQuestion === 'string' ? overrideQuestion.trim() : question.trim()
           if (!draft) {
             setAskState({ phase: 'error', taskId: null, progress: null, result: null, error: '请先输入要向知识图提问的问题。' })
@@ -7701,7 +7703,7 @@ export default function clientPlugin() {
                 })
               : h('input', {
                   className: 'kg-question-input', value: question, maxLength: 600,
-                  disabled: askState.phase === 'submitting' || askState.phase === 'running',
+                  disabled: readOnly || askState.phase === 'submitting' || askState.phase === 'running',
                   placeholder: '例如：这份资料为什么认为经验预测存在局限？', 'aria-label': '向知识图提问',
                   onChange: (e) => setQuestion(e.target.value),
                   onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey && askState.phase !== 'submitting' && askState.phase !== 'running') { e.preventDefault(); startAsk() } },
@@ -7729,7 +7731,7 @@ export default function clientPlugin() {
             ),
             tab === 'search'
               ? h('button', { type: 'button', className: 'kg-primary', disabled: searchState.phase === 'loading', onClick: () => runSearch() }, searchState.phase === 'loading' ? '检索中…' : '检索')
-              : h('button', { type: 'button', className: 'kg-primary', disabled: askState.phase === 'submitting' || askState.phase === 'running', onClick: () => startAsk() }, askState.phase === 'submitting' || askState.phase === 'running' ? '回答中…' : '基于证据回答'),
+              : h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || askState.phase === 'submitting' || askState.phase === 'running', onClick: () => startAsk() }, askState.phase === 'submitting' || askState.phase === 'running' ? '回答中…' : '基于证据回答'),
           ),
           tab === 'search'
             ? h(React.Fragment, null,
@@ -7807,7 +7809,7 @@ export default function clientPlugin() {
                     h('div', { className: 'kg-hint', style: { marginTop: 7 } }, '模型自评 ' + Math.round(Number(answer.confidence || 0) * 100) + '%' + (answer.model ? ' · ' + answer.model.provider + '/' + answer.model.model : '')),
                   ) : null,
                   Array.isArray(answer.followUps) && answer.followUps.length > 0 ? h('div', { className: 'kg-consume-followups' },
-                    answer.followUps.map((item, index) => h('button', { key: index, type: 'button', className: 'kg-secondary', onClick: () => startAsk(item) }, Array.isArray(answer.followUpLabels) ? answer.followUpLabels[index] || item : item)),
+                    answer.followUps.map((item, index) => h('button', { key: index, type: 'button', className: 'kg-secondary', disabled: readOnly, onClick: () => startAsk(item) }, Array.isArray(answer.followUpLabels) ? answer.followUpLabels[index] || item : item)),
                   ) : null,
                 ) : null,
               ),
@@ -8723,6 +8725,12 @@ export default function clientPlugin() {
       }
       const workbenchDraftStore = createWorkbenchDraftStore()
 
+      function canBrowseSavedTaskGraph(submission, graph) {
+        if (!graph || !(submission?.append || submission?.imageAppend || submission?.relationRetry)) return false
+        const documentId = documentIdOfGraph(graph) || ''
+        return documentId === (submission.documentId || '')
+      }
+
       function WorkbenchTabs({ value, onChange, reviewCount, reviewBusy }) {
         const tabs = [{ id: 'read', label: '图文阅读' }, { id: 'use', label: '检索与学习' },
           { id: 'review', label: '审校处理', count: reviewCount }, { id: 'source', label: '资料' }]
@@ -8893,6 +8901,16 @@ export default function clientPlugin() {
         const colsRef = useRef(null)
         const submittedRef = useRef(null)
         const submissionBusyRef = useRef(false)
+        const generationTaskActive = Boolean(taskId) || phase === 'extracting' || phase === 'paused'
+        const generationTaskActiveRef = useRef(generationTaskActive)
+        generationTaskActiveRef.current = generationTaskActive
+        const guardGenerationAction = action => (...args) => {
+          if (generationTaskActiveRef.current || submissionBusyRef.current) {
+            toastStore.show('当前任务尚未结束，图文可浏览；修改和新 AI 请求暂不可用。')
+            return
+          }
+          return action(...args)
+        }
         const bulkFixBusyRef = useRef(false)
         const resumeAttemptRef = useRef(false)
         const [incompleteRuns, setIncompleteRuns] = useState([])
@@ -9198,10 +9216,10 @@ export default function clientPlugin() {
                 documentId: typeof pending.documentId === 'string' ? pending.documentId : '',
                 prevEdgeCount: -1,
               }
-              if ((pending.relationRetry === true || pending.imageAppend === true) && pending.documentId) {
+              if ((pending.append === true || pending.relationRetry === true || pending.imageAppend === true) && pending.documentId) {
                 const restored = await restoreDocument(pending.documentId, pending.title)
                 if (disposed) return
-                if (!restored) setError({ message: '补全仍在后台运行，但暂时无法读取已保存知识图；可稍后刷新页面重试。' })
+                if (!restored) setError({ message: '任务仍在后台运行，但暂时无法读取已保存知识图；可稍后刷新页面重试。' })
                 if (pending.imageAppend === true) { setVisualPanelOpen(true); setVisualSelection(submittedRef.current.imageIds) }
               }
               if (disposed) return
@@ -9605,7 +9623,7 @@ export default function clientPlugin() {
                 setTaskId(null)
                 setExtractProgress(null)
                 setInputCollapsed(true)
-                navigateWorkspace('read', 'kg-workspace-read')
+                if (!sub.append && !sub.relationRetry) navigateWorkspace('read', 'kg-workspace-read')
                 const entryId = (sub.append === true || sub.relationRetry === true) && currentHistoryId ? currentHistoryId : 'h-' + Date.now()
                 setCurrentHistoryId(entryId)
                 setHistory((prev) => appendHistory(prev, {
@@ -10006,6 +10024,7 @@ export default function clientPlugin() {
         // host; the AI only produces new nodes (edges may reference existing
         // node ids) and the host returns the MERGED graph.
         const appendSubmit = async (overrideText) => {
+          if (generationTaskActiveRef.current || submissionBusyRef.current) return
           const t = (overrideText != null ? overrideText : text).trim()
           if (!t) { setError({ message: '请先粘贴要追加的资料正文' }); return }
           if (t.length > MAX_LEN) { setError({ message: '追加正文不能超过 ' + MAX_LEN + ' 字' }); return }
@@ -10013,6 +10032,7 @@ export default function clientPlugin() {
             setError({ message: '请先完成一次拆分，再追加内容' })
             return
           }
+          submissionBusyRef.current = true
           cancelVerifyTasks()
           setError(null)
           const baseText = fullText || ''
@@ -10062,7 +10082,7 @@ export default function clientPlugin() {
           } catch (e) {
             setPhase('idle')
             setError({ message: '无法提交追加任务：' + (e && e.message ? e.message : '未知错误') })
-          }
+          } finally { submissionBusyRef.current = false }
         }
 
         const appendImagesSubmit = async (imageIds) => {
@@ -11754,8 +11774,8 @@ export default function clientPlugin() {
         // ---- view constructors ----
         const allNodesActive = resultView?.graph?.view?.kind === 'all'
         const displayView = resultView
-        const relationTaskActive = submittedRef.current?.relationRetry === true && (phase === 'extracting' || phase === 'paused')
-        const relationTaskViewing = relationTaskActive && !!resultView
+        const generationTaskViewing = generationTaskActive && canBrowseSavedTaskGraph(submittedRef.current, resultView?.graph)
+        const generationLabel = submittedRef.current?.imageAppend ? '图片解读' : submittedRef.current?.relationRetry ? '关系补全' : '资料追加'
         const chapterSections = displayView ? chapterSectionsOf(displayView.graph) : []
         const activeChapter = chapterFilter !== 'all' ? chapterSections.find((section) => section.id === chapterFilter) : null
         const activeChapterId = activeChapter ? activeChapter.id : 'all'
@@ -11835,12 +11855,13 @@ export default function clientPlugin() {
             : h(React.Fragment, null,
                 h('input', {
                   className: 'kg-input-title', placeholder: '资料标题（可选）', value: title, maxLength: 200,
+                  readOnly: generationTaskActive,
                   onChange: (e) => setTitle(e.target.value), 'aria-label': '资料标题（可选）',
                 }),
                 h('textarea', {
                   className: 'kg-textarea',
                   placeholder: resultView ? '粘贴要追加的段落或新资料（将合并进当前知识图，跨段关系自动建立）…' : '粘贴资料正文，或上传可搜索 PDF / 包含文字、图示、表格的图片…',
-                  value: text, readOnly: Boolean(markdownBundle), maxLength: MAX_LEN, onChange: (e) => setText(e.target.value), 'aria-label': '资料正文',
+                  value: text, readOnly: generationTaskActive || Boolean(markdownBundle), maxLength: MAX_LEN, onChange: (e) => setText(e.target.value), 'aria-label': '资料正文',
                 }),
                 h('div', { className: 'kg-actions' },
                   markdownBundle ? h('div', { role: 'status', style: { width: '100%' } }, 'Markdown · ' + markdownBundle.paragraphCount + ' 段 · ' + markdownBundle.imageCount + ' 张原图 · ' + markdownBundle.referenceCount + ' 处引用 · 未引用图片 ' + markdownBundle.ignoredFiles + ' 张') : null,
@@ -11866,12 +11887,12 @@ export default function clientPlugin() {
                    h('span', { className: 'kg-counter' },
                     '已输入 ' + text.length + ' / ' + MAX_LEN + ' 字' + (imageInputs.length > 0 ? ' · 图片 ' + imageInputs.length + '/' + MAX_IMAGE_INPUTS + ' 张' : '') + (resultView ? ' · 将追加到当前图' : '')),
                   text.trim().length > 0 || imageInputs.length > 0
-                    ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setText(''); setTitle(''); clearImageInputs(); setMarkdownBundle(null) } }, '清空')
+                    ? h('button', { type: 'button', className: 'kg-secondary', disabled: generationTaskActive, onClick: () => { setText(''); setTitle(''); clearImageInputs(); setMarkdownBundle(null) } }, '清空')
                     : null,
                   resultView
                     ? h('button', {
                         type: 'button', className: 'kg-primary',
-                        disabled: resultView ? text.trim().length === 0 : (text.trim().length === 0 && imageInputs.length === 0),
+                        disabled: generationTaskActive || (resultView ? text.trim().length === 0 : (text.trim().length === 0 && imageInputs.length === 0)),
                         onClick: () => appendSubmit(),
                       }, '追加拆分')
                     : h('button', {
@@ -11956,7 +11977,7 @@ export default function clientPlugin() {
                   h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length + ' 节点'),
                   (graph.view?.totalNodes || graph.nodes.length) >= 2 && documentIdOfGraph(graph)
                     ? h(RelationCompletionControls, { continuous: continuousRelations, onContinuousChange: setContinuousRelations,
-                        onStart: retryRelations, coverage: discoveryMeta, disabled: relationTaskActive || !!taskId || graphWindowLoading || verifyPhase === 'running' || factPhase === 'running' || questionPhase === 'running' })
+                        onStart: retryRelations, coverage: discoveryMeta, disabled: generationTaskActive || graphWindowLoading || verifyPhase === 'running' || factPhase === 'running' || questionPhase === 'running' })
                     : null,
                   generationMeta?.relationCompletion ? h(RelationCompletionStatus, { completion: generationMeta.relationCompletion }) : null,
                   sourceMeta && sourceMeta.sectionCount > 0 ? h('span', null, sourceMeta.sectionCount + ' 个章节 · ' + (sourceMeta.chunkCount || 0) + ' 个内容块') : null,
@@ -12086,10 +12107,10 @@ export default function clientPlugin() {
                       layoutMode,
                       onLayoutModeChange: changeLayoutMode,
                       issueReport: verification,
-                      onQuestionNode: relationTaskActive ? undefined : handleQuestionNode,
-                      onQuestionEdge: relationTaskActive ? undefined : handleQuestionEdge,
-                      onDeleteEdge: relationTaskActive ? undefined : handleDeleteEdge,
-                      onOpenNodeIssues: relationTaskActive ? undefined : handleOpenNodeIssues,
+                      onQuestionNode: generationTaskActive ? undefined : guardGenerationAction(handleQuestionNode),
+                      onQuestionEdge: generationTaskActive ? undefined : guardGenerationAction(handleQuestionEdge),
+                      onDeleteEdge: generationTaskActive ? undefined : guardGenerationAction(handleDeleteEdge),
+                      onOpenNodeIssues: handleOpenNodeIssues,
                       exportTitle: title,
                     }),
                     ontologyModeBadge(resultView),
@@ -12226,15 +12247,16 @@ export default function clientPlugin() {
               )
             : null,
           documentLoading && !graphWindowLoading ? h(GraphLoading, { progress: documentLoading }) : null,
-          phase === 'extracting' || phase === 'paused'
-            ? h(React.Fragment, null,
-                relationTaskViewing
-                  ? h('section', { className: 'kg-relation-progress', 'aria-label': '关系补全进度' },
+          generationTaskActive
+            ? generationTaskViewing
+                  ? h('section', { className: 'kg-relation-progress', 'aria-label': generationLabel + '进度' },
                       h('div', { className: 'kg-relation-progress-head' },
-                        h('strong', null, phase === 'paused' ? '关系补全已暂停' : '正在补全知识图关系'),
-                        h('span', { role: 'status' }, (extractProgress?.stage || '正在读取任务进度…') + ' · 当前显示已保存的知识图（只读）'),
+                        h('strong', null, phase === 'paused' ? generationLabel + '已暂停'
+                          : submittedRef.current?.imageAppend ? '正在解读 ' + (submittedRef.current.imageIds?.length || '') + ' 张图片并生成节点…'
+                          : submittedRef.current?.relationRetry ? '正在补全知识图关系' : '正在追加资料'),
+                        h('span', { role: 'status' }, (extractProgress?.stage || '正在读取任务进度…') + ' · 当前显示已保存的知识图（只读） · 修改和新 AI 请求暂不可用'),
                         h('button', { type: 'button', className: 'kg-secondary', disabled: graphWindowLoading || allNodesLoading, onClick: refreshSavedGraph }, graphWindowLoading ? '刷新中…' : '刷新已保存图'),
-                        phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, '停止补全') : null),
+                        phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务') : null),
                       h('details', null,
                         h('summary', null, '运行详情'),
                         h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
@@ -12262,9 +12284,9 @@ export default function clientPlugin() {
                         setExtractProgress(null)
                         setPhase('extracting')
                       } }),
-                      phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务') : null),
-                relationTaskViewing ? resultPanel : null)
-            : historyOpen
+                      phase !== 'paused' ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: extractProgress?.pauseRequested, onClick: handleCancelExtract }, submittedRef.current?.relationRetry ? '停止补全' : '取消任务') : null)
+            : null,
+          generationTaskActive && !generationTaskViewing ? null : historyOpen
               ? historyPanel
               : h(React.Fragment, null,
                   resultView ? h(WorkbenchTabs, { value: workspaceTab, onChange: tab => navigateWorkspace(tab),
@@ -12285,7 +12307,7 @@ export default function clientPlugin() {
                   resultView
                     ? h(KnowledgeConsumePanel, {
                         ctx, graph: resultView.graph, sourceText: fullText || resultView.sourceText || '',
-                        mode: 'document', model: effectiveModelArg,
+                        mode: 'document', model: effectiveModelArg, readOnly: generationTaskActive,
                         onLocateReference: locateConsumptionReference,
                         onNotify: (message) => toastStore.show(message),
                         restoreState: consumptionRestore,
@@ -12313,28 +12335,28 @@ export default function clientPlugin() {
                   resultView ? h('div', { className: 'kg-review-launcher', 'aria-label': '审校操作' },
                     h(VerificationConcurrencyControl, { value: verifyConcurrency, onChange: setVerifyConcurrency, disabled: verifyPhase === 'running' || verifyBusyRef.current }),
                     h('div', { className: 'kg-verify-actions' },
-                      h('button', { type: 'button', className: 'kg-secondary', onClick: startQuickVerify,
+                      h('button', { type: 'button', className: 'kg-secondary', onClick: guardGenerationAction(startQuickVerify),
                         title: '检查当前显示的节点窗口；全图检查请使用 AI 全图深度审校',
-                        disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, '当前窗口体检'),
-                      h('button', { type: 'button', className: 'kg-secondary', onClick: startDeepVerify,
+                        disabled: generationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, '当前窗口体检'),
+                      h('button', { type: 'button', className: 'kg-secondary', onClick: guardGenerationAction(startDeepVerify),
                         title: '审校全部节点、关系和原文；支持暂停续跑',
-                        disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, verifyPhase === 'running' ? '审校中…' : 'AI 全图深度审校'),
-                      documentIdOfGraph(resultView.graph) ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => startDeepVerify({ reuseVerified: true }),
+                        disabled: generationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, verifyPhase === 'running' ? '审校中…' : 'AI 全图深度审校'),
+                      documentIdOfGraph(resultView.graph) ? h('button', { type: 'button', className: 'kg-secondary', onClick: guardGenerationAction(() => startDeepVerify({ reuseVerified: true })),
                         title: '复用输入、模型和规则一致的历史批次，仅重审变化部分；开始前确认计划',
-                        disabled: relationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, '增量审校') : null,
-                      h('button', { type: 'button', className: 'kg-secondary', onClick: handleOpenFactPanel,
-                        disabled: relationTaskActive || factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '外部事实核查'))) : null,
+                        disabled: generationTaskActive || verifyPhase === 'running' || verifyBusyRef.current || bulkReview?.phase === 'running' }, '增量审校') : null,
+                      h('button', { type: 'button', className: 'kg-secondary', onClick: guardGenerationAction(handleOpenFactPanel),
+                        disabled: generationTaskActive || factPhase === 'running' }, factPhase === 'running' ? '核查中…' : '外部事实核查'))) : null,
                   resultView
                     ? h(VerificationPanel, {
-                        report: verification, graph: resultView.graph,
+                        report: verification, graph: resultView.graph, readOnly: generationTaskActive,
                         verifying: verifyPhase === 'running' || questionPhase === 'running',
                         activeIssueId, onSelectIssue: handleSelectIssue,
                         onLocateIssue: issue => {
                           navigateWorkspace('read', 'kg-workspace-read')
                           ctx.timeout(() => handleSelectIssue(issue), 0)
                         },
-                        onApplyIssue: handleApplyIssue, onRejectIssue: handleRejectIssue, onRecheckIssue: handleRecheckIssue,
-                        onApplyAll: handleApplyAll,
+                        onApplyIssue: guardGenerationAction(handleApplyIssue), onRejectIssue: guardGenerationAction(handleRejectIssue), onRecheckIssue: guardGenerationAction(handleRecheckIssue),
+                        onApplyAll: guardGenerationAction(handleApplyAll),
                         issueFilter, setIssueFilter,
                         questionDraft, setQuestionDraft: (draft) => {
                           setQuestionDraft(draft)
@@ -12342,35 +12364,35 @@ export default function clientPlugin() {
                           setQuestionTarget((target) => target?.sourceIssueId ? { kind: target.kind, id: target.id } : target)
                         }, questionTarget,
                         clearQuestionTarget: () => { setQuestionTarget(null); setQuestionResult(null); setQuestionError('') },
-                        questionResult, questionError, questionPhase, reviewSaving, onSubmitQuestion: submitQuestion,
-                        onDeleteTarget: handleDeleteQuestionTarget,
+                        questionResult, questionError, questionPhase, reviewSaving, onSubmitQuestion: guardGenerationAction(submitQuestion),
+                        onDeleteTarget: guardGenerationAction(handleDeleteQuestionTarget),
                         panelId: 'kg-verify-panel-workbench',
                         progress: verifyProgress,
                         onCancel: (verifyTaskId || questionTaskId) && !verifyProgress?.cancelling && verifyProgress?.status !== 'saving' ? handleCancelVerify : null,
-                        bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview: handleStartBulkReview,
-                        onContinueBulkReview: () => runBulkReview(bulkReview), onStopBulkReview: handleStopBulkReview,
-                        onPreviewBulkReview: handlePreviewBulkReview, onApplyBulkReview: handleApplyBulkReview,
-                        onDiscardBulkReview: handleDiscardBulkReview, onUndoBulkReview: handleUndoBulkReview,
+                        bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview: guardGenerationAction(handleStartBulkReview),
+                        onContinueBulkReview: guardGenerationAction(() => runBulkReview(bulkReview)), onStopBulkReview: handleStopBulkReview,
+                        onPreviewBulkReview: guardGenerationAction(handlePreviewBulkReview), onApplyBulkReview: guardGenerationAction(handleApplyBulkReview),
+                        onDiscardBulkReview: guardGenerationAction(handleDiscardBulkReview), onUndoBulkReview: guardGenerationAction(handleUndoBulkReview),
                       })
                     : null,
                   resultView
                     ? h('details', { className: 'kg-review-extras' }, h('summary', null, '章节与候选审核'),
                       h(CandidateReviewPanel, {
-                        graph: resultView.graph, chapterFilter: activeChapterId,
-                        onChapterFilter: setChapterFilter, reviews: candidateReviews, onSetReview: handleCandidateReview,
+                        graph: resultView.graph, chapterFilter: activeChapterId, readOnly: generationTaskActive,
+                        onChapterFilter: setChapterFilter, reviews: candidateReviews, onSetReview: guardGenerationAction(handleCandidateReview),
                         onLocate: candidate => { navigateWorkspace('read', 'kg-workspace-read'); ctx.timeout(() => handleCandidateLocate(candidate), 0) },
                       })) : null,
                   resultView
                     ? h('details', { className: 'kg-review-extras' }, h('summary', null, '外部事实核查'),
                       h(FactCheckPanel, {
-                        report: factReport,
+                        report: factReport, readOnly: generationTaskActive,
                         verifying: factPhase === 'running',
                         activeClaimId: factActiveId,
                         onSelectClaim: claim => { navigateWorkspace('read', 'kg-workspace-read'); ctx.timeout(() => handleSelectFactClaim(claim), 0) },
-                        onRejectClaim: handleRejectFactClaim,
+                        onRejectClaim: guardGenerationAction(handleRejectFactClaim),
                         panelId: 'kg-fact-panel-workbench',
                         rulesDraft: factRules, setRulesDraft: setFactRules,
-                        onStartFactCheck: startFactCheck,
+                        onStartFactCheck: guardGenerationAction(startFactCheck),
                         progress: factProgress,
                         onCancel: handleCancelFact,
                       }))

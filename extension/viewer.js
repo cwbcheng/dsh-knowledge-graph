@@ -2017,7 +2017,7 @@
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
-        if (graph?.nodes?.some(node => node.type === 'image')) {
+        if (graph?.nodes?.some(node => node.type === 'image') || graph?.source?.visualSource?.images?.length) {
           TYPE_META = { ...TYPE_META, image: { label: '图片', color: '#0f766e', fill: '#ecfdf5' } }
           REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片' }
           TYPE_ORDER = [...TYPE_ORDER, 'image']
@@ -5846,7 +5846,7 @@
       }
 
       // --------------------- candidate review panel ---------------------
-      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate }) {
+      function CandidateReviewPanel({ graph, chapterFilter, onChapterFilter, reviews, onSetReview, onLocate, readOnly = false }) {
         const [statusFilter, setStatusFilter] = useState('candidate')
         const sections = chapterSectionsOf(graph)
         const activeSectionId = chapterFilter && chapterFilter !== 'all' && sections.some((section) => section.id === chapterFilter) ? chapterFilter : 'all'
@@ -5916,7 +5916,8 @@
                     REVIEW_STATUS_ORDER.map((nextStatus) => h('button', {
                       key: nextStatus, type: 'button',
                       className: nextStatus === status ? 'kg-primary' : 'kg-secondary',
-                      onClick: (event) => { event.stopPropagation(); onSetReview(key, nextStatus) },
+                      disabled: readOnly,
+                      onClick: (event) => { event.stopPropagation(); if (!readOnly) onSetReview(key, nextStatus) },
                     }, REVIEW_STATUS_LABEL[nextStatus])),
                     h('span', { className: 'kg-candidate-status' }, REVIEW_STATUS_LABEL[status]),
                   ),
@@ -5962,7 +5963,7 @@
         return '拟议文字已改变，但' + retained.join('；') + '。这些引文未随修改更新，请逐项核对是否支持新表述。'
       }
 
-      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onLocateIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false }) {
+      function VerificationPanel({ report, graph, verifying, activeIssueId, onSelectIssue, onLocateIssue, onApplyIssue, onRejectIssue, onRecheckIssue, onApplyAll, issueFilter, setIssueFilter, questionDraft, setQuestionDraft, questionTarget, clearQuestionTarget, questionResult, questionError, questionPhase, onSubmitQuestion, onDeleteTarget, panelId, progress, onCancel, bulkReview, bulkReviewPreview, bulkReviewUndo, onStartBulkReview, onContinueBulkReview, onStopBulkReview, onPreviewBulkReview, onApplyBulkReview, onDiscardBulkReview, onUndoBulkReview, reviewSaving = false, readOnly = false }) {
         const [issueLimit, setIssueLimit] = useState(40)
         const [bulkLimit, setBulkLimit] = useState(50)
         const [workPackageMode, setWorkPackageMode] = useState('family')
@@ -6006,6 +6007,7 @@
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report, graph)
         const crossGroupReview = bulkReview?.workPackage?.key === 'all'
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
+        const actionsDisabled = readOnly || bulkRunning
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
           && (reportStale || !bulkFixEligible(it))).length
@@ -6090,7 +6092,7 @@
         const confirmationKey = (id, fix) => JSON.stringify([documentIdOfGraph(graph), graph?.revision, id, fix])
         const applyReviewedIssue = async (issue, confirmationId = issue?.id) => {
           const action = issue?.proposedFix?.action
-          if (bulkRunning) return
+          if (actionsDisabled) return
           if (archivedIssueNeedsFreshReview(report, graph, issue)) return
           if (nodeTypeFixConflicts(graph, issue?.proposedFix).length > 0) return
           const key = confirmationKey(confirmationId, issue.proposedFix)
@@ -6154,14 +6156,14 @@
               placeholder: '对这张图提问或提出质疑，例如：这条推论真的能从原文推出吗？',
               value: questionDraft,
               maxLength: 600,
-              disabled: questionPhase === 'running' || bulkRunning,
+              disabled: questionPhase === 'running' || actionsDisabled,
               onChange: (e) => setQuestionDraft(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmitQuestion() } },
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !actionsDisabled && questionPhase !== 'running') { e.preventDefault(); onSubmitQuestion() } },
               'aria-label': '质疑或提问输入框',
             }),
             h('button', {
               type: 'button', className: 'kg-primary',
-              disabled: questionPhase === 'running' || bulkRunning || !questionDraft.trim(),
+              disabled: questionPhase === 'running' || actionsDisabled || !questionDraft.trim(),
               onClick: onSubmitQuestion,
             }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
           ),
@@ -6191,7 +6193,7 @@
                   : null,
                 issueReview && !reviewGraphChanged && qVerdict === 'false_positive' && recheckedIssue
                   ? h('div', { className: 'kg-issue-actions' },
-                      h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning,
+                      h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled,
                         onClick: () => onRejectIssue(recheckedIssue, 'AI 复核认为原问题不成立：' + (questionResult.answer || '图已有原文支持'),
                           questionTarget.reviewSnapshot || questionTarget.reviewSignature) },
                         '标记原问题为误报')) : null,
@@ -6222,7 +6224,7 @@
                         '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
                       h('button', {
-                        type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0,
+                        type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0,
                         onClick: () => applyReviewedIssue({
                           id: questionTarget?.sourceIssueId || 'qfix-' + Date.now(), source: issueReview ? 'issue_review' : 'question', severity: 'warning', category: 'other',
                           targetKind: issueReview ? recheckedIssue?.targetKind || 'graph' : questionTarget ? questionTarget.kind : 'graph',
@@ -6248,7 +6250,7 @@
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
                 issueReview && qNeedsManualRepair && questionResult.repairStatus !== 'context_limit' && !reviewGraphChanged && recheckedIssue
-                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
+                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
                   : null,
               )
             : null,
@@ -6269,7 +6271,7 @@
               ? h('button', {
                   type: 'button', className: 'kg-primary',
                   style: { flex: 'none', marginLeft: 'auto' },
-                  disabled: verifying || bulkRunning,
+                  disabled: verifying || actionsDisabled,
                   onClick: onApplyAll,
                   title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 审校问题',
                 }, '修复本地规则 ' + fixableCount + ' 项')
@@ -6336,7 +6338,7 @@
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
-                        disabled: verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
+                        disabled: readOnly || verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
                         onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key || 'all', workPackageMode) },
                         workPackage ? '逐项 AI 核实本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
                           : '逐项 AI 核实当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
@@ -6386,23 +6388,23 @@
                         bulkReview.phase === 'running'
                           ? h('button', { type: 'button', className: 'kg-secondary', onClick: onStopBulkReview }, '暂停批量核实') : null,
                         bulkReview.phase === 'paused'
-                          ? h('button', { type: 'button', className: 'kg-primary', onClick: onContinueBulkReview }, '继续批量核实') : null,
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly, onClick: onContinueBulkReview }, '继续批量核实') : null,
                         bulkReview.phase === 'ready'
-                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly || verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
                               '检查冲突与修改') : null,
                         bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
                           && bulkReviewPreview.documentId === bulkReview.documentId
-                          ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || verifying || questionPhase === 'running', onClick: onApplyBulkReview },
                               crossGroupReview ? '确认保存本批处理' : '确认保存本组处理') : null,
                         bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
-                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview },
+                          ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly, onClick: onDiscardBulkReview },
                               crossGroupReview ? '放弃本批结果' : '放弃本组结果') : null))
                   : null)
             : null,
           bulkReviewUndo?.documentId === documentIdOfGraph(graph) && bulkReviewUndo?.reportId === report?.reportId
             && bulkReviewUndo?.revision === graph?.revision
             ? h('div', { className: 'kg-issue-actions' },
-                h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
+                h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || actionsDisabled || questionPhase === 'running',
                   onClick: onUndoBulkReview, title: '仅当上次批量保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上次批量修改')) : null,
           h('details', { className: 'kg-review-question',
             open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
@@ -6492,21 +6494,21 @@
                       onLocateIssue ? h('button', { type: 'button', className: 'kg-secondary',
                         onClick: e => { e.stopPropagation(); onLocateIssue(it) } }, '查看图文') : null,
                       it.status === 'open' && relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
                         : null,
                       it.status === 'open' && relationTypeFix && typeof onDeleteTarget === 'function'
-                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: bulkRunning || reportStale,
+                        ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: actionsDisabled || reportStale,
                             title: reportStale ? '旧报告的关系问题需先对当前图重新核实' : undefined,
                             onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: bulkRunning || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: bulkRunning, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || bulkRunning, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || actionsDisabled, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
                         : null,
                       h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
                     ),
@@ -6540,7 +6542,7 @@
       }
 
       // --------------------- external fact-check panel ---------------------
-      function FactCheckPanel({ report, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel }) {
+      function FactCheckPanel({ report, verifying, activeClaimId, onSelectClaim, onRejectClaim, panelId, rulesDraft, setRulesDraft, onStartFactCheck, progress, onCancel, readOnly = false }) {
         const claims = (report && Array.isArray(report.claims) ? report.claims : [])
         const m = report && report.metrics ? report.metrics : {}
         return h('section', { id: panelId || 'kg-fact-panel', className: 'kg-card', 'aria-label': '外部事实核查' },
@@ -6578,7 +6580,7 @@
                   'aria-label': '领域规则来源',
                 }),
                 h('div', { className: 'kg-fact-actions', style: { marginTop: 8 } },
-                  h('button', { type: 'button', className: 'kg-primary', disabled: verifying, onClick: onStartFactCheck },
+                  h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || verifying, onClick: onStartFactCheck },
                     verifying ? '核查中…' : (report ? '重新核查' : '开始外部核查')),
                   (rulesDraft || '').trim() ? h('span', { className: 'kg-fact-status', style: { marginLeft: 0 } }, '将附带 ' + rulesDraft.trim().split(/\n+/).length + ' 段规则') : null),
               )
@@ -6624,7 +6626,7 @@
               h('div', { className: 'kg-fact-actions' },
                 h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onSelectClaim(c) } }, '在图中定位'),
                 c.status === 'open'
-                  ? h('button', { type: 'button', className: 'kg-secondary', onClick: (e) => { e.stopPropagation(); onRejectClaim(c) } }, '忽略')
+                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly, onClick: (e) => { e.stopPropagation(); if (!readOnly) onRejectClaim(c) } }, '忽略')
                   : null,
                 h('span', { className: 'kg-fact-status' }, c.status === 'rejected' ? '已忽略' : c.status === 'accepted' ? '已确认' : ''),
               ),

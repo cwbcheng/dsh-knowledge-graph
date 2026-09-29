@@ -139,7 +139,7 @@ assert(panel.includes("['delete_node', 'delete_edge', 'merge_nodes', 'add_edge',
   && panel.includes('if (pendingDestructiveFix !== key) { setPendingDestructiveFix(key); return }')
   && panel.includes('再次点击确认'),
   'destructive fixes must require an accessible second click without a blocking native dialog')
-assert(panel.includes('disabled: bulkRunning || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0'),
+assert(panel.includes('disabled: actionsDisabled || sourcePeerChecking || reviewGraphChanged || qFixConflicts.length > 0'),
   'a type fix that would invalidate an incident relation must not be clickable')
 assert(panel.includes("qVerdict === 'false_positive' && recheckedIssue")
   && panel.includes("'标记原问题为误报'") && panel.includes("'处理说明：' + it.userNote"),
@@ -153,7 +153,7 @@ assert(panel.includes("questionResult.repairStatus === 'context_limit'")
   'an oversized follow-up preserves the verdict and explains the limit without suggesting an unchanged costly retry')
 assert(panel.includes("id: questionTarget?.sourceIssueId || 'qfix-' + Date.now()"),
   'a fix proposed by rechecking an issue must resolve that original issue')
-assert(panel.includes("disabled: questionPhase === 'running' || bulkRunning, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) }"),
+assert(panel.includes("disabled: questionPhase === 'running' || actionsDisabled, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) }"),
   'a second recheck cannot replace the target of a running question')
 assert(panel.includes('shown.slice(0, issueLimit).map((it) => {') && panel.includes('显示更多问题（已显示 '),
   'a large verification report must not render every issue card on each interaction')
@@ -163,8 +163,8 @@ assert(panel.includes('无需重新跑完整审校') && panel.includes('可批�
   && panel.includes('旧补丁不能直接采纳'),
   'a stale full-graph report must remain an actionable issue queue without implying a full rerun')
 assert(panel.includes('const reportStale = verificationReportStale(report, graph)')
-  && panel.includes('disabled: bulkRunning || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0')
-  && panel.includes("disabled: bulkRunning || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实'"),
+  && panel.includes('disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0')
+  && panel.includes("disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实'"),
   'archived AI and deterministic proposals must not be directly applied to a changed graph')
 const staleStart = client.indexOf('      function verificationReportStale(')
 const staleEnd = client.indexOf('      function paragraphTypeNodes(', staleStart)
@@ -669,9 +669,9 @@ const reviewEnd = panel.indexOf('        // A contradicted/insufficient answer',
 assert(reviewStart >= 0 && reviewEnd > reviewStart)
 const destructiveIssue = { id: 'issue-one', proposedFix: { action: 'delete_edge', edgePatch: { fromNodeId: 'n2052', toNodeId: 'n2087' } } }
 const applied = [], pending = []
-const reviewFix = (current) => new Function('nodeTypeFixConflicts', 'archivedIssueNeedsFreshReview', 'report', 'graph', 'pendingDestructiveFix', 'setPendingDestructiveFix', 'onApplyIssue', 'bulkRunning', 'confirmationKey', 'repairSourcePeerIds', 'sourcePeerCheck', 'setSourcePeerCheck',
+const reviewFix = (current, actionsDisabled = false) => new Function('nodeTypeFixConflicts', 'archivedIssueNeedsFreshReview', 'report', 'graph', 'pendingDestructiveFix', 'setPendingDestructiveFix', 'onApplyIssue', 'actionsDisabled', 'confirmationKey', 'repairSourcePeerIds', 'sourcePeerCheck', 'setSourcePeerCheck',
   panel.slice(reviewStart, reviewEnd) + '; return applyReviewedIssue')(
-  () => [], () => false, null, {}, current, value => pending.push(value), issue => applied.push(issue), false,
+  () => [], () => false, null, {}, current, value => pending.push(value), issue => applied.push(issue), actionsDisabled,
   (id, fix) => JSON.stringify([id, fix]), () => [], null, () => {})
 await reviewFix(null)(destructiveIssue)
 assert.equal(applied.length, 0, 'the first destructive click must not mutate the graph')
@@ -682,6 +682,8 @@ await reviewFix(pending.at(-1))(destructiveIssue)
 assert.equal(applied.length, 0, 'switching back to the first card must require its own confirmation again')
 await reviewFix(pending.at(-1))(destructiveIssue)
 assert.deepEqual(applied, [destructiveIssue], 'the matching second click must apply exactly that reviewed fix')
+await reviewFix(JSON.stringify([destructiveIssue.id, destructiveIssue.proposedFix]), true)(destructiveIssue)
+assert.equal(applied.length, 1, 'a running generation must block even an already-confirmed repair')
 
 const textGraph = { revision: 1, source: { documentId: 'synthetic-text' },
   nodes: [{ id: 'n1', text: '先展示答案减少了错误' }] }
@@ -695,7 +697,7 @@ const textReviewFix = () => {
     nodeTypeFixConflicts: () => [], archivedIssueNeedsFreshReview: () => false,
     report: null, graph: textGraph, pendingDestructiveFix: textPending,
     setPendingDestructiveFix: value => { textPending = value },
-    onApplyIssue: issue => textApplied.push(issue), bulkRunning: false,
+    onApplyIssue: issue => textApplied.push(issue), actionsDisabled: false,
     confirmationKey: (id, fix) => JSON.stringify([textGraph.source.documentId, textGraph.revision, id, fix]),
     sourcePeerCheck: textSourceCheck, setSourcePeerCheck: value => { textSourceCheck = value },
     sourcePeerBusyRef: textBusyRef, sourcePeerRequestRef: textRequestRef, sourcePeerGraphRef: textGraphRef,
