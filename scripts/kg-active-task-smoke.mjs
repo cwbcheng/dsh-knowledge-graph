@@ -116,6 +116,14 @@ assert.equal(JSON.parse(saved.get('pending')).relationRetry, true)
 storage.forgetPendingTask('another-tab-task')
 assert.ok(saved.has('pending'), 'one tab cannot clear a different pending task')
 storage.forgetPendingTask('relation-1'); assert.equal(saved.size, 0)
+storage.rememberPendingTask('visual-1', { documentId: 'doc', append: true, imageAppend: true,
+  imageIds: ['figure-3', 'figure-5'], images: ['must not persist bytes'], text: 'must not persist source' })
+const visualPending = JSON.parse(saved.get('pending'))
+assert.deepEqual(visualPending.imageIds, ['figure-3', 'figure-5'])
+assert.equal(visualPending.imageAppend, true)
+assert.equal(visualPending.text, undefined)
+assert.equal(visualPending.images, undefined)
+storage.forgetPendingTask('visual-1')
 
 // Exercise the actual submission path twice before React can re-render.
 const retryStart = client.indexOf('        const retryRelations = async () => {')

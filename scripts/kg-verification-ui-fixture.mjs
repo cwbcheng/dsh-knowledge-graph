@@ -20,7 +20,8 @@ const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
 const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
-const markdownImageMode = process.argv.includes('--markdown-image')
+const visualInspectorMode = process.argv.includes('--visual-inspector')
+const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
 const sourcePeersMode = process.argv.includes('--source-peers')
 const offWindowPeerMode = process.argv.includes('--source-peers-off-window')
@@ -37,7 +38,7 @@ const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (relationSemanticMode) paragraphs[0] = 'The two outcomes were correlated, but no causal direction was established.'
 if (textSemanticMode) paragraphs[0] = 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.'
 if (sourcePeersMode || offWindowPeerMode) paragraphs[0] = 'In the trained subgroup, strategy A reached 8 of 10 and strategy B reached 7 of 10.'
@@ -66,6 +67,15 @@ if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown
   images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
     startParagraph: 1, endParagraph: 1, interpretationStatus: 'not_requested',
     attachment: { attachmentId: 'fixture-diagram-1', mediaType: 'image/png', width: 1, height: 1, bytes: 68 } }], warnings: [] }
+const visualFixtureBytes = visualInspectorMode ? readFileSync(new URL('../extension/icons/icon128.png', import.meta.url)) : null
+// Append re-keys source identity to the complete text; compare retained content and anchors, not generated metadata.
+const nodeContent = nodes => nodes.map(({ id, type, text, quote, paragraph, evidence }) => ({ id, type, text, quote, paragraph,
+  evidence: (evidence || []).map(({ paragraph, quote }) => ({ paragraph, quote })) }))
+if (visualInspectorMode) graph.source.visualSource.images = Array.from({ length: 14 }, (_, i) => ({
+  id: 'figure-' + (i + 1), name: 'images/figure-' + (i + 1) + '.png', caption: '受控视觉样本 ' + (i + 1),
+  paragraphs: [i + 1], startParagraph: i + 1, endParagraph: i + 1, interpretationStatus: 'not_requested',
+  attachment: { attachmentId: 'fixture-visual-' + (i + 1), mediaType: 'image/png', width: 128, height: 128, bytes: visualFixtureBytes.length },
+}))
 if (reviewMode) {
   for (const node of graph.nodes.slice(0, 2)) { node.quote = ''; node.evidence = []; node.groundingStatus = 'unverified' }
   graph.verification = { stale: true, lastReport: {
@@ -179,6 +189,7 @@ if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagra
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
 let holdNextVerification = false, releaseHeldVerification = null
+let rejectVisual = visualInspectorMode, holdVisual = false, releaseVisual = null
 class Timer extends Service {
   constructor(context) { super(context, 'timer'); context.mixin('timer', ['interval']) }
   interval(fn, ms) { return this.ctx.effect(() => { const id = setInterval(fn, ms); return () => clearInterval(id) }) }
@@ -262,14 +273,27 @@ ctx.provide('webServer', { register(route) { routes.set(route.path, route); retu
 if (markdownImageMode) {
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   ctx.provide('attachments', { async readImage(ref) {
+    if (visualInspectorMode && /^fixture-visual-\d+$/.test(ref?.attachmentId)) return { ref, data: visualFixtureBytes }
     if (ref?.attachmentId !== 'fixture-diagram-1') throw new Error('unknown fixture image')
     return { ref, data: Buffer.from(png, 'base64') }
   } })
   ctx.provide('kgExtractor', {
-    async extractImages() { stats.visualCalls = (stats.visualCalls || 0) + 1
+    async extractImages({ images }) { stats.visualCalls = (stats.visualCalls || 0) + 1
+      if (visualInspectorMode) {
+        ;(stats.visualSelections ||= []).push(images.map(image => image.id))
+        if (holdVisual) { await new Promise(resolve => { releaseVisual = resolve }); releaseVisual = null; holdVisual = false }
+        const reply = { images: images.map((image, i) => ({ imageIndex: i + 1, summary: '受控视觉样本 ' + image.id,
+          units: [{ kind: 'text', text: '受控视觉内容 ' + image.id + '。' }], warnings: ['受控测试替身，不代表实际图片识别质量'] })) }
+        if (rejectVisual) { rejectVisual = false; reply.images.push({ ...reply.images[0], summary: '冲突编号' }) }
+        return reply
+      }
       return { images: [{ imageIndex: 1, summary: '图片有从 A 指向 B 的箭头。',
         units: [{ kind: 'diagram', text: '关系：A → B；图中依据：可见箭头。' }] }] } },
-    async extractChunk() { return { summary: '箭头图', nodes: [{ id: 'visual-1', type: 'fact', text: 'A 指向 B',
+    async extractChunk({ chunk }) {
+      if (visualInspectorMode) return { summary: '受控视觉结果', nodes: chunk.units.filter(unit => unit.text.includes('【可见文字】')).map((unit, i) => ({
+        id: 'visual-' + i, type: 'fact', text: unit.text.replace('【可见文字】', ''), quote: unit.text.replace('【可见文字】', ''), paragraph: unit.num,
+      })), edges: [] }
+      return { summary: '箭头图', nodes: [{ id: 'visual-1', type: 'fact', text: 'A 指向 B',
       quote: '关系：A → B；图中依据：可见箭头。', paragraph: 3 }], edges: [] } },
   })
 }
@@ -308,6 +332,10 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      ...(visualInspectorMode ? { visualInspectorFixture: true, visualHeld: !!releaseVisual,
+        imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),
+        originalNodeContentPreserved: JSON.stringify(nodeContent(store.getDocument(documentId).nodes.filter(node => /^n\d+$/.test(node.id)))) === JSON.stringify(nodeContent(graph.nodes)),
+        originalTextPreserved: store.getDocument(documentId).sourceText.startsWith(sourceText) } : {}),
       ...(workPackagesMode ? { report: store.getDocument(documentId).verification.lastReport,
         targetQuotes: store.getDocument(documentId).nodes.slice(0, 4).map(node => node.quote) } : {}),
       ...(repairPatchLimitMode ? { repairTargets: store.getDocument(documentId).nodes.slice(0, 2) } : {}),
@@ -326,6 +354,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith('/fixture/') && req.method === 'POST') {
       if (url.pathname.endsWith('/offline')) dropStatus = 2
       if (url.pathname.endsWith('/reject-save')) rejectSave = true
+      if (visualInspectorMode && url.pathname.endsWith('/hold-visual')) holdVisual = true
+      if (visualInspectorMode && url.pathname.endsWith('/release-visual')) releaseVisual?.()
       if (heldSaveMode && url.pathname.endsWith('/hold-next-save')) holdNextSave = true
       if (heldSaveMode && url.pathname.endsWith('/reject-held-save')) releaseHeldSave?.()
       if (quickVerifyMode && url.pathname.endsWith('/hold-next-verification')) holdNextVerification = true

@@ -1294,6 +1294,24 @@
             const height = hasExportBBox ? Math.max(240, Math.ceil(exportBBox.h + padding * 2)) : Math.max(240, Math.round(rect.height || 0))
             const clone = svg.cloneNode(true)
             const svgNs = 'http://www.w3.org/2000/svg'
+            // Blob URLs and HTML foreignObjects are not portable in a saved SVG.
+            // Embed decoded source thumbnails as SVG images before rasterizing.
+            const sourceFigures = svg.querySelectorAll('foreignObject[data-image-node]')
+            const clonedFigures = clone.querySelectorAll('foreignObject[data-image-node]')
+            for (let index = 0; index < sourceFigures.length; index++) {
+              const sourceImage = sourceFigures[index].querySelector('img')
+              if (!sourceImage?.complete || !sourceImage.naturalWidth) throw new Error('原图尚未读取完成，请待图片节点显示后再导出')
+              const bitmap = document.createElement('canvas')
+              const scale = Math.min(1, 1024 / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight))
+              bitmap.width = Math.max(1, Math.round(sourceImage.naturalWidth * scale))
+              bitmap.height = Math.max(1, Math.round(sourceImage.naturalHeight * scale))
+              bitmap.getContext('2d').drawImage(sourceImage, 0, 0, bitmap.width, bitmap.height)
+              const embedded = document.createElementNS(svgNs, 'image')
+              for (const attribute of ['x', 'y', 'width', 'height']) embedded.setAttribute(attribute, clonedFigures[index].getAttribute(attribute))
+              embedded.setAttribute('href', bitmap.toDataURL('image/png'))
+              embedded.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+              clonedFigures[index].replaceWith(embedded)
+            }
             clone.setAttribute('xmlns', svgNs)
             clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
             clone.setAttribute('width', String(width))
@@ -1999,6 +2017,11 @@
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
+        if (graph?.nodes?.some(node => node.type === 'image')) {
+          TYPE_META = { ...TYPE_META, image: { label: '图片', color: '#0f766e', fill: '#ecfdf5' } }
+          REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片' }
+          TYPE_ORDER = [...TYPE_ORDER, 'image']
+        }
         const paragraphs = splitParagraphs(sourceText)
         // Normalize this document at most once per mode, not once per node.
         // Keep the cache local so switching documents cannot reuse stale offsets.
@@ -2779,6 +2802,10 @@
         }
         const out = new Map()
         for (const node of nodes) {
+          if (node.type === 'image') {
+            out.set(node.id, { w: 208, h: 194, lines: wrapText(g, node.text, 174).slice(0, 2) })
+            continue
+          }
           const meta = TYPE_META[node.type] || { label: '未知' }
           const labelW = g.measureText(meta.label).width
           const WRAP_W = 162
@@ -5016,13 +5043,18 @@
       }
 
       function visualTranscriptImageAt(visualSource, paragraph) {
-        if (visualSource?.kind !== 'markdown-assets' || !Number.isSafeInteger(paragraph)) return null
-        return (visualSource.images || []).find(image => image.interpretationStatus === 'ai_unverified' &&
+        if (!visualSource || !Number.isSafeInteger(paragraph)) return null
+        return (visualSource.images || []).find(image => (visualSource.kind === 'image-derived' || image.interpretationStatus === 'ai_unverified') &&
           Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
           paragraph >= image.startParagraph && paragraph <= image.endParagraph) || null
       }
 
-      function GraphScene({ nodes, edges, anchors, visualSource, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function sourceImageForNode(visualSource, node) {
+        return node?.type === 'image' ? (visualSource?.images || []).find(image =>
+          node.id === 'image:' + encodeURIComponent(image.id)) || null : null
+      }
+
+      function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -5615,7 +5647,7 @@
           const meta = TYPE_META[node.type] || { label: '未知', color: '#6b7280' }
           const y = p.y - s.h / 2, hub = (nodeDegree.get(node.id) || 0) >= 4
           return [node.id, [
-            h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + 25, textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
+            h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + (node.type === 'image' ? 142 : 25), textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
           ]]
@@ -5640,7 +5672,8 @@
           const hub = degree >= 4
           const off = anchors[node.id]
           const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
-          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || ''))
+          const sourceImage = sourceImageForNode(visualSource, node)
+          const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
           return h('g', {
             key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
             'aria-pressed': sel, 'aria-label': aria,
@@ -5659,6 +5692,10 @@
               className: flash ? 'kg-node-flash' : '',
               style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
             }),
+            sourceImage && renderSourceImage && (!overview || view.k >= 0.35) ? h('foreignObject', {
+              x: x + 8, y: y + 8, width: s.w - 16, height: 116, 'data-image-node': node.id,
+              onPointerDown: event => event.stopPropagation(), onClick: event => event.stopPropagation(),
+            }, renderSourceImage(sourceImage, true)) : null,
             issueCount > 0
               ? h('g', {
                   className: 'kg-node-issue-badge',
@@ -5676,7 +5713,7 @@
               : null,
             nodeLabels.get(node.id),
           )
-        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, renderSourceImage, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds, view.k])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -5684,7 +5721,7 @@
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
+                tooltip.node.type === 'image' ? '保留原图' : (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
             )
           : null
 
@@ -5702,6 +5739,7 @@
                 }, '×'),
               ),
               h('div', { className: 'kg-node-detail-text' }, detail.text),
+              sourceImageForNode(visualSource, detail) && renderSourceImage ? renderSourceImage(sourceImageForNode(visualSource, detail), false) : null,
               detail.quote
                 ? h('div', { className: 'kg-node-detail-quote' }, (visualTranscriptImageAt(visualSource, detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
                 : null,
@@ -5720,7 +5758,7 @@
                       onClick: () => onOpenNodeIssues(detail),
                     }, '查看 ' + openIssuesOf(issueMaps.nodeMap.get(detail.id)).length + ' 个问题')
                   : null,
-                typeof onQuestionNode === 'function'
+                detail.type !== 'image' && typeof onQuestionNode === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionNode(detail),
@@ -5746,13 +5784,13 @@
               h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)
                 + attributeDetailSuffix(edgeDetail)),
               h('div', { className: 'kg-node-detail-actions' },
-                typeof onQuestionEdge === 'function'
+                edgeDetail.relation !== 'visual_source' && typeof onQuestionEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionEdge(edgeDetail, selectedEdgeId),
                     }, '质疑此关系')
                   : null,
-                typeof onDeleteEdge === 'function'
+                edgeDetail.relation !== 'visual_source' && typeof onDeleteEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary kg-danger',
                       onClick: () => onDeleteEdge(edgeDetail, selectedEdgeId),

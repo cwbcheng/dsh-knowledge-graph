@@ -1,5 +1,6 @@
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import './gen-image-nodes-inline.mjs'
 
 // ---------- HOST ----------
 // Extract the plugin body directly from the source file (previously the
@@ -424,6 +425,35 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-inspect') {
+              res.setHeader('Cache-Control', 'no-store')
+              const raw = await readBody(req, 256 * 1024)
+              let payload = {}
+              try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
+              const a = payload && typeof payload === 'object' ? payload : {}
+              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const store = await getSqliteStore()
+              return writeJson(res, 200, inspectImageHost(documentId ? store.getDocument(documentId) : null, a))
+            }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-nodes') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { a = {} }
+              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const store = await getSqliteStore()
+              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const current = documentId ? store.getDocument(documentId) : null
+              const prepared = prepareImageNodesHost(current, a || {})
+              if (prepared.error) return writeJson(res, 200, prepared)
+              if (prepared.changed) store.saveGraph(prepared.graph, { sourceText: current.sourceText,
+                expectedRevision: current.revision, kind: 'image_nodes' })
+              const saved = store.getDocument(documentId)
+              const graph = { ...saved }
+              delete graph.sourceText
+              rememberCanonicalGraphHost(graph, saved.sourceText, saved.revision)
+              return writeJson(res, 200, { documentId, revision: saved.revision, changed: prepared.changed,
+                graph: buildGraphViewHost(graph, 0, 'image:') })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-load') {
               res.setHeader('Cache-Control', 'no-store')
               res.setHeader('Pragma', 'no-cache')
@@ -465,7 +495,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const graph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
               delete graph.sourceText
               graph.graphOntology = ontDescribe(graph)
-              graph.graphDiagnostics = ontDiagnose(graph)
+              graph.graphDiagnostics = ontDiagnose(IMAGE_NODE_TOOLS.semanticGraph(graph))
               return writeJson(res, 200, { documentId, revision, graph,
                 ...(payload.includeSourceText === true ? { sourceText: saved.sourceText || '' } : {}) })
             }
@@ -519,6 +549,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 const commitContinuity = continueOntologyHost(current, a.ontology)
                 if (commitContinuity.error) return writeJson(res, 200, { error: commitContinuity.error })
                 const operated = applyGraphOperationsHost(current, a.operations)
+                const imageMutation = imageNodeMutationErrorHost(current, a.graph, a.baseNodeIds, a.operations)
+                if (imageMutation) return writeJson(res, 200, { error: imageMutation })
                 const incomingGraph = {
                   ...a.graph,
                   ontology: commitContinuity.ontology,
@@ -1449,7 +1481,7 @@ function writeJson(res, status, body) {
 host = host.replace('      // Periodically purge finished tasks (kept for 2h after completion).', helpers + '\n      // Periodically purge finished tasks (kept for 2h after completion).')
 
 const buildHash = createHash('sha256').update(host)
-for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs']) {
+for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs', 'kg-image-nodes.mjs']) {
   buildHash.update('\0').update(source).update('\0')
     .update(readFileSync(new URL('../src/' + source, import.meta.url)))
 }
@@ -1459,4 +1491,5 @@ writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib/kg-markdown.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-ontology.mjs', import.meta.url), new URL('../lib/kg-ontology.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-image-nodes.mjs', import.meta.url), new URL('../lib/kg-image-nodes.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)

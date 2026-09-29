@@ -12,7 +12,7 @@ const generatedHost = readFileSync(new URL('../lib/index.js', import.meta.url), 
 const identityLine = `export const hostBuildSha256 = '${hostBuildSha256}'\n`
 assert(generatedHost.startsWith(identityLine), 'generated Host must embed its runtime identity')
 const buildHash = createHash('sha256').update(generatedHost.slice(identityLine.length))
-for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs']) {
+for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs', 'kg-image-nodes.mjs']) {
   buildHash.update('\0').update(source).update('\0')
     .update(readFileSync(new URL('../lib/' + source, import.meta.url)))
 }

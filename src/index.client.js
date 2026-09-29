@@ -155,6 +155,30 @@ export default function clientPlugin() {
 .kg-reading-toolbar > .kg-workbench-tools { margin: 0; }
 .kg-reading-toolbar .kg-export-actions { margin: 0; }
 .kg-figure-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12px; margin-bottom: 8px; }
+.kg-visual-inspector { border-block: 1px solid var(--kg-border); padding: 12px 0; margin-bottom: 12px; }
+.kg-visual-inspector h4 { margin: 0; font-size: 14px; }
+.kg-visual-inspector-head, .kg-visual-controls, .kg-visual-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.kg-visual-inspector-head { justify-content: space-between; }
+.kg-visual-controls input[type="search"] { flex: 1 1 180px; min-width: 0; max-width: 420px; }
+.kg-visual-inspector-grid { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 16px; }
+.kg-visual-image-list { min-width: 0; max-height: 480px; overflow: auto; margin-bottom: 10px; }
+.kg-visual-image-row { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--kg-border); padding: 6px; min-height: 54px; }
+.kg-visual-image-row.active { border-left: 3px solid #3b82f6; background: var(--kg-panel); }
+.kg-visual-image-row > button { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; color: inherit; padding: 4px; cursor: pointer; }
+.kg-visual-image-row strong, .kg-visual-image-row small { display: block; overflow-wrap: anywhere; }
+.kg-visual-image-row strong { font-size: 13px; font-weight: 500; }
+.kg-visual-image-row small { color: var(--kg-text-dim); font-size: 12px; margin-top: 3px; }
+.kg-visual-controls select, .kg-visual-controls input[type="search"] { box-sizing: border-box; max-width: 100%; padding: 6px 8px; border: 1px solid var(--kg-border); border-radius: 4px; background: var(--kg-edge-label-bg); color: var(--kg-text); font: inherit; font-size: 13px; }
+.kg-visual-inspection { min-width: 0; }
+.kg-visual-original { max-width: 560px; }
+.kg-visual-transcript { max-height: 260px; overflow: auto; border-block: 1px solid var(--kg-border); margin: 8px 0; }
+.kg-visual-transcript p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; margin: 10px 0; }
+.kg-visual-node-list { max-height: 240px; overflow: auto; padding-left: 22px; }
+.kg-visual-node-list li { margin: 6px 0; overflow-wrap: anywhere; }
+.kg-visual-node-list button { text-align: left; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.kg-visual-message { font-size: 13px; overflow-wrap: anywhere; }
+.kg-visual-message[role="alert"] { color: #b42318; }
+@media (max-width: 700px) { .kg-visual-inspector-grid { grid-template-columns: minmax(0, 1fr); } .kg-visual-image-list { max-height: 280px; overflow: auto; } }
 .kg-review-launcher { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--kg-border); }
 .kg-review-launcher .kg-verify-actions { margin: 0; }
 .kg-review-extras { border-top: 1px solid var(--kg-border); padding: 12px 0; }
@@ -340,7 +364,8 @@ export default function clientPlugin() {
 .kg-fact-status { margin-left: auto; font-size: 11.5px; color: var(--kg-text-dim); }
 .kg-verify-spinner { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(59,130,246,0.25); border-top-color: #3b82f6; animation: kg-spin 0.9s linear infinite; vertical-align: -2px; margin-right: 6px; }
 .kg-hint { margin: 0 0 10px; font-size: 12px; color: var(--kg-text-dim); }
-.kg-cols { display: grid; gap: 14px; }
+.kg-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.kg-cols > * { min-width: 0; }
 .kg-original { display: flex; flex-direction: column; gap: 10px; overflow: auto; user-select: text; }
 .kg-select-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: -1px -1px 0; background: var(--kg-win-bg); border-bottom: 1px solid var(--kg-border); border-radius: 10px 10px 0 0; }
 .kg-select-count { font-size: 12px; color: var(--kg-text-dim); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -819,7 +844,9 @@ export default function clientPlugin() {
           !running && task?.documentId && onOpenDocument && !knownKey ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => onOpenDocument(task) }, task.status === 'succeeded' && task.kind !== 'verify' ? '查看更新后的知识图' : '查看已保存知识图') : null)
       }
       function rememberPendingTask(taskId, submitted) {
-        try { localStorage.setItem(LS_PENDING, JSON.stringify({ taskId, title: submitted.title || '', documentId: submitted.documentId || '', append: submitted.append === true, relationRetry: submitted.relationRetry === true, ts: Date.now() })) } catch (error) {}
+        try { localStorage.setItem(LS_PENDING, JSON.stringify({ taskId, title: submitted.title || '', documentId: submitted.documentId || '', append: submitted.append === true,
+          ...(submitted.imageAppend === true ? { imageAppend: true, imageIds: Array.isArray(submitted.imageIds) ? submitted.imageIds.filter(id => typeof id === 'string' && id.length <= 80).slice(0, 4) : [] } : {}),
+          relationRetry: submitted.relationRetry === true, ts: Date.now() })) } catch (error) {}
       }
       function forgetPendingTask(taskId) {
         try {
@@ -2111,6 +2138,24 @@ export default function clientPlugin() {
             const height = hasExportBBox ? Math.max(240, Math.ceil(exportBBox.h + padding * 2)) : Math.max(240, Math.round(rect.height || 0))
             const clone = svg.cloneNode(true)
             const svgNs = 'http://www.w3.org/2000/svg'
+            // Blob URLs and HTML foreignObjects are not portable in a saved SVG.
+            // Embed decoded source thumbnails as SVG images before rasterizing.
+            const sourceFigures = svg.querySelectorAll('foreignObject[data-image-node]')
+            const clonedFigures = clone.querySelectorAll('foreignObject[data-image-node]')
+            for (let index = 0; index < sourceFigures.length; index++) {
+              const sourceImage = sourceFigures[index].querySelector('img')
+              if (!sourceImage?.complete || !sourceImage.naturalWidth) throw new Error('原图尚未读取完成，请待图片节点显示后再导出')
+              const bitmap = document.createElement('canvas')
+              const scale = Math.min(1, 1024 / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight))
+              bitmap.width = Math.max(1, Math.round(sourceImage.naturalWidth * scale))
+              bitmap.height = Math.max(1, Math.round(sourceImage.naturalHeight * scale))
+              bitmap.getContext('2d').drawImage(sourceImage, 0, 0, bitmap.width, bitmap.height)
+              const embedded = document.createElementNS(svgNs, 'image')
+              for (const attribute of ['x', 'y', 'width', 'height']) embedded.setAttribute(attribute, clonedFigures[index].getAttribute(attribute))
+              embedded.setAttribute('href', bitmap.toDataURL('image/png'))
+              embedded.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+              clonedFigures[index].replaceWith(embedded)
+            }
             clone.setAttribute('xmlns', svgNs)
             clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
             clone.setAttribute('width', String(width))
@@ -2816,6 +2861,11 @@ export default function clientPlugin() {
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
         const ontology = applyGraphOntology(graph && graph.graphOntology)
+        if (graph?.nodes?.some(node => node.type === 'image')) {
+          TYPE_META = { ...TYPE_META, image: { label: '图片', color: '#0f766e', fill: '#ecfdf5' } }
+          REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片' }
+          TYPE_ORDER = [...TYPE_ORDER, 'image']
+        }
         const paragraphs = splitParagraphs(sourceText)
         // Normalize this document at most once per mode, not once per node.
         // Keep the cache local so switching documents cannot reuse stale offsets.
@@ -3596,6 +3646,10 @@ export default function clientPlugin() {
         }
         const out = new Map()
         for (const node of nodes) {
+          if (node.type === 'image') {
+            out.set(node.id, { w: 208, h: 194, lines: wrapText(g, node.text, 174).slice(0, 2) })
+            continue
+          }
           const meta = TYPE_META[node.type] || { label: '未知' }
           const labelW = g.measureText(meta.label).width
           const WRAP_W = 162
@@ -5833,13 +5887,18 @@ export default function clientPlugin() {
       }
 
       function visualTranscriptImageAt(visualSource, paragraph) {
-        if (visualSource?.kind !== 'markdown-assets' || !Number.isSafeInteger(paragraph)) return null
-        return (visualSource.images || []).find(image => image.interpretationStatus === 'ai_unverified' &&
+        if (!visualSource || !Number.isSafeInteger(paragraph)) return null
+        return (visualSource.images || []).find(image => (visualSource.kind === 'image-derived' || image.interpretationStatus === 'ai_unverified') &&
           Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
           paragraph >= image.startParagraph && paragraph <= image.endParagraph) || null
       }
 
-      function GraphScene({ nodes, edges, anchors, visualSource, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function sourceImageForNode(visualSource, node) {
+        return node?.type === 'image' ? (visualSource?.images || []).find(image =>
+          node.id === 'image:' + encodeURIComponent(image.id)) || null : null
+      }
+
+      function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -6432,7 +6491,7 @@ export default function clientPlugin() {
           const meta = TYPE_META[node.type] || { label: '未知', color: '#6b7280' }
           const y = p.y - s.h / 2, hub = (nodeDegree.get(node.id) || 0) >= 4
           return [node.id, [
-            h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + 25, textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
+            h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + (node.type === 'image' ? 142 : 25), textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
               s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
             h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
           ]]
@@ -6457,7 +6516,8 @@ export default function clientPlugin() {
           const hub = degree >= 4
           const off = anchors[node.id]
           const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
-          const aria = meta.label + '节点：' + node.text + (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || ''))
+          const sourceImage = sourceImageForNode(visualSource, node)
+          const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
           return h('g', {
             key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
             'aria-pressed': sel, 'aria-label': aria,
@@ -6476,6 +6536,10 @@ export default function clientPlugin() {
               className: flash ? 'kg-node-flash' : '',
               style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
             }),
+            sourceImage && renderSourceImage && (!overview || view.k >= 0.35) ? h('foreignObject', {
+              x: x + 8, y: y + 8, width: s.w - 16, height: 116, 'data-image-node': node.id,
+              onPointerDown: event => event.stopPropagation(), onClick: event => event.stopPropagation(),
+            }, renderSourceImage(sourceImage, true)) : null,
             issueCount > 0
               ? h('g', {
                   className: 'kg-node-issue-badge',
@@ -6493,7 +6557,7 @@ export default function clientPlugin() {
               : null,
             nodeLabels.get(node.id),
           )
-        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds])
+        }), [nodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, renderSourceImage, startPress, cancelPress, onSelectNode, onOpenNodeIssues, overview, visibleOverviewIds, view.k])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
@@ -6501,7 +6565,7 @@ export default function clientPlugin() {
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
+                tooltip.node.type === 'image' ? '保留原图' : (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
             )
           : null
 
@@ -6519,6 +6583,7 @@ export default function clientPlugin() {
                 }, '×'),
               ),
               h('div', { className: 'kg-node-detail-text' }, detail.text),
+              sourceImageForNode(visualSource, detail) && renderSourceImage ? renderSourceImage(sourceImageForNode(visualSource, detail), false) : null,
               detail.quote
                 ? h('div', { className: 'kg-node-detail-quote' }, (visualTranscriptImageAt(visualSource, detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
                 : null,
@@ -6537,7 +6602,7 @@ export default function clientPlugin() {
                       onClick: () => onOpenNodeIssues(detail),
                     }, '查看 ' + openIssuesOf(issueMaps.nodeMap.get(detail.id)).length + ' 个问题')
                   : null,
-                typeof onQuestionNode === 'function'
+                detail.type !== 'image' && typeof onQuestionNode === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionNode(detail),
@@ -6563,13 +6628,13 @@ export default function clientPlugin() {
               h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)
                 + attributeDetailSuffix(edgeDetail)),
               h('div', { className: 'kg-node-detail-actions' },
-                typeof onQuestionEdge === 'function'
+                edgeDetail.relation !== 'visual_source' && typeof onQuestionEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionEdge(edgeDetail, selectedEdgeId),
                     }, '质疑此关系')
                   : null,
-                typeof onDeleteEdge === 'function'
+                edgeDetail.relation !== 'visual_source' && typeof onDeleteEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary kg-danger',
                       onClick: () => onDeleteEdge(edgeDetail, selectedEdgeId),
@@ -8311,7 +8376,7 @@ export default function clientPlugin() {
         return record && record.isDefault ? null : choice
       }
 
-      function SourceFigure({ image, documentId, revision, onOpen, large }) {
+      function SourceFigure({ image, documentId, revision, onOpen, large, compact }) {
         const ref = useRef(null)
         const [visible, setVisible] = useState(Boolean(large))
         const [url, setUrl] = useState('')
@@ -8336,13 +8401,112 @@ export default function clientPlugin() {
           }).catch(error => { if (!disposed) setError(error.message) })
           return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
         }, [visible, documentId, image.id, digestPinned ? attachmentId : revision, retry])
-        return h('figure', { ref, className: 'kg-book-figure' + (large ? ' large' : ''), style: { margin: '8px 0', maxWidth: '100%' } },
+        return h('figure', { ref, className: 'kg-book-figure' + (large ? ' large' : ''), style: { margin: compact ? 0 : '8px 0', maxWidth: '100%', height: compact ? 116 : undefined, overflow: compact ? 'hidden' : undefined } },
           error ? h('button', { type: 'button', onClick: e => { e.stopPropagation(); setRetry(retry + 1) } }, error + ' · 重试')
             : h(large ? 'div' : 'button', { type: large ? undefined : 'button', onClick: large ? undefined : e => { e.stopPropagation(); onOpen(image) }, title: '查看原图', style: { border: 0, padding: 0, background: 'transparent', width: '100%', minHeight: large ? 120 : 110, cursor: large ? 'default' : 'zoom-in' } },
-              url ? h('img', { src: url, alt: image.caption || image.name, onError: () => setError('图片解码失败'), style: { display: 'block', objectFit: 'contain', width: '100%', maxHeight: large ? '72vh' : 190 } }) : h('span', { role: 'status' }, visible ? '正在读取图片…' : '插图')),
-          h('figcaption', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, (image.caption || image.id)
+              url ? h('img', { src: url, alt: image.caption || image.name, onError: () => setError('图片解码失败'), style: { display: 'block', objectFit: 'contain', width: '100%', height: compact ? 116 : undefined, maxHeight: large ? '72vh' : 190 } }) : h('span', { role: 'status' }, visible ? '正在读取图片…' : '插图')),
+          !compact ? h('figcaption', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, (image.caption || image.id)
             + (image.interpretationStatus === 'not_requested' ? ' · 原图，未进行视觉解读'
-              : image.interpretationStatus === 'ai_unverified' ? ' · AI 视觉解读，待对照原图复核' : '')))
+              : image.interpretationStatus === 'ai_unverified' ? ' · AI 视觉解读，待对照原图复核' : '')) : null)
+      }
+
+      function VisualInterpretationPanel({ visualSource, documentId, revision, selected, setSelected, busy, taskImageIds, imageSupport, onSubmit, onOpen, onLocate }) {
+        const images = visualSource.images || []
+        const pending = image => visualSource.kind === 'markdown-assets' && image.interpretationStatus === 'not_requested'
+        const [filter, setFilter] = useState('all')
+        const [query, setQuery] = useState('')
+        const [page, setPage] = useState(0)
+        const [activeId, setActiveId] = useState(images[0]?.id || '')
+        const [nodeOffset, setNodeOffset] = useState(0)
+        const [inspection, setInspection] = useState(null)
+        const [loadError, setLoadError] = useState('')
+        const [actionError, setActionError] = useState('')
+        const [loading, setLoading] = useState(false)
+        const [submitting, setSubmitting] = useState(false)
+        const [retry, setRetry] = useState(0)
+        const active = images.find(image => image.id === activeId) || images[0]
+        useEffect(() => {
+          setSelected(ids => ids.filter(id => images.some(image => image.id === id && pending(image))))
+          setNodeOffset(0)
+        }, [revision])
+        useEffect(() => {
+          if (!active) return
+          let disposed = false
+          setLoading(true); setLoadError(''); setInspection(null)
+          host.call('image-inspect', { documentId, expectedRevision: revision, imageId: active.id, nodeOffset }).then(result => {
+            if (disposed) return
+            if (result?.error) throw new Error(result.error.message)
+            if (result?.documentId !== documentId || result.imageId !== active.id || result.revision !== revision) throw new Error('图片结果与当前资料不一致')
+            setInspection(result)
+          }).catch(error => { if (!disposed) setLoadError(error.message || '无法读取图片解读结果') })
+            .finally(() => { if (!disposed) setLoading(false) })
+          return () => { disposed = true }
+        }, [documentId, revision, active?.id, nodeOffset, retry])
+        const filtered = images.filter(image => (!query.trim() || ((image.name || '') + ' ' + (image.caption || '')).toLowerCase().includes(query.trim().toLowerCase()))
+          && (filter === 'all' || (filter === 'pending' ? pending(image) : !pending(image))))
+        const pageCount = Math.max(1, Math.ceil(filtered.length / 12))
+        const currentPage = Math.min(page, pageCount - 1)
+        const visible = filtered.slice(currentPage * 12, currentPage * 12 + 12)
+        const disabled = busy || submitting
+        const selectedIds = selected.filter(id => images.some(image => image.id === id && pending(image)))
+        const locate = reference => Promise.resolve(onLocate(reference)).catch(error => setActionError(error.message))
+        const submitSelected = async () => {
+          if (disabled || !selectedIds.length) return
+          setSubmitting(true); setActionError('')
+          try {
+            const result = await onSubmit(selectedIds)
+            if (result?.error) setActionError(result.error.message || '图片解读任务未提交')
+          } catch (error) { setActionError(error.message || '图片解读任务未提交') }
+          finally { setSubmitting(false) }
+        }
+        const remaining = images.filter(pending).length
+        return h('section', { className: 'kg-visual-inspector', 'aria-label': '图片视觉解读' },
+          h('div', { className: 'kg-visual-inspector-head' }, h('h4', null, '图片视觉解读'),
+            h('span', { className: 'kg-section-meta', role: 'status' }, images.length + ' 张原图 · 未解读 ' + remaining + ' 张 · 已转写 ' + (images.length - remaining) + ' 张（待核对）')),
+          h('div', { className: 'kg-visual-controls' },
+            h('input', { type: 'search', value: query, placeholder: '图片名称或图注', 'aria-label': '搜索图片', onChange: event => { setQuery(event.target.value); setPage(0) } }),
+            h('select', { value: filter, 'aria-label': '图片解读状态', onChange: event => { setFilter(event.target.value); setPage(0) } },
+              h('option', { value: 'all' }, '全部图片'), h('option', { value: 'pending' }, '未解读'), h('option', { value: 'interpreted' }, '已转写 · 待核对')),
+            remaining > 0 ? h(React.Fragment, null,
+              h('button', { type: 'button', className: 'kg-secondary', disabled: disabled || !visible.some(pending), onClick: () => setSelected(visible.filter(pending).slice(0, 4).map(image => image.id)) }, '选本页待解读'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: disabled || !selectedIds.length, onClick: () => setSelected([]) }, '清空选择'),
+              h('span', { className: 'kg-section-meta' }, '已选 ' + selectedIds.length + '/4 张'),
+              h('button', { type: 'button', className: 'kg-primary', disabled: disabled || !selectedIds.length || imageSupport === false, onClick: submitSelected }, submitting ? '正在提交…' : '解读所选图片（' + selectedIds.length + '）')) : null),
+          remaining > 0 && imageSupport === false ? h('p', { className: 'kg-visual-message', role: 'alert' }, '当前模型仅支持文本，请在模型设置中选择图像模型。') : null,
+          actionError ? h('p', { className: 'kg-visual-message', role: 'alert' }, actionError) : null,
+          busy && taskImageIds?.length ? h('p', { className: 'kg-visual-message', role: 'status' }, '正在解读所选 ' + taskImageIds.length + ' 张图片，尚未写入结果。') : null,
+          h('div', { className: 'kg-visual-inspector-grid' },
+            h('div', null,
+              h('div', { className: 'kg-visual-image-list', 'aria-label': '图片清单' }, visible.length ? visible.map(image => h('div', { key: image.id, className: 'kg-visual-image-row' + (active?.id === image.id ? ' active' : '') },
+                pending(image) ? h('input', { type: 'checkbox', checked: selectedIds.includes(image.id), 'aria-label': '选择图片 ' + (image.name || image.id),
+                  disabled: disabled || (!selectedIds.includes(image.id) && selectedIds.length >= 4),
+                  onChange: event => setSelected(ids => event.target.checked ? [...new Set([...ids, image.id])].slice(0, 4) : ids.filter(id => id !== image.id)) }) : null,
+                h('button', { type: 'button', 'aria-pressed': active?.id === image.id, 'aria-label': '查看图片 ' + (image.name || image.id), onClick: () => { setActiveId(image.id); setNodeOffset(0); setActionError('') } },
+                  h('strong', null, image.caption || image.name || image.id), h('small', null, image.name || image.id),
+                  h('small', null, busy && taskImageIds?.includes(image.id) ? '正在解读' : pending(image) ? '未解读' : '已转写 · 待核对')))) : h('p', null, '没有符合条件的图片')),
+              h('div', { className: 'kg-visual-pagination' },
+                h('button', { type: 'button', className: 'kg-secondary', disabled: currentPage === 0, onClick: () => setPage(currentPage - 1), 'aria-label': '上一页图片' }, '上一页'),
+                h('span', null, (currentPage + 1) + '/' + pageCount),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: currentPage + 1 >= pageCount, onClick: () => setPage(currentPage + 1), 'aria-label': '下一页图片' }, '下一页'))),
+            active ? h('div', { className: 'kg-visual-inspection', 'aria-label': '所选图片详情' },
+              h('div', { className: 'kg-visual-original' }, h(SourceFigure, { image: active, documentId, revision, onOpen })),
+              active.paragraphs?.length ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ paragraph: active.paragraphs[0] }) }, '定位原书插图') : null,
+              loading ? h('p', { role: 'status' }, '正在读取解读结果…') : null,
+              loadError ? h('p', { className: 'kg-visual-message', role: 'alert' }, loadError, ' ', h('button', { type: 'button', className: 'kg-secondary', onClick: () => setRetry(retry + 1) }, '重试读取')) : null,
+              inspection ? h(React.Fragment, null,
+                inspection.imageNode ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ nodeId: inspection.imageNode.id, paragraph: inspection.imageNode.paragraph }) }, '定位图片节点') : null,
+                pending(active) ? h('p', { className: 'kg-visual-message' }, '这张图片尚未解读，未生成解读内容节点。') : h(React.Fragment, null,
+                  h('p', { className: 'kg-visual-message' }, 'AI 视觉转写 · 非原书文字 · 尚未独立验证'),
+                  active.summary ? h('p', { className: 'kg-visual-message' }, active.summary) : null,
+                  active.warnings?.length ? h('div', { className: 'kg-visual-message', 'aria-label': '视觉识别疑点' }, h('strong', null, '识别疑点'), h('ul', null, active.warnings.map((warning, index) => h('li', { key: index }, warning)))) : null,
+                  h('div', { className: 'kg-visual-transcript', 'aria-label': '图片转写内容' }, inspection.transcript.map(paragraph => h('p', { key: paragraph.paragraph },
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ paragraph: paragraph.paragraph }), 'aria-label': '定位转写 P' + (paragraph.paragraph + 1) }, 'P' + (paragraph.paragraph + 1)), ' ', paragraph.text))),
+                  h('h4', null, '关联节点 · 全图 ' + inspection.totalNodes + ' 个'),
+                  inspection.totalNodes === 0 ? h('p', { className: 'kg-visual-message' }, '已保留转写，但没有关联节点。') : h('ul', { className: 'kg-visual-node-list' }, inspection.nodes.map(node => h('li', { key: node.id },
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ nodeId: node.id, paragraph: node.paragraph }) }, (TYPE_META[node.type]?.label || node.type) + ' · ' + node.text)))),
+                  inspection.totalNodes > 50 ? h('div', { className: 'kg-visual-pagination' },
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: nodeOffset === 0, onClick: () => setNodeOffset(Math.max(0, nodeOffset - 50)) }, '上一页节点'),
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: inspection.nextOffset == null, onClick: () => setNodeOffset(inspection.nextOffset) }, '下一页节点')) : null)) : null) : null))
       }
 
       function ModelPicker({ value, onChange, requiresImage }) {
@@ -8595,6 +8759,8 @@ export default function clientPlugin() {
         const [draftRestored, setDraftRestored] = useState(false)
         const [folderPreparing, setFolderPreparing] = useState(false)
         const [openFigure, setOpenFigure] = useState(null)
+        const [imageNodesLoading, setImageNodesLoading] = useState(false)
+        const imageNodesSubmitting = useRef(false)
         const pdfInputRef = useRef(null)
         const imagePreparingRef = useRef(false)
         const pdfPreparingRef = useRef(false)
@@ -8626,6 +8792,9 @@ export default function clientPlugin() {
         const workspaceDocumentId = documentIdOfGraph(resultView?.graph)
         useEffect(() => { setWorkspaceTab('read'); setWorkspaceFocus(null) }, [workspaceDocumentId])
         const [readingMapOpen, setReadingMapOpen] = useState(false)
+        const [visualPanelOpen, setVisualPanelOpen] = useState(false)
+        const [visualSelection, setVisualSelection] = useState([])
+        useEffect(() => { setVisualSelection(submittedRef.current?.imageAppend && submittedRef.current.documentId === workspaceDocumentId ? submittedRef.current.imageIds || [] : []) }, [workspaceDocumentId])
         const [dossierOpen, setDossierOpen] = useState(false)
         const [learningOpen, setLearningOpen] = useState(false)
         const consumptionPerspectiveRef = useRef(null)
@@ -9022,15 +9191,18 @@ export default function clientPlugin() {
                 title: typeof pending.title === 'string' ? pending.title : '',
                 text: '',
                 append: pending.append === true,
+                imageAppend: pending.imageAppend === true,
+                imageIds: Array.isArray(pending.imageIds) ? pending.imageIds : [],
                 relationRetry: pending.relationRetry === true,
                 baseText: '',
                 documentId: typeof pending.documentId === 'string' ? pending.documentId : '',
                 prevEdgeCount: -1,
               }
-              if (pending.relationRetry === true && pending.documentId) {
+              if ((pending.relationRetry === true || pending.imageAppend === true) && pending.documentId) {
                 const restored = await restoreDocument(pending.documentId, pending.title)
                 if (disposed) return
                 if (!restored) setError({ message: '补全仍在后台运行，但暂时无法读取已保存知识图；可稍后刷新页面重试。' })
+                if (pending.imageAppend === true) { setVisualPanelOpen(true); setVisualSelection(submittedRef.current.imageIds) }
               }
               if (disposed) return
               setTaskId(pending.taskId)
@@ -9326,6 +9498,8 @@ export default function clientPlugin() {
                text: '',
                documentId: typeof pending.documentId === 'string' ? pending.documentId : '',
                append: pending.append === true,
+               imageAppend: pending.imageAppend === true,
+               imageIds: Array.isArray(pending.imageIds) ? pending.imageIds : [],
                baseText: '',
                prevEdgeCount: -1,
              }
@@ -9891,17 +10065,18 @@ export default function clientPlugin() {
           }
         }
 
-        const appendImagesSubmit = async () => {
+        const appendImagesSubmit = async (imageIds) => {
           const graph = resultView?.graph
           const documentId = documentIdOfGraph(graph)
           const remaining = graph?.source?.visualSource?.kind === 'markdown-assets'
             ? (graph.source.visualSource.images || []).filter(image => image.interpretationStatus === 'not_requested') : []
-          if (!documentId || !remaining.length || taskId || phase === 'extracting') return
+          if (submissionBusyRef.current || !documentId || taskId || phase === 'extracting') return { error: { message: '当前有任务正在运行，请稍后重试' } }
+          if (!Array.isArray(imageIds) || !imageIds.length || imageIds.length > 4 || new Set(imageIds).size !== imageIds.length
+            || imageIds.some(id => !remaining.some(image => image.id === id))) return { error: { message: '请选择 1 至 4 张尚未解读的图片' } }
           if (effectiveModelImageSupport === false) {
-            setError({ message: '当前模型不支持图片输入；请先选择带“图像”标记的模型' })
-            return
+            return { error: { message: '当前模型不支持图片输入；请先选择带“图像”标记的模型' } }
           }
-          const imageIds = remaining.slice(0, 4).map(image => image.id)
+          submissionBusyRef.current = true
           const payload = {
             documentId, expectedRevision: graphRevisionRef.current, imageIds,
             title: graph.source?.title || title, concurrency: extractionConcurrency,
@@ -9919,15 +10094,17 @@ export default function clientPlugin() {
             if (res?.error || !res?.taskId) {
               setPhase('idle')
               setError(res?.error || { message: '无法提交图片视觉解读任务' })
-              return
+              return { error: res?.error || { message: '无法提交图片视觉解读任务' } }
             }
             setTaskId(res.taskId)
             try { localStorage.setItem(LS_PENDING, JSON.stringify({ taskId: res.taskId, title: payload.title,
-              append: true, documentId, ts: Date.now() })) } catch (e) {}
+              append: true, imageAppend: true, imageIds, documentId, ts: Date.now() })) } catch (e) {}
+            return { taskId: res.taskId }
           } catch (e) {
             setPhase('idle')
             setError({ message: '无法提交图片视觉解读任务：' + (e?.message || '未知错误') })
-          }
+            return { error: { message: '无法提交图片视觉解读任务：' + (e?.message || '未知错误') } }
+          } finally { submissionBusyRef.current = false }
         }
 
         const retryRelations = async () => {
@@ -11291,13 +11468,14 @@ export default function clientPlugin() {
           ctx.timeout(() => setFlashPara(-1), 1400)
           toastStore.show('已定位原文第 ' + (pi + 1) + ' 段')
         }
-        const locateConsumptionReference = async (reference, stillCurrent = () => true) => {
+        const locateConsumptionReference = async (reference, stillCurrent = () => currentResultRef.current === resultView) => {
           if (!resultView || !reference) return false
           if (!stillCurrent()) throw new Error('知识图已切换，旧定位已取消')
           const nodeId = typeof reference.nodeId === 'string' ? reference.nodeId : ''
           let targetView = resultView
           let targetGraph = resultView.graph
-          if (nodeId && !(targetGraph.nodes || []).some((node) => node.id === nodeId)) {
+          if (nodeId && (!(targetGraph.nodes || []).some((node) => node.id === nodeId)
+            || (targetGraph.nodes || []).some(node => node.id === nodeId && node.type === 'image'))) {
             const documentId = documentIdOfGraph(targetGraph)
             if (!documentId) throw new Error('该节点不在当前视图，且当前图没有 canonical documentId')
             await graphCommitQueueRef.current.catch(() => {})
@@ -11342,6 +11520,34 @@ export default function clientPlugin() {
             ctx.timeout(() => setFlashPara(-1), 1460)
           }
           return true
+        }
+        const showImageNodes = async () => {
+          if (imageNodesSubmitting.current || taskId || phase === 'extracting' || !resultView) return
+          imageNodesSubmitting.current = true
+          setImageNodesLoading(true)
+          const openingView = resultView
+          try {
+            await graphCommitQueueRef.current
+            if (currentResultRef.current !== openingView) throw new Error('知识图已变化，请重新打开图片节点')
+            const documentId = documentIdOfGraph(openingView.graph)
+            const revision = graphRevisionRef.current
+            const response = await host.call('image-nodes', { documentId, expectedRevision: revision })
+            if (currentResultRef.current !== openingView || graphRevisionRef.current !== revision) return
+            if (response?.error) throw new Error(response.error.message || '图片节点未保存')
+            if (response?.documentId !== documentId || !response.graph || !Number.isSafeInteger(response.revision)) throw new Error('图片节点返回的文档版本不一致')
+            graphRevisionRef.current = response.revision
+            setResultView(makeView(response.graph, fullText || openingView.sourceText || ''))
+            setGraphQueryDraft('image:')
+            setGraphPageDraft('1')
+            setChapterFilter('all')
+            setSelectedNodeId(null)
+            setSelectedEdgeId(null)
+            setFocusReq(value => ({ nodeId: null, seq: value.seq + 1 }))
+            navigateWorkspace('read', 'kg-workspace-read')
+            toastStore.show(response.changed ? '图片节点已保存到知识图' : '已显示图片节点')
+          } catch (error) {
+            if (currentResultRef.current === openingView) setError({ message: error.message || '无法打开图片节点' })
+          } finally { imageNodesSubmitting.current = false; setImageNodesLoading(false) }
         }
         const capturePerspective = () => {
           const documentId = documentIdOfGraph(resultView?.graph)
@@ -11575,12 +11781,12 @@ export default function clientPlugin() {
             h('button', { type: 'button', className: 'kg-para-num', title: '定位 P' + (i + 1) + ' 对应节点', 'aria-label': '定位 P' + (i + 1) + ' 对应节点' }, 'P' + (i + 1)),
             badges.map((t) => h('span', { key: t, className: 'kg-para-tag' },
               h('span', { className: 'knowledge-type-badge', style: badgeStyle(TYPE_META[t]?.color) }, TYPE_META[t]?.label || t),
-              h('button', { type: 'button', className: 'kg-para-tag-remove',
+              t !== 'image' ? h('button', { type: 'button', className: 'kg-para-tag-remove',
                 title: '移除本段“' + (TYPE_META[t]?.label || t) + '”标签及对应节点，保留原文',
                 'aria-label': '移除 P' + (i + 1) + ' 的' + (TYPE_META[t]?.label || t) + '标签和对应节点',
                 disabled: removingParagraphType || Boolean(taskId) || phase === 'extracting' || graphWindowLoading || Boolean(documentLoading) || !documentIdOfGraph(resultView.graph),
                 onClick: (event) => { event.stopPropagation(); handleRemoveParagraphType(i, t) },
-              }, h('span', { 'aria-hidden': true }, '×'))))
+              }, h('span', { 'aria-hidden': true }, '×')) : null))
           )
         }
         const paraEl = (p, i) => {
@@ -11717,15 +11923,20 @@ export default function clientPlugin() {
                 removingParagraphType ? h('p', { className: 'kg-delete-progress', role: 'status', 'aria-live': 'polite', 'aria-label': '删除进度' },
                   h('span', { className: 'kg-verify-spinner', 'aria-hidden': true }), removingParagraphType) : null,
                 graph.summary ? h('p', { className: 'kg-summary' }, graph.summary) : null,
-                visualMeta?.kind === 'markdown-assets' ? h('div', { className: 'kg-figure-actions' },
+                visualImages.length > 0 ? h('div', { className: 'kg-figure-actions' },
                   h('span', { role: 'status' }, '原图 ' + visualImages.length + ' 张 · 未解读 ' + unreviewedImages.length + ' 张'),
-                  unreviewedImages.length > 0 ? h('button', { type: 'button', className: 'kg-secondary',
-                    disabled: !!taskId || phase === 'extracting' || effectiveModelImageSupport === false,
-                    title: effectiveModelImageSupport === false ? '请先选择支持图像输入的模型' : '原图保留；AI 视觉转写将追加为来源段落和候选节点，结果需对照原图复核',
-                    onClick: appendImagesSubmit }, '视觉解读下一批（' + Math.min(4, unreviewedImages.length) + ' 张）') : null,
-                  unreviewedImages.length > 0 && effectiveModelImageSupport === false
-                    ? h('span', { className: 'kg-visual-note' }, '当前模型仅支持文本') : null,
-                ) : null,
+                  h('button', { type: 'button', className: 'kg-secondary', disabled: imageNodesLoading || Boolean(taskId) || phase === 'extracting',
+                    onClick: showImageNodes }, imageNodesLoading ? '正在打开图片节点…' : '打开图片节点'),
+                  h('button', { type: 'button', className: 'kg-secondary', 'aria-expanded': visualPanelOpen,
+                    onClick: () => setVisualPanelOpen(!visualPanelOpen) }, visualPanelOpen ? '收起图片解读' : '图片解读与节点')) : null,
+                visualImages.length > 0 && visualPanelOpen ? h(VisualInterpretationPanel, {
+                  key: documentIdOfGraph(resultView.graph), visualSource: visualMeta,
+                  documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current,
+                  busy: Boolean(taskId) || phase === 'extracting', taskImageIds: submittedRef.current?.imageIds,
+                  selected: visualSelection, setSelected: setVisualSelection,
+                  imageSupport: effectiveModelImageSupport, onSubmit: appendImagesSubmit,
+                  onOpen: setOpenFigure, onLocate: locateConsumptionReference,
+                }) : null,
                 documentIdOfGraph(resultView.graph) && readingMapOpen ? h(ReadingMapPanel, {
                     key: documentIdOfGraph(resultView.graph) + ':' + graphRevisionRef.current,
                     documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current,
@@ -11857,6 +12068,8 @@ export default function clientPlugin() {
                       documentId: documentIdOfGraph(resultView.graph), revision: resultView.graph.revision ?? resultView.graph.source?.revision,
                       sourceText: displayView.sourceText,
                       visualSource: visualMeta,
+                      renderSourceImage: (image, compact) => h(SourceFigure, { image, compact,
+                        documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current, onOpen: setOpenFigure }),
                       loadNeighborhood: async (args, signal) => {
                         await graphCommitQueueRef.current.catch(() => {})
                         signal.throwIfAborted()
@@ -12000,7 +12213,11 @@ export default function clientPlugin() {
               h('span', { style: { overflowWrap: 'anywhere' } }, openFigure.caption || openFigure.name),
               h('button', { type: 'button', className: 'kg-secondary', style: { flex: '0 0 32px', height: 32, padding: 0 }, autoFocus: true, 'aria-label': '关闭原图', title: '关闭原图', onClick: () => setOpenFigure(null) }, '×')),
             h(SourceFigure, { image: openFigure, documentId: resultView.graph.source.documentId, revision: resultView.graph.revision, large: true }),
-            h('button', { type: 'button', className: 'kg-secondary', onClick: () => { const paragraph = openFigure.startParagraph; setOpenFigure(null); setActivePara(paragraph); const element = document.getElementById('kg-para-' + paragraph); if (element) scrollElIntoCenter(element) } }, '定位原文'),
+            h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+              const paragraph = openFigure.paragraphs?.[0] ?? openFigure.startParagraph
+              setOpenFigure(null)
+              locateConsumptionReference({ paragraph }).catch(error => setError({ message: error.message }))
+            } }, openFigure.paragraphs?.length ? '定位原书插图' : '定位视觉转写'),
           ) : null,
           error
             ? h('div', { className: 'kg-banner', role: 'alert' },
@@ -12031,7 +12248,7 @@ export default function clientPlugin() {
                         } })))
                   : h('div', { className: 'kg-empty' },
                       phase !== 'paused' ? h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }) : null,
-                      h('p', null, phase === 'paused' ? '任务已暂停' : submittedRef.current && submittedRef.current.relationRetry === true ? '正在用 AI 补全知识图关系…' : (submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…')),
+                      h('p', null, phase === 'paused' ? '任务已暂停' : submittedRef.current?.imageAppend ? '正在解读 ' + (submittedRef.current.imageIds?.length || '') + ' 张图片并生成节点…' : submittedRef.current && submittedRef.current.relationRetry === true ? '正在用 AI 补全知识图关系…' : (submittedRef.current && submittedRef.current.append === true ? '正在用 AI 追加拆分…' : '正在用 AI 拆分资料…')),
                       h('p', { className: 'kg-empty-sub' }, '使用模型：' + modelLabelOf((extractProgress && extractProgress.model) || effectiveModelArg, modelChoice)),
                       extractProgress && extractProgress.parallel ? h('p', {role:'status'}, '本轮第 ' + extractProgress.parallel.start + '–' + extractProgress.parallel.end + ' 批 · 执行中 ' + extractProgress.parallel.active + ' · 待合并 ' + extractProgress.parallel.saved + ' · 主拆分已保存、待补全 ' + (extractProgress.parallel.prepared || 0)) : null,
                       h(GenerationProgress, { progress: extractProgress }),

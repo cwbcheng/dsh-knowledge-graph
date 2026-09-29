@@ -23,12 +23,14 @@ assert.throws(()=>prepareMarkdownBundle({text,files:[file,file]},contract.splitP
 const handlers=new Map(), stored=new Map()
 let saved=0
 let visualCalls=0
+let malformedVisual = false
+const visualReply = () => ({ images: [{ imageIndex: 1, summary: '图中展示 A 到 B 的箭头。', units: [{ kind: 'diagram', text: '关系：A → B；图中依据：可见箭头。' }], warnings: [] }] })
 globalThis.harness={handle(name,fn){handlers.set(name,fn)}}
 hostPlugin().apply({get(name){return name==='attachments'?{
   async saveImages(inputs){return inputs.map(input=>{const ref={attachmentId:'md-'+ ++saved,mediaType:input.mediaType,bytes:input.data.length,width:1,height:1};stored.set(ref.attachmentId,{ref,data:input.data});return ref})},
   async readImage(ref){return stored.get(ref.attachmentId)},
 }:name==='kgExtractor'?{
-  extractImages:async args=>{visualCalls++;assert.equal(args.images[0].id,'figure-1');return {images:[{imageIndex:1,summary:'图中展示 A 到 B 的箭头。',units:[{kind:'diagram',text:'关系：A → B；图中依据：可见箭头。'}],warnings:[]}] }},
+  extractImages:async args=>{visualCalls++;assert.equal(args.images[0].id,'figure-1');const reply=visualReply();if(malformedVisual)reply.images.push({...reply.images[0],summary:'冲突解读'});return reply},
   extractChunk:async args=>{if(visualCalls){assert(args.prompt.includes('本批内容是 AI 对已保存图片的视觉转写'));assert(args.prompt.includes('候选结论保持待复核'));return {summary:'视觉材料',nodes:[{id:'v1',text:'A 指向 B',type:'fact',quote:'关系：A → B；图中依据：可见箭头。',paragraph:3}],edges:[]}}assert(args.prompt.includes('禁止猜测图中内容'));return {summary:'fixture',nodes:[{id:'n1',text:'温度升高',type:'fact',quote:'温度升高',paragraph:1}],edges:[]}},
 }:null},interval(){return()=>{}}})
 const imported=await handlers.get('markdown-import')({text,files:[file]})
@@ -48,6 +50,16 @@ const loaded=await handlers.get('image-load')({documentId:result.result.source.d
 assert.equal(loaded.data,png)
 const missing=await handlers.get('image-load')({documentId:result.result.source.documentId,imageId:'figure-2'})
 assert(missing.error)
+const beforeVisual = await handlers.get('document-export')({ documentId: result.result.source.documentId, includeSourceText: true })
+malformedVisual = true
+const badVisual = await handlers.get('append-extract')({ documentId: result.result.source.documentId, expectedRevision: result.result.revision, imageIds: ['figure-1'] })
+assert(badVisual.taskId)
+let badTerminal
+for (let i=0; i<500; i++) { badTerminal=await handlers.get('task-status')({taskId:badVisual.taskId}); if(badTerminal.status!=='running')break; await new Promise(r=>setTimeout(r,5)) }
+assert.equal(badTerminal.status, 'failed', 'conflicting visual attribution must fail the entire task')
+assert.equal(badTerminal.error.code, 'visual_schema_invalid')
+assert.deepEqual(await handlers.get('document-export')({ documentId: result.result.source.documentId, includeSourceText: true }), beforeVisual, 'failed interpretation must preserve source, nodes, image status and revision')
+malformedVisual = false
 const visualAppend = await handlers.get('append-extract')({
   documentId: result.result.source.documentId, expectedRevision: result.result.revision,
   imageIds: ['figure-1'], text: '',
@@ -70,6 +82,25 @@ const exported=await handlers.get('document-export')({documentId:visualGraph.sou
 assert(exported.sourceText.startsWith(text),'visual interpretation must preserve the original Markdown source')
 assert(exported.sourceText.includes('【AI 视觉转写；非原书文字，待对照原图复核】'),'derived source must retain its warning outside UI')
 assert(exported.sourceText.includes('【图示关系】关系：A → B；图中依据：可见箭头。'))
+const inspection = await handlers.get('image-inspect')({ documentId: visualGraph.source.documentId, imageId: 'figure-1', expectedRevision: visualGraph.revision })
+assert.equal(inspection.totalNodes, 1)
+assert.equal(inspection.nodes[0].id, visualNode.id)
+assert.equal(inspection.imageNode?.id, 'image:figure-1')
+assert(visualGraph.edges.some(edge => edge.relation === 'visual_source' && edge.fromNodeId === visualNode.id && edge.toNodeId === inspection.imageNode.id))
+const imageView = await handlers.get('image-nodes')({ documentId: visualGraph.source.documentId, expectedRevision: visualGraph.revision })
+assert.equal(imageView.changed, false)
+assert.equal(imageView.revision, visualGraph.revision, 'opening existing image nodes must not increment the revision')
+assert(imageView.graph.nodes.some(node => node.type === 'image'))
+const imageSearch = await handlers.get('graph-query')({ documentId: visualGraph.source.documentId, types: ['image'], hops: 0 })
+assert(!imageSearch.error, JSON.stringify(imageSearch.error))
+assert.deepEqual(imageSearch.graph.nodes.map(node => node.id), [inspection.imageNode.id])
+const provenanceSearch = await handlers.get('graph-query')({ documentId: visualGraph.source.documentId, nodeIds: [visualNode.id], relations: ['visual_source'], hops: 1 })
+assert(!provenanceSearch.error, JSON.stringify(provenanceSearch.error))
+assert.equal(provenanceSearch.graph.edges.length, 1)
+assert.equal(provenanceSearch.graph.edges[0].relation, 'visual_source')
+assert.equal((await handlers.get('graph-query')({ documentId: 'missing-image-book', types: ['image'] })).error.code, 'not_found')
+assert(inspection.transcript.some(p => p.text.includes('关系：A → B')))
+assert.equal((await handlers.get('image-inspect')({ documentId: visualGraph.source.documentId, imageId: 'figure-1', expectedRevision: result.result.revision })).error.code, 'revision_conflict')
 const callsAfterSuccess=visualCalls
 for(const attempt of [
   {imageIds:['figure-1'],expectedRevision:visualGraph.revision},
@@ -90,12 +121,13 @@ async function persistentVisualAppend() {
   process.env.DSH_KG_DB = dbPath
   const routes = [], cleanups = [], attachments = new Map()
   let visualRequests = 0
+  let oversized = true
   const extractor = {
     async extractImages({ images }) {
       visualRequests++
       assert.equal(images.length, 1)
       assert(attachments.has(images[0].attachment.attachmentId), 'visual task must reference the stored attachment')
-      return { images: [{ imageIndex: 1, summary: 'A 指向 B', units: [{ kind: 'diagram', text: '关系：A → B；图中依据：可见箭头。' }] }] }
+      return { images: [{ imageIndex: 1, summary: 'A 指向 B', units: [{ kind: 'diagram', text: oversized ? 'A'.repeat(1600) + '；但不适用于 B' : '关系：A → B；图中依据：可见箭头。' }] }] }
     },
     async extractChunk({ prompt }) {
       if (visualRequests) {
@@ -151,10 +183,23 @@ async function persistentVisualAppend() {
     const first = await settled(api, initial.taskId)
     assert.equal(first.status, 'succeeded', JSON.stringify(first.error))
     const documentId = first.result.source.documentId
+    const before = await invoke(api, 'document-export', { documentId, includeSourceText: true })
+    const rejectedAppend = await invoke(api, 'append-extract', { documentId, expectedRevision: first.result.revision, imageIds: ['figure-1'] })
+    assert(rejectedAppend.taskId)
+    const rejectedResult = await settled(api, rejectedAppend.taskId)
+    assert.equal(rejectedResult.status, 'failed')
+    assert.equal(rejectedResult.error.code, 'visual_too_large', 'never silently remove the final qualifier from a visual unit')
+    assert.deepEqual(await invoke(api, 'document-export', { documentId, includeSourceText: true }), before, 'SQLite must remain unchanged on a rejected visual transcript')
+    oversized = false
     const append = await invoke(api, 'append-extract', { documentId, expectedRevision: first.result.revision, imageIds: ['figure-1'] })
     assert(append.taskId, JSON.stringify(append))
     const second = await settled(api, append.taskId)
     assert.equal(second.status, 'succeeded', JSON.stringify(second.error))
+    const inspected = await invoke(api, 'image-inspect', { documentId, imageId: 'figure-1', expectedRevision: second.result.revision })
+    assert.equal(inspected.totalNodes, 1)
+    assert.equal(inspected.nodes[0].text, 'A 指向 B')
+    assert.equal(inspected.imageNode?.id, 'image:figure-1')
+    assert(inspected.transcript.some(p => p.text.includes('关系：A → B')))
     const store = await openSqliteStore(dbPath)
     try {
       const persisted = store.getDocument(documentId)
@@ -166,7 +211,7 @@ async function persistentVisualAppend() {
         node.paragraph >= image.startParagraph && node.paragraph <= image.endParagraph))
       assert(persisted.nodes.some(node => node.text === '温度升高'), 'visual append must not replace older nodes')
     } finally { store.close() }
-    assert.equal(visualRequests, 1)
+    assert.equal(visualRequests, 2, 'explicit retry, not an automatic extra model call')
   } finally {
     for (const cleanup of cleanups.reverse()) { try { cleanup() } catch {} }
     if (previousDb === undefined) delete process.env.DSH_KG_DB

@@ -61,7 +61,7 @@ window.__ModuleLoader__.load({
         const res = await fetch("/api/dsh-knowledge-graph/" + method, { cache: "no-store" })
         return res.json()
       }
-      if (method === "document-import" || method === "markdown-import") {
+      if (method === "document-import" || method === "markdown-import" || method === "image-nodes") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
         })
         return res.json()
       }
-      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "reading-map" || method === "perspectives" || method === "concept-dossier" || method === "learning-mode" || method === "image-load" || method === "document-export" || method === "graph-commit" || method === "graph-commit-preview" || method === "graph-source-peers" || method === "graph-undo-bulk-review" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
+      if (method === "candidate-list" || method === "candidate-update" || method === "document-load" || method === "reading-map" || method === "perspectives" || method === "concept-dossier" || method === "learning-mode" || method === "image-load" || method === "image-inspect" || method === "document-export" || method === "graph-commit" || method === "graph-commit-preview" || method === "graph-source-peers" || method === "graph-undo-bulk-review" || method === "graph-query" || method === "answer-graph" || method === "verification-plan" || method === "resume-extract" || method === "resume-verify" || method === "relation-retry" || method === "document-list" || method === "extraction-run-list" || method === "extraction-run-delete") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -204,6 +204,8 @@ c = c.split("host.call('perspectives'").join("rpc('perspectives'")
 c = c.split("host.call('concept-dossier'").join("rpc('concept-dossier'")
 c = c.split("host.call('learning-mode'").join("rpc('learning-mode'")
 c = c.split("host.call('image-load'").join("rpc('image-load'")
+c = c.split("host.call('image-inspect'").join("rpc('image-inspect'")
+c = c.split("host.call('image-nodes'").join("rpc('image-nodes'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
 c = c.split("host.call('graph-commit-preview'").join("rpc('graph-commit-preview'")

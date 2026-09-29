@@ -1,0 +1,181 @@
+// Real Chrome against kg-verification-ui-fixture.mjs --visual-inspector only.
+const assert = require('node:assert/strict')
+const { mkdirSync } = require('node:fs')
+const path = require('node:path')
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core')
+
+async function main() {
+  const url = new URL(process.argv[2])
+  assert(url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname))
+  assert(url.port && !['3099', '3109', '3119'].includes(url.port), 'Disposable fixture only')
+  const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : { channel: 'chrome' }) })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  const endpoint = value => new URL(value, url).href
+  const stats = async () => {
+    const result = await (await page.request.get(endpoint('/fixture/stats'))).json()
+    assert.equal(result.visualInspectorFixture, true, 'Must verify fixture identity before any mutations')
+    return result
+  }
+  const control = action => page.request.post(endpoint('/fixture/' + action))
+  const waitStats = async predicate => {
+    for (let i = 0; i < 120; i++) { const value = await stats(); if (predicate(value)) return value; await new Promise(resolve => setTimeout(resolve, 250)) }
+    throw new Error('fixture condition timed out')
+  }
+  try {
+    let before = await stats()
+    assert.equal(before.visualCalls || 0, 0, 'Fresh fixture required')
+    await page.goto(url.href)
+    await page.getByRole('button', { name: '打开图片节点', exact: true }).click()
+    await page.locator('svg .kg-node[data-node-id="image:figure-1"]').waitFor()
+    const materialized = await stats()
+    assert.equal(materialized.revision, before.revision + 1)
+    assert.equal(materialized.modelCalls, 0)
+    assert.equal(materialized.visualCalls || 0, 0, 'Original images can be graph nodes without model interpretation')
+    const canonical = async () => (await page.request.post(endpoint('/api/dsh-knowledge-graph/document-export'), { data: { documentId: 'verification-fixture', includeSourceText: true } })).json()
+    const initialGraph = (await canonical()).graph
+    assert.equal(initialGraph.nodes.filter(node => node.type === 'image').length, 14)
+    assert.equal(initialGraph.edges.filter(edge => edge.relation === 'visual_source').length, 0, 'Uninterpreted images must not claim provenance of neighboring prose')
+    await page.getByRole('button', { name: '打开图片节点', exact: true }).click()
+    await page.locator('svg .kg-node[data-node-id="image:figure-1"]').waitFor()
+    assert.equal((await stats()).revision, materialized.revision, 'Reopening is idempotent')
+    before = materialized
+    await page.getByRole('button', { name: '图片解读与节点', exact: true }).click()
+    const panel = () => page.getByRole('region', { name: '图片视觉解读', exact: true })
+    await panel().getByText('这张图片尚未解读，未生成解读内容节点。', { exact: true }).waitFor()
+    assert.equal(await panel().locator('.kg-visual-image-row').count(), 12)
+    await panel().getByRole('button', { name: '下一页图片' }).click()
+    assert.equal(await panel().locator('.kg-visual-image-row').count(), 2)
+    await panel().getByRole('button', { name: '查看图片 images/figure-14.png', exact: true }).click()
+    await panel().getByRole('button', { name: '上一页图片' }).click()
+    let failRead = true
+    await page.route('**/api/dsh-knowledge-graph/image-inspect', async route => {
+      if (failRead && route.request().postDataJSON().imageId === 'figure-6') {
+        failRead = false
+        return route.fulfill({ json: { error: { code: 'fixture_read_failure', message: '受控读取失败' } } })
+      }
+      return route.continue()
+    })
+    await panel().getByRole('button', { name: '查看图片 images/figure-6.png', exact: true }).click()
+    await panel().getByRole('button', { name: '重试读取', exact: true }).click()
+    await panel().getByText('这张图片尚未解读，未生成解读内容节点。', { exact: true }).waitFor()
+    const check = i => panel().getByRole('checkbox', { name: '选择图片 images/figure-' + i + '.png', exact: true })
+    for (const i of [5, 3, 1, 2]) await check(i).check()
+    assert.equal(await check(4).isDisabled(), true, 'Selection is explicitly bounded to four images')
+    for (const i of [1, 2]) await check(i).uncheck()
+    const readOnly = await stats()
+    assert.equal(readOnly.revision, before.revision)
+    assert.equal(readOnly.visualCalls || 0, 0)
+    assert.equal(readOnly.modelCalls, 0)
+    assert.equal(readOnly.commits, 0)
+    await panel().getByRole('button', { name: '解读所选图片（2）', exact: true }).click()
+    await page.locator('.kg-banner').filter({ hasText: '图片数量不符' }).waitFor({ timeout: 30000 })
+    await panel().waitFor()
+    assert.equal(await check(5).isChecked(), true, 'Failed task must retain selected images')
+    assert.equal(await check(3).isChecked(), true)
+    const failed = await stats()
+    assert.equal(failed.revision, before.revision)
+    assert.deepEqual(failed.imageStates, before.imageStates)
+    assert.deepEqual(failed.visualSelections, [['figure-5', 'figure-3']], 'Not an implicit first-four selection')
+
+    await control('hold-visual')
+    await panel().getByRole('button', { name: '解读所选图片（2）', exact: true }).evaluate(button => { button.click(); button.click() })
+    await waitStats(value => value.visualHeld)
+    await page.reload()
+    await page.getByText('正在解读 2 张图片并生成节点…', { exact: true }).waitFor()
+    assert.equal((await stats()).visualCalls, 2, 'Double click and reload must not resubmit')
+    await control('release-visual')
+    await panel().waitFor({ timeout: 30000 })
+    await panel().getByText('14 张原图 · 未解读 12 张 · 已转写 2 张（待核对）', { exact: true }).waitFor()
+    const after = await stats()
+    assert.equal(after.revision, before.revision + 1)
+    assert.deepEqual(after.imageStates.filter(image => image.status === 'ai_unverified').map(image => image.id), ['figure-3', 'figure-5'])
+    assert.equal(after.originalTextPreserved, true)
+    assert.equal(after.originalNodeContentPreserved, true)
+    await panel().getByRole('button', { name: '查看图片 images/figure-5.png', exact: true }).click()
+    await panel().getByText('关联节点 · 全图 1 个', { exact: true }).waitFor()
+    assert((await panel().getByLabel('图片转写内容').innerText()).includes('受控视觉内容 figure-5'))
+    assert((await panel().getByLabel('视觉识别疑点').innerText()).includes('受控测试替身'))
+    await panel().getByRole('button', { name: '事实 · 受控视觉内容 figure-5。', exact: true }).click()
+    const inspected = await (await page.request.post(endpoint('/api/dsh-knowledge-graph/image-inspect'), { data: { documentId: 'verification-fixture', imageId: 'figure-5', expectedRevision: after.revision } })).json()
+    await page.locator('svg .kg-node[data-node-id="' + inspected.nodes[0].id + '"]').waitFor()
+    assert.equal(inspected.totalNodes, 1, 'Off-window appended nodes are navigable')
+
+    const output = path.resolve(__dirname, '../output/playwright')
+    mkdirSync(output, { recursive: true })
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 })
+      await panel().scrollIntoViewIfNeeded()
+      const image = panel().locator('.kg-visual-original img')
+      await image.waitFor()
+      await image.evaluate(img => img.decode())
+      assert.equal(await image.evaluate(img => img.naturalWidth), 128)
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Horizontal overflow at ' + width)
+      assert(await panel().evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'Panel overflow at ' + width)
+      await page.screenshot({ path: path.join(output, 'visual-inspector-' + width + '.png'), fullPage: true })
+    }
+    await panel().locator('.kg-visual-original button[title="查看原图"]').click()
+    await page.getByRole('dialog', { name: '原始插图' }).waitFor()
+    await page.getByRole('dialog').getByRole('button', { name: '定位原书插图', exact: true }).click()
+    assert.equal(await page.getByRole('dialog').count(), 0)
+    await page.reload()
+    await page.getByRole('button', { name: '图片解读与节点', exact: true }).click()
+    await panel().getByRole('combobox', { name: '图片解读状态' }).selectOption('interpreted')
+    assert.equal(await panel().locator('.kg-visual-image-row').count(), 2)
+    await panel().getByRole('button', { name: '查看图片 images/figure-5.png', exact: true }).click()
+    await panel().getByText('关联节点 · 全图 1 个', { exact: true }).waitFor()
+    assert.equal((await stats()).visualCalls, 2, 'Viewing persisted results must not call models')
+    await panel().getByRole('button', { name: '定位图片节点', exact: true }).click()
+    await page.getByRole('button', { name: '收起图片解读', exact: true }).click()
+    const finalGraph = (await canonical()).graph
+    assert.equal(finalGraph.nodes.filter(node => node.type === 'image').length, 14)
+    assert.equal(finalGraph.edges.filter(edge => edge.relation === 'visual_source').length, 2)
+    const sourceEdge = finalGraph.edges.find(edge => edge.relation === 'visual_source' && edge.toNodeId === 'image:figure-5')
+    assert(sourceEdge)
+    assert.equal(finalGraph.nodes.find(node => node.id === sourceEdge.fromNodeId).text, '受控视觉内容 figure-5。')
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 })
+      const node = page.locator('svg .kg-node[data-node-id="image:figure-5"]')
+      await node.waitFor()
+      await page.locator('.kg-graph').last().scrollIntoViewIfNeeded()
+      await page.waitForTimeout(1600)
+      const image = node.locator('foreignObject img')
+      await image.waitFor()
+      await image.evaluate(img => img.decode())
+      const pixels = await image.evaluate(img => {
+        const canvas = document.createElement('canvas'); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight
+        const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0)
+        const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+        return new Set(Array.from({ length: rgba.length / 4 }, (_, i) => Array.from(rgba.slice(i * 4, i * 4 + 4)).join(','))).size
+      })
+      assert(pixels >= 3, 'The canonical image node must show nonblank bitmap pixels')
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Image graph overflow at ' + width)
+      await page.screenshot({ path: path.join(output, 'image-nodes-' + width + '.png'), fullPage: true })
+      if (width === 1440) {
+        const download = page.waitForEvent('download')
+        await page.getByRole('button', { name: '导出知识图 PNG 图片' }).click()
+        const png = await download
+        assert.equal(await png.failure(), null, 'Image nodes must not taint the PNG export canvas')
+        await png.saveAs(path.join(output, 'image-nodes-export.png'))
+      }
+      await node.locator('button[title="查看原图"]').click()
+      await page.getByRole('dialog', { name: '原始插图' }).waitFor()
+      await page.getByRole('dialog', { name: '原始插图' }).getByRole('button', { name: '关闭原图' }).click()
+    }
+    await page.getByRole('tab', { name: '检索与学习', exact: true }).click()
+    const consumption = page.getByRole('region', { name: '使用这张知识图', exact: true })
+    await consumption.getByRole('combobox', { name: '节点类型筛选' }).selectOption('image')
+    await consumption.getByRole('button', { name: '检索', exact: true }).click()
+    await consumption.getByText('显示 14 个直接命中 · 点击可回链图与原文', { exact: true }).waitFor()
+    await consumption.locator('.kg-consume-result').filter({ hasText: 'image:figure-5 ·' }).click()
+    await page.locator('svg .kg-node[data-node-id="image:figure-5"]').waitFor()
+    assert.equal((await stats()).revision, after.revision, 'Search and locate must be read-only')
+    assert.deepEqual(errors, [])
+    console.log(JSON.stringify({ ok: true, selection: [5, 3], canonicalImageNodes: 14, sourceLinks: 2, graphBitmapPixels: true, imageTypeSearch: true, duplicateSubmissionRejected: true, failureAtomic: true, reloadRecovery: true, offWindowNodes: true, widths: [1440, 390], model: 'controlled-only' }))
+  } finally {
+    await control('release-visual').catch(() => {})
+    await browser.close()
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1 })
