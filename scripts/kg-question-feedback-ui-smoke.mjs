@@ -115,8 +115,8 @@ assert(panel.includes('onPreviewBulkReview') && panel.includes('bulkReviewPrevie
   'saving a reviewed work package must require an explicit conflict and change preview')
 assert(panel.includes('逐项处理预览') && panel.includes('修改前后'),
   'the preview must make both per-item outcomes and actual graph changes inspectable')
-assert(panel.includes('撤销上一组修改') && panel.includes('onUndoBulkReview'),
-  'a committed work package needs an explicit one-group undo control')
+assert(panel.includes('撤销上次批量修改') && panel.includes('onUndoBulkReview'),
+  'a committed cross-group batch needs an explicit whole-batch undo control')
 assert(panel.indexOf('questionContent,') < panel.indexOf("className: 'kg-verify-filters'"),
   'question and its feedback must appear before a potentially long issue list')
 assert.equal((panel.match(/className: 'kg-question-bar'/g) || []).length, 1)

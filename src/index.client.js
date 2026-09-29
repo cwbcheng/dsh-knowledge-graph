@@ -182,7 +182,7 @@ export default function clientPlugin() {
       .kg-bulk-review .kg-work-package-controls { margin: 8px 0; align-items: flex-end; gap: 8px 12px; }
       .kg-bulk-review .kg-work-package-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--kg-text-dim); }
       .kg-bulk-review .kg-work-package-controls .kg-work-package-label { flex: 1 1 320px; max-width: 720px; min-width: 220px; }
-      .kg-bulk-review .kg-work-package-picker { display: block; width: 100%; min-width: 0; max-width: 720px; }
+      .kg-bulk-review .kg-work-package-picker { display: block; box-sizing: border-box; width: 100%; height: 32px; min-width: 0; max-width: 720px; max-height: 32px; }
       .kg-bulk-review details { max-height: 360px; overflow: auto; margin: 8px 0; }
       .kg-bulk-review summary { cursor: pointer; font-size: 12px; }
       .kg-bulk-review .kg-issue { cursor: default; }
@@ -3027,6 +3027,17 @@ export default function clientPlugin() {
           if (issue.status === 'open' && !issue.batchReview) group.remaining++
         }
         return [...groups.values()]
+      }
+      function bulkReviewSelectionMembers(report, selection) {
+        if (!selection || !['family', 'source'].includes(selection.mode)) return new Set()
+        if (selection.version === 2 && selection.key === 'all'
+          && ['all', 'error', 'warning', 'suggestion'].includes(selection.filter)) {
+          return new Set((report?.issues || []).filter(issue => issue.status === 'open' && !issue.batchReview
+            && (selection.filter === 'all' || issue.severity === selection.filter)).map(issue => issue.id))
+        }
+        if (selection.version !== 1) return new Set()
+        const group = buildIssueWorkPackages(report, 'all', selection.mode).find(item => item.key === selection.key)
+        return new Set(group?.issues.map(issue => issue.id) || [])
       }
       function batchReviewIssueSignature(issue) {
         return JSON.stringify([reviewIssueSignature(issue), issue?.category || 'other', issue?.proposedFix || { action: 'none' }])
@@ -6708,6 +6719,7 @@ export default function clientPlugin() {
           : workPackages.find(group => group.key === workPackageKey) || workPackages.find(group => group.remaining > 0) || workPackages[0]
         const workPackageIds = workPackage ? new Set(workPackage.issues.map(issue => issue.id)) : null
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report, graph)
+        const crossGroupReview = bulkReview?.workPackage?.key === 'all'
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
@@ -7019,8 +7031,8 @@ export default function clientPlugin() {
             : null,
           typeof onStartBulkReview === 'function' && report
             ? h('div', { className: 'kg-bulk-review' },
-                h('h4', { className: 'kg-review-subtitle' }, '按组二次核实'),
-                h('p', { className: 'kg-verify-summary' }, '同组问题共享原文上下文，但每条问题分别判断；核实后仍需检查修改预览并确认保存。'),
+                h('h4', { className: 'kg-review-subtitle' }, '批量二次核实'),
+                h('p', { className: 'kg-verify-summary' }, '可跨问题组顺序核实；每条独立判断。批量修改仅限原文逐字支持的安全修复，其他结论留待单独处理。'),
                 h('div', { className: 'kg-issue-actions kg-work-package-controls' },
                   h('label', null, '归类方式',
                   h('select', { value: workPackageMode, disabled: bulkRunning, 'aria-label': '问题分组方式',
@@ -7039,13 +7051,14 @@ export default function clientPlugin() {
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
-                        disabled: verifying || questionPhase === 'running' || !workPackage?.remaining,
-                        onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key, workPackageMode) },
-                        workPackage ? '逐项 AI 核实本组（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）' : '先选择问题组'))
+                        disabled: verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
+                        onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key || 'all', workPackageMode) },
+                        workPackage ? '逐项 AI 核实本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
+                          : '逐项 AI 核实当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
                   : null,
                 bulkReview
                   ? h('div', null,
-                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '问题组：' + bulkReview.workPackage.label) : null,
+                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '核实范围：' + bulkReview.workPackage.label) : null,
                       h('p', { className: 'kg-verify-summary', role: 'status' },
                         '批量核实 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
                         (bulkReview.phase === 'running' ? ' · 正在处理 ' + (bulkReview.currentIssueId || '')
@@ -7095,16 +7108,17 @@ export default function clientPlugin() {
                         bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
                           && bulkReviewPreview.documentId === bulkReview.documentId
                           ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
-                              '确认保存本组处理') : null,
+                              crossGroupReview ? '确认保存本批处理' : '确认保存本组处理') : null,
                         bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
-                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview }, '放弃本组结果') : null))
+                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview },
+                              crossGroupReview ? '放弃本批结果' : '放弃本组结果') : null))
                   : null)
             : null,
           bulkReviewUndo?.documentId === documentIdOfGraph(graph) && bulkReviewUndo?.reportId === report?.reportId
             && bulkReviewUndo?.revision === graph?.revision
             ? h('div', { className: 'kg-issue-actions' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
-                  onClick: onUndoBulkReview, title: '仅当本组保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上一组修改')) : null,
+                  onClick: onUndoBulkReview, title: '仅当上次批量保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上次批量修改')) : null,
           h('details', { className: 'kg-review-question',
             open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
             h('summary', null, targetLabel ? '核实与提问 · ' + targetLabel : '对知识图提问'),
@@ -10412,10 +10426,12 @@ export default function clientPlugin() {
             const contextIndex = buildReviewContextIndex(canonical)
             const issuesById = new Map((canonical.verification.lastReport.issues || []).map(issue => [issue.id, issue]))
             if (state.workPackage) {
-              const group = buildIssueWorkPackages(canonical.verification.lastReport, 'all', state.workPackage.mode)
-                .find(item => item.key === state.workPackage.key)
-              const members = new Set(group?.issues.map(issue => issue.id) || [])
-              if (state.issueIds.some(id => !members.has(id))) throw new Error('问题分组已变化；保留本组结果，未继续请求模型')
+              const members = bulkReviewSelectionMembers(canonical.verification.lastReport, state.workPackage)
+              if (state.issueIds.length < 1 || state.issueIds.length > 100
+                || new Set(state.issueIds).size !== state.issueIds.length
+                || state.issueIds.some(id => !members.has(id))) {
+                throw new Error('问题筛选或分组已变化；保留核实结果，未继续请求模型')
+              }
             }
             for (let index = state.rows.length; index < state.issueIds.length; index++) {
               if (bulkStopRef.current) break
@@ -10517,14 +10533,19 @@ export default function clientPlugin() {
           if (modelCatalog?.issueReview !== true) { toastStore.show('服务端尚未加载 AI 问题核实功能，请稍后刷新'); return }
           const documentId = documentIdOfGraph(resultView.graph)
           if (!documentId) { toastStore.show('批量核实需要已保存的 canonical 知识图'); return }
-          const group = buildIssueWorkPackages(verification, filter, groupMode).find(item => item.key === groupKey)
-          if (!group) { toastStore.show('问题组已变化，请重新选择'); return }
-          const issueIds = group.issues.filter(issue => issue.status === 'open' && !issue.batchReview)
+          const selectedFilter = ['all', 'error', 'warning', 'suggestion'].includes(filter) ? filter : 'all'
+          const group = groupKey === 'all' ? null
+            : buildIssueWorkPackages(verification, selectedFilter, groupMode).find(item => item.key === groupKey)
+          if (groupKey !== 'all' && !group) { toastStore.show('问题组已变化，请重新选择'); return }
+          const issueIds = (group ? group.issues : verification.issues || [])
+            .filter(issue => issue.status === 'open' && !issue.batchReview
+              && (selectedFilter === 'all' || issue.severity === selectedFilter))
             .slice(0, Math.min(100, Math.max(1, Number.isSafeInteger(limit) ? limit : 50)))
             .map(issue => issue.id)
           if (!issueIds.length) return
           runBulkReview({ documentId, reportId: verification.reportId, issueIds, rows: [],
-            workPackage: { version: 1, key: group.key, label: group.label, mode: groupMode },
+            workPackage: group ? { version: 1, key: group.key, label: group.label, mode: groupMode }
+              : { version: 2, key: 'all', label: '当前筛选全部问题', mode: groupMode, filter: selectedFilter },
             model: effectiveModelArg || null, activeTaskId: null, activeContextHash: null, activeIssueHash: null, createdAt: Date.now() })
         }
         const handleStopBulkReview = () => {

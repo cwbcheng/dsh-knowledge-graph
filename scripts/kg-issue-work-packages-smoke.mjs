@@ -10,6 +10,9 @@ const section = (from, to) => {
 }
 const buildIssueWorkPackages = new Function(section('      function buildIssueWorkPackages(', '      function batchReviewIssueSignature(')
   + '; return buildIssueWorkPackages')()
+const bulkReviewSelectionMembers = new Function('buildIssueWorkPackages',
+  section('      function bulkReviewSelectionMembers(', '      function batchReviewIssueSignature(')
+  + '; return bulkReviewSelectionMembers')(buildIssueWorkPackages)
 for (const file of ['../lib/client.js', '../extension/viewer.js']) {
   const generated = readFileSync(new URL(file, import.meta.url), 'utf8')
   assert(generated.includes(section('      function buildIssueWorkPackages(', '      function batchSafeFix(')), file + ' must contain current grouping and allegation proof helpers')
@@ -46,6 +49,15 @@ const conditions = { issues: [issue('1', 'Claim holds above 10 only'), issue('2'
 assert.equal(buildIssueWorkPackages(conditions).length, 3, 'grouping must preserve qualifiers, negation and numeric conditions')
 assert.deepEqual(buildIssueWorkPackages({ issues: [...report.issues].reverse() }).map(group => group.key).sort(), groups.map(group => group.key).sort(),
   'group identity must not depend on list order')
+const warningSelection = { version: 2, key: 'all', filter: 'warning', mode: 'source' }
+assert.deepEqual([...bulkReviewSelectionMembers(report, warningSelection)], ['1', '2', '3', '4', '8'],
+  'cross-group selection must include every eligible warning while excluding handled rows and other severities')
+assert.equal(bulkReviewSelectionMembers(report, { ...warningSelection, filter: 'unknown' }).size, 0,
+  'a tampered severity filter cannot authorize model calls')
+assert.equal(bulkReviewSelectionMembers(report, { ...warningSelection, mode: 'unknown' }).size, 0,
+  'a tampered grouping mode cannot authorize model calls')
+assert.deepEqual([...bulkReviewSelectionMembers(report, { version: 1, key: quotes.key, mode: 'family' })],
+  ['1', '3', '4', '5', '6', '7'], 'existing single-group checkpoints must remain readable')
 
 const starts = []
 const env = { resultView: { graph: { source: { documentId: 'doc' } } }, verification: report,
@@ -64,6 +76,12 @@ start(100, 'all', 'unknown-group', 'family')
 assert.equal(starts.length, 1, 'stale selection cannot silently fall back to a different group')
 start(100, 'error', quotes.key, 'family')
 assert.deepEqual(starts[1].issueIds, ['7'])
+start(4, 'warning', 'all', 'source')
+assert.deepEqual(starts[2].issueIds, ['1', '2', '3', '4'],
+  'one batch must span different problem families and source paragraphs without sharing verdicts')
+assert.deepEqual(starts[2].workPackage, { version: 2, key: 'all', label: '当前筛选全部问题', mode: 'source', filter: 'warning' })
+start(100, 'error', 'all', 'source')
+assert.deepEqual(starts[3].issueIds, ['7'], 'the all-groups action must still honor the severity filter')
 const original = JSON.stringify(report)
 buildIssueWorkPackages(report)
 assert.equal(JSON.stringify(report), original, 'grouping is a derived view, not a graph or report edit')
@@ -86,7 +104,16 @@ assert(source.includes("const [workPackageKey, setWorkPackageKey] = useState('al
   && source.includes("setWorkPackageKey('all')"), 'opening or regrouping a report must show all issues instead of silently choosing the first group')
 assert(source.includes('扫描完成不代表逐条问题已经核实')
   && source.includes('当前显示 '), 'the report must distinguish completed scanning from pending issue decisions and scoped list counts')
+assert(source.includes('bulkReviewSelectionMembers(canonical.verification.lastReport, state.workPackage)'),
+  'resume must recheck frozen cross-group membership against the canonical report before model calls')
 const large = { issues: Array.from({ length: 5000 }, (_, index) => issue(String(index), 'Missing quote', index)) }
+const largeStarts = []
+const startLarge = new Function(...Object.keys(env), startCode + '; return handleStartBulkReview')(
+  ...Object.values({ ...env, verification: large, runBulkReview: state => largeStarts.push(state) }))
+startLarge(1000, 'warning', 'all', 'source')
+assert.equal(largeStarts[0].issueIds.length, 100, 'cross-group runs must have a bounded request count')
+assert.deepEqual(largeStarts[0].issueIds, large.issues.slice(0, 100).map(item => item.id),
+  'a bounded cross-group run must preserve report order and never skip eligible findings')
 const then = performance.now()
 assert.equal(buildIssueWorkPackages(large).length, 1)
 assert.equal(buildIssueWorkPackages(large, 'all', 'source').length, 5000)

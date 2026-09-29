@@ -141,7 +141,7 @@
       .kg-bulk-review .kg-work-package-controls { margin: 8px 0; align-items: flex-end; gap: 8px 12px; }
       .kg-bulk-review .kg-work-package-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--kg-text-dim); }
       .kg-bulk-review .kg-work-package-controls .kg-work-package-label { flex: 1 1 320px; max-width: 720px; min-width: 220px; }
-      .kg-bulk-review .kg-work-package-picker { display: block; width: 100%; min-width: 0; max-width: 720px; }
+      .kg-bulk-review .kg-work-package-picker { display: block; box-sizing: border-box; width: 100%; height: 32px; min-width: 0; max-width: 720px; max-height: 32px; }
       .kg-bulk-review details { max-height: 360px; overflow: auto; margin: 8px 0; }
       .kg-bulk-review summary { cursor: pointer; font-size: 12px; }
       .kg-bulk-review .kg-issue { cursor: default; }

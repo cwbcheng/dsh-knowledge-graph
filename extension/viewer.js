@@ -2248,6 +2248,17 @@
         }
         return [...groups.values()]
       }
+      function bulkReviewSelectionMembers(report, selection) {
+        if (!selection || !['family', 'source'].includes(selection.mode)) return new Set()
+        if (selection.version === 2 && selection.key === 'all'
+          && ['all', 'error', 'warning', 'suggestion'].includes(selection.filter)) {
+          return new Set((report?.issues || []).filter(issue => issue.status === 'open' && !issue.batchReview
+            && (selection.filter === 'all' || issue.severity === selection.filter)).map(issue => issue.id))
+        }
+        if (selection.version !== 1) return new Set()
+        const group = buildIssueWorkPackages(report, 'all', selection.mode).find(item => item.key === selection.key)
+        return new Set(group?.issues.map(issue => issue.id) || [])
+      }
       function batchReviewIssueSignature(issue) {
         return JSON.stringify([reviewIssueSignature(issue), issue?.category || 'other', issue?.proposedFix || { action: 'none' }])
       }
@@ -5928,6 +5939,7 @@
           : workPackages.find(group => group.key === workPackageKey) || workPackages.find(group => group.remaining > 0) || workPackages[0]
         const workPackageIds = workPackage ? new Set(workPackage.issues.map(issue => issue.id)) : null
         const bulkCounts = batchReviewCounts(bulkReview?.rows, report, graph)
+        const crossGroupReview = bulkReview?.workPackage?.key === 'all'
         const bulkRunning = bulkReview?.phase === 'running' || bulkReview?.phase === 'applying' || reviewSaving
         const fixableCount = reportStale ? 0 : openIssues.filter(bulkFixEligible).length
         const manualFixCount = openIssues.filter((it) => it.proposedFix?.action && it.proposedFix.action !== 'none'
@@ -6239,8 +6251,8 @@
             : null,
           typeof onStartBulkReview === 'function' && report
             ? h('div', { className: 'kg-bulk-review' },
-                h('h4', { className: 'kg-review-subtitle' }, '按组二次核实'),
-                h('p', { className: 'kg-verify-summary' }, '同组问题共享原文上下文，但每条问题分别判断；核实后仍需检查修改预览并确认保存。'),
+                h('h4', { className: 'kg-review-subtitle' }, '批量二次核实'),
+                h('p', { className: 'kg-verify-summary' }, '可跨问题组顺序核实；每条独立判断。批量修改仅限原文逐字支持的安全修复，其他结论留待单独处理。'),
                 h('div', { className: 'kg-issue-actions kg-work-package-controls' },
                   h('label', null, '归类方式',
                   h('select', { value: workPackageMode, disabled: bulkRunning, 'aria-label': '问题分组方式',
@@ -6259,13 +6271,14 @@
                         onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
-                        disabled: verifying || questionPhase === 'running' || !workPackage?.remaining,
-                        onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key, workPackageMode) },
-                        workPackage ? '逐项 AI 核实本组（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）' : '先选择问题组'))
+                        disabled: verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
+                        onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key || 'all', workPackageMode) },
+                        workPackage ? '逐项 AI 核实本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
+                          : '逐项 AI 核实当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
                   : null,
                 bulkReview
                   ? h('div', null,
-                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '问题组：' + bulkReview.workPackage.label) : null,
+                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '核实范围：' + bulkReview.workPackage.label) : null,
                       h('p', { className: 'kg-verify-summary', role: 'status' },
                         '批量核实 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
                         (bulkReview.phase === 'running' ? ' · 正在处理 ' + (bulkReview.currentIssueId || '')
@@ -6315,16 +6328,17 @@
                         bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
                           && bulkReviewPreview.documentId === bulkReview.documentId
                           ? h('button', { type: 'button', className: 'kg-primary', disabled: verifying || questionPhase === 'running', onClick: onApplyBulkReview },
-                              '确认保存本组处理') : null,
+                              crossGroupReview ? '确认保存本批处理' : '确认保存本组处理') : null,
                         bulkReview.phase !== 'running' && bulkReview.phase !== 'applying'
-                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview }, '放弃本组结果') : null))
+                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onDiscardBulkReview },
+                              crossGroupReview ? '放弃本批结果' : '放弃本组结果') : null))
                   : null)
             : null,
           bulkReviewUndo?.documentId === documentIdOfGraph(graph) && bulkReviewUndo?.reportId === report?.reportId
             && bulkReviewUndo?.revision === graph?.revision
             ? h('div', { className: 'kg-issue-actions' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: verifying || bulkRunning || questionPhase === 'running',
-                  onClick: onUndoBulkReview, title: '仅当本组保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上一组修改')) : null,
+                  onClick: onUndoBulkReview, title: '仅当上次批量保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上次批量修改')) : null,
           h('details', { className: 'kg-review-question',
             open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
             h('summary', null, targetLabel ? '核实与提问 · ' + targetLabel : '对知识图提问'),
