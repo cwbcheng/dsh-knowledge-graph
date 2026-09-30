@@ -100,6 +100,7 @@ function createHostPlugin(graphContractOnly) {
        // state into SQLite and can recover it after a process restart.
        const canonicalGraphs = new Map()
        const canonicalSources = new Map()
+       const canonicalSourceUnits = new Map()
        const canonicalRevisions = new Map()
        const bulkReviewUndoSnapshots = new Map()
 
@@ -1937,13 +1938,21 @@ function createHostPlugin(graphContractOnly) {
            ? source.documentId
            : (typeof graph?.documentId === 'string' ? graph.documentId : '')
        }
-       function rememberCanonicalGraphHost(graph, sourceText, revision) {
+       function rememberCanonicalGraphHost(graph, sourceText, revision, sourceUnits) {
          const documentId = canonicalDocumentIdHost(graph)
          if (!documentId || !graph || typeof graph !== 'object') return null
          const currentRevision = Number.isInteger(canonicalRevisions.get(documentId)) ? canonicalRevisions.get(documentId) : 0
          const nextRevision = Number.isInteger(revision) ? revision : currentRevision + 1
          canonicalGraphs.set(documentId, graph)
-         if (typeof sourceText === 'string') canonicalSources.set(documentId, sourceText)
+         if (typeof sourceText === 'string') {
+           if (Array.isArray(sourceUnits) && sourceUnits.length) {
+             graphCitationSourceHost(sourceText, sourceUnits)
+             canonicalSourceUnits.set(documentId, sourceUnits.map(unit => ({ paragraph: unit.paragraph, text: unit.text })))
+           } else if (!canonicalSourceUnits.has(documentId) || canonicalSources.get(documentId) !== sourceText) {
+             canonicalSourceUnits.set(documentId, splitParagraphsHost(sourceText).map((text, paragraph) => ({ paragraph, text })))
+           }
+           canonicalSources.set(documentId, sourceText)
+         }
          canonicalRevisions.set(documentId, nextRevision)
          return { documentId, revision: nextRevision }
        }
@@ -1954,6 +1963,7 @@ function createHostPlugin(graphContractOnly) {
          return {
            documentId: id,
            sourceText: canonicalSources.get(id) || '',
+           sourceUnits: canonicalSourceUnits.get(id) || [],
            revision: Number.isInteger(canonicalRevisions.get(id)) ? canonicalRevisions.get(id) : 0,
            graph,
          }
@@ -2052,7 +2062,12 @@ function createHostPlugin(graphContractOnly) {
          const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes.filter((node) => node && typeof node.id === 'string' && node.id) : []
          const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges.filter((edge) => edge && edgeKeyHost(edge)) : []
          const nodeMap = new Map((Array.isArray(current.nodes) ? current.nodes : []).filter((node) => node && node.id && !baseNodes.has(node.id)).map((node) => [node.id, cloneGraphNodeHost(node)]))
-         for (const node of incomingNodes) nodeMap.set(node.id, cloneGraphNodeHost(node))
+          const previousNodes = new Map((current.nodes || []).map(node => [node.id, node]))
+          for (const node of incomingNodes) {
+            const previous = previousNodes.get(node.id)
+            nodeMap.set(node.id, cloneGraphNodeHost(previous?.modelStructure && !Object.hasOwn(node, 'modelStructure')
+              ? { ...node, modelStructure: previous.modelStructure } : node))
+          }
          const nodes = Array.from(nodeMap.values())
          const nodeIds = new Set(nodeMap.keys())
          const edgeMap = new Map()
@@ -2195,7 +2210,7 @@ function createHostPlugin(graphContractOnly) {
           '· states_intension 表述内涵：intension_description → concept，同理。',
           '· feature_split 特征拆分：intension_description → feature_description，即从内涵描述中拆出特征描述（原书给出的改进技法）。',
           '· has_rule 规律：concept/connection_model → rule。builds 渐构：材料 → discrimination_model/connection_model。',
-          '· maps_between 联结映射：connection_model → concept，用 role 区分 input / output。**联结模型必须交代它在什么与什么之间映射**：原文若明确写出两端（输入类别与输出类别、输入变量与输出变量），必须把两端各建成节点并连上 maps_between——两端是可判别的类别时用 concept，是输入/输出/表征变量时用 factor_material 并以 states_variable 连接。只把映射写进 connection_model 的 text 里会触发「联结空载」诊断。原文没写两端时不要补造。',
+          '· maps_between 联结映射：connection_model → concept，每条边必须依据原文用 role 标明 input / output；两种角色的存储方向都是模型指向概念，不代表推测方向。输入或输出变量的概念建为 concept，由模型经 maps_between 连接；描述这些变量的因素材料另建 factor_material，经 states_variable 指向 concept，不能让模型用 states_variable 指向因素材料。多输入必须分别保留；原文未交代角色则保持待核对，不凭词序猜测。只介绍联结模型定义的文字、假设、错误示例不能冒充已成立的具体规律，必须在文本中保留其身份和限定条件。',
           '· contrasts 外延对比 / extension_relation 外延关系：指向 concept 时各建两条边，用 role 区分正负。',
           '· compares_feature / compares_relation 用 mode 属性区分对比（contrast）与类比（analogy），不要为二者各造一个类型。',
           '· transfers_from 迁移：要求 evidence 里出现显式复用语义（「基于」「沿用了」「套用」等），否则不建边。',
@@ -3479,6 +3494,284 @@ function createHostPlugin(graphContractOnly) {
         return splitParagraphsOffsetsHost(text).map((p) => p.text)
       }
 
+      function connectionModelsHost(document, options = {}) {
+        const fail = (code, message) => ({ error: { code, message } })
+        if (!document?.graph || !Array.isArray(document.graph.nodes)) return fail('not_found', '找不到知识图文档')
+        if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision !== document.revision) {
+          return { error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入联结模型', currentRevision: document.revision } }
+        }
+        const graph = document.graph
+        const profile = ontProfile(graph)
+        const typeLabels = new Map(profile.nodeTypes.map(type => [type.id, type.zh]))
+        const relationLabels = new Map(profile.relationTypes.map(relation => [relation.id, relation.zh]))
+        const nodes = new Map(graph.nodes.map(node => [node.id, node]))
+        const edges = Array.isArray(graph.edges) ? graph.edges : []
+        const incident = new Map(), identities = new Map()
+        edges.forEach((edge, index) => {
+          const key = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
+          identities.set(key, (identities.get(key) || 0) + 1)
+          for (const id of new Set([edge.fromNodeId, edge.toNodeId])) {
+            if (!incident.has(id)) incident.set(id, [])
+            incident.get(id).push({ edge, index })
+          }
+        })
+        const normalize = value => String(value || '').normalize('NFKC').toLowerCase().trim()
+        const unitMap = new Map(Array.isArray(document.sourceUnits) && document.sourceUnits.length
+          ? document.sourceUnits.map(unit => [unit.paragraph, unit.text])
+          : splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+        const citations = item => {
+          const records = [...(Array.isArray(item?.evidence) ? item.evidence : [])]
+          if (item?.quote) records.push({ paragraph: item.paragraph, quote: item.quote,
+            documentId: item.documentId, sourceId: item.sourceId })
+          const seen = new Set()
+          return records.filter(record => {
+            const { paragraph, quote } = record || {}
+            const provenance = provenanceForParagraphHost(graph, paragraph)
+            const key = paragraph + ':' + quote
+            if (!Number.isInteger(paragraph) || paragraph < 0 || typeof quote !== 'string' || !quote.trim()
+              || record.documentId && record.documentId !== document.documentId
+              || record.sourceId && provenance.sourceId && record.sourceId !== provenance.sourceId
+              || !unitMap.get(paragraph)?.includes(quote) || seen.has(key)) return false
+            seen.add(key)
+            return true
+          }).slice(0, 8).map(record => ({ paragraph: record.paragraph, quote: record.quote,
+            nodeId: item.id || null, sourceId: record.sourceId || null }))
+        }
+        const reference = node => ({ nodeId: node.id, type: node.type, label: typeLabels.get(node.type) || node.type, text: String(node.text || ''),
+          paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
+          state: node.state || 'candidate', entailmentStatus: node.entailmentStatus || 'unverified', citations: citations(node) })
+        if (options.concepts === true) {
+          const query = normalize(options.query).slice(0, 200)
+          const concepts = graph.nodes.filter(node => node.type === 'concept' && node.state !== 'rejected'
+            && (!query || normalize(node.id + ' ' + node.text).includes(query)))
+          const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
+          return { documentId: document.documentId, revision: document.revision, modelStructureVersion: 1, total: concepts.length,
+            offset, items: concepts.slice(offset, offset + 20).map(reference) }
+        }
+        const sections = Array.isArray(graph.source?.sections) ? graph.source.sections : []
+        const sectionOf = node => sections.find(section => Number.isInteger(node.paragraph)
+          && node.paragraph >= section.startParagraph && node.paragraph <= section.endParagraph)
+        const modelNodes = graph.nodes.filter(node => node.type === 'connection_model')
+        const legacyPortsOf = node => (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
+          .map(({ edge, index }) => {
+            const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
+            const valid = edge.fromNodeId === node.id && target?.type === 'concept' && edge.state !== 'rejected' && target.state !== 'rejected'
+            const edgeKey = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
+            return { edgeIndex: index, edgeKey,
+              node: target ? reference(target) : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
+              role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
+              storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: citations(edge) }
+          })
+        const structures = new Map(), structureErrors = new Map()
+        const structureOf = node => {
+          if (!node.modelStructure) return null
+          if (!structures.has(node.id)) {
+            try { structures.set(node.id, MODEL_STRUCTURE_TOOLS.validate(node.modelStructure, nodes, unitMap)) }
+            catch (error) { structures.set(node.id, null); structureErrors.set(node.id, error.message) }
+          }
+          return structures.get(node.id)
+        }
+        const portsOf = node => {
+          const structure = structureOf(node)
+          return structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
+            edgeKey: '', source: 'structured', editable: false, role: slot.role, storedRole: slot.role,
+            unit: slot.unit, timeState: slot.state, provenance: slot.provenance,
+            node: { ...reference(nodes.get(slot.conceptId)), text: slot.label || nodes.get(slot.conceptId).text },
+            citations: citations(slot.provenance) })) : legacyPortsOf(node)
+        }
+        const identityLabels = { assertion: '原文断言身份待核对', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明', undetermined: '内容身份尚未判定' }
+        const summarize = node => {
+          const ports = portsOf(node)
+          const structure = structureOf(node)
+          const inputs = ports.filter(port => port.role === 'input').map(port => port.node)
+          const outputs = ports.filter(port => port.role === 'output').map(port => port.node)
+          const warnings = []
+          if (!inputs.length) warnings.push('输入待核对')
+          if (!outputs.length) warnings.push('输出待核对')
+          if (ports.some(port => port.role === 'unknown')) warnings.push('存在未定角色或异常端点')
+          if (structureErrors.has(node.id)) warnings.push('结构记录需重新核对：' + structureErrors.get(node.id))
+          if (structure) {
+            if (structure.identity !== 'assertion') warnings.push(identityLabels[structure.identity])
+            if (!structure.branches.length || structure.branches.some(branch => !branch.mapping.text.trim())) warnings.push('映射规律待整理')
+            if (!structure.branches.length || structure.branches.some(branch => !branch.condition.text.trim())) warnings.push('存在未核对的适用条件')
+            const legacy = legacyPortsOf(node)
+            if (legacy.some(port => port.role === 'unknown' || !port.editable)) warnings.push('原有图谱端点仍有未定角色或异常关系')
+            const slotSignature = structure.slots.map(slot => slot.conceptId + ':' + slot.role).sort()
+            const edgeSignature = legacy.map(port => port.node.nodeId + ':' + port.role).sort()
+            if (JSON.stringify(slotSignature) !== JSON.stringify(edgeSignature)) warnings.push('结构槽位与原有图谱端点并不一一对应')
+          }
+          // These are textual cautions, never automatic truth classifications.
+          if (/错误模型|错误知识|学偏/.test(node.text || '')) warnings.push('文本涉及错误示例')
+          if (/联结模型(?:是|指|的定义)|联结模型。?$/.test(node.text || '')) warnings.push('可能仅为类型说明')
+          if (/视觉转写|图片|待复核/.test(node.text || '')) warnings.push('图片或转写待核对')
+          if (node.state === 'rejected' || node.entailmentStatus === 'unsupported') warnings.push('已有否决或不支持记录')
+          const section = sectionOf(node)
+          return { ...reference(node), inputs, outputs, warnings, portCount: ports.length,
+            structureComplete: inputs.length > 0 && outputs.length > 0 && ports.every(port => port.role !== 'unknown'),
+            contentIdentity: structure?.identity || 'undetermined', hasStructure: !!structure,
+            sectionId: section?.id || '', sectionTitle: section?.title || '未分章' }
+        }
+        const base = { documentId: document.documentId, revision: document.revision, modelStructureVersion: 1, modelDiagnosticsVersion: 1, modelUnderstandingVersion: 1, modelFeedbackVersion: 1, modelLearningHistoryVersion: 1,
+          origin: 'canonical_derived', totalModels: modelNodes.length }
+        const detailOf = (modelId, materialOffset = 0) => {
+          const model = nodes.get(modelId)
+          if (model?.type !== 'connection_model') return fail('not_found', '找不到该联结模型')
+          const ports = portsOf(model)
+          const specification = structureOf(model)
+          let structure = null
+          if (specification) {
+            if (options.branchId && !specification.branches.some(branch => branch.id === options.branchId)) return fail('invalid_input', '所选条件分支已不存在')
+            const examples = specification.examples.filter(example => !options.branchId || example.branchId === options.branchId)
+            const exampleOffset = Number.isSafeInteger(options.exampleOffset) && options.exampleOffset >= 0 ? options.exampleOffset : 0
+            const statuses = new Map(specification.examples.map(example => [example.id, MODEL_STRUCTURE_TOOLS.exampleStatus(specification, example)]))
+            structure = { identity: specification.identity, slots: specification.slots.map(slot => ({ ...slot, conceptText: nodes.get(slot.conceptId).text })),
+              branches: specification.branches.map(branch => ({ ...branch,
+                pairedExamples: specification.examples.filter(example => example.branchId === branch.id && statuses.get(example.id).complete).length,
+                incompleteExamples: specification.examples.filter(example => example.branchId === branch.id && !statuses.get(example.id).complete).length })),
+              examples: examples.slice(exampleOffset, exampleOffset + 20).map(example => ({ ...example, ...statuses.get(example.id) })),
+              exampleTotal: specification.examples.length, filteredTotal: examples.length, exampleOffset,
+              branchId: options.branchId || '', origin: 'reviewed_structure_not_verified_truth' }
+          }
+          const direct = incident.get(model.id) || []
+          const related = new Map()
+          const add = (id, relation, via) => {
+            const node = nodes.get(id)
+            if (!node || id === model.id) return
+            if (!related.has(id)) related.set(id, { ...reference(node), links: [] })
+            related.get(id).links.push({ relation, label: relationLabels.get(relation) || relation, via })
+          }
+          for (const { edge } of direct) {
+            const id = edge.fromNodeId === model.id ? edge.toNodeId : edge.fromNodeId
+            if (edge.relation !== 'maps_between') add(id, edge.relation, model.id)
+            if (edge.fromNodeId === model.id && edge.relation === 'has_rule' && nodes.get(id)?.type === 'rule') {
+              for (const { edge: material } of incident.get(id) || []) {
+                if (material.toNodeId === id && ['exemplifies', 'states_mapping', 'verifies', 'aligns_upper_lower'].includes(material.relation)) {
+                  add(material.fromNodeId, material.relation, id)
+                }
+              }
+            }
+          }
+          const allRelated = [...related.values()]
+          const legacyPorts = legacyPortsOf(model)
+          const diagnosis = MODEL_STRUCTURE_TOOLS.diagnose(specification, { ports: legacyPorts,
+            names: Object.fromEntries(ports.map(port => [port.node.nodeId, nodes.get(port.node.nodeId)?.text || port.node.text])), invalid: structureErrors.get(model.id),
+            cautions: summarize(model).warnings.filter(warning => ['文本涉及错误示例', '可能仅为类型说明', '图片或转写待核对', '已有否决或不支持记录'].includes(warning)) })
+          if (options.diagnosis === true) {
+            const diagnosisOffset = Number.isSafeInteger(options.diagnosisOffset) && options.diagnosisOffset >= 0 ? options.diagnosisOffset : 0
+            return { ...base, model: summarize(model), diagnosis: { ...diagnosis, offset: diagnosisOffset,
+              items: diagnosis.items.slice(diagnosisOffset, diagnosisOffset + 20) } }
+          }
+          const offset = Number.isSafeInteger(materialOffset) && materialOffset >= 0 ? materialOffset : 0
+          const page = allRelated.slice(offset, offset + 20)
+          const contexts = new Map()
+          for (const item of [reference(model), ...ports.map(port => port.node), ...(options.structureSources === true ? allRelated : page)]) {
+            const anchors = new Set(item.citations.map(citation => citation.paragraph))
+            if (Number.isInteger(item.paragraph)) anchors.add(item.paragraph)
+            for (const p of anchors) {
+              // Adjacent units preserve split tables and the surrounding qualification.
+              for (let index = Math.max(0, p - 1); index <= p + 2; index++) {
+                if (unitMap.has(index)) contexts.set(index, { paragraph: index, text: unitMap.get(index) })
+              }
+            }
+          }
+          for (const provenance of specification ? [...specification.slots.map(slot => slot.provenance),
+            ...specification.branches.flatMap(branch => ['condition', 'mapping', 'boundary'].map(key => branch[key].provenance)),
+            ...(options.structureSources === true ? specification.examples : structure.examples).map(example => example.provenance)] : []) {
+            for (const citation of citations(provenance)) {
+              for (let p = Math.max(0, citation.paragraph - 1); p <= citation.paragraph + 2; p++) {
+                if (unitMap.has(p)) contexts.set(p, { paragraph: p, text: unitMap.get(p) })
+              }
+            }
+          }
+          if (options.structureSources === true) {
+            const sourceOffset = Number.isSafeInteger(options.sourceOffset) && options.sourceOffset >= 0 ? options.sourceOffset : 0
+            const units = [...contexts.values()].sort((a, b) => a.paragraph - b.paragraph)
+            return { ...base, model: summarize(model), sourceUnits: { total: units.length, offset: sourceOffset,
+              basis: 'stored_model_and_related_context_not_field_entailment',
+              items: units.slice(sourceOffset, sourceOffset + 12).map(unit => ({ ...unit, ...provenanceForParagraphHost(graph, unit.paragraph) })) } }
+          }
+          return { ...base, model: summarize(model), ports, related: page, relatedTotal: allRelated.length, offset,
+            diagnosisSummary: { total: diagnosis.total, counts: diagnosis.counts, origins: diagnosis.origins },
+            structure, ...(specification || options.structureEdit === true ? { legacyPorts } : {}),
+            ...(options.structureEdit === true ? { modelStructure: specification } : {}),
+            sourceUnits: [...contexts.values()].sort((a, b) => a.paragraph - b.paragraph),
+            incidentCount: direct.length }
+        }
+        if (options.compareModelId) {
+          if (!options.modelId || options.modelId === options.compareModelId) return fail('invalid_input', '请选择两个不同的联结模型')
+          const left = detailOf(options.modelId), right = detailOf(options.compareModelId)
+          if (left.error || right.error) return left.error ? left : right
+          const grouped = detail => {
+            const groups = new Map()
+            for (const port of detail.ports) {
+              if (port.node.type !== 'concept') continue
+              if (!groups.has(port.node.nodeId)) groups.set(port.node.nodeId, { node: port.node, roles: new Set(), ambiguous: false })
+              const group = groups.get(port.node.nodeId)
+              group.roles.add(port.role)
+              group.ambiguous ||= port.source !== 'structured' && !port.editable || port.role === 'unknown'
+            }
+            return groups
+          }
+          const a = grouped(left), b = grouped(right)
+          const shared = [...a].filter(([id]) => b.has(id)).map(([id, group]) => ({ node: group.node,
+            leftRoles: [...group.roles].sort(), rightRoles: [...b.get(id).roles].sort(),
+            uncertain: group.ambiguous || b.get(id).ambiguous || group.roles.size !== 1 || b.get(id).roles.size !== 1 }))
+          const names = new Map(), sameNamed = []
+          let sameNamedTotal = 0
+          for (const group of b.values()) {
+            const name = normalize(group.node.text)
+            if (!name) continue
+            if (!names.has(name)) names.set(name, [])
+            names.get(name).push(group.node)
+          }
+          for (const [id, group] of a) {
+            const name = normalize(group.node.text)
+            if (!name) continue
+            const matches = names.get(name) || []
+            sameNamedTotal += matches.length - (b.has(id) ? 1 : 0)
+            for (const other of matches) {
+              if (sameNamed.length >= 50) break
+              if (other.nodeId !== id) sameNamed.push({ left: group.node, right: other })
+            }
+          }
+          const complete = detail => detail.model.structureComplete && detail.ports.every(port => port.source === 'structured' || port.editable)
+          const portSignature = detail => detail.ports.map(port => JSON.stringify([port.node.nodeId, port.role, port.unit || '', port.timeState || ''])).sort().join('|')
+          const sameEndpoints = complete(left) && complete(right) && a.size === b.size && shared.length === a.size
+            && portSignature(left) === portSignature(right)
+          return { ...base, left, right, shared, sameNamed, sameNamedTotal,
+            endpointStatus: sameEndpoints ? 'same_recorded_direction' : complete(left) && complete(right) ? 'different_recorded_direction' : 'incomplete',
+            basis: 'canonical_concept_identity_and_recorded_roles', equivalence: 'not_inferred',
+            conditions: left.structure && right.structure ? 'structured_text_not_executable' : 'not_structured' }
+        }
+        if (options.modelId) return detailOf(options.modelId, options.offset)
+        const peer = options.peerOf ? nodes.get(options.peerOf) : null
+        if (options.peerOf && peer?.type !== 'connection_model') return fail('not_found', '找不到待比较的联结模型')
+        const usablePort = port => port.source === 'structured' || port.editable
+        const peerPorts = peer ? new Set(portsOf(peer).filter(usablePort).map(port => port.node.nodeId)) : null
+        if (options.conceptId && !nodes.has(options.conceptId)) return fail('not_found', '找不到该概念')
+        const query = normalize(options.query).slice(0, 200)
+        const summaries = modelNodes.map(summarize)
+        const matches = summaries.filter(model => {
+          if (model.nodeId === options.excludeModelId) return false
+          if (peerPorts && (model.nodeId === peer.id || !portsOf(nodes.get(model.nodeId)).some(port => usablePort(port) && peerPorts.has(port.node.nodeId)))) return false
+          if (options.sectionId && model.sectionId !== options.sectionId) return false
+          if (options.needsReview && !model.warnings.length) return false
+          if (options.conceptId && !portsOf(nodes.get(model.nodeId)).some(port => port.node.nodeId === options.conceptId
+            && (!options.role || port.role === options.role))) return false
+          return !query || normalize([model.nodeId, model.text, model.sectionTitle,
+            ...model.inputs.map(node => node.text), ...model.outputs.map(node => node.text),
+            ...portsOf(nodes.get(model.nodeId)).map(port => port.node.text)].join(' ')).includes(query)
+        }).sort((a, b) => (a.paragraph ?? Infinity) - (b.paragraph ?? Infinity) || a.nodeId.localeCompare(b.nodeId))
+        const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
+        const topics = new Map()
+        for (const model of summaries) {
+          if (!topics.has(model.sectionId)) topics.set(model.sectionId, { id: model.sectionId, title: model.sectionTitle, count: 0 })
+          topics.get(model.sectionId).count++
+        }
+        return { ...base, total: matches.length, offset, items: matches.slice(offset, offset + 20),
+          topics: [...topics.values()], role: options.role || '', conceptId: options.conceptId || '' }
+      }
+
       function readingMapHost(document, options = {}) {
         const graph = document && document.graph
         if (!graph || !Array.isArray(graph.nodes)) return null
@@ -3605,6 +3898,45 @@ function createHostPlugin(graphContractOnly) {
       function learningPlanHost(document, options = {}) {
         const graph = document?.graph
         if (!graph || !Array.isArray(graph.nodes)) return null
+        if (options.modelId) {
+          if (options.exercise && !['prediction', 'counterexample', 'understanding'].includes(options.exercise)) return { error: { code: 'invalid_input', message: '模型练习类型无效' } }
+          const detail = connectionModelsHost(document, options)
+          if (detail?.error) return detail
+          const { model, ports, related, relatedTotal } = detail
+          const references = [model, ...ports.map(port => port.node), ...related]
+            .filter((item, index, all) => item.citations.length && all.findIndex(other => other.nodeId === item.nodeId) === index)
+            .slice(0, 40).map(item => ({ nodeId: item.nodeId, type: item.type, label: item.label, text: item.text,
+              state: item.state, entailmentStatus: item.entailmentStatus, citations: item.citations }))
+          const challenge = options.exercise === 'counterexample'
+          const understanding = options.exercise === 'understanding'
+          const task = { id: (understanding ? 'model_understanding:' : challenge ? 'model_counterexample:' : 'model_prediction:') + encodeURIComponent(model.nodeId),
+            kind: understanding ? 'model_understanding' : 'model_prediction', modelId: model.nodeId,
+            ...(understanding ? { exercise: 'understanding', origin: 'personal_expression_not_source', assessment: 'not_assessed',
+              source: { id: graph.source?.id || '', title: graph.source?.title || '' } } :
+              { origin: 'derived_exercise_not_source', grading: 'self_assessment_only', scenarioOrigin: 'learner_provided', novelty: 'not_verified',
+                ...(challenge ? { exercise: 'counterexample', controlledChange: 'learner_reported_not_verified', refutation: 'not_verified' } : {}) }),
+            prompt: understanding ? '我的输入判别、联结规律、输出判别与适用边界。' : challenge ? '从一个基准情境出发，只改变一个输入或适用条件，分别写出预测，以及什么观察结果会反驳你的联结。' :
+              '用自己的话重建这个联结模型，再为一个具体的新情境作出预测，并写下能观察到的验证依据。',
+            guide: [...(challenge ? ['基准情境及原预测', '只改变哪一项，哪些条件保持不变', '边界之外不适用，不能直接当成边界之内的反例'] : []),
+              '输入是否足够具体', '输入通过什么关系得到输出，哪些步骤只是推测',
+              '适用条件是否满足，什么反例会使预测失效', '对照原文后，哪些地方需要修改；自评不是验证结果'],
+            model: { nodeId: model.nodeId, text: model.text, warnings: model.warnings,
+              ...(understanding ? { state: model.state, entailmentStatus: model.entailmentStatus, identity: detail.structure?.identity || 'undetermined' } : {}),
+              inputs: ports.filter(port => port.role === 'input').map(port => ({ nodeId: port.node.nodeId, text: port.node.text,
+                ...(port.slotId ? { slotId: port.slotId, unit: port.unit, state: port.timeState } : {}) })),
+              outputs: ports.filter(port => port.role === 'output').map(port => ({ nodeId: port.node.nodeId, text: port.node.text,
+                ...(port.slotId ? { slotId: port.slotId, unit: port.unit, state: port.timeState } : {}) })),
+              ...(detail.structure ? { branches: detail.structure.branches.map(branch => ({ id: branch.id, label: branch.label,
+                condition: branch.condition.text, mapping: branch.mapping.text, boundary: branch.boundary.text,
+                provenance: Object.fromEntries(['condition', 'mapping', 'boundary'].map(key => [key, understanding ? branch[key].provenance : branch[key].provenance.kind])) })) } : {}),
+              unknown: ports.filter(port => port.role === 'unknown').map(port => ({ nodeId: port.node.nodeId, text: port.node.text })) },
+            references, relatedTotal, referencesLimited: relatedTotal > related.length || references.length === 40 }
+          return { documentId: document.documentId, revision: document.revision, modelId: model.nodeId, modelFeedbackVersion: 1,
+            ...(understanding ? { modelUnderstandingVersion: 1 } : {}),
+            origin: 'derived_learning_plan_not_canonical', tasks: understanding || model.citations.length ? [task] : [],
+            unavailable: understanding || model.citations.length ? [] : ['model_prediction'],
+            reason: model.citations.length ? '' : '模型尚无可匹配当前原文的引用；请先核对来源，旧练习仍可查看。' }
+        }
         if (Number.isInteger(options.expectedRevision) && options.expectedRevision !== document.revision) {
           return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入学习任务',
             currentRevision: document.revision } }
@@ -4211,12 +4543,47 @@ function createHostPlugin(graphContractOnly) {
         }
         return incomingGraph
       }
-      function authenticateGraphEvidenceHost(graph, sourceText) {
+      let graphCitationSourceCache = null
+      function graphCitationSourceHost(sourceText, sourceUnits, sourceUnitLengths) {
+        const source = typeof sourceText === 'string' ? sourceText : ''
+        const stored = Array.isArray(sourceUnits) && sourceUnits.length > 0
+        const boundaryKey = JSON.stringify(stored ? sourceUnits.map(unit => [unit?.paragraph, unit?.text]) : sourceUnitLengths)
+        if (graphCitationSourceCache?.source === source && graphCitationSourceCache.boundaryKey === boundaryKey
+          && graphCitationSourceCache.stored === stored) return graphCitationSourceCache
+        const paragraphTexts = new Map(), paras = []
+        let text = source
+        if (stored) {
+          const invalid = () => taskOperationErrorHost('source_units_invalid', '存储原文的段落身份无效，禁止使用错位证据', 'verification')
+          for (const unit of sourceUnits) {
+            if (!Number.isSafeInteger(unit?.paragraph) || unit.paragraph < 0 || typeof unit.text !== 'string'
+              || !unit.text.trim() || paragraphTexts.has(unit.paragraph)) throw invalid()
+            paragraphTexts.set(unit.paragraph, unit.text)
+          }
+          let start = 0
+          // Stored paragraph identities outrank a newer parser, including sparse ids.
+          // Offsets here are internal to the stored-unit index, never offsets in the raw file.
+          for (const [paragraph, unitText] of [...paragraphTexts].sort((a, b) => a[0] - b[0])) {
+            const end = start + unitText.length
+            paras.push({ paragraph, text: unitText, start, end })
+            start = end + 2
+          }
+          text = paras.map(unit => unit.text).join(NL + NL)
+        } else {
+          for (const [paragraph, unit] of verificationParagraphsHost(source, sourceUnitLengths).entries()) {
+            paragraphTexts.set(paragraph, unit.text)
+            paras.push({ ...unit, paragraph })
+          }
+        }
+        graphCitationSourceCache = { source, stored, boundaryKey, text, paras, paragraphTexts }
+        return graphCitationSourceCache
+      }
+
+      function authenticateGraphEvidenceHost(graph, sourceText, sourceUnits) {
         if (!graph || typeof graph !== 'object') return graph
-        const paragraphs = splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '')
+        const { paragraphTexts } = graphCitationSourceHost(sourceText, sourceUnits)
         const quoteMatch = (paragraph, quote) => {
-          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphs.length || !quote) return ''
-          return exactOrUniqueTypographicQuoteHost(String(paragraphs[paragraph] || ''), quote)
+          if (!Number.isInteger(paragraph) || !paragraphTexts.has(paragraph) || !quote) return ''
+          return exactOrUniqueTypographicQuoteHost(paragraphTexts.get(paragraph), quote)
         }
         for (const node of Array.isArray(graph.nodes) ? graph.nodes : []) {
           if (!node || typeof node !== 'object') continue
@@ -4256,12 +4623,12 @@ function createHostPlugin(graphContractOnly) {
         return graph
       }
 
-      function newlyInvalidGraphCitationHost(current, proposed, sourceText) {
-        const paragraphs = splitParagraphsHost(typeof sourceText === 'string' ? sourceText : '')
+      function newlyInvalidGraphCitationHost(current, proposed, sourceText, sourceUnits) {
+        const { paragraphTexts } = graphCitationSourceHost(sourceText, sourceUnits)
         const matches = (paragraph, quote) => Number.isInteger(paragraph) && paragraph >= 0 &&
-          paragraph < paragraphs.length && typeof quote === 'string' &&
+          paragraphTexts.has(paragraph) && typeof quote === 'string' &&
           quote.trim().length > 0 && quote.trim().length <= 600 &&
-          Boolean(exactOrUniqueTypographicQuoteHost(paragraphs[paragraph], quote))
+          Boolean(exactOrUniqueTypographicQuoteHost(paragraphTexts.get(paragraph), quote))
         const invalid = (targetKind, targetId, field) => ({ code: 'invalid_evidence_quote',
           message: '新增或修改的引文无法在指定原文段落中核对，知识图未更新', targetKind, targetId, field })
         const check = (item, previous, targetKind, targetId) => {
@@ -4346,7 +4713,6 @@ function createHostPlugin(graphContractOnly) {
         }, merged)
       }
 
-      let invariantSourceCache = null
       function validateGraphInvariantsHost(graph, sourceText, options = {}) {
         const typeLookup = ontTypeAliases(graph)
         const relationLookup = ontRelationAliases(graph)
@@ -4359,6 +4725,7 @@ function createHostPlugin(graphContractOnly) {
         const extraNodes = options.extraNodes instanceof Map ? options.extraNodes : new Map()
         const normalizationWarnings = Array.isArray(options.normalizationWarnings) ? options.normalizationWarnings : []
         const ignoreSafeNormalizationDrops = options.ignoreSafeNormalizationDrops === true
+        const { paras, paragraphTexts, text: citationSource } = graphCitationSourceHost(sourceText, options.sourceUnits, options.sourceUnitLengths)
         const issues = []
         const add = (code, blocking, severity, category, targetKind, targetId, title, detail, evidence, proposedFix, confidence, extra) => {
           issues.push({
@@ -4375,6 +4742,12 @@ function createHostPlugin(graphContractOnly) {
             proposedFix: proposedFix || { action: 'none' },
             ...(extra && typeof extra === 'object' ? extra : {}),
           })
+        }
+        if (graph?.nodes?.some(node => node?.modelStructure != null)) {
+          for (const issue of MODEL_STRUCTURE_TOOLS.errors(graph, paragraphTexts)) {
+            add('model_structure_invalid', true, 'error', 'type', 'node', issue.nodeId,
+              '联结模型结构无效', issue.message, [], { action: 'none' })
+          }
         }
         for (const issue of IMAGE_NODE_TOOLS.errors(graph || { nodes: [], edges: [] })) {
           add('image_source_invalid', true, 'error', 'grounding', issue.targetKind, issue.targetId,
@@ -4404,22 +4777,12 @@ function createHostPlugin(graphContractOnly) {
         const edgeKey = (edge) => edge && typeof edge.fromNodeId === 'string' && typeof edge.toNodeId === 'string'
           ? edge.fromNodeId + '>' + edge.toNodeId
           : ''
-        const source = sourceText || ''
-        const boundaryKey = JSON.stringify(options.sourceUnitLengths)
-        // Retain only the latest immutable source index, never a graph verdict.
-        if (!invariantSourceCache || typeof source !== 'string' || invariantSourceCache.text !== source
-          || invariantSourceCache.boundaryKey !== boundaryKey) {
-          const paras = verificationParagraphsHost(source, options.sourceUnitLengths)
-          invariantSourceCache = { text: source, boundaryKey,
-            paras, paragraphTexts: paras.map((paragraph) => paragraph.text) }
-        }
-        const { paras, paragraphTexts } = invariantSourceCache
         // One validation pass shares source normalization across all node lookups.
         // This is not a validation-result cache: every invariant still runs.
         const sourceForms = new Map()
         const quoteInParagraph = (quote, paragraph) => {
-          if (!quote || !Number.isInteger(paragraph) || paragraph < 0 || paragraph >= paragraphTexts.length) return false
-          return Boolean(exactOrUniqueTypographicQuoteHost(String(paragraphTexts[paragraph] || ''), quote))
+          if (!quote || !Number.isInteger(paragraph) || !paragraphTexts.has(paragraph)) return false
+          return Boolean(exactOrUniqueTypographicQuoteHost(paragraphTexts.get(paragraph), quote))
         }
 
         // Normalization rejections are part of the same acceptance contract.
@@ -4454,7 +4817,7 @@ function createHostPlugin(graphContractOnly) {
           }
           if (skipGrounding) continue
           const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
-          const pNum = Number.isInteger(node.paragraph) && node.paragraph >= 0 && node.paragraph < paras.length ? node.paragraph : null
+          const pNum = Number.isInteger(node.paragraph) && paragraphTexts.has(node.paragraph) ? node.paragraph : null
           const declaredQuoteMatch = quote && pNum != null && quoteInParagraph(quote, pNum)
           const semanticGuard = semanticGuardTypes.has(node.type) ? semanticGuardDriftHost(quote, node.text) : ''
           if (semanticGuard) {
@@ -4466,8 +4829,8 @@ function createHostPlugin(graphContractOnly) {
               canRestoreFromQuote ? { action: 'update_node', nodePatch: { id, patch: { text: quote } } } : { action: 'none' }, 1,
               { safeRepairable: canRestoreFromQuote, semanticGuardContext: { marker: semanticGuard, text: node.text, quote, paragraph: pNum } })
           }
-          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '', undefined, sourceForms) : null
-          const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paragraphIndexOfOffset(paras, quoteOffset) : null)
+          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, citationSource, undefined, sourceForms) : null
+          const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paras[paragraphIndexOfOffset(paras, quoteOffset)]?.paragraph ?? null : null)
           if (quote && quotePara != null && pNum != null && pNum !== quotePara) {
             add('node_paragraph_mismatch', true, 'error', 'grounding', 'node', id,
               '摘录位置与段落编号不一致',
@@ -4557,7 +4920,7 @@ function createHostPlugin(graphContractOnly) {
           }
           const relationEvidence = skipGrounding
             ? (Array.isArray(edge.evidence) ? edge.evidence.filter((item) => item && Number.isInteger(item.paragraph) && typeof item.quote === 'string' && item.quote.trim()) : [])
-            : normalizeRelationEvidenceHost(edge.evidence, paras.length, { paragraphTexts }, null, identity)
+            : normalizeRelationEvidenceHost(edge.evidence, paras.length, { paragraphMap: paragraphTexts }, null, identity)
           if (relationEvidence.length === 0) {
             add('edge_relation_evidence_missing', true, 'error', 'grounding', 'edge', key,
               '关系边缺少直接原文证据', '端点分别出现不能证明 relation；必须有能直接支持该关系的原文摘录。',
@@ -4580,10 +4943,10 @@ function createHostPlugin(graphContractOnly) {
         for (const node of skipGrounding ? [] : nodes) {
           if (!node || typeof node !== 'object' || !node.id) continue
           const quote = typeof node.quote === 'string' ? node.quote.trim() : ''
-          const pNum = Number.isInteger(node.paragraph) && node.paragraph >= 0 && node.paragraph < paras.length ? node.paragraph : null
+          const pNum = Number.isInteger(node.paragraph) && paragraphTexts.has(node.paragraph) ? node.paragraph : null
           const declaredQuoteMatch = quote && pNum != null && quoteInParagraph(quote, pNum)
-          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, sourceText || '', undefined, sourceForms) : null
-          const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paragraphIndexOfOffset(paras, quoteOffset) : null)
+          const quoteOffset = quote && !declaredQuoteMatch ? resolveAnchorHost(quote, citationSource, undefined, sourceForms) : null
+          const quotePara = declaredQuoteMatch ? pNum : (quoteOffset != null ? paras[paragraphIndexOfOffset(paras, quoteOffset)]?.paragraph ?? null : null)
           if (declaredQuoteMatch || quoteOffset != null || pNum != null) anchorOk += 1
           if (declaredQuoteMatch || quoteOffset != null || node.groundingStatus === 'grounded') evidenceOk += 1
           if (node.entailmentStatus === 'verified') entailmentVerified += 1
@@ -4622,7 +4985,7 @@ function createHostPlugin(graphContractOnly) {
               '当前边/节点比为 ' + (Math.round(qualityConnectivity.edgeNodeRatio * 100) / 100) + '，建议检查主结论、核心概念与低连接节点之间是否存在漏边。', [], { action: 'none' })
           }
           const uncovered = []
-          for (let i = 0; i < paras.length; i++) if (!coveredParas.has(i)) uncovered.push(i + 1)
+          for (const unit of paras) if (!coveredParas.has(unit.paragraph)) uncovered.push(unit.paragraph + 1)
           if (uncovered.length > 0 && uncovered.length <= 6) {
             add('paragraph_uncovered', false, 'suggestion', 'completeness', 'graph', null, '部分段落未拆出任何节点',
               '以下段落没有可定位节点：第 ' + uncovered.join('、') + ' 段。如其中有重要结论/定义/规则，建议追加拆分。', [], { action: 'none' })
@@ -4732,6 +5095,7 @@ function createHostPlugin(graphContractOnly) {
             text: node && node.text,
             quote: node && node.quote,
             paragraph: node && node.paragraph,
+             ...(node?.modelStructure ? { modelStructure: node.modelStructure } : {}),
             ...(pickDeclaredAttributes(node, nodeAttributes) || {}),
           })),
           edges: (Array.isArray(candidate.edges) ? candidate.edges : []).map((edge) => ({
@@ -4908,15 +5272,18 @@ function createHostPlugin(graphContractOnly) {
       function normalizeRelationEvidenceHost(rawEvidence, totalParagraphs, sourceContext, warnings, edgeLabel) {
         const out = []
         const paragraphs = sourceContext && Array.isArray(sourceContext.paragraphTexts) ? sourceContext.paragraphTexts : null
+        const paragraphMap = sourceContext?.paragraphMap instanceof Map ? sourceContext.paragraphMap : null
         for (const item of Array.isArray(rawEvidence) ? rawEvidence : []) {
           if (!item || typeof item !== 'object') continue
           const rawParagraph = item.paragraph != null ? item.paragraph : item.para
           const paragraph = Number(String(rawParagraph == null ? '' : rawParagraph).trim())
           const quote = typeof item.quote === 'string' ? item.quote.trim().slice(0, 600) : ''
-          if (!Number.isInteger(paragraph) || paragraph < 0 || paragraph >= totalParagraphs || !quote) continue
+          if (!Number.isInteger(paragraph) || paragraph < 0 || !quote
+            || (paragraphMap ? !paragraphMap.has(paragraph) : paragraph >= totalParagraphs)) continue
           let authenticatedQuote = quote
-          if (paragraphs && typeof paragraphs[paragraph] === 'string') {
-            authenticatedQuote = exactOrUniqueTypographicQuoteHost(paragraphs[paragraph], quote)
+          const paragraphText = paragraphMap ? paragraphMap.get(paragraph) : paragraphs?.[paragraph]
+          if (typeof paragraphText === 'string') {
+            authenticatedQuote = exactOrUniqueTypographicQuoteHost(paragraphText, quote)
             if (!authenticatedQuote) continue
           }
           out.push(evidenceRecordHost(paragraph, authenticatedQuote, sourceContext, item))
@@ -5788,6 +6155,197 @@ function createHostPlugin(graphContractOnly) {
         return { nodeId, forNode, matches, materialize, semanticGraph, errors, signature }
       })()
       // <<< END IMAGE NODE TOOLS <<<
+
+      // >>> GENERATED MODEL STRUCTURE TOOLS >>>
+      const MODEL_STRUCTURE_TOOLS = (function createModelStructureTools() {
+        const fail = (path, message) => { throw Object.assign(new Error(path + ': ' + message), { code: 'invalid_model_structure' }) }
+        const object = (value, keys, path) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) fail(path, 'expected an object')
+          if (Object.keys(value).some(key => !keys.includes(key))) fail(path, 'unsupported field')
+        }
+        const string = (value, max, path, required = false) => {
+          if (typeof value !== 'string' || value.length > max || required && !value.trim()) fail(path, 'invalid text')
+        }
+        const list = (value, max, path) => {
+          if (!Array.isArray(value) || value.length > max) fail(path, 'invalid or oversized list')
+        }
+        const ids = (items, path) => {
+          const found = new Set()
+          for (const item of items) {
+            if (!item || typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(item.id) || found.has(item.id)) fail(path, 'missing or duplicate identity')
+            found.add(item.id)
+          }
+          return found
+        }
+        const provenance = (value, units, path) => {
+          object(value, ['kind', 'paragraph', 'quote', 'note'], path)
+          if (!['unknown', 'source', 'user', 'ai'].includes(value.kind)) fail(path, 'invalid provenance kind')
+          string(value.quote, 2000, path + '.quote')
+          string(value.note, 1000, path + '.note')
+          if (value.paragraph !== null && (!Number.isSafeInteger(value.paragraph) || value.paragraph < 0)) fail(path, 'invalid paragraph')
+          if (value.kind === 'source' && (!value.quote.trim() || value.paragraph === null)) fail(path, 'source fields need a quote and paragraph')
+          if (value.quote && units && !units.get(value.paragraph)?.includes(value.quote)) fail(path, 'quote does not match the stored source unit')
+        }
+        const field = (value, units, path) => {
+          object(value, ['text', 'provenance'], path)
+          string(value.text, 2000, path + '.text')
+          provenance(value.provenance, units, path + '.provenance')
+        }
+        const validate = (value, nodes, units, shapeOnly = false) => {
+          if (!shapeOnly && (!nodes?.get || !units?.get)) fail('modelStructure', 'canonical node and source indexes are required')
+          object(value, ['version', 'identity', 'slots', 'branches', 'examples'], 'modelStructure')
+          if (JSON.stringify(value).length > 200000) fail('modelStructure', 'payload exceeds 200000 characters')
+          if (value.version !== 1 || !['undetermined', 'assertion', 'hypothesis', 'wrong_example', 'type_definition'].includes(value.identity)) fail('modelStructure', 'invalid version or content identity')
+          list(value.slots, 40, 'slots'); list(value.branches, 40, 'branches'); list(value.examples, 100, 'examples')
+          const slotIds = ids(value.slots, 'slots'), branchIds = ids(value.branches, 'branches')
+          ids(value.examples, 'examples')
+          const slots = new Map(value.slots.map(slot => [slot.id, slot]))
+          for (const slot of value.slots) {
+            const path = 'slot ' + slot.id
+            object(slot, ['id', 'conceptId', 'label', 'role', 'unit', 'state', 'provenance'], path)
+            string(slot.conceptId, 160, path + '.conceptId', true)
+            const concept = nodes?.get(slot.conceptId)
+            if (!shapeOnly && (concept?.type !== 'concept' || concept.state === 'rejected')) fail(path, 'endpoint must reference an existing non-rejected concept')
+            if (!['input', 'output', 'unknown'].includes(slot.role)) fail(path, 'invalid role')
+            string(slot.label, 200, path + '.label'); string(slot.unit, 80, path + '.unit'); string(slot.state, 200, path + '.state')
+            provenance(slot.provenance, units, path + '.provenance')
+          }
+          for (const branch of value.branches) {
+            const path = 'branch ' + branch.id
+            object(branch, ['id', 'label', 'condition', 'mapping', 'boundary'], path)
+            string(branch.label, 200, path + '.label', true)
+            for (const key of ['condition', 'mapping', 'boundary']) field(branch[key], units, path + '.' + key)
+          }
+          for (const example of value.examples) {
+            const path = 'example ' + example.id
+            object(example, ['id', 'title', 'scenario', 'branchId', 'inputs', 'outputs', 'reasoning', 'provenance'], path)
+            string(example.title, 200, path + '.title', true)
+            string(example.scenario, 2000, path + '.scenario', true)
+            string(example.reasoning, 2000, path + '.reasoning')
+            string(example.branchId, 80, path + '.branchId')
+            if (example.branchId && !branchIds.has(example.branchId)) fail(path, 'branch no longer exists')
+            for (const [key, role] of [['inputs', 'input'], ['outputs', 'output']]) {
+              list(example[key], 40, path + '.' + key)
+              const seen = new Set()
+              for (const binding of example[key]) {
+                object(binding, ['slotId', 'value'], path + '.' + key)
+                if (!slotIds.has(binding.slotId) || seen.has(binding.slotId) || slots.get(binding.slotId).role !== role) fail(path, 'binding has a missing, duplicate, or incompatible slot')
+                seen.add(binding.slotId); string(binding.value, 1000, path + '.value')
+              }
+            }
+            provenance(example.provenance, units, path + '.provenance')
+          }
+          return value
+        }
+        const errors = (graph, units) => {
+          const nodes = new Map((graph.nodes || []).map(node => [node.id, node])), out = []
+          for (const node of nodes.values()) {
+            if (node.modelStructure == null) continue
+            try {
+              if (node.type !== 'connection_model') fail('modelStructure', 'only connection_model can hold a model structure')
+              validate(node.modelStructure, nodes, units)
+            } catch (error) { out.push({ nodeId: node.id, message: error.message }) }
+          }
+          return out
+        }
+        const exampleStatus = (structure, example) => {
+          const branch = structure.branches.find(item => item.id === example.branchId)
+          const missing = []
+          for (const role of ['input', 'output']) {
+            const bindings = example[role === 'input' ? 'inputs' : 'outputs']
+            for (const slot of structure.slots.filter(item => item.role === role)) {
+              if (!bindings.some(binding => binding.slotId === slot.id && binding.value.trim())) missing.push(slot.id)
+            }
+          }
+          return { missing, complete: !!branch?.mapping.text.trim() && structure.slots.some(slot => slot.role === 'input')
+            && structure.slots.some(slot => slot.role === 'output') && !structure.slots.some(slot => slot.role === 'unknown') && !missing.length }
+        }
+        const diagnose = (value, context = {}) => {
+          const items = [], counts = { structure: 0, examples: 0, sources: 0, review: 0 }
+          const origins = { source: 0, user: 0, ai: 0, unknown: 0 }
+          const text = value => typeof value === 'string' ? value.trim() : ''
+          const array = (value, limit) => Array.isArray(value) ? value.slice(0, limit).filter(item => item && typeof item === 'object') : []
+          const add = (code, group, target, info = {}) => {
+            counts[group]++
+            items.push({ id: code + ':' + (target?.id || '') + ':' + (target?.field || '') + ':' + (info.branchId || info.edgeKey || '') + ':' + (info.edgeIndex ?? info.cautionIndex ?? ''), code, group, target, ...info })
+          }
+          const origin = (provenance, target, name) => {
+            const kind = Object.hasOwn(origins, provenance?.kind) ? provenance.kind : 'unknown'
+            origins[kind]++
+            if (kind === 'unknown') add('source_unknown', 'sources', { ...target, field: target.field ? target.field + '.provenance' : 'provenance' }, { name })
+          }
+          const ports = array(context.ports, Number.MAX_SAFE_INTEGER)
+          const slots = value ? array(value.slots, 40) : ports.filter(port => port.node?.type === 'concept')
+            .map(port => ({ id: port.edgeKey, conceptId: port.node.nodeId, role: port.role, label: port.node.text }))
+          const branches = array(value?.branches, 40), examples = array(value?.examples, 100)
+          const nameOf = slot => text(slot.label) || text(context.names?.[slot.conceptId]) || slot.conceptId || slot.id
+          const target = (section, id = '', field = '') => ({ section, id, field })
+          if (!value) add('structure_absent', 'structure', target('slots'))
+          else {
+            try { validate(value, null, null, true) }
+            catch (error) { add('shape_invalid', 'structure', null, { detail: error.message }) }
+          }
+          if (context.invalid) add('canonical_invalid', 'review', null, { detail: context.invalid })
+          for (const [cautionIndex, caution] of (Array.isArray(context.cautions) ? context.cautions.slice(0, 20) : []).entries()) {
+            if (text(caution)) add('wording_caution', 'review', target('identity'), { detail: caution, cautionIndex })
+          }
+          if (!value || value.identity === 'undetermined') add('identity_unknown', 'review', target('identity'))
+          else if (value.identity !== 'assertion') add('identity_caution', 'review', target('identity'), { identity: value.identity })
+          for (const role of ['input', 'output']) {
+            if (!slots.some(slot => slot.role === role)) add('missing_' + role, 'structure', target('slots'))
+          }
+          const conceptCounts = new Map()
+          for (const slot of slots) conceptCounts.set(slot.conceptId, (conceptCounts.get(slot.conceptId) || 0) + 1)
+          for (const slot of slots) {
+            if (!['input', 'output'].includes(slot.role)) add('slot_role', 'structure', target('slots', value ? slot.id : '', 'role'), { name: nameOf(slot) })
+            if (value) {
+              if (conceptCounts.get(slot.conceptId) > 1 && !text(slot.state)) add('slot_state', 'review', target('slots', slot.id, 'state'), { name: nameOf(slot) })
+              origin(slot.provenance, target('slots', slot.id), nameOf(slot))
+            }
+          }
+          if (!branches.length) add('missing_branch', 'structure', target('branches'))
+          for (const branch of branches) {
+            for (const key of ['condition', 'mapping', 'boundary']) {
+              if (!text(branch[key]?.text)) add('branch_' + key, 'structure', target('branches', branch.id, key), { name: branch.label })
+              else origin(branch[key]?.provenance, target('branches', branch.id, key), branch.label + ' / ' + key)
+            }
+            const paired = examples.filter(example => example.branchId === branch.id && text(example.scenario)
+              && text(branch.mapping?.text) && slots.some(slot => slot.role === 'input') && slots.some(slot => slot.role === 'output')
+              && slots.every(slot => ['input', 'output'].includes(slot.role) && array(example[slot.role === 'input' ? 'inputs' : 'outputs'], 40)
+                .some(binding => binding.slotId === slot.id && text(binding.value))))
+            if (!paired.length) add('branch_no_pair', 'examples', target('examples', '', 'branchId'), { name: branch.label, branchId: branch.id })
+          }
+          if (!examples.length) add('missing_example', 'examples', target('examples'))
+          for (const example of examples) {
+            if (!text(example.scenario)) add('example_scenario', 'examples', target('examples', example.id, 'scenario'), { name: example.title })
+            if (!branches.some(branch => branch.id === example.branchId)) add('example_branch', 'examples', target('examples', example.id, 'branchId'), { name: example.title })
+            for (const [key, role] of [['inputs', 'input'], ['outputs', 'output']]) {
+              const bindings = array(example[key], 40)
+              const missing = slots.filter(slot => slot.role === role && !bindings.some(binding => binding.slotId === slot.id && text(binding.value)))
+              if (missing.length) add('example_' + key, 'examples', target('examples', example.id, key), { name: example.title,
+                missing: missing.map(slot => ({ slotId: slot.id, name: nameOf(slot) })) })
+            }
+            if (!text(example.reasoning)) add('example_reasoning', 'examples', target('examples', example.id, 'reasoning'), { name: example.title })
+            if (text(example.scenario)) origin(example.provenance, target('examples', example.id), example.title)
+          }
+          for (const port of ports) {
+            if (!port.editable || port.role === 'unknown') add('legacy_port', 'review', null, { name: port.node?.text || port.node?.nodeId,
+              edgeKey: port.edgeKey, edgeIndex: port.edgeIndex, paragraph: port.citations?.[0]?.paragraph ?? port.node?.citations?.[0]?.paragraph ?? null })
+          }
+          if (value && JSON.stringify(slots.map(slot => slot.conceptId + ':' + slot.role).sort())
+            !== JSON.stringify(ports.map(port => port.node?.nodeId + ':' + port.role).sort())) add('legacy_difference', 'review', null)
+          return { version: 1, basis: 'recorded_fields_not_semantic_truth', stored: !!value, total: items.length, counts, origins, items }
+        }
+        const fieldFromSource = (target, unit, quote) => {
+          if (!target || target.section !== 'branches' || !['condition', 'mapping', 'boundary'].includes(target.field)) fail('source selection', 'invalid destination')
+          if (!Number.isSafeInteger(unit?.paragraph) || unit.paragraph < 0 || typeof unit.text !== 'string') fail('source selection', 'invalid stored source unit')
+          string(quote, 2000, 'source selection', true)
+          if (!unit.text.includes(quote)) fail('source selection', 'quote does not match the selected source unit')
+          return { text: quote, provenance: { kind: 'source', paragraph: unit.paragraph, quote, note: '' } }
+        }
+        return { validate, validateShape: value => validate(value, null, null, true), errors, exampleStatus, diagnose, fieldFromSource }
+      })()
+      // <<< END MODEL STRUCTURE TOOLS <<<
       function prepareImageNodesHost(saved, args) {
         const graph = saved?.graph || saved
         if (!graph) return { error: { code: 'not_found', message: '找不到图片所属文档' } }
@@ -7121,7 +7679,8 @@ function createHostPlugin(graphContractOnly) {
         const records = new Map()
         for (const unit of relationEvidenceUnitsHost(nodes, paragraphTexts).sort((a, b) => a.num - b.num)) records.set('p:' + unit.num, JSON.stringify({ paragraph: unit.num, text: unit.text }))
         const attributes = ontNodeAttributes(ontology)
-        for (const node of nodes.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)))) records.set('n:' + node.id, JSON.stringify({ id: node.id, type: node.type, paragraph: node.paragraph, text: node.text, ...(pickDeclaredAttributes(node, attributes) || {}) }))
+        for (const node of nodes.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)))) records.set('n:' + node.id, JSON.stringify({ id: node.id, type: node.type, paragraph: node.paragraph, text: node.text,
+          ...(node.modelStructure ? { modelStructure: node.modelStructure } : {}), ...(pickDeclaredAttributes(node, attributes) || {}) }))
         return records
       }
       function prepareRelationWeaveContextsHost(groups, paragraphTexts, ontology = null) {
@@ -11775,6 +12334,8 @@ function createHostPlugin(graphContractOnly) {
 
       // Headless consumers share these contracts without RPCs or timers.
       if (graphContractOnly === true) return Object.freeze({
+        connectionModels: connectionModelsHost,
+        learningPlan: learningPlanHost,
         normalizeGraph, renumberNewIds, mergeBatch,
         materializeImageNodes: IMAGE_NODE_TOOLS.materialize,
         splitParagraphs: splitParagraphsHost,
@@ -11935,6 +12496,21 @@ function createHostPlugin(graphContractOnly) {
          return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
        })
 
+       harness.handle('connection-models', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         const saved = typeof a.documentId === 'string' ? loadCanonicalDocumentHost(a.documentId) : null
+         return connectionModelsHost(saved, a)
+       })
+       harness.handle('learning-mode', async (args) => {
+         const a = args && typeof args === 'object' ? args : {}
+         if (a.action !== 'plan') return { error: { code: 'persistence_unavailable',
+           message: '当前为临时 Host；个人练习记录需要持久化安装，不会假报保存成功。' } }
+         const saved = typeof a.documentId === 'string' ? loadCanonicalDocumentHost(a.documentId) : null
+         if (!saved) return { error: { code: 'not_found', message: '找不到 canonical 知识图' } }
+         const plan = learningPlanHost(saved, a)
+         return plan?.error ? plan : { ...plan, tasks: plan.tasks.map(task => task.kind === 'model_prediction'
+           ? { ...task, referenceCount: task.references.length, references: [] } : task) }
+       })
        harness.handle('reading-map', async (args) => {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
@@ -12050,7 +12626,7 @@ function createHostPlugin(graphContractOnly) {
          if (invalidCitationShape) return { error: invalidCitationShape }
          const imageMutation = imageNodeMutationErrorHost(current.graph, incoming, a.baseNodeIds, a.operations)
          if (imageMutation) return { error: imageMutation }
-         const invalidIncomingCitation = newlyInvalidGraphCitationHost(current.graph, incoming, current.sourceText)
+         const invalidIncomingCitation = newlyInvalidGraphCitationHost(current.graph, incoming, current.sourceText, current.sourceUnits)
          if (invalidIncomingCitation) return { error: invalidIncomingCitation }
          const baselineIds = new Set(Array.isArray(a.baseNodeIds) ? a.baseNodeIds.filter((id) => typeof id === 'string' && id) : [])
          const canonicalIds = new Set((Array.isArray(current.graph.nodes) ? current.graph.nodes : []).map((node) => node && node.id).filter(Boolean))
@@ -12079,20 +12655,21 @@ function createHostPlugin(graphContractOnly) {
              message: '修复会使现有关系违反本体类型约束，canonical graph 未更新',
              edges: ontologyConflicts.slice(0, 20) } }
          }
-         const invalidCitation = newlyInvalidGraphCitationHost(current.graph, merged, current.sourceText)
+         const invalidCitation = newlyInvalidGraphCitationHost(current.graph, merged, current.sourceText, current.sourceUnits)
          if (invalidCitation) return { error: invalidCitation }
          const droppedCitation = droppedGraphCitationHost(incoming, merged)
          if (droppedCitation) return { error: droppedCitation }
          const droppedOperationCitation = droppedOperationCitationHost(operated, merged, a.operations)
          if (droppedOperationCitation) return { error: droppedOperationCitation }
-         authenticateGraphEvidenceHost(merged, current.sourceText)
-         const gate = validateGraphInvariantsHost(merged, current.sourceText, { includeQuality: false })
+         authenticateGraphEvidenceHost(merged, current.sourceText, current.sourceUnits)
+        const gate = validateGraphInvariantsHost(merged, current.sourceText, { includeQuality: false, sourceUnits: current.sourceUnits })
          if (gate.blockingIssues.length > 0) {
            return {
              error: {
                code: 'invariant_violation',
                message: '修改后的知识图未通过确定性验收，canonical graph 未更新',
-               issues: gate.blockingIssues.slice(0, 20).map((issue) => ({ code: issue.code, targetKind: issue.targetKind, targetId: issue.targetId, title: issue.title })),
+                issues: gate.blockingIssues.slice(0, 20).map((issue) => ({ code: issue.code, targetKind: issue.targetKind, targetId: issue.targetId, title: issue.title,
+                  ...(issue.code === 'model_structure_invalid' ? { detail: issue.detail } : {}) })),
              },
            }
          }

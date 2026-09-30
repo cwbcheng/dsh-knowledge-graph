@@ -31,6 +31,19 @@ const bundle = `/**
   const React = window.React
 ${body}
   window.KGViewer = {
+    ConnectionModelPanel,
+    ModelLearningPanel,
+    ModelUnderstandingPanel,
+    ModelFeedbackPanel,
+    ModelLearningHistoryPanel,
+    ModelDiagnosisMaterials,
+    ConnectionModelComparison,
+    ModelStructureEditor,
+    ModelPairedExamples,
+    ModelGapPanel,
+    ModelGapList,
+    ModelSourceFieldPicker,
+    connectionStructurePatch,
     GraphViewer,
     makeView,
     splitParagraphs,

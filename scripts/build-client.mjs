@@ -49,12 +49,12 @@ window.__ModuleLoader__.load({
 
     // ---------- RPC to the host half (webServer route, replaces host.call) ----------
     async function rpc(method, body, options = {}) {
-      if (method === "graph-neighborhood") {
-        const res = await fetch("/api/dsh-knowledge-graph/graph-neighborhood", {
+      if (method === "graph-neighborhood" || method === "connection-models" || method === "learning-mode") {
+        const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body), signal: options.signal,
         })
-        if (!res.ok) throw new Error("关系聚拢查询失败：HTTP " + res.status)
+        if (!res.ok) throw new Error("图谱查询失败：HTTP " + res.status)
         return res.json()
       }
       if (method === "list-models" || method === "ontology-list") {
@@ -200,6 +200,7 @@ c = c.split("host.call('candidate-list'").join("rpc('candidate-list'")
 c = c.split("host.call('candidate-update'").join("rpc('candidate-update'")
 c = c.split("host.call('document-load'").join("rpc('document-load'")
 c = c.split("host.call('reading-map'").join("rpc('reading-map'")
+c = c.split("host.call('connection-models'").join("rpc('connection-models'")
 c = c.split("host.call('perspectives'").join("rpc('perspectives'")
 c = c.split("host.call('concept-dossier'").join("rpc('concept-dossier'")
 c = c.split("host.call('learning-mode'").join("rpc('learning-mode'")

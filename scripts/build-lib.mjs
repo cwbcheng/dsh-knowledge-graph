@@ -1,6 +1,7 @@
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import './gen-image-nodes-inline.mjs'
+import './gen-model-structure-inline.mjs'
 
 // ---------- HOST ----------
 // Extract the plugin body directly from the source file (previously the
@@ -312,6 +313,17 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               graph.graphOntology = ontDescribe(graph)
               return writeJson(res, 200, { documentId, sourceText, revision, graph })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/connection-models') {
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的联结模型查询' } }) }
+              const documentId = typeof a?.documentId === 'string' && a.documentId.length <= 160 ? a.documentId : ''
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const store = await getSqliteStore()
+              const saved = store.getDocument(documentId)
+              return writeJson(res, 200, connectionModelsHost(saved ? { documentId, revision: saved.revision,
+                sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved } : null, a))
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/reading-map') {
               const raw = await readBody(req, 16 * 1024)
               let a
@@ -378,25 +390,60 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/learning-mode') {
-              const raw = await readBody(req, 24 * 1024)
+              res.setHeader('Cache-Control', 'no-store')
+              const raw = await readBody(req, 64 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的学习任务请求' } }) }
               const documentId = typeof a?.documentId === 'string' ? a.documentId.trim() : ''
               if (!documentId || documentId.length > 160) return writeJson(res, 200,
                 { error: { code: 'invalid_input', message: '学习任务缺少有效的 documentId' } })
+              const modelId = a.modelId ?? ''
+              if (typeof modelId !== 'string' || modelId.length > 160) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: '模型标识无效' } })
+              const exercise = a.exercise ?? ''
+              if (typeof exercise !== 'string' || exercise && (!modelId || !['prediction', 'counterexample', 'understanding', 'feedback'].includes(exercise))) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: '模型练习类型无效' } })
+              const taskView = (task, revealed) => task.kind === 'model_prediction' ? { ...task,
+                referenceCount: task.references.length, references: revealed ? task.references : [] } : task
+              const attemptView = attempt => ({ ...attempt, task: taskView(attempt.task, !!attempt.revealedAt) })
+              const matchesExercise = attempt => !exercise || (attempt.task.exercise || 'prediction') === exercise
               const store = await getSqliteStore()
               try {
+                if (a.action === 'model-history') return writeJson(res, 200, { modelLearningHistoryVersion: 1,
+                  ...store.listModelLearningHistory(documentId, modelId, a) })
+                if (a.action === 'results') return writeJson(res, 200, { modelFeedbackVersion: 1,
+                  ...store.listModelFeedback(documentId, modelId, a.predictionId) })
+                if (a.action === 'save-result') return writeJson(res, 200, { modelFeedbackVersion: 1,
+                  attempt: store.saveModelFeedback({ attemptId: a.attemptId, documentId, modelId, predictionId: a.predictionId,
+                    expectedRevision: a.expectedRevision, expectedVersion: a.expectedVersion, response: a.response }) })
                 if (a.action === 'attempts') return writeJson(res, 200,
-                  { attempts: store.listLearningAttempts(documentId) })
+                  { ...(exercise === 'understanding' ? { modelUnderstandingVersion: 1 } : {}),
+                    ...(exercise === 'feedback' ? { modelFeedbackVersion: 1 } : {}),
+                    attempts: store.listLearningAttempts(documentId, modelId, exercise).map(attemptView) })
+                if (a.action === 'get') {
+                  const attempt = typeof a.attemptId === 'string' ? store.getLearningAttempt(a.attemptId) : null
+                  if (!attempt || attempt.documentId !== documentId || attempt.modelId !== modelId || !matchesExercise(attempt)) return writeJson(res, 200,
+                    { error: { code: 'not_found', message: '找不到当前模型的练习记录' } })
+                  return writeJson(res, 200, { attempt: attemptView(attempt),
+                    ...(attempt.kind === 'model_feedback' ? { resultHeadId: store.modelFeedbackHead(attempt) } : {}) })
+                }
+                if (a.action === 'reveal' || a.action === 'review') {
+                  const attempt = typeof a.attemptId === 'string' ? store.getLearningAttempt(a.attemptId) : null
+                  if (attempt && !matchesExercise(attempt)) return writeJson(res, 200,
+                    { error: { code: 'invalid_input', message: '练习记录不属于当前练习类型' } })
+                  return writeJson(res, 200, { attempt: attemptView(store.advanceLearningAttempt({ action: a.action, documentId, modelId,
+                    attemptId: a.attemptId, expectedVersion: a.expectedVersion, review: a.review })) })
+                }
                 if (a.action === 'save' && typeof a.attemptId === 'string') {
                   const previous = store.getLearningAttempt(a.attemptId)
                   if (previous) {
-                    if (previous.documentId !== documentId || previous.taskId !== a.taskId) return writeJson(res, 200,
+                    if (previous.documentId !== documentId || previous.taskId !== a.taskId || previous.modelId !== modelId || !matchesExercise(previous)) return writeJson(res, 200,
                       { error: { code: 'attempt_conflict', message: '练习记录请求与已保存记录冲突' } })
-                    return writeJson(res, 200, { attempt: store.saveLearningAttempt({
+                    return writeJson(res, 200, { attempt: attemptView(store.saveLearningAttempt({
                       attemptId: a.attemptId, documentId, expectedRevision: a.expectedRevision,
                       task: previous.task, answer: a.answer, scenario: a.scenario || '', selfRating: a.selfRating,
-                    }) })
+                      response: a.response,
+                    })) })
                   }
                 }
                 const saved = store.getDocument(documentId)
@@ -404,17 +451,18 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   { error: { code: 'not_found', message: '找不到 canonical 知识图' } })
                 const plan = learningPlanHost({ documentId, revision: saved.revision,
                   sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved },
-                  { expectedRevision: a.expectedRevision })
+                  { expectedRevision: a.expectedRevision, modelId, exercise })
                 if (plan?.error) return writeJson(res, 200, plan)
-                if (a.action === 'plan') return writeJson(res, 200, plan)
+                if (a.action === 'plan') return writeJson(res, 200, { ...plan, tasks: plan.tasks.map(task => taskView(task, false)) })
                 if (a.action === 'save') {
                   const task = plan.tasks.find(item => item.id === a.taskId)
                   if (!task) return writeJson(res, 200,
                     { error: { code: 'invalid_input', message: '学习任务不属于当前知识图版本' } })
-                  return writeJson(res, 200, { attempt: store.saveLearningAttempt({
+                  return writeJson(res, 200, { attempt: attemptView(store.saveLearningAttempt({
                     attemptId: a.attemptId, documentId, expectedRevision: a.expectedRevision,
                     task, answer: a.answer, scenario: a.scenario || '', selfRating: a.selfRating,
-                  }) })
+                    response: a.response,
+                  })) })
                 }
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '学习任务操作无效' } })
               } catch (error) {
@@ -472,7 +520,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const saved = store.getDocument(documentId)
               const graph = { ...saved }
               delete graph.sourceText
-              rememberCanonicalGraphHost(graph, saved.sourceText, saved.revision)
+              rememberCanonicalGraphHost(graph, saved.sourceText, saved.revision, store.getDocumentSourceUnits(documentId))
               return writeJson(res, 200, { documentId, revision: saved.revision, changed: prepared.changed,
                 graph: buildGraphViewHost(graph, 0, 'image:') })
             }
@@ -555,9 +603,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (expectedRevision !== current.revision) {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已被其他修改更新，请重新载入后再提交', currentRevision: current.revision } })
                 }
+                const sourceUnits = store.getDocumentSourceUnits(documentId)
                 const invalidCitationShape = invalidGraphCitationShapeHost(a.graph)
                 if (invalidCitationShape) return writeJson(res, 200, { error: invalidCitationShape })
-                const invalidIncomingCitation = newlyInvalidGraphCitationHost(current, a.graph, current.sourceText || '')
+                const invalidIncomingCitation = newlyInvalidGraphCitationHost(current, a.graph, current.sourceText || '', sourceUnits)
                 if (invalidIncomingCitation) return writeJson(res, 200, { error: invalidIncomingCitation })
                 const baseNodeIds = new Set(Array.isArray(a.baseNodeIds) ? a.baseNodeIds : [])
                 const canonicalNodeIds = new Set((current.nodes || []).map(node => node.id))
@@ -583,7 +632,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 }
                 preserveEntailmentAuthorityHost(current, incomingGraph)
                 const preview = mergeGraphViewHost(operated, incomingGraph, a.baseNodeIds, a.baseEdgeKeys)
-                const invalidCitation = newlyInvalidGraphCitationHost(current, preview, current.sourceText || '')
+                const invalidCitation = newlyInvalidGraphCitationHost(current, preview, current.sourceText || '', sourceUnits)
                 if (invalidCitation) return writeJson(res, 200, { error: invalidCitation })
                 const droppedCitation = droppedGraphCitationHost(incomingGraph, preview)
                 if (droppedCitation) return writeJson(res, 200, { error: droppedCitation })
@@ -591,21 +640,22 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (droppedOperationCitation) return writeJson(res, 200, { error: droppedOperationCitation })
                 // The store commits incomingGraph, not preview; authenticate both after
                 // checking the raw proposed citations so neither path silently drops them.
-                authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '')
+                authenticateGraphEvidenceHost(incomingGraph, current.sourceText || '', sourceUnits)
                 const ontologyConflicts = newlyInvalidOntologyEdgesHost(current, preview)
                 if (ontologyConflicts.length > 0) {
                   return writeJson(res, 200, { error: { code: 'ontology_relation_conflict',
                     message: '修复会使现有关系违反本体类型约束，canonical graph 未更新',
                     edges: ontologyConflicts.slice(0, 20) } })
                 }
-                authenticateGraphEvidenceHost(preview, current.sourceText || '')
-                const gate = validateGraphInvariantsHost(preview, current.sourceText || '', { includeQuality: false })
+                authenticateGraphEvidenceHost(preview, current.sourceText || '', sourceUnits)
+                const gate = validateGraphInvariantsHost(preview, current.sourceText || '', { includeQuality: false, sourceUnits })
                 if (gate.blockingIssues.length > 0) {
                   return writeJson(res, 200, {
                     error: {
                       code: 'invariant_violation',
                       message: '修改后的知识图未通过确定性验收，canonical graph 未更新',
-                      issues: gate.blockingIssues.slice(0, 20).map((issue) => ({ code: issue.code, targetKind: issue.targetKind, targetId: issue.targetId, title: issue.title })),
+                      issues: gate.blockingIssues.slice(0, 20).map((issue) => ({ code: issue.code, targetKind: issue.targetKind, targetId: issue.targetId, title: issue.title,
+                        ...(issue.code === 'model_structure_invalid' ? { detail: issue.detail } : {}) })),
                     },
                   })
                 }
@@ -624,7 +674,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 const revision = committed && Number.isInteger(committed.revision) ? committed.revision : saved.revision
                 const fullGraph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
                 delete fullGraph.sourceText
-                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
+                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision, sourceUnits)
                 return writeJson(res, 200, { documentId, revision, graph: buildGraphViewHost(fullGraph) })
               } catch (error) {
                 if (error && error.code === 'revision_conflict') {
@@ -671,7 +721,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 const revision = saved.revision
                 const fullGraph = { ...saved, revision, source: { ...(saved.source || {}), revision } }
                 delete fullGraph.sourceText
-                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision)
+                rememberCanonicalGraphHost(fullGraph, saved.sourceText || '', revision, store.getDocumentSourceUnits(documentId))
                 return writeJson(res, 200, { documentId, revision, graph: buildGraphViewHost(fullGraph) })
               } catch (error) {
                 if (error?.code === 'revision_conflict') return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已有后续修改，未撤销本组' } })
@@ -1254,7 +1304,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const expectedRevision = a.expectedRevision
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
-              rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision)
+              rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision, store.getDocumentSourceUnits(documentId))
               const continuity = continueOntologyHost(canonical, a.ontology)
               if (continuity.error) return writeJson(res, 200, { error: continuity.error })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
@@ -1514,4 +1564,5 @@ copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg
 copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib/kg-markdown.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-ontology.mjs', import.meta.url), new URL('../lib/kg-ontology.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-image-nodes.mjs', import.meta.url), new URL('../lib/kg-image-nodes.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-model-structure.mjs', import.meta.url), new URL('../lib/kg-model-structure.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)

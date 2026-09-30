@@ -3,8 +3,10 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { getOntology, ontologyIdOf, rawProfiles } from './kg-ontology.mjs'
 import { createImageNodeTools } from './kg-image-nodes.mjs'
+import { createModelStructureTools } from './kg-model-structure.mjs'
 
 const imageNodeTools = createImageNodeTools()
+const modelStructureTools = createModelStructureTools()
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -344,8 +346,10 @@ function declaredAttributes(value, allowed) {
 }
 
 function nodeFromRow(node) {
+  const attributes = parseJson(node.attributes_json, {})
   return {
-    ...declaredAttributes(parseJson(node.attributes_json, {}), NODE_ATTRIBUTES),
+    ...declaredAttributes(attributes, NODE_ATTRIBUTES),
+    ...(attributes.modelStructure ? { modelStructure: attributes.modelStructure } : {}),
     id: node.node_id,
     type: node.type,
     text: node.text,
@@ -704,6 +708,13 @@ export class SqliteKnowledgeStore {
     this.ensureColumn('concept_dossier_members', 'applicability', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('concept_dossier_members', 'valid_time', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('concept_dossier_members', 'reference_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('learning_attempts', 'model_id', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('learning_attempts', 'response_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('learning_attempts', 'revealed_at', 'INTEGER')
+    this.ensureColumn('learning_attempts', 'review_json', 'TEXT')
+    this.ensureColumn('learning_attempts', 'attempt_version', 'INTEGER NOT NULL DEFAULT 1')
+    this.db.exec(`CREATE INDEX IF NOT EXISTS learning_attempts_model_idx
+      ON learning_attempts(document_id, model_id, created_at DESC, attempt_id DESC)`)
   }
 
   ensureColumn(table, column, declaration) {
@@ -871,6 +882,18 @@ export class SqliteKnowledgeStore {
         error.currentRevision = currentRevision
         throw error
       }
+      // Older projections cannot silently erase a reviewed model structure.
+      const previousStructures = new Map(this.db.prepare("SELECT node_id, attributes_json FROM graph_nodes WHERE document_id = ? AND json_type(attributes_json, '$.modelStructure') = 'object'").all(documentId)
+        .map(row => [row.node_id, parseJson(row.attributes_json, {}).modelStructure]))
+      for (let index = 0; index < nodes.length; index++) {
+        if (!Object.hasOwn(nodes[index], 'modelStructure') && previousStructures.get(nodes[index].id)) {
+          nodes[index] = { ...nodes[index], modelStructure: previousStructures.get(nodes[index].id) }
+        }
+      }
+      const structureUnits = new Map((hasSourceUnits ? sourceUnits : current && text(current.source_text) === sourceText
+        ? this.getDocumentSourceUnits(documentId) : []).map(unit => [unit.paragraph, unit.text]))
+      const structureErrors = nodes.some(node => node.modelStructure != null) ? modelStructureTools.errors({ ...graph, nodes }, structureUnits) : []
+      if (structureErrors.length) throw Object.assign(new Error(structureErrors[0].message), { code: 'invalid_model_structure' })
       // Keep the overwritten graph and source units in the same transaction.
       // Older revisions without snapshots remain explicitly non-restorable.
       if (currentRevision > 0) {
@@ -992,7 +1015,8 @@ export class SqliteKnowledgeStore {
           text(node.quote),
           Number.isInteger(node.paragraph) ? node.paragraph : null,
           JSON.stringify(Array.isArray(node.evidence) ? node.evidence : []),
-          JSON.stringify(declaredAttributes(node, profile.nodeAttributes)),
+          JSON.stringify({ ...declaredAttributes(node, profile.nodeAttributes),
+            ...(node.modelStructure ? { modelStructure: node.modelStructure } : {}) }),
           text(node.chunkId) || null,
           text(node.sectionId) || null,
           text(node.sectionTitle) || null,
@@ -1448,12 +1472,15 @@ export class SqliteKnowledgeStore {
     return false
   }
 
-  listLearningAttempts(documentId) {
+  listLearningAttempts(documentId, modelId = '', exercise = '') {
     if (typeof documentId !== 'string' || !documentId || documentId.length > 160) return []
+    if (typeof modelId !== 'string' || modelId.length > 160) return []
+    if (exercise && (!modelId || !['prediction', 'counterexample', 'understanding', 'feedback'].includes(exercise))) return []
     const revision = this.getDocumentRevision(documentId)
-    return this.db.prepare(`SELECT attempt_id, base_revision, task_id, task_kind, task_json,
-      answer, scenario, self_rating, created_at FROM learning_attempts
-      WHERE document_id = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 100`).all(documentId)
+    const taskId = (exercise === 'feedback' ? 'model_feedback:' : exercise === 'understanding' ? 'model_understanding:' : exercise === 'counterexample' ? 'model_counterexample:' : 'model_prediction:') + encodeURIComponent(modelId)
+    return this.db.prepare(`SELECT * FROM learning_attempts
+      WHERE document_id = ? AND model_id = ? ${exercise ? 'AND task_id = ?' : ''}
+      ORDER BY created_at DESC, attempt_id DESC LIMIT 100`).all(documentId, modelId, ...(exercise ? [taskId] : []))
       .map(row => this.learningAttemptOf(row, documentId, revision))
   }
 
@@ -1461,6 +1488,8 @@ export class SqliteKnowledgeStore {
     return { attemptId: row.attempt_id, documentId, baseRevision: row.base_revision,
       taskId: row.task_id, kind: row.task_kind, task: parseJson(row.task_json, {}), answer: row.answer,
       scenario: row.scenario, selfRating: row.self_rating, createdAt: row.created_at,
+      modelId: row.model_id, response: parseJson(row.response_json, {}), revealedAt: row.revealed_at,
+      review: parseJson(row.review_json, null), version: row.attempt_version,
       stale: revision !== row.base_revision }
   }
 
@@ -1471,32 +1500,78 @@ export class SqliteKnowledgeStore {
 
   saveLearningAttempt(input) {
     const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
-    const { attemptId, documentId, expectedRevision, task, answer, scenario = '', selfRating } = input || {}
+    const { attemptId, documentId, expectedRevision, task, selfRating } = input || {}
+    const modelExercise = task?.kind === 'model_prediction'
+    const understanding = task?.kind === 'model_understanding'
+    let answer = input?.answer, scenario = input?.scenario ?? '', response = {}
+    if (understanding) {
+      const value = input.response
+      const fields = { inputs: 2000, mapping: 4000, outputs: 2000, conditions: 2000, boundary: 2000, questions: 2000, revisionReason: 2000 }
+      if (task.exercise !== 'understanding' || task.origin !== 'personal_expression_not_source' ||
+          typeof task.modelId !== 'string' || !task.modelId || task.modelId.length > 160 ||
+          task.id !== 'model_understanding:' + encodeURIComponent(task.modelId) ||
+          !value || typeof value !== 'object' || Array.isArray(value) ||
+          typeof value.parentAttemptId !== 'string' || value.parentAttemptId.length > 120 ||
+          !Array.isArray(value.practiceIds) || value.practiceIds.length > 10 ||
+          value.practiceIds.some(id => typeof id !== 'string' || !id || id.length > 120) ||
+          new Set(value.practiceIds).size !== value.practiceIds.length) throw invalid('个人表述身份或关联记录无效')
+      for (const [field, limit] of Object.entries(fields)) {
+        if (typeof value[field] !== 'string' || value[field].length > limit) throw invalid('个人表述字段无效或过长')
+        response[field] = value[field].trim()
+      }
+      if (!response.mapping || value.parentAttemptId && !response.revisionReason) throw invalid('请填写联结规律；修订时还需填写修改理由')
+      response.parentAttemptId = value.parentAttemptId
+      response.practiceIds = [...value.practiceIds].sort()
+      answer = response.mapping
+      scenario = ''
+    }
+    if (modelExercise) {
+      const fields = { inputs: 1000, mapping: 2000, outputs: 1000, boundary: 1500,
+        scenario: 2000, prediction: 2000, check: 2000,
+        ...(task.exercise === 'counterexample' ? { baseline: 2000, baselinePrediction: 2000, changedVariable: 1500, falsifier: 2000 } : {}) }
+      if (task.exercise && task.exercise !== 'counterexample') throw invalid('模型练习类型无效')
+      if (!input.response || typeof input.response !== 'object' || Array.isArray(input.response) ||
+          !['not_seen', 'seen', 'unsure'].includes(input.response.sourceExposure) ||
+          typeof task.modelId !== 'string' || !task.modelId || task.modelId.length > 160 ||
+          task.id !== (task.exercise === 'counterexample' ? 'model_counterexample:' : 'model_prediction:') + encodeURIComponent(task.modelId)) throw invalid('模型练习内容无效')
+      for (const [field, limit] of Object.entries(fields)) {
+        const value = input.response[field]
+        if (typeof value !== 'string' || !value.trim() || value.length > limit) throw invalid('请完整填写模型理解、情境、预测和验证依据')
+        response[field] = value.trim()
+      }
+      response.sourceExposure = input.response.sourceExposure
+      scenario = response.scenario
+      answer = response.prediction
+    }
     if (typeof attemptId !== 'string' || !attemptId || attemptId.length > 120 ||
         typeof documentId !== 'string' || !documentId || documentId.length > 160 ||
         !Number.isInteger(expectedRevision) || expectedRevision < 1 ||
-        !task || typeof task.id !== 'string' || !['distinction', 'mechanism', 'transfer'].includes(task.kind) ||
-        task.origin !== 'derived_exercise_not_source' || !Array.isArray(task.references) ||
+        !task || typeof task.id !== 'string' || !['distinction', 'mechanism', 'transfer', 'model_prediction', 'model_understanding'].includes(task.kind) ||
+        task.origin !== (understanding ? 'personal_expression_not_source' : 'derived_exercise_not_source') || !Array.isArray(task.references) ||
         typeof answer !== 'string' || !answer.trim() || answer.length > 10000 ||
         typeof scenario !== 'string' || scenario.length > 2000 ||
-        !['needs_work', 'uncertain', 'confident'].includes(selfRating) ||
+        !(understanding ? selfRating === 'not_assessed' : ['needs_work', 'uncertain', 'confident'].includes(selfRating)) ||
         task.kind === 'transfer' && !scenario.trim()) throw invalid('学习记录内容无效')
     const comparableText = value => typeof value === 'string' ?
       value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '') : ''
-    if (task.kind === 'transfer' && task.references.some(ref =>
-      comparableText(scenario) && comparableText(scenario) === comparableText(ref.quote))) {
+    if (task.exercise === 'counterexample' && (!comparableText(response.baseline) || !comparableText(response.scenario) ||
+        comparableText(response.baseline) === comparableText(response.scenario))) throw invalid('请给出与基准不同的情境；仅修改标点或排版不构成条件变化')
+    if ((task.kind === 'transfer' || modelExercise) && task.references.some(ref =>
+      [ref.quote, ref.text, ...(ref.citations || []).map(citation => citation.quote)].some(quote =>
+        comparableText(scenario) && comparableText(scenario) === comparableText(quote)))) {
       throw invalid('新情境不能直接复制原文引文；请描述具体的新场景')
     }
-    const taskJson = JSON.stringify(task)
+    let taskJson = JSON.stringify(task)
     const answerText = answer.trim()
     const scenarioText = scenario.trim()
+    const responseJson = JSON.stringify(response)
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const previous = this.db.prepare('SELECT * FROM learning_attempts WHERE attempt_id = ?').get(attemptId)
       if (previous) {
         if (previous.document_id !== documentId || previous.base_revision !== expectedRevision ||
             previous.task_id !== task.id || previous.task_json !== taskJson || previous.answer !== answerText ||
-            previous.scenario !== scenarioText || previous.self_rating !== selfRating) {
+            previous.scenario !== scenarioText || previous.self_rating !== selfRating || previous.response_json !== responseJson) {
           throw Object.assign(new Error('学习记录请求与已保存记录冲突'), { code: 'attempt_conflict' })
         }
         this.db.exec('COMMIT')
@@ -1506,10 +1581,317 @@ export class SqliteKnowledgeStore {
       if (!revision || revision !== expectedRevision) {
         throw Object.assign(new Error('知识图已变化，请重新生成学习任务'), { code: 'revision_conflict', currentRevision: revision })
       }
+      let createdAt = Date.now()
+      if (understanding) {
+        const latest = this.db.prepare(`SELECT attempt_id, created_at FROM learning_attempts
+          WHERE document_id = ? AND model_id = ? AND task_kind = 'model_understanding'
+          ORDER BY created_at DESC, attempt_id DESC LIMIT 1`).get(documentId, task.modelId)
+        if ((latest?.attempt_id || '') !== response.parentAttemptId) {
+          throw Object.assign(new Error('个人表述已有新版本；草稿保留，请对照最新记录后再修订'), { code: 'attempt_conflict' })
+        }
+        // Append-only revisions retain both the learner's expression and the evidence as it was then.
+        const practiceSnapshots = response.practiceIds.map(id => {
+          const practice = this.getLearningAttempt(id)
+          if (!practice || practice.documentId !== documentId || practice.modelId !== task.modelId || practice.kind !== 'model_prediction') {
+            throw invalid('关联练习不属于当前文档和模型')
+          }
+          const feedback = this.listModelFeedback(documentId, task.modelId, id)
+          return { attemptId: id, version: practice.version, baseRevision: practice.baseRevision,
+            exercise: practice.task.exercise || 'prediction', createdAt: practice.createdAt, response: practice.response,
+            revealedAt: practice.revealedAt, review: practice.review, assessment: 'learner_reported_not_verified',
+            feedbackSnapshots: feedback.attempts.slice(0, 5).map(item => ({ attemptId: item.attemptId, version: item.version,
+              createdAt: item.createdAt, rootResultId: item.task.rootResultId, response: item.response,
+              reference: item.task.reference, assessment: item.task.assessment,
+              supersededAtSave: feedback.attempts.find(other => other.task.rootResultId === item.task.rootResultId).attemptId !== item.attemptId })),
+            feedbackTotal: feedback.total, feedbackLimited: feedback.total > 5 }
+        })
+        taskJson = JSON.stringify({ ...task, practiceSnapshots })
+        createdAt = Math.max(createdAt, (latest?.created_at || 0) + 1)
+      }
       this.db.prepare(`INSERT INTO learning_attempts (attempt_id, document_id, base_revision,
-        task_id, task_kind, task_json, answer, scenario, self_rating, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(attemptId, documentId, expectedRevision,
-        task.id, task.kind, taskJson, answerText, scenarioText, selfRating, Date.now())
+        task_id, task_kind, task_json, answer, scenario, self_rating, created_at, model_id, response_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(attemptId, documentId, expectedRevision,
+        task.id, task.kind, taskJson, answerText, scenarioText, selfRating, createdAt, modelExercise || understanding ? task.modelId : '', responseJson)
+      this.db.exec('COMMIT')
+      return this.getLearningAttempt(attemptId)
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  advanceLearningAttempt(input) {
+    const { action, attemptId, documentId, modelId, expectedVersion } = input || {}
+    const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
+    const conflict = message => Object.assign(new Error(message), { code: 'attempt_conflict' })
+    if (!['reveal', 'review'].includes(action) || typeof attemptId !== 'string' || !attemptId || attemptId.length > 120 ||
+        typeof documentId !== 'string' || !documentId || documentId.length > 160 ||
+        typeof modelId !== 'string' || !modelId || modelId.length > 160 ||
+        !Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw invalid('练习记录身份或版本无效')
+    let review = null
+    if (action === 'review') {
+      const value = input.review
+      if (!value || !['input', 'mapping', 'output', 'boundary', 'evidence', 'no_change', 'unsure'].includes(value.diagnosis) ||
+          !['needs_work', 'uncertain', 'confident'].includes(value.selfRating) ||
+          typeof value.reflection !== 'string' || !value.reflection.trim() || value.reflection.length > 4000 ||
+          typeof value.nextCheck !== 'string' || !value.nextCheck.trim() || value.nextCheck.length > 2000) throw invalid('请填写复盘判断和下一步验证')
+      review = { diagnosis: value.diagnosis, reflection: value.reflection.trim(), nextCheck: value.nextCheck.trim(), selfRating: value.selfRating }
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.db.prepare('SELECT * FROM learning_attempts WHERE attempt_id = ?').get(attemptId)
+      if (!row || row.document_id !== documentId || row.model_id !== modelId || row.task_kind !== 'model_prediction') {
+        throw invalid('找不到属于当前模型的练习记录')
+      }
+      if (expectedVersion > row.attempt_version) throw conflict('练习记录版本不一致，请重新读取')
+      // Lost responses can be retried, but neither prediction nor completed review may be overwritten.
+      if (action === 'reveal' && row.revealed_at || action === 'review' && row.review_json) {
+        if (action === 'review') {
+          const previous = parseJson(row.review_json, {})
+          if (JSON.stringify(previous.content) !== JSON.stringify(review)) throw conflict('复盘已保存，不能覆盖；请另开练习')
+        }
+        this.db.exec('COMMIT')
+        return this.getLearningAttempt(attemptId)
+      }
+      if (row.attempt_version !== expectedVersion) throw conflict('练习记录已变化，请重新读取')
+      if (action === 'review' && !row.revealed_at) throw invalid('请先展开原文对照，再保存复盘')
+      if (action === 'reveal') {
+        this.db.prepare('UPDATE learning_attempts SET revealed_at = ?, attempt_version = attempt_version + 1 WHERE attempt_id = ?')
+          .run(Date.now(), attemptId)
+      } else {
+        this.db.prepare('UPDATE learning_attempts SET review_json = ?, attempt_version = attempt_version + 1 WHERE attempt_id = ?')
+          .run(JSON.stringify({ content: review, createdAt: Date.now() }), attemptId)
+      }
+      this.db.exec('COMMIT')
+      return this.getLearningAttempt(attemptId)
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  listModelLearningHistory(documentId, modelId, options = {}) {
+    const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
+    const { offset = 0, exercise = '', sourceType = '', diagnosis = '', comparison = '', expectedRevision } = options
+    const types = ['observation', 'reference', 'derivation', 'ai_suggestion', 'reflection']
+    if ([documentId, modelId].some(id => typeof id !== 'string' || !id || id.length > 160) ||
+        !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+        !['', 'prediction', 'counterexample'].includes(exercise) || !['', ...types].includes(sourceType) ||
+        !['', 'input', 'mapping', 'condition', 'calculation', 'output', 'evidence', 'no_change', 'unsure'].includes(diagnosis) ||
+        !['', 'consistent', 'different', 'inconclusive', 'not_compared'].includes(comparison)) throw invalid('学习记录筛选或来源版本无效')
+    // Fold entire correction chains before any filtering or pagination. A result row is not a new trial.
+    const cte = `WITH predictions AS (
+      SELECT * FROM learning_attempts WHERE document_id = ? AND model_id = ? AND task_kind = 'model_prediction'
+        AND COALESCE(json_extract(task_json, '$.exercise'), 'prediction') IN ('prediction', 'counterexample')
+    ), feedback AS (
+      SELECT f.*, json_extract(f.task_json, '$.predictionId') AS prediction_id,
+        json_extract(f.task_json, '$.rootResultId') AS root_result_id,
+        ROW_NUMBER() OVER (PARTITION BY json_extract(f.task_json, '$.predictionId'), json_extract(f.task_json, '$.rootResultId')
+          ORDER BY f.created_at DESC, f.attempt_id DESC) AS result_rank
+      FROM learning_attempts f JOIN predictions p ON p.attempt_id = json_extract(f.task_json, '$.predictionId')
+        AND p.base_revision = f.base_revision
+      WHERE f.document_id = ? AND f.model_id = ? AND f.task_kind = 'model_feedback'
+        AND json_extract(f.task_json, '$.assessment') = 'not_independently_verified'
+        AND json_extract(f.task_json, '$.origin') = 'learner_reported_feedback_not_verification'
+        AND LENGTH(json_extract(f.task_json, '$.rootResultId')) > 0
+    ), heads AS (
+      SELECT *, json_extract(response_json, '$.type') AS source_type,
+        json_extract(response_json, '$.comparison') AS comparison,
+        json_extract(response_json, '$.diagnosis') AS diagnosis FROM feedback WHERE result_rank = 1
+    ), filtered AS (
+      SELECT p.* FROM predictions p WHERE (? = '' OR COALESCE(json_extract(p.task_json, '$.exercise'), 'prediction') = ?)
+        AND ((? = '' AND ? = '' AND ? = '') OR EXISTS (SELECT 1 FROM heads h WHERE h.prediction_id = p.attempt_id
+          AND (? = '' OR h.source_type = ?) AND (? = '' OR h.diagnosis = ?) AND (? = '' OR h.comparison = ?)))
+    ) `
+    const args = [documentId, modelId, documentId, modelId, exercise, exercise, sourceType, diagnosis, comparison,
+      sourceType, sourceType, diagnosis, diagnosis, comparison, comparison]
+    this.db.exec('BEGIN')
+    try {
+      const revision = this.getDocumentRevision(documentId)
+      if (revision !== expectedRevision) throw Object.assign(new Error('知识图版本已变化，请重新读取学习记录'),
+        { code: 'revision_conflict', currentRevision: revision })
+      const summary = this.db.prepare(cte + `SELECT COUNT(*) AS predictions,
+        COUNT(CASE WHEN base_revision = ? THEN 1 END) AS currentRevision,
+        COUNT(CASE WHEN base_revision <> ? THEN 1 END) AS olderRevision,
+        COUNT(CASE WHEN revealed_at IS NULL THEN 1 END) AS unrevealed,
+        COUNT(CASE WHEN json_extract(response_json, '$.sourceExposure') = 'seen' THEN 1 END) AS seenSource,
+        COUNT(CASE WHEN json_extract(response_json, '$.sourceExposure') = 'not_seen' THEN 1 END) AS unseenSourceReported,
+        COUNT(CASE WHEN review_json IS NOT NULL THEN 1 END) AS withReview,
+        COUNT(CASE WHEN EXISTS (SELECT 1 FROM heads h WHERE h.prediction_id = predictions.attempt_id) THEN 1 END) AS withFeedback,
+        (SELECT COUNT(*) FROM feedback) AS feedbackRows, (SELECT COUNT(*) FROM heads) AS feedbackRoots
+        FROM predictions`).get(...args, revision, revision)
+      summary.corrections = summary.feedbackRows - summary.feedbackRoots
+      const grouped = this.db.prepare(cte + `SELECT h.source_type AS type, COUNT(*) AS roots,
+        COUNT(DISTINCT h.prediction_id) AS predictions,
+        COUNT(DISTINCT CASE WHEN h.comparison = 'consistent' THEN h.prediction_id END) AS consistent,
+        COUNT(DISTINCT CASE WHEN h.comparison = 'different' THEN h.prediction_id END) AS different,
+        COUNT(DISTINCT CASE WHEN h.comparison = 'inconclusive' THEN h.prediction_id END) AS inconclusive,
+        COUNT(DISTINCT CASE WHEN h.comparison = 'not_compared' THEN h.prediction_id END) AS notCompared,
+        COUNT(DISTINCT CASE WHEN h.comparison = 'consistent' AND EXISTS (SELECT 1 FROM heads other
+          WHERE other.prediction_id = h.prediction_id AND other.source_type = h.source_type AND other.comparison = 'different')
+          THEN h.prediction_id END) AS mixed FROM heads h GROUP BY h.source_type`).all(...args)
+      const sourceCounts = types.map(type => grouped.find(row => row.type === type) ||
+        { type, roots: 0, predictions: 0, consistent: 0, different: 0, inconclusive: 0, notCompared: 0, mixed: 0 })
+      const total = this.db.prepare(cte + 'SELECT COUNT(*) AS count FROM filtered').get(...args).count
+      const rows = this.db.prepare(cte + `SELECT p.*,
+        (SELECT COUNT(*) FROM heads h WHERE h.prediction_id = p.attempt_id) AS result_total,
+        (SELECT h.attempt_id FROM heads h WHERE h.prediction_id = p.attempt_id
+          AND (? = '' OR h.source_type = ?) AND (? = '' OR h.diagnosis = ?) AND (? = '' OR h.comparison = ?)
+          ORDER BY h.created_at DESC, h.attempt_id DESC LIMIT 1) AS matching_result_id
+        FROM filtered p ORDER BY p.created_at DESC, p.attempt_id DESC LIMIT 20 OFFSET ?`)
+        .all(...args, sourceType, sourceType, diagnosis, diagnosis, comparison, comparison, offset)
+      const resultRows = this.db.prepare(cte + `, page AS (
+        SELECT attempt_id FROM filtered ORDER BY created_at DESC, attempt_id DESC LIMIT 20 OFFSET ?
+      ), previews AS (
+        SELECT h.*, ROW_NUMBER() OVER (PARTITION BY h.prediction_id ORDER BY h.created_at DESC, h.attempt_id DESC) AS preview_rank
+          FROM heads h JOIN page p ON p.attempt_id = h.prediction_id
+      ) SELECT prediction_id AS predictionId, attempt_id AS attemptId, root_result_id AS rootResultId,
+        source_type AS type, comparison, diagnosis, created_at AS createdAt, base_revision AS baseRevision,
+        SUBSTR(json_extract(response_json, '$.content'), 1, 500) AS content,
+        json_extract(response_json, '$.observedOn') AS observedOn,
+        json_extract(response_json, '$.observedTimeZone') AS observedTimeZone
+        FROM previews WHERE preview_rank <= 5 ORDER BY created_at DESC, attempt_id DESC`).all(...args, offset)
+      const items = rows.map(row => {
+        const results = resultRows.filter(item => item.predictionId === row.attempt_id)
+        // The response preview is bounded, but result counts and filters are based on all heads.
+        return { attemptId: row.attempt_id, exercise: parseJson(row.task_json, {}).exercise || 'prediction',
+          baseRevision: row.base_revision, version: row.attempt_version, createdAt: row.created_at,
+          stale: row.base_revision !== revision, revealedAt: row.revealed_at,
+          response: parseJson(row.response_json, {}), review: parseJson(row.review_json, null),
+          resultTotal: row.result_total, results, resultsLimited: row.result_total > 5,
+          matchingResultId: row.matching_result_id || '' }
+      })
+      this.db.exec('COMMIT')
+      return { documentId, modelId, revision, basis: 'learner_reports_not_mastery',
+        summary, sourceCounts, total, offset, limit: 20, filters: { exercise, sourceType, diagnosis, comparison }, items }
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  listModelFeedback(documentId, modelId, predictionId) {
+    if ([documentId, modelId].some(id => typeof id !== 'string' || !id || id.length > 160) ||
+        typeof predictionId !== 'string' || !predictionId || predictionId.length > 120) {
+      throw Object.assign(new Error('结果记录缺少有效的模型和预测身份'), { code: 'invalid_input' })
+    }
+    const prediction = this.getLearningAttempt(predictionId)
+    if (!prediction || prediction.documentId !== documentId || prediction.modelId !== modelId || prediction.kind !== 'model_prediction') {
+      throw Object.assign(new Error('找不到当前模型的预测'), { code: 'invalid_input' })
+    }
+    const where = "document_id = ? AND model_id = ? AND task_kind = 'model_feedback' AND json_extract(task_json, '$.predictionId') = ?"
+    const args = [documentId, modelId, predictionId]
+    const total = this.db.prepare(`SELECT COUNT(*) AS count FROM learning_attempts WHERE ${where}`).get(...args).count
+    const revision = this.getDocumentRevision(documentId)
+    const attempts = this.db.prepare(`SELECT * FROM learning_attempts WHERE ${where}
+      ORDER BY created_at DESC, attempt_id DESC LIMIT 100`).all(...args).map(row => this.learningAttemptOf(row, documentId, revision))
+    return { predictionId, total, attempts, limited: total > attempts.length }
+  }
+
+  modelFeedbackHead(attempt) {
+    if (attempt?.kind !== 'model_feedback') return ''
+    return this.db.prepare(`SELECT attempt_id FROM learning_attempts WHERE document_id = ? AND model_id = ?
+      AND task_kind = 'model_feedback' AND json_extract(task_json, '$.predictionId') = ?
+      AND json_extract(task_json, '$.rootResultId') = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1`)
+      .get(attempt.documentId, attempt.modelId, attempt.task.predictionId, attempt.task.rootResultId)?.attempt_id || ''
+  }
+
+  saveModelFeedback(input) {
+    const invalid = message => Object.assign(new Error(message), { code: 'invalid_input' })
+    const conflict = message => Object.assign(new Error(message), { code: 'attempt_conflict' })
+    const { attemptId, documentId, modelId, predictionId, expectedVersion, expectedRevision } = input || {}
+    const value = input?.response
+    if ([attemptId, predictionId].some(id => typeof id !== 'string' || !id || id.length > 120) ||
+        [documentId, modelId].some(id => typeof id !== 'string' || !id || id.length > 160) ||
+        !Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+        !value || typeof value !== 'object' || Array.isArray(value) ||
+        !['observation', 'reference', 'derivation', 'ai_suggestion', 'reflection'].includes(value.type) ||
+        !['consistent', 'different', 'inconclusive', 'not_compared'].includes(value.comparison) ||
+        !['input', 'mapping', 'condition', 'calculation', 'output', 'evidence', 'no_change', 'unsure'].includes(value.diagnosis) ||
+        typeof value.observationConfirmed !== 'boolean' || typeof value.parentResultId !== 'string' || value.parentResultId.length > 120) {
+      throw invalid('结果记录身份、来源类型或预测版本无效')
+    }
+    const response = { type: value.type, comparison: value.comparison, diagnosis: value.diagnosis,
+      observationConfirmed: value.observationConfirmed, parentResultId: value.parentResultId }
+    const limits = { content: 4000, context: 2000, observedOn: 10, observedTimeZone: 100, sourceName: 500, sourceUrl: 2000,
+      sourceLocator: 1000, rationale: 2000, revisionReason: 2000 }
+    for (const [field, limit] of Object.entries(limits)) {
+      if (typeof value[field] !== 'string' || value[field].length > limit) throw invalid('结果记录字段无效或过长')
+      response[field] = value[field].trim()
+    }
+    if (!response.content || response.parentResultId && !response.revisionReason ||
+        response.comparison !== 'not_compared' && !response.rationale ||
+        response.comparison === 'not_compared' && response.diagnosis !== 'unsure') throw invalid('请记录结果；比较或更正时还需填写理由')
+    if (response.sourceUrl) {
+      let url
+      try { url = new URL(response.sourceUrl) } catch { throw invalid('来源链接必须是完整的 HTTP 或 HTTPS 地址') }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw invalid('来源链接协议或凭据无效')
+    }
+    response.reference = null
+    if (value.reference !== null) {
+      const ref = value.reference
+      if (response.type !== 'reference' || !ref || typeof ref !== 'object' || Array.isArray(ref) ||
+          typeof ref.nodeId !== 'string' || !ref.nodeId || ref.nodeId.length > 160 ||
+          !Number.isSafeInteger(ref.paragraph) || ref.paragraph < 0 ||
+          typeof ref.quote !== 'string' || !ref.quote.trim() || ref.quote.length > 2000 ||
+          response.sourceName || response.sourceUrl || response.sourceLocator) throw invalid('原文引用身份无效；不能混用外部来源')
+      response.reference = { nodeId: ref.nodeId, paragraph: ref.paragraph, quote: ref.quote.trim() }
+    }
+    if (response.type === 'observation') {
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(response.observedOn) ? new Date(response.observedOn + 'T00:00:00Z') : null
+      let today
+      try {
+        if (!response.observedTimeZone) throw new Error('Missing observation time zone')
+        const parts = new Intl.DateTimeFormat('en', { timeZone: response.observedTimeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(Date.now())
+        const part = type => parts.find(item => item.type === type).value
+        today = part('year') + '-' + part('month') + '-' + part('day')
+      } catch { throw invalid('观察日期须有有效的时区') }
+      if (!date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== response.observedOn ||
+          response.observedOn > today || !response.context || !response.observationConfirmed) throw invalid('真实观察须记录已发生的日期、实际条件并明确确认；计划不是证据')
+    } else if (response.observedOn || response.observedTimeZone || response.observationConfirmed) throw invalid('非观察来源不能记为已发生的真实观察')
+    if (response.type === 'reference' && !response.reference && (!response.sourceName || !response.sourceLocator)) {
+      throw invalid('外部参考资料须填写名称和可核对的位置')
+    }
+    if (response.type === 'ai_suggestion' && !response.sourceName) throw invalid('请记录 AI 建议的生成来源')
+    if (response.type === 'derivation' && !response.context) throw invalid('公式或规则推导须记录使用的输入和前提')
+    const responseJson = JSON.stringify(response)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.getLearningAttempt(attemptId)
+      if (previous) {
+        if (previous.documentId !== documentId || previous.modelId !== modelId || previous.kind !== 'model_feedback' ||
+            previous.task.predictionId !== predictionId || previous.task.predictionSnapshot.version !== expectedVersion ||
+            previous.baseRevision !== expectedRevision || JSON.stringify(previous.response) !== responseJson) throw conflict('结果请求与已保存记录冲突，不能覆盖')
+        this.db.exec('COMMIT')
+        return previous
+      }
+      const prediction = this.getLearningAttempt(predictionId)
+      if (!prediction || prediction.documentId !== documentId || prediction.modelId !== modelId || prediction.kind !== 'model_prediction') throw invalid('结果必须关联当前模型已有的预测')
+      if (prediction.version !== expectedVersion) throw conflict('预测或复盘版本已变化；结果草稿保留，请重新对照后保存')
+      if (prediction.baseRevision !== expectedRevision) throw invalid('结果必须绑定最初预测的来源版本')
+      let reference = null
+      if (response.reference) {
+        if (!prediction.revealedAt) throw invalid('请先展开当时的原文对照，再引用资料')
+        const { nodeId, paragraph, quote } = response.reference
+        const ref = prediction.task.references.find(item => item.nodeId === nodeId &&
+          item.citations.some(citation => citation.paragraph === paragraph && citation.quote.includes(quote)))
+        if (!ref) throw invalid('引用不是当时模型的连续原文摘录')
+        const citation = ref.citations.find(item => item.paragraph === paragraph && item.quote.includes(quote))
+        reference = { ...response.reference, documentId, sourceId: citation.sourceId || '', text: ref.text, type: ref.type, origin: 'frozen_source_reference_not_outcome' }
+      }
+      let rootResultId = attemptId, createdAt = Date.now()
+      if (response.parentResultId) {
+        const parent = this.getLearningAttempt(response.parentResultId)
+        if (!parent || parent.documentId !== documentId || parent.modelId !== modelId || parent.kind !== 'model_feedback' ||
+            parent.task.predictionId !== predictionId) throw invalid('更正记录不属于当前预测')
+        rootResultId = parent.task.rootResultId
+        const latest = this.db.prepare(`SELECT attempt_id, created_at FROM learning_attempts WHERE document_id = ? AND model_id = ?
+          AND task_kind = 'model_feedback' AND json_extract(task_json, '$.rootResultId') = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1`)
+          .get(documentId, modelId, rootResultId)
+        if (latest.attempt_id !== parent.attemptId) throw conflict('这条结果已有新更正，请重新读取；旧结果保留')
+        createdAt = Math.max(createdAt, latest.created_at + 1)
+      }
+      // Evidence remains a typed learner report, not a verdict, even after source or review revisions.
+      const task = { id: 'model_feedback:' + encodeURIComponent(modelId), kind: 'model_feedback', exercise: 'feedback',
+        modelId, predictionId, rootResultId, origin: 'learner_reported_feedback_not_verification', assessment: 'not_independently_verified',
+        references: [], reference, predictionSnapshot: { attemptId: predictionId, version: prediction.version,
+          baseRevision: prediction.baseRevision, createdAt: prediction.createdAt, exercise: prediction.task.exercise || 'prediction',
+          model: prediction.task.model, response: prediction.response, revealedAt: prediction.revealedAt, review: prediction.review } }
+      this.db.prepare(`INSERT INTO learning_attempts (attempt_id, document_id, base_revision, task_id, task_kind,
+        task_json, answer, scenario, self_rating, created_at, model_id, response_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(attemptId, documentId, expectedRevision, task.id, task.kind, JSON.stringify(task), response.content, response.context,
+          'not_assessed', createdAt, modelId, responseJson)
       this.db.exec('COMMIT')
       return this.getLearningAttempt(attemptId)
     } catch (error) { this.db.exec('ROLLBACK'); throw error }

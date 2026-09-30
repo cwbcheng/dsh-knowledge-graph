@@ -21,6 +21,10 @@ graph.traceText = graph.sourceText
 const store = {
   getDocumentRevision: () => 1,
   getDocument: () => structuredClone(graph),
+  getDocumentSourceUnits: id => {
+    assert.equal(id, documentId, 'task admission must read the selected canonical document, not client-provided source units')
+    return [{ paragraph: 0, text: 'Alpha.' }, { paragraph: 1, text: 'Beta.' }]
+  },
   queryDocumentGraph: () => ({ graph: structuredClone(graph), matches: [] }),
 }
 
@@ -182,7 +186,7 @@ for (const kind of ['dynamic', 'persistent']) {
     try {
       for (const concurrency of [1, 2, 4, undefined, 3]) {
         const result = await host.post('relation-retry', { documentId, expectedRevision: 1, concurrency })
-        assert(result.response.taskId)
+        assert(result.response.taskId, 'relation admission failed: ' + JSON.stringify(result.response))
         const task = host.tasks.get(result.response.taskId)
         assert.equal(task.concurrency, [1, 2, 4].includes(concurrency) ? concurrency : 2)
         assert.equal(task.ontology, graph.ontology)

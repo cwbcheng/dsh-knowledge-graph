@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs'
 let source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      function validateGraphInvariantsHost('
 assert.equal(source.split(marker).length, 2)
-source = source.replace(marker, `      harness.validation = { validateGraphInvariantsHost, reset() { if (typeof invariantSourceCache !== 'undefined') invariantSourceCache = null } }
+assert(source.includes('let graphCitationSourceCache = null'), 'cache reset must target the shipped source index')
+source = source.replace(marker, `      harness.validation = { validateGraphInvariantsHost, reset() { graphCitationSourceCache = null } }
 ${marker}`)
 source = source.replace('function splitParagraphsOffsetsHost(', `function splitParagraphsOffsetsHost(...args) {
   harness.parses++

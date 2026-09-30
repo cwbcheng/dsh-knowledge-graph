@@ -98,15 +98,21 @@ function fakeLlm() {
 
 async function waitDynamic(handlers, taskId, timeoutMs = 1200) {
   const startedAt = Date.now()
+  const monotonicStart = performance.now()
   let lastStatus = null
+  let lastPoll = null
   while (Date.now() - startedAt < timeoutMs) {
+    const pollStarted = performance.now()
     const status = await handlers.get('task-status')({ taskId })
     lastStatus = status
     if (status.status !== 'running') return { ...status, elapsedMs: Date.now() - startedAt }
+    const sleepStarted = performance.now()
     await sleep(5)
+    lastPoll = { statusMs: sleepStarted - pollStarted, sleepMs: performance.now() - sleepStarted }
   }
   throw new Error('dynamic task did not settle: ' + taskId + ' ' + JSON.stringify({
     elapsedMs: Date.now() - startedAt, progress: lastStatus?.progress,
+    monotonicElapsedMs: performance.now() - monotonicStart, lastPoll,
     error: lastStatus?.error,
   }))
 }
@@ -215,13 +221,17 @@ async function post(api, endpoint, payload) {
 
 async function waitHttp(api, taskId, timeoutMs = 1200) {
   const startedAt = Date.now()
+  let lastStatus = null, polls = 0
   while (Date.now() - startedAt < timeoutMs) {
     const response = await invoke(api, { method: 'GET', url: '/api/dsh-knowledge-graph/task-status?taskId=' + encodeURIComponent(taskId) })
     const status = response.body ? JSON.parse(response.body) : {}
+    lastStatus = status; polls++
     if (status.status !== 'running') return { ...status, elapsedMs: Date.now() - startedAt }
     await sleep(5)
   }
-  throw new Error('persistent task did not settle: ' + taskId)
+  throw new Error('persistent task did not settle: ' + taskId + ' ' + JSON.stringify({
+    elapsedMs: Date.now() - startedAt, polls, status: lastStatus?.status, progress: lastStatus?.progress, error: lastStatus?.error,
+  }))
 }
 
 async function startHttpAnswer(api, payload) {

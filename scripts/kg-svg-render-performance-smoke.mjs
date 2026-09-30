@@ -80,6 +80,9 @@ assert.equal(selectedEdge, 0, 'edge index zero is selectable with keyboard')
 const parallel = render(GraphEdgeInteraction, edgeElements[1].props, owner())
 const chips = all(parallel, item => byClass('kg-edge-label')(item) && item.props.role === 'button')
 assert.equal(chips.length, 2)
+assert.equal(parallel.props.role, 'group', 'Parallel relation controls must not be nested inside an atomic button')
+assert(!all(parallel, item => item.props['aria-label']?.startsWith('并行关系：'))[0].props['aria-hidden'],
+  'Independently selectable relations must remain exposed to assistive technology')
 chips[1].props.onClick({ stopPropagation() {} })
 assert.equal(selectedEdge, edges.length - 1, 'parallel chip selects its original relation index')
 
