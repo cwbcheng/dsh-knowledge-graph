@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, copyFile, writeFile, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, copyFile, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:net'
@@ -11,7 +11,7 @@ if (process.platform !== 'linux') {
   console.log('dev-web launcher is Linux/WSL-only; run this test in WSL')
   process.exit(0)
 }
-const root = await mkdtemp(join(tmpdir(), 'kg-dev-web-'))
+const root = await mkdtemp(join(tmpdir(), 'kg-dev-web space#-'))
 const plugin = join(root, 'plugin')
 const harness = join(root, 'harness')
 const home = join(root, 'home')
@@ -30,6 +30,7 @@ async function freePort() {
 }
 function launch(extra = {}, args = []) {
   const child = spawn('bash', [script, ...args], { env: { ...process.env, DSH_REPO: harness, DSH_HOME: home,
+    PATH: dirname(process.execPath) + ':' + join(root, 'bin') + ':' + process.env.PATH,
     DSH_DEV_NODE: process.execPath, DSH_DEV_PROFILE: 'fixture', DSH_DEV_LOG: log, DSH_DEV_PID: pidFile,
     DSH_DEV_STARTUP_SECONDS: '8', ...extra }, stdio: ['ignore', 'pipe', 'pipe'] })
   children.add(child)
@@ -57,21 +58,53 @@ try {
   for (const dir of ['src', 'lib', 'scripts']) await mkdir(join(plugin, dir), { recursive: true })
   await mkdir(join(harness, 'apps/cli/lib'), { recursive: true })
   await mkdir(join(home, 'profiles/fixture'), { recursive: true })
+  await mkdir(join(root, 'bin'))
+  await writeFile(join(root, 'bin/pnpm'), '#!/bin/sh\nprintf "fixture pnpm\\n"\n', { mode: 0o700 })
   await copyFile(new URL('./dev-web.sh', import.meta.url), script)
-  await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: 'dsh-knowledge-graph' }))
-  await writeFile(join(plugin, 'lib/index.js'), '')
-  await writeFile(join(plugin, 'lib/client.js'), '')
+  await copyFile(new URL('./kg-web-artifacts.mjs', import.meta.url), join(plugin, 'scripts/kg-web-artifacts.mjs'))
+  await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: 'dsh-knowledge-graph', type: 'module',
+    exports: { '.': './lib/index.js', './client': './lib/client.js' } }))
+  await writeFile(join(plugin, 'cordis.patch.yml'), '- insert:\n    - id: dsh-knowledge-graph\n      name: dsh-knowledge-graph\n')
+  await writeFile(join(plugin, 'lib/index.js'), 'export const version = "A"\n')
+  await writeFile(join(plugin, 'lib/client.js'), 'client-A\n')
   await writeFile(join(harness, 'pnpm-workspace.yaml'), 'packages: []\n')
-  await writeFile(join(home, 'profiles/fixture/package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-knowledge-graph'] } } }))
+  await writeFile(join(home, 'profiles/fixture/package.json'), JSON.stringify({
+    dependencies: { 'dsh-knowledge-graph': 'link:' + plugin }, dsh: { profile: { bundles: ['dsh-knowledge-graph'] } },
+  }))
+  await mkdir(join(home, 'profiles/fixture/node_modules'), { recursive: true })
+  await symlink(plugin, join(home, 'profiles/fixture/node_modules/dsh-knowledge-graph'))
   await writeFile(join(harness, 'apps/cli/lib/bin.js'), `
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 if (process.argv.includes('--version')) { console.log('fixture'); process.exit(0); }
+const profile = path.join(process.env.DSH_HOME, 'profiles/fixture');
+if (process.argv.includes('plugin')) {
+  if (process.env.FAIL_INSTALL) process.exit(17);
+  if (process.env.SKIP_INSTALL) process.exit(0);
+  const spec = process.argv.at(-1);
+  if (!spec.startsWith('link:')) throw new Error('snapshot must be installed as a local link');
+  const target = spec.slice(5);
+  const manifest = JSON.parse(fs.readFileSync(path.join(profile, 'package.json')));
+  manifest.dependencies['dsh-knowledge-graph'] = spec;
+  fs.writeFileSync(path.join(profile, 'package.json'), JSON.stringify(manifest));
+  const link = path.join(profile, 'node_modules/dsh-knowledge-graph');
+  fs.unlinkSync(link); fs.symlinkSync(target, link);
+  fs.appendFileSync(path.join(profile, 'install-count'), '1\\n');
+  process.exit(0);
+}
 if (process.env.FAIL_EARLY) process.exit(42);
+async function main() {
+const artifact = fs.realpathSync(path.join(profile, 'node_modules/dsh-knowledge-graph'));
+const host = await import(pathToFileURL(path.join(artifact, 'lib/index.js')).href);
 const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
 const server = http.createServer((req, res) => {
   if (req.url === '/runtime-probe') { res.write('stream-'); setImmediate(() => res.end('ok')); return; }
   if (req.url === '/?token=fresh-token') { res.writeHead(303, { 'Set-Cookie': 'fixture=yes; Path=/', Location: '/' }); res.end(); return; }
   if (req.headers.cookie !== 'fixture=yes' || req.headers.origin !== 'http://127.0.0.1:' + port) { res.writeHead(401); res.end('unauthorized'); return; }
+  if (req.url === '/artifact-probe') { res.end(JSON.stringify({ host: host.version,
+    client: fs.readFileSync(path.join(artifact, 'lib/client.js'), 'utf8'), artifact })); return; }
   if (process.env.FAIL_HEALTH) { res.writeHead(404); res.end('{"ontologies":"not a catalogue"}'); return; }
   res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ontologies: [{ id: 'fixture' }] }));
   if (process.env.EXIT_LATER) setTimeout(() => process.exit(43), 500);
@@ -84,6 +117,8 @@ server.listen(port, '127.0.0.1', async () => {
   console.log('dsh web: http://127.0.0.1:' + port + '/?token=fresh-token');
 });
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
+}
+main().catch(error => { console.error(error); process.exit(1); });
 `)
   const port = String(await freePort())
   const env = { DSH_DEV_PORT: port }
@@ -99,11 +134,53 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
   const procFields = (await readFile('/proc/' + pid + '/stat', 'utf8')).split(') ')[1].split(' ')
   assert.equal(procFields[3], pid, 'detached child must own a separate session')
   assert.ok((await readdir(root)).some(name => name.startsWith('web.log.previous.')))
+  const artifacts = async () => {
+    const response = await fetch('http://127.0.0.1:' + port + '/artifact-probe', {
+      headers: { Cookie: 'fixture=yes', Origin: 'http://127.0.0.1:' + port },
+    })
+    assert.equal(response.status, 200)
+    return response.json()
+  }
+  const original = await artifacts()
+  assert.equal(original.host, 'A')
+  assert.equal(original.client, 'client-A\n')
+  await writeFile(join(plugin, 'lib/index.js'), 'export const version = "B"\n')
+  await writeFile(join(plugin, 'lib/client.js'), 'client-B\n')
+  const unchanged = await artifacts()
+  assert.equal(unchanged.host, 'A')
+  assert.equal(unchanged.client, 'client-A\n', 'building the checkout must not hot-publish a client against the old Host')
+  assert.equal(unchanged.artifact, original.artifact)
   const duplicate = await run(env, ['--detach'])
   assert.notEqual(duplicate.code, 0)
   assert.equal(await readFile(pidFile, 'utf8'), pid + ' ' + start + '\n')
   assert.equal((await run(env, ['--stop'])).code, 0)
   await stopped(pid)
+
+  const failedInstall = await run({ ...env, FAIL_INSTALL: '1' }, ['--detach'])
+  assert.equal(failedInstall.code, 17, 'a failed snapshot installation must prevent server startup')
+  assert.equal(await readFile(join(home, 'profiles/fixture/install-count'), 'utf8'), '1\n')
+  const skippedInstall = await run({ ...env, SKIP_INSTALL: '1' }, ['--detach'])
+  assert.notEqual(skippedInstall.code, 0, 'package-manager success is not proof the intended build was installed')
+  assert.match(skippedInstall.output, /profile did not install the pinned/)
+  assert.doesNotMatch(skippedInstall.output, /health:/)
+  assert.equal(await readFile(join(home, 'profiles/fixture/install-count'), 'utf8'), '1\n')
+  const next = await run(env, ['--detach'])
+  assert.equal(next.code, 0, next.output)
+  const updated = await artifacts()
+  assert.equal(updated.host, 'B')
+  assert.equal(updated.client, 'client-B\n')
+  assert.notEqual(updated.artifact, original.artifact)
+  assert.equal(await readFile(join(original.artifact, 'lib/client.js'), 'utf8'), 'client-A\n', 'prior launch artifacts must remain readable')
+  const nextPid = (await readFile(pidFile, 'utf8')).split(' ')[0]
+  assert.equal((await run(env, ['--stop'])).code, 0)
+  await stopped(nextPid)
+  const reused = await run(env, ['--detach'])
+  assert.equal(reused.code, 0, reused.output)
+  assert.equal((await artifacts()).artifact, updated.artifact)
+  assert.equal(await readFile(join(home, 'profiles/fixture/install-count'), 'utf8'), '1\n1\n', 'an unchanged build must not reinstall the package')
+  const reusedPid = (await readFile(pidFile, 'utf8')).split(' ')[0]
+  assert.equal((await run(env, ['--stop'])).code, 0)
+  await stopped(reusedPid)
 
   const early = await run({ ...env, FAIL_EARLY: '1' }, ['--detach'])
   assert.equal(early.code, 42, early.output)
@@ -204,7 +281,8 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
   } finally { await new Promise(resolve => unrelated.close(resolve)) }
   console.log(JSON.stringify({ ok: true, staleLog: true, authenticatedReadiness: true, realPid: true,
     earlyExit: true, foregroundExitCode: true, signalCleanup: true, failedHealthStops: true, unrelatedProcessPreserved: true,
-    safeRuntime: true, nativeFetchStream: true, supervisedRecovery: !!supervisedUnit }))
+    safeRuntime: true, nativeFetchStream: true, pinnedHostAndClient: true, nextLaunchUpdatesBoth: true,
+    failedInstallationStops: true, unchangedBuildReused: true, supervisedRecovery: !!supervisedUnit }))
 } finally {
   if (supervisedUnit) {
     await exec('systemctl', ['--user', 'stop', supervisedUnit]).catch(() => {})

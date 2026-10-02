@@ -15,7 +15,7 @@ export const learnerResponse = {
 export const learnerReview = { diagnosis: 'boundary', reflection: '简化模型不包含夜间加价，原预测应限于无附加费用的情境。',
   nextCheck: '收集一次含附加收费的账单，对比偏差是否来自遗漏的条件。', selfRating: 'uncertain' }
 
-export async function modelLearningHarness({ legacy = false, fixture = connectionFixture() } = {}) {
+export async function modelLearningHarness({ legacy = false, fixture = connectionFixture(), llm = null } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'kg-model-learning-'))
   const database = join(directory, 'graph.sqlite'), document = fixture
   if (legacy) {
@@ -34,7 +34,7 @@ export async function modelLearningHarness({ legacy = false, fixture = connectio
   process.env.DSH_KG_DB = database
   const host = await import('../lib/index.js')
   const routes = []
-  host.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null,
+  host.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : name === 'llm' ? llm : null,
     effect: fn => fn(), interval: () => () => {} })
   const handler = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const post = (body, method = 'learning-mode') => new Promise((resolve, reject) => {

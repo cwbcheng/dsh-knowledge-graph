@@ -31,6 +31,7 @@ const bundle = `/**
   const React = window.React
 ${body}
   window.KGViewer = {
+    TargetMapPanel,
     ConnectionModelPanel,
     ModelLearningPanel,
     ModelUnderstandingPanel,
@@ -38,6 +39,7 @@ ${body}
     ModelLearningHistoryPanel,
     ModelDiagnosisMaterials,
     ConnectionModelComparison,
+    ConnectionModelChain,
     ModelStructureEditor,
     ModelPairedExamples,
     ModelGapPanel,

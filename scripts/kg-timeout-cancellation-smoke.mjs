@@ -101,18 +101,17 @@ async function waitDynamic(handlers, taskId, timeoutMs = 1200) {
   const monotonicStart = performance.now()
   let lastStatus = null
   let lastPoll = null
-  while (Date.now() - startedAt < timeoutMs) {
+  while (performance.now() - monotonicStart < timeoutMs) {
     const pollStarted = performance.now()
     const status = await handlers.get('task-status')({ taskId })
     lastStatus = status
-    if (status.status !== 'running') return { ...status, elapsedMs: Date.now() - startedAt }
+    if (status.status !== 'running') return { ...status, elapsedMs: performance.now() - monotonicStart }
     const sleepStarted = performance.now()
     await sleep(5)
     lastPoll = { statusMs: sleepStarted - pollStarted, sleepMs: performance.now() - sleepStarted }
   }
   throw new Error('dynamic task did not settle: ' + taskId + ' ' + JSON.stringify({
-    elapsedMs: Date.now() - startedAt, progress: lastStatus?.progress,
-    monotonicElapsedMs: performance.now() - monotonicStart, lastPoll,
+    elapsedMs: performance.now() - monotonicStart, wallClockElapsedMs: Date.now() - startedAt, progress: lastStatus?.progress, lastPoll,
     error: lastStatus?.error,
   }))
 }
@@ -221,16 +220,18 @@ async function post(api, endpoint, payload) {
 
 async function waitHttp(api, taskId, timeoutMs = 1200) {
   const startedAt = Date.now()
+  const monotonicStart = performance.now()
   let lastStatus = null, polls = 0
-  while (Date.now() - startedAt < timeoutMs) {
+  while (performance.now() - monotonicStart < timeoutMs) {
     const response = await invoke(api, { method: 'GET', url: '/api/dsh-knowledge-graph/task-status?taskId=' + encodeURIComponent(taskId) })
     const status = response.body ? JSON.parse(response.body) : {}
     lastStatus = status; polls++
-    if (status.status !== 'running') return { ...status, elapsedMs: Date.now() - startedAt }
+    if (status.status !== 'running') return { ...status, elapsedMs: performance.now() - monotonicStart }
     await sleep(5)
   }
   throw new Error('persistent task did not settle: ' + taskId + ' ' + JSON.stringify({
-    elapsedMs: Date.now() - startedAt, polls, status: lastStatus?.status, progress: lastStatus?.progress, error: lastStatus?.error,
+    elapsedMs: performance.now() - monotonicStart, wallClockElapsedMs: Date.now() - startedAt,
+    polls, status: lastStatus?.status, progress: lastStatus?.progress, error: lastStatus?.error,
   }))
 }
 
@@ -241,6 +242,44 @@ async function startHttpAnswer(api, payload) {
     await sleep(5)
   }
   throw new Error('persistent busy lock was not released')
+}
+
+async function pollingClockSmoke() {
+  const originalNow = Date.now
+  try {
+    for (const shift of [10000, -10000]) {
+      let offset = 0, polls = 0
+      Date.now = () => originalNow() + offset
+      const handlers = new Map([['task-status', async () => {
+        offset = shift
+        return { status: ++polls === 3 ? 'succeeded' : 'running' }
+      }]])
+      const result = await waitDynamic(handlers, 'clock-jump-fixture', 100)
+      assert(result.status === 'succeeded' && polls === 3 && result.elapsedMs >= 8 && result.elapsedMs < 100,
+        'Wall-clock adjustments must not expire or inflate the dynamic elapsed-time guard')
+      offset = 0; polls = 0
+      const api = async (_req, res) => {
+        offset = shift
+        res.end(JSON.stringify({ status: ++polls === 3 ? 'succeeded' : 'running' }))
+      }
+      const http = await waitHttp(api, 'clock-jump-fixture', 100)
+      assert(http.status === 'succeeded' && polls === 3 && http.elapsedMs >= 8 && http.elapsedMs < 100,
+        'Wall-clock adjustments must not expire or inflate the HTTP elapsed-time guard')
+    }
+    Date.now = () => 1
+    const started = performance.now()
+    let timedOut = false
+    try { await waitDynamic(new Map([['task-status', async () => ({ status: 'running' })]]), 'frozen-clock-fixture', 40) }
+    catch (error) { timedOut = error.message.startsWith('dynamic task did not settle: frozen-clock-fixture') }
+    assert(timedOut && performance.now() - started >= 40 && performance.now() - started < 200,
+      'A frozen wall clock must not disable the monotonic deadline')
+    const httpStarted = performance.now()
+    let httpTimedOut = false
+    try { await waitHttp(async (_req, res) => res.end(JSON.stringify({ status: 'running' })), 'frozen-clock-fixture', 40) }
+    catch (error) { httpTimedOut = error.message.startsWith('persistent task did not settle: frozen-clock-fixture') }
+    assert(httpTimedOut && performance.now() - httpStarted >= 40 && performance.now() - httpStarted < 200,
+      'A frozen wall clock must not disable the HTTP monotonic deadline')
+  } finally { Date.now = originalNow }
 }
 
 async function persistentSmoke() {
@@ -377,10 +416,11 @@ async function extractionDeadlineSmoke() {
   } finally { globalThis.setTimeout = originalSetTimeout }
 }
 try {
+  await pollingClockSmoke()
   const dynamic = await dynamicSmoke()
   const persistent = await persistentSmoke()
   const extraction = await extractionDeadlineSmoke()
-  console.log(JSON.stringify({ ok: true, dynamic, persistent, extraction }))
+  console.log(JSON.stringify({ ok: true, clockAdjustmentGuards: true, dynamic, persistent, extraction }))
 } finally {
   if (previousCap === undefined) delete process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS
   else process.env.DSH_KG_MODEL_TIMEOUT_CAP_MS = previousCap

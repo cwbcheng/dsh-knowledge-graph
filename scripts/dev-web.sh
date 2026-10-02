@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Boot a dsh web instance from the SOURCE checkout in /mnt/d/github with this
+# Boot a dsh web instance from a pinned build of the SOURCE checkout with this
 # plugin installed, on its own port and profile, so it never touches the
 # instance you normally run.
 #
@@ -55,7 +55,6 @@ LOG_FILE="${DSH_DEV_LOG:-/tmp/dsh-${PROFILE}-web.log}"
 PID_FILE="${DSH_DEV_PID:-/tmp/dsh-${PROFILE}-web.pid}"
 CLI="$DSH_REPO/apps/cli/lib/bin.js"
 PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
-PLUGIN_URL="$(printf '%s' "$PLUGIN_DIR" | sed 's/ /%20/g')"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -135,6 +134,16 @@ pnpm_build() {
   elif have corepack; then corepack pnpm "$@"
   else die "pnpm or corepack is required to build/install"; fi
 }
+ensure_pnpm() {
+  have pnpm && return
+  have corepack || die "pnpm or corepack is required to install the pinned plugin build"
+  # Node 24 may ship Corepack without enabling global pnpm symlinks. Use its
+  # existing shim only for this launch; never change the global installation.
+  local shims
+  shims="$(dirname "$(dirname "$(readlink -f "$(command -v corepack)")")")/shims"
+  [ -x "$shims/pnpm" ] || die "Corepack pnpm shim not found; put pnpm on PATH"
+  export PATH="$PATH:$shims"
+}
 existing="$(port_pid "$PORT")"
 [ -z "$existing" ] || die "port $PORT is already in use (pid $existing); no process was stopped"
 if [ -f "$PID_FILE" ]; then
@@ -158,9 +167,8 @@ else
 fi
 
 # --- 2. this plugin's own artifacts ------------------------------------------
-# The profile links this directory, so dsh serves lib/index.js and lib/client.js
-# straight from here. A stale lib is the single most confusing failure mode:
-# the UI silently keeps the previous client bundle.
+# Build before pinning both halves. A running instance must not serve the next
+# client's build while its Host still executes the previous imported module.
 if [ "$REBUILD" = 1 ] || [ ! -f "$PLUGIN_DIR/lib/index.js" ] || [ ! -f "$PLUGIN_DIR/lib/client.js" ]; then
   log "[2/4] building $PLUGIN_NAME…"
   ( cd "$PLUGIN_DIR" && npm run build >/dev/null )
@@ -173,6 +181,9 @@ else
     log "[2/4] $PLUGIN_NAME artifacts are current"
   fi
 fi
+ARTIFACT_DIR="$(node "$PLUGIN_DIR/scripts/kg-web-artifacts.mjs" "$PLUGIN_DIR" "$DSH_HOME")"
+PLUGIN_SPEC="link:$ARTIFACT_DIR"
+log "[2/4] pinned plugin build: $(basename "$ARTIFACT_DIR")"
 
 # --- 3. the profile: web template + this plugin as a bundle layer ------------
 if [ ! -f "$PROFILE_DIR/package.json" ]; then
@@ -182,18 +193,24 @@ if [ ! -f "$PROFILE_DIR/package.json" ]; then
   ( cd "$DSH_REPO" && node "$CLI" --profile "$PROFILE" --from-default-profile web --dump-config >/dev/null )
 fi
 
-bundles="$(node -e '
-  const m = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
-  const list = m?.dsh?.profile?.bundles ?? []
-  process.stdout.write(list.join(","))
-' "$PROFILE_DIR/package.json")"
-case ",$bundles," in
-  *",$PLUGIN_NAME,"*) log "[3/4] profile '$PROFILE' already carries $PLUGIN_NAME as a bundle" ;;
-  *)
-    log "[3/4] installing $PLUGIN_NAME into profile '$PROFILE'…"
-    ( cd "$DSH_REPO" && node "$CLI" plugin --profile "$PROFILE" add "$PLUGIN_URL" )
-    ;;
-esac
+profile_pins_build() {
+  node -e '
+  const fs = require("node:fs")
+  const [profile, name, spec, target] = process.argv.slice(1)
+  const m = JSON.parse(fs.readFileSync(profile + "/package.json", "utf8"))
+  let installed = false
+  try { installed = fs.realpathSync(profile + "/node_modules/" + name) === target } catch {}
+  process.exit(m?.dsh?.profile?.bundles?.includes(name) && m?.dependencies?.[name] === spec && installed ? 0 : 1)
+' "$PROFILE_DIR" "$PLUGIN_NAME" "$PLUGIN_SPEC" "$ARTIFACT_DIR"
+}
+if profile_pins_build; then
+  log "[3/4] profile '$PROFILE' already pins this plugin build"
+else
+  log "[3/4] installing the pinned $PLUGIN_NAME build into profile '$PROFILE'…"
+  ensure_pnpm
+  ( cd "$DSH_REPO" && node "$CLI" plugin --profile "$PROFILE" add "$PLUGIN_SPEC" )
+fi
+profile_pins_build || die "profile did not install the pinned plugin build; server was not started"
 
 if [ "$PROFILE" = "web" ]; then
   log "      note: 'web' is the profile you normally run — this will have modified it"

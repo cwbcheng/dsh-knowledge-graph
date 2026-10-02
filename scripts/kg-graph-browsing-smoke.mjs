@@ -42,6 +42,12 @@ assert(/\.kg-edge-label\[role="button"\]\s*\{\s*pointer-events:\s*auto;/.test(cs
   'Parallel relation chips need pointer hit testing, not just click handlers')
 assert(/\.kg-node-search\s*\{[^}]*background:\s*var\(--kg-edge-label-bg\)/.test(css),
   'Search results must not be visually overlaid by graph content behind the panel')
+const toolbarRule = css.match(/\.kg-graph-toolbar\s*\{([^}]+)\}/)?.[1]
+assert(toolbarRule && !/position:\s*absolute/.test(toolbarRule) && /flex-wrap:\s*wrap/.test(toolbarRule),
+  'Toolbar rows must occupy real layout space, including when controls wrap')
+assert(/\.kg-graph-viewport\s*\{[^}]*min-height:\s*0/.test(css), 'The canvas must shrink inside a fixed graph surface')
+assert(/\.kg-graph-toolbar \.kg-graph-zoom\s*\{[^}]*width:\s*56px/.test(css),
+  'Changing the zoom percentage cannot rewrap the toolbar and resize the canvas')
 runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { GraphScene,'), context)
 const { GraphScene } = context.window.KGViewer
 const all = (element, predicate) => Array.isArray(element) ? element.flatMap(child => all(child, predicate))
@@ -61,7 +67,14 @@ const edges = [
 ]
 const original = JSON.stringify({ nodes, edges })
 const owner = { slots: [], effects: [], dirty: false }
-const el = { clientWidth: 900, clientHeight: 600, addEventListener() {}, removeEventListener() {},
+const listeners = new Map(), captured = new Set()
+const el = { clientWidth: 900, clientHeight: 600,
+  addEventListener(name, callback) { listeners.set(name, callback) },
+  removeEventListener(name) { listeners.delete(name) },
+  getBoundingClientRect: () => ({ left: 100, top: 160 }),
+  setPointerCapture(id) { captured.add(id) }, hasPointerCapture: id => captured.has(id),
+  releasePointerCapture(id) { captured.delete(id) },
+  contains: item => all(tree, byClass('kg-graph-viewport')).some(viewport => all(viewport, node => node === item).length),
   querySelector: () => null, closest: () => null }
 const layout = { pos: new Map(nodes.map((node, i) => [node.id, { x: i * 300, y: i * 200 }])) }
 const props = { nodes, edges, anchors: Object.fromEntries(nodes.map((node, i) => [node.id, i * 10])),
@@ -78,7 +91,10 @@ function render() {
   for (let i = 0; i < 20; i++) {
     owner.dirty = false; current = owner; cursor = 0
     pendingUpdates.splice(0).forEach(fn => fn())
-    tree = GraphScene(props); tree.props.ref.current = el
+    tree = GraphScene(props)
+    const viewport = all(tree, byClass('kg-graph-viewport'))[0]
+    assert(viewport?.props.ref, 'Camera measurement must be attached to the actual canvas')
+    viewport.props.ref.current = el
     owner.effects.splice(0).forEach(fn => fn())
     const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn())
     if (!owner.dirty && !frames.size && !pendingUpdates.length) return tree
@@ -95,14 +111,30 @@ const click = label => { const item = button(label); assert(!item.props.disabled
 
 render()
 assert.equal(tree.props.role, 'group', 'Interactive SVG controls must not be hidden inside an atomic image role')
+assert.equal(tree.props.ref, undefined, 'The camera cannot measure the graph plus toolbar')
+assert.equal(tree.props.onPointerDown, undefined, 'Toolbar background must never start canvas panning')
+const toolbar = all(tree, byClass('kg-graph-toolbar'))[0]
+const viewport = () => all(tree, byClass('kg-graph-viewport'))[0]
+assert(tree.props.children.includes(toolbar) && tree.props.children.includes(viewport()), 'Toolbar and canvas must be separate rows')
+assert.equal(all(viewport(), byClass('kg-graph-toolbar')).length, 0, 'Toolbar cannot occlude the canvas')
+assert.equal(all(viewport(), item => item.type === 'svg').length, 1, 'Export and panning use the same rendered SVG')
 const initial = camera()
 click('适合画布')
 assert.notEqual(camera(), initial, 'Fit must actually include a large graph below the editor zoom floor')
 const fitted = camera()
+const fittedValues = fitted.match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)
+for (const [coordinate, size, center, translation] of [[900, 20000, 9600, fittedValues[1]], [600, 13000, 6400, fittedValues[2]]]) {
+  const near = (center - size / 2) * Number(fittedValues[3]) + Number(translation)
+  const far = (center + size / 2) * Number(fittedValues[3]) + Number(translation)
+  assert(near >= 16 - 1e-8 && far <= coordinate - 16 + 1e-8, 'Fit retains a canvas inset instead of clipping node borders')
+}
 click('放大（10%）')
 assert.notEqual(camera(), fitted)
 click('缩小（10%）')
-assert.equal(camera(), fitted, 'Zooming in from fit must not ratchet the minimum upward')
+const roundTrip = camera().match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)
+assert.equal(roundTrip[3], fittedValues[3], 'Zooming in from fit must not ratchet the minimum upward')
+for (const axis of [1, 2]) assert(Math.abs(Number(roundTrip[axis]) - Number(fittedValues[axis])) < 1e-8,
+  'Fit zoom round trip must preserve position apart from floating-point arithmetic')
 click('返回上一位置')
 assert.equal(camera(), initial, 'Back restores the exact camera rather than fitting again')
 click('查找节点')
@@ -182,7 +214,105 @@ props.nodes = nodes.slice(1); props.edges = []; render()
 assert(button('返回上一位置').props.disabled)
 assert.equal(all(tree, byClass('kg-node-detail')).length, 0)
 assert.equal(JSON.stringify({ nodes, edges }), original, 'Browsing never mutates canonical graph data')
+const beforeWheel = camera().match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)
+let wheelPrevented = false
+listeners.get('wheel')({ctrlKey:true,deltaY:-1,clientX:550,clientY:460,preventDefault(){wheelPrevented=true},target:{closest:()=>null}})
+render()
+assert(wheelPrevented)
+const zoomed = camera().match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)
+assert(Math.abs((450 - Number(zoomed[1])) / Number(zoomed[3]) - (450 - Number(beforeWheel[1])) / Number(beforeWheel[3])) < 1e-8)
+assert(Math.abs((300 - Number(zoomed[2])) / Number(zoomed[3]) - (300 - Number(beforeWheel[2])) / Number(beforeWheel[3])) < 1e-8,
+  'Ctrl-wheel anchors to canvas coordinates, not the toolbar or outer surface')
+const prePan = camera()
+const panTarget = {closest:()=>null}
+viewport().props.onPointerDown({button:0,pointerId:1,clientX:110,clientY:170,target:panTarget}); render()
+assert(captured.has(1))
+viewport().props.onPointerMove({pointerId:1,clientX:140,clientY:190}); render()
+assert.notEqual(camera(), prePan)
+const moved = camera()
+viewport().props.onPointerCancel({pointerId:1,clientX:900,clientY:900}); render()
+assert.equal(camera(), moved, 'Cancelled gestures cannot apply a late pointer coordinate')
+assert.equal(captured.size, 0)
+viewport().props.onPointerMove({pointerId:1,clientX:500,clientY:500}); render()
+assert.equal(camera(), moved, 'No stale panning after pointer cancellation')
+viewport().props.onPointerDown({button:0,pointerId:2,clientX:140,clientY:190,target:panTarget}); render()
+viewport().props.onPointerUp({pointerId:2,clientX:110,clientY:170}); render()
+assert.equal(camera(), prePan)
 owner.slots.forEach(state => state.cleanup?.())
 assert.equal(frames.size, 0, 'Unmount cancels pending camera work')
+
+// A bounding-box center can lie in a large empty gap between real nodes.
+// DOM node count is not a rendering assertion; mount the actual component.
+const sparseNodes = [
+  { id: 'shared:model', text: 'Same label', type: 'connection_model' },
+  { id: 'shared:model ', text: 'Same label', type: 'connection_model' },
+]
+const sparsePrepared = { sizes: new Map(sparseNodes.map(node => [node.id, { w: 220, h: 100, lines: [node.text] }])),
+  layout: { pos: new Map([['shared:model', { x: -20000, y: -10000 }], ['shared:model ', { x: 20000, y: 10000 }]]) },
+  bbox: { w: 40220, h: 20100, cx: 0, cy: 0 }, edgeLanes: new Map(), layeredEdgeGeometry: new Map() }
+const firstViews = []
+for (const width of [900, 344]) {
+  for (const [layoutMode, selectedNodeId] of [['layered', null], ['radial', 'shared:model '], ['neighborhood', 'shared:model '], ['overview', null]]) {
+    const instance = { slots: [], effects: [], dirty: false }
+    let firstTree, selectionCalls = 0, animationCalls = 0, animationCancels = 0
+    el.clientWidth = width; el.clientHeight = 481
+    el.querySelectorAll = selector => {
+      assert.equal(selector, '.kg-node')
+      return all(firstTree, byClass('kg-node')).map(element => ({
+        getAttribute: name => element.props[name],
+        animate(keyframes, options) {
+          assert.equal(options.duration, 240)
+          assert.equal(keyframes[1].transform, 'translate(0px,0px)')
+          animationCalls++
+          return { cancel() { animationCancels++ } }
+        },
+      }))
+    }
+    const firstProps = { ...props, nodes: sparseNodes, edges: [], selectedNodeId, selectedEdgeId: null,
+      prepared: sparsePrepared, focusReq: { seq: 0 }, layoutMode,
+      onSelectNode() { selectionCalls++ }, onSelectEdge() { selectionCalls++ } }
+    const mount = () => {
+      for (let pass = 0; pass < 20; pass++) {
+        instance.dirty = false; current = instance; cursor = 0
+        pendingUpdates.splice(0).forEach(fn => fn())
+        firstTree = GraphScene(firstProps)
+        all(firstTree, byClass('kg-graph-viewport'))[0].props.ref.current = el
+        instance.effects.splice(0).forEach(fn => fn())
+        const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn())
+        if (!instance.dirty && !frames.size && !pendingUpdates.length) return
+      }
+      throw new Error('Initial view did not settle')
+    }
+    mount()
+    const transform = all(firstTree, item => item.type === 'g' && item.props.style?.transform)[0].props.style.transform
+    const match = transform.match(/translate\(([-\d.eE+]+)px, ([-\d.eE+]+)px\) scale\(([-\d.eE+]+)\)/)
+    assert(match, 'Initial camera is finite and inspectable')
+    const [tx, ty, k] = match.slice(1).map(Number)
+    const visible = sparseNodes.filter(node => {
+      const point = sparsePrepared.layout.pos.get(node.id), size = sparsePrepared.sizes.get(node.id)
+      const x = point.x * k + tx, y = point.y * k + ty
+      return x - size.w * k / 2 >= 16 - 1e-8 && x + size.w * k / 2 <= width - 16 + 1e-8
+        && y - size.h * k / 2 >= 16 - 1e-8 && y + size.h * k / 2 <= 481 - 16 + 1e-8
+    })
+    assert(visible.length > 0, 'First sparse graph view must contain an actual visible node, not just DOM nodes')
+    if (layoutMode === 'overview') assert.equal(visible.length, sparseNodes.length, 'Overview fits the full graph below its former zoom floor')
+    else {
+      assert(k >= 0.85, 'A large graph must start at a readable local scale, not as microscopic labels')
+      if (layoutMode === 'neighborhood') assert.equal(visible[0].id, sparseNodes[0].id, 'Neighborhood keeps its root rather than an off-center selection')
+      else if (selectedNodeId) assert.equal(visible[0].id, selectedNodeId, 'Prefer exact selected identity, including trailing space')
+    }
+    firstProps.selectedNodeId = sparseNodes[0].id
+    mount()
+    assert.equal(all(firstTree, item => item.type === 'g' && item.props.style?.transform)[0].props.style.transform, transform,
+      'A selection update cannot rerun the initial fit and overwrite the camera')
+    assert.equal(selectionCalls, 0, 'Initial camera placement must not silently select or edit knowledge')
+    firstViews.push({ width, layoutMode, visible: visible.length, scale: k })
+    instance.slots.forEach(state => state.cleanup?.())
+    assert.equal(animationCalls, layoutMode === 'neighborhood' ? sparseNodes.length : 0)
+    assert.equal(animationCancels, animationCalls, 'Neighborhood transition is disposed without changing the camera')
+    assert.equal(frames.size, 0)
+  }
+}
 console.log(JSON.stringify({ ok: true, nodeSearch: true, paginatedResults: 65, readableFocus: true,
-  cameraRestoration: true, endpointNavigation: true, parallelRelationIdentity: true, readOnly: true }))
+  cameraRestoration: true, endpointNavigation: true, parallelRelationIdentity: true,
+  separateToolbarAndCanvas: true, canvasWheelAnchor: true, pointerCancellation: true, readOnly: true, firstViews }))

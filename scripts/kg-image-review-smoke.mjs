@@ -143,9 +143,13 @@ try {
   // Exercise the dynamic Host handler with its real shared helpers and canonical snapshot.
   const host = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
   const helpers = host.slice(host.indexOf('      function imageReviewsHost('), host.indexOf('      function visualTextHost('))
+  const identityStart = host.indexOf('       function canonicalDocumentInputHost(')
+  const identityEnd = host.indexOf('       function rememberCanonicalGraphHost(', identityStart)
+  assert(identityStart >= 0 && identityEnd > identityStart, 'The dynamic fixture must load the real identity validator')
+  const identityHelper = host.slice(identityStart, identityEnd)
   const handler = host.slice(host.indexOf("       harness.handle('image-review'"), host.indexOf("       harness.handle('image-nodes'"))
   const setup = new Function('harness', 'busy', 'loadCanonicalDocumentHost', 'imageReviewState', 'splitParagraphsHost', 'sha256HexHost', 'canonicalDocumentIdHost',
-    "const busyTaskResponseHost = () => ({error:{code:'busy'}});\n" + helpers + handler)
+    "const busyTaskResponseHost = () => ({error:{code:'busy'}});\n" + identityHelper + helpers + handler)
   for (const busy of [false, true]) {
     const handlers = new Map(), state = new Map()
     const snapshot = { graph, sourceText, revision: 1 }
@@ -159,6 +163,11 @@ try {
       assert.equal(next.review.status, 'matched')
       assert.equal((await dynamic({ action: 'list' })).reviews[0].status, 'matched')
       assert.deepEqual(snapshot, { graph, sourceText, revision: 1 })
+    }
+    for (const documentId of [' book-review ', 'book-review'.padEnd(161, 'x')]) {
+      const before = JSON.stringify([...state])
+      assert((await dynamic({ ...request, documentId, expectedRevision: 1, fingerprint: first.fingerprint })).error)
+      assert.equal(JSON.stringify([...state]), before, 'An unsupported identity must not review a normalized or prefix document')
     }
   }
   console.log(JSON.stringify({ ok: true, independentReviewState: true, durable: true, versionFence: true,

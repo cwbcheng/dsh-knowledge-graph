@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
 
     // ---------- RPC to the host half (webServer route, replaces host.call) ----------
     async function rpc(method, body, options = {}) {
-      if (method === "graph-neighborhood" || method === "connection-models" || method === "learning-mode") {
+      if (method === "graph-neighborhood" || method === "connection-models" || method === "learning-mode" || method === "target-map") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body), signal: options.signal,
@@ -61,7 +61,7 @@ window.__ModuleLoader__.load({
         const res = await fetch("/api/dsh-knowledge-graph/" + method, { cache: "no-store" })
         return res.json()
       }
-      if (method === "document-import" || method === "markdown-import" || method === "image-nodes" || method === "image-review") {
+      if (method === "document-import" || method === "markdown-import" || method === "image-nodes" || method === "image-review" || method === "image-references") {
         const res = await fetch("/api/dsh-knowledge-graph/" + method, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -208,6 +208,8 @@ c = c.split("host.call('image-load'").join("rpc('image-load'")
 c = c.split("host.call('image-inspect'").join("rpc('image-inspect'")
 c = c.split("host.call('image-review'").join("rpc('image-review'")
 c = c.split("host.call('image-nodes'").join("rpc('image-nodes'")
+c = c.split("host.call('image-references'").join("rpc('image-references'")
+c = c.split("host.call('target-map'").join("rpc('target-map'")
 c = c.split("host.call('document-export'").join("rpc('document-export'")
 c = c.split("host.call('graph-commit'").join("rpc('graph-commit'")
 c = c.split("host.call('graph-commit-preview'").join("rpc('graph-commit-preview'")

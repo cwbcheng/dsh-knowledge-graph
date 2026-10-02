@@ -3,10 +3,13 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { getOntology, ontologyIdOf, rawProfiles } from './kg-ontology.mjs'
 import { createImageNodeTools } from './kg-image-nodes.mjs'
-import { createModelStructureTools } from './kg-model-structure.mjs'
+import { createModelStructureTools, createModelConsumptionTools } from './kg-model-structure.mjs'
+import { createTargetMapTools } from './kg-target-map.mjs'
 
 const imageNodeTools = createImageNodeTools()
 const modelStructureTools = createModelStructureTools()
+const modelConsumptionTools = createModelConsumptionTools(modelStructureTools)
+const targetMapTools = createTargetMapTools()
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -289,7 +292,7 @@ function perspectiveKeys(value, allowed, label) {
 function normalizePerspectiveState(state) {
   perspectiveKeys(state, ['tab', 'query', 'filters', 'chapterId', 'layout', 'focusNodeId', 'gather', 'reading', 'sourceParagraph'], '视图')
   const filters = state.filters === undefined ? {} : state.filters
-  perspectiveKeys(filters, ['type', 'section', 'grounding', 'entailment'], '筛选')
+  perspectiveKeys(filters, ['type', 'relation', 'section', 'grounding', 'entailment'], '筛选')
   const tab = perspectiveString(state.tab, 10, '视图类型', 'search')
   const layout = perspectiveString(state.layout, 16, '布局', 'layered')
   if (!['search', 'answer'].includes(tab) || !['force', 'circular', 'radial', 'layered'].includes(layout)) throw perspectiveInputError('视图模式无效')
@@ -316,6 +319,7 @@ function normalizePerspectiveState(state) {
   const sourceParagraph = state.sourceParagraph == null ? null : count(state.sourceParagraph, '原文位置')
   return { tab, query: perspectiveString(state.query, 600, '检索词'),
     filters: { type: perspectiveString(filters.type, 80, '节点类型', 'all'),
+      relation: perspectiveString(filters.relation, 80, '关系上下文', 'all'),
       section: perspectiveString(filters.section, 160, '章节', 'all'),
       grounding: perspectiveString(filters.grounding, 32, '证据状态', 'all'),
       entailment: perspectiveString(filters.entailment, 32, '语义状态', 'all') },
@@ -389,9 +393,9 @@ function consumeEvidenceProjection(value) {
     const quote = text(item.quote).trim().slice(0, 600)
     if (!Number.isInteger(paragraph) || paragraph < 0 || !quote) continue
     out.push({
-      documentId: typeof item.documentId === 'string' ? item.documentId.slice(0, 160) : null,
-      sourceId: typeof item.sourceId === 'string' ? item.sourceId.slice(0, 160) : null,
-      chunkId: typeof item.chunkId === 'string' ? item.chunkId.slice(0, 160) : null,
+      documentId: typeof item.documentId === 'string' ? item.documentId : null,
+      sourceId: typeof item.sourceId === 'string' ? item.sourceId : null,
+      chunkId: typeof item.chunkId === 'string' ? item.chunkId : null,
       paragraph,
       quote,
     })
@@ -403,16 +407,16 @@ function consumeEvidenceProjection(value) {
 function consumeNodeFromRow(node) {
   return {
     ...declaredAttributes(parseJson(node.attributes_json, {}), NODE_ATTRIBUTES),
-    id: text(node.node_id).slice(0, 160),
+    id: text(node.node_id),
     type: text(node.type).slice(0, 40),
     text: text(node.text).slice(0, 1200),
     quote: text(node.quote).slice(0, 600),
     paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
     evidence: consumeEvidenceProjection(parseJson(node.evidence_json, [])),
-    documentId: typeof node.document_id === 'string' ? node.document_id.slice(0, 160) : null,
-    sourceId: typeof node.source_id === 'string' ? node.source_id.slice(0, 160) : null,
-    chunkId: typeof node.chunk_id === 'string' ? node.chunk_id.slice(0, 160) : null,
-    sectionId: typeof node.section_id === 'string' ? node.section_id.slice(0, 160) : null,
+    documentId: typeof node.document_id === 'string' ? node.document_id : null,
+    sourceId: typeof node.source_id === 'string' ? node.source_id : null,
+    chunkId: typeof node.chunk_id === 'string' ? node.chunk_id : null,
+    sectionId: typeof node.section_id === 'string' ? node.section_id : null,
     sectionTitle: typeof node.section_title === 'string' ? node.section_title.slice(0, 300) : null,
     groundingStatus: text(node.grounding_status, 'candidate'),
     entailmentStatus: text(node.entailment_status, 'unverified'),
@@ -423,13 +427,13 @@ function consumeNodeFromRow(node) {
 function consumeEdgeFromRow(edge) {
   return {
     ...declaredAttributes(parseJson(edge.attributes_json, {}), EDGE_ATTRIBUTES),
-    fromNodeId: text(edge.from_node_id).slice(0, 160),
-    toNodeId: text(edge.to_node_id).slice(0, 160),
+    fromNodeId: text(edge.from_node_id),
+    toNodeId: text(edge.to_node_id),
     relation: text(edge.relation).slice(0, 40),
     evidence: consumeEvidenceProjection(parseJson(edge.evidence_json, [])),
-    documentId: typeof edge.document_id === 'string' ? edge.document_id.slice(0, 160) : null,
-    sourceId: typeof edge.source_id === 'string' ? edge.source_id.slice(0, 160) : null,
-    chunkId: typeof edge.chunk_id === 'string' ? edge.chunk_id.slice(0, 160) : null,
+    documentId: typeof edge.document_id === 'string' ? edge.document_id : null,
+    sourceId: typeof edge.source_id === 'string' ? edge.source_id : null,
+    chunkId: typeof edge.chunk_id === 'string' ? edge.chunk_id : null,
     state: text(edge.state, 'candidate'),
   }
 }
@@ -440,7 +444,7 @@ function consumeSourceProjection(value, row, revision) {
   for (const item of Array.isArray(raw.sections) ? raw.sections : []) {
     if (!item || typeof item !== 'object') continue
     sections.push({
-      id: typeof item.id === 'string' ? item.id.slice(0, 160) : '',
+      id: typeof item.id === 'string' ? item.id : '',
       title: typeof item.title === 'string' ? item.title.slice(0, 300) : '',
       startParagraph: Number.isInteger(Number(item.startParagraph)) ? Number(item.startParagraph) : null,
       endParagraph: Number.isInteger(Number(item.endParagraph)) ? Number(item.endParagraph) : null,
@@ -448,7 +452,7 @@ function consumeSourceProjection(value, row, revision) {
     if (sections.length >= 80) break
   }
   return {
-    id: typeof raw.id === 'string' ? raw.id.slice(0, 160) : null,
+    id: typeof raw.id === 'string' ? raw.id : null,
     documentId: row.document_id,
     title: typeof raw.title === 'string' ? raw.title.slice(0, 300) : '',
     chars: Number.isFinite(Number(raw.chars)) ? Number(raw.chars) : 0,
@@ -472,6 +476,10 @@ function boundConsumeGraph(nodes, edges, directIds) {
   const nodeBudget = Math.floor(CONSUME_CONTEXT_CHARS * 0.62)
   for (const node of orderedNodes) {
     const size = JSON.stringify(node).length
+    // Opaque identities cannot be clipped to fit or bypass the response cap.
+    if (direct.has(node.id) && contextChars + size > CONSUME_CONTEXT_CHARS) {
+      throw Object.assign(new Error('指定节点的完整身份与记录超过检索预算，请缩小范围'), { code: 'limit_exceeded' })
+    }
     if (!direct.has(node.id) && contextChars + size > nodeBudget) continue
     keptNodes.push(node)
     keptIds.add(node.id)
@@ -513,14 +521,33 @@ function chunkFromRow(chunk) {
   }
 }
 
-const CONSUME_NODE_TYPES = new Set(['fact', 'claim', 'inference', 'concept', 'definition', 'example', 'counter_example', 'rule', 'image'])
-const CONSUME_RELATIONS = new Set(['supports', 'example', 'counter_example', 'defines', 'infers', 'causes', 'is_a', 'contains', 'driven_by', 'not_is', 'analogy', 'aims_at', 'visual_source'])
 const CONSUME_GROUNDING = new Set(['grounded', 'candidate', 'unsupported'])
 const CONSUME_ENTAILMENT = new Set(['verified', 'unsupported', 'uncertain', 'unverified'])
 const CONSUME_SOURCE_UNITS = 80
 const CONSUME_SOURCE_CHARS = 24000
 const CONSUME_CONTEXT_CHARS = 384000
 const CONSUME_SOURCE_FALLBACK = 8
+function validateConsumeOptions(options, profile) {
+  const types = new Set([...profile.consumptionTypes, 'image'])
+  const relations = new Set([...profile.relationTypes.map(relation => relation.id), 'visual_source', 'visual_reference'])
+  const fail = (code, message) => { throw Object.assign(new Error(message), { code }) }
+  for (const [field, allowed] of [['types', types], ['relations', relations],
+    ['groundingStatuses', CONSUME_GROUNDING], ['entailmentStatuses', CONSUME_ENTAILMENT],
+    ['nodeIds', null], ['sectionIds', null]]) {
+    if (options[field] == null) continue
+    if (!Array.isArray(options[field])) fail('invalid_input', field + ' 必须是数组')
+    if (options[field].length > 40) fail('limit_exceeded', field + ' 最多允许 40 项')
+    for (const item of options[field]) {
+      if (typeof item !== 'string' || !item.trim() || (allowed && !allowed.has(item.trim()))) {
+        fail('invalid_input', field + ' 包含不支持的值：' + String(item))
+      }
+    }
+  }
+  if (options.direction != null && !['both', 'in', 'out'].includes(options.direction)) {
+    fail('invalid_input', 'direction 只能是 both、in 或 out')
+  }
+  return { types, relations }
+}
 function normalizeConsumeText(value) {
   return String(value == null ? '' : value).normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ' ').trim()
 }
@@ -551,7 +578,7 @@ function boundedConsumeList(value, allowed, limit = 40) {
   }
   return out
 }
-function consumeScore(node, query, terms, explicitIds) {
+function consumeScore(node, query, terms, explicitIds, queryRaw) {
   const id = normalizeConsumeText(node.node_id)
   const type = normalizeConsumeText(node.type)
   const body = normalizeConsumeText(node.text)
@@ -559,6 +586,9 @@ function consumeScore(node, query, terms, explicitIds) {
   const section = normalizeConsumeText((node.section_title || '') + ' ' + (node.section_id || ''))
   let score = explicitIds.has(node.node_id) ? 1000 : 0
   const reasons = explicitIds.has(node.node_id) ? ['指定节点'] : []
+  const modelMatch = node.type === 'connection_model'
+    ? modelConsumptionTools.matchFields(parseJson(node.attributes_json, {}).modelStructure, queryRaw) : null
+  if (modelMatch) { score += modelMatch.score; reasons.push(...modelMatch.reasons) }
   if (query) {
     if (id === query) { score += 120; reasons.push('节点 ID 精确匹配') }
     if (body === query) { score += 100; reasons.push('节点文本精确匹配') }
@@ -579,7 +609,8 @@ function consumeScore(node, query, terms, explicitIds) {
   if (!query && explicitIds.size === 0) score += 1
   if (node.grounding_status === 'grounded') score += 1.5
   if (node.entailment_status === 'verified') score += 1
-  return score > 0 ? { score: Math.round(score * 100) / 100, reasons } : null
+  return score > 0 ? { score: Math.round(score * 100) / 100, reasons,
+    ...(modelMatch ? { modelFieldMatches: modelMatch.fieldMatches } : {}) } : null
 }
 function consumeSourceScore(value, query, terms) {
   const normalized = normalizeConsumeText(value)
@@ -686,6 +717,9 @@ export class SqliteKnowledgeStore {
   constructor(db, filename) {
     this.db = db
     this.filename = filename
+    // Fresh connections otherwise fail immediately on brief independent locks.
+    // Preserve an explicit caller timeout; never retry at the application layer.
+    if (this.db.prepare('PRAGMA busy_timeout').get().timeout === 0) this.db.exec('PRAGMA busy_timeout = 2000')
     this.db.exec(SCHEMA)
     this.migrateChunkIdentitySchema()
     // CREATE TABLE IF NOT EXISTS does not add columns to databases created by
@@ -793,10 +827,11 @@ export class SqliteKnowledgeStore {
     const hasEdges = Object.prototype.hasOwnProperty.call(graph, 'edges')
     if (hasNodes && !Array.isArray(graph.nodes)) throw invalidGraph('graph.nodes must be an array when provided')
     if (hasEdges && !Array.isArray(graph.edges)) throw invalidGraph('graph.edges must be an array when provided')
-    if ((graph.nodes || []).some(node => node?.type === 'image')) graph = imageNodeTools.materialize(graph)
+    if ((graph.nodes || []).some(node => node?.type === 'image')
+      || (graph.edges || []).some(edge => ['visual_source', 'visual_reference'].includes(edge?.relation))) graph = imageNodeTools.materialize(graph)
     const sourceInput = graph.source && typeof graph.source === 'object' ? graph.source : {}
-    const nodes = hasNodes ? graph.nodes.slice() : []
-    const edges = hasEdges ? graph.edges.slice() : []
+    let nodes = hasNodes ? graph.nodes.slice() : []
+    let edges = hasEdges ? graph.edges.slice() : []
     const profile = getOntology(ontologyIdOf(graph))
     const nodeIds = new Set()
     for (let index = 0; index < nodes.length; index++) {
@@ -892,6 +927,10 @@ export class SqliteKnowledgeStore {
       }
       const structureUnits = new Map((hasSourceUnits ? sourceUnits : current && text(current.source_text) === sourceText
         ? this.getDocumentSourceUnits(documentId) : []).map(unit => [unit.paragraph, unit.text]))
+      if (graph.source?.visualSource?.textReferences?.length) {
+        const projected = imageNodeTools.materialize({ ...graph, nodes, edges }, structureUnits)
+        nodes = projected.nodes; edges = projected.edges
+      }
       const structureErrors = nodes.some(node => node.modelStructure != null) ? modelStructureTools.errors({ ...graph, nodes }, structureUnits) : []
       if (structureErrors.length) throw Object.assign(new Error(structureErrors[0].message), { code: 'invalid_model_structure' })
       // Keep the overwritten graph and source units in the same transaction.
@@ -1472,6 +1511,60 @@ export class SqliteKnowledgeStore {
     return false
   }
 
+  targetMap(args) {
+    if (!args || typeof args.documentId !== 'string') return targetMapTools.handle(null, args)
+    this.db.exec(args.action === 'save' ? 'BEGIN IMMEDIATE' : 'BEGIN')
+    try {
+      const graph = this.getDocument(args.documentId)
+      const targetId = typeof args.targetId === 'string' ? args.targetId : ''
+      if (args.action === 'history') {
+        const where = "document_id = ? AND model_id = ? AND task_kind = 'target_map'"
+        const keys = [args.documentId, targetId]
+        const head = this.db.prepare(`SELECT attempt_id FROM learning_attempts WHERE ${where} ORDER BY created_at DESC, attempt_id DESC LIMIT 1`).get(...keys)
+        const historyTotal = this.db.prepare(`SELECT COUNT(*) AS n FROM learning_attempts WHERE ${where}`).get(...keys).n
+        const offset = Number.isSafeInteger(args.offset) && args.offset >= 0 ? args.offset : 0
+        const history = this.db.prepare(`SELECT attempt_id AS id, base_revision AS baseRevision, created_at AS createdAt,
+          json_extract(response_json, '$.title') AS title, json_extract(task_json, '$.reason') AS reason
+          FROM learning_attempts WHERE ${where} ORDER BY created_at DESC, attempt_id DESC LIMIT 20 OFFSET ?`).all(...keys, offset)
+        const result = targetMapTools.handle(graph ? { documentId: args.documentId, revision: graph.revision, graph } : null, args, [], Date.now(), historyTotal, [],
+          { historyHead: head?.attempt_id || '', historyTotal, history })
+        this.db.exec('COMMIT')
+        return result
+      }
+      const rows = this.db.prepare(`SELECT task_json, response_json FROM learning_attempts
+        WHERE document_id = ? AND model_id = ? AND task_kind = 'target_map'
+        ORDER BY created_at DESC, attempt_id DESC LIMIT 20`).all(args.documentId, targetId)
+      const records = rows.map(row => ({ ...parseJson(row.task_json, {}), map: parseJson(row.response_json, {}) }))
+      const count = this.db.prepare(`SELECT COUNT(*) AS n FROM learning_attempts
+        WHERE document_id = ? AND model_id = ? AND task_kind = 'target_map'`).get(args.documentId, targetId).n
+      const requestedId = args.action === 'save' ? args.id : args.recordId
+      if (typeof requestedId === 'string' && !records.some(record => record.id === requestedId)) {
+        const row = this.db.prepare('SELECT task_kind, task_json, response_json FROM learning_attempts WHERE attempt_id = ?').get(requestedId)
+        if (row && row.task_kind !== 'target_map') {
+          this.db.exec('ROLLBACK')
+          return { error: { code: 'attempt_conflict', message: '保存身份已被其他记录使用' } }
+        }
+        if (row) records.push({ ...parseJson(row.task_json, {}), map: parseJson(row.response_json, {}) })
+      }
+      const contexts = args.action === 'save' && Array.isArray(args.map?.examples) && args.map.examples.some(item => item?.exposure === 'self_reported_new')
+        ? this.db.prepare(`SELECT DISTINCT json_extract(example.value, '$.context') AS context
+            FROM learning_attempts, json_each(learning_attempts.response_json, '$.examples') AS example
+            WHERE document_id = ? AND model_id = ? AND task_kind = 'target_map'`).all(args.documentId, targetId)
+          .map(row => row.context).filter(value => typeof value === 'string') : []
+      const result = targetMapTools.handle(graph ? { documentId: args.documentId, revision: graph.revision, graph } : null, args, records, Date.now(), count, contexts)
+      if (result.appendRecord) {
+        const { map, ...record } = result.appendRecord
+        this.db.prepare(`INSERT INTO learning_attempts (attempt_id, document_id, base_revision, task_id, task_kind,
+          task_json, answer, scenario, self_rating, created_at, model_id, response_json)
+          VALUES (?, ?, ?, ?, 'target_map', ?, ?, '', 'not_assessed', ?, ?, ?)`).run(record.id, record.documentId, record.baseRevision,
+          'target_map:' + encodeURIComponent(record.target.id), JSON.stringify(record), map.mapping, record.createdAt, record.target.id, JSON.stringify(map))
+        delete result.appendRecord
+      }
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
   listLearningAttempts(documentId, modelId = '', exercise = '') {
     if (typeof documentId !== 'string' || !documentId || documentId.length > 160) return []
     if (typeof modelId !== 'string' || modelId.length > 160) return []
@@ -1479,7 +1572,7 @@ export class SqliteKnowledgeStore {
     const revision = this.getDocumentRevision(documentId)
     const taskId = (exercise === 'feedback' ? 'model_feedback:' : exercise === 'understanding' ? 'model_understanding:' : exercise === 'counterexample' ? 'model_counterexample:' : 'model_prediction:') + encodeURIComponent(modelId)
     return this.db.prepare(`SELECT * FROM learning_attempts
-      WHERE document_id = ? AND model_id = ? ${exercise ? 'AND task_id = ?' : ''}
+      WHERE document_id = ? AND model_id = ? AND task_kind <> 'target_map' ${exercise ? 'AND task_id = ?' : ''}
       ORDER BY created_at DESC, attempt_id DESC LIMIT 100`).all(documentId, modelId, ...(exercise ? [taskId] : []))
       .map(row => this.learningAttemptOf(row, documentId, revision))
   }
@@ -1562,6 +1655,12 @@ export class SqliteKnowledgeStore {
       throw invalid('新情境不能直接复制原文引文；请描述具体的新场景')
     }
     let taskJson = JSON.stringify(task)
+    const retryTaskJson = value => {
+      const original = { ...value }
+      // Evidence derived at the first commit is frozen, not part of the learner's retry identity.
+      delete original.practiceSnapshots
+      return JSON.stringify(original)
+    }
     const answerText = answer.trim()
     const scenarioText = scenario.trim()
     const responseJson = JSON.stringify(response)
@@ -1569,8 +1668,10 @@ export class SqliteKnowledgeStore {
     try {
       const previous = this.db.prepare('SELECT * FROM learning_attempts WHERE attempt_id = ?').get(attemptId)
       if (previous) {
+        const matchesTask = understanding ? retryTaskJson(parseJson(previous.task_json, {})) === retryTaskJson(task)
+          : previous.task_json === taskJson
         if (previous.document_id !== documentId || previous.base_revision !== expectedRevision ||
-            previous.task_id !== task.id || previous.task_json !== taskJson || previous.answer !== answerText ||
+            previous.task_id !== task.id || !matchesTask || previous.answer !== answerText ||
             previous.scenario !== scenarioText || previous.self_rating !== selfRating || previous.response_json !== responseJson) {
           throw Object.assign(new Error('学习记录请求与已保存记录冲突'), { code: 'attempt_conflict' })
         }
@@ -1906,6 +2007,29 @@ export class SqliteKnowledgeStore {
     return this.db.prepare('SELECT paragraph, text FROM document_units WHERE document_id = ? ORDER BY paragraph').all(documentId)
   }
 
+  #readDocumentSnapshot(read) {
+    // Metadata, counts, graph rows and source units must agree on one revision.
+    // SAVEPOINT preserves enclosing reads/writes, including on a nested read failure.
+    this.db.exec('SAVEPOINT kg_document_read')
+    try {
+      const result = read()
+      this.db.exec('RELEASE SAVEPOINT kg_document_read')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK TO SAVEPOINT kg_document_read')
+      this.db.exec('RELEASE SAVEPOINT kg_document_read')
+      throw error
+    }
+  }
+
+  getCanonicalDocument(documentId) {
+    return this.#readDocumentSnapshot(() => {
+      const graph = this.getDocument(documentId)
+      return graph ? { documentId, revision: graph.revision, sourceText: graph.sourceText,
+        sourceUnits: this.getDocumentSourceUnits(documentId), graph } : null
+    })
+  }
+
   listPerspectives(documentId) {
     return this.db.prepare(`SELECT perspective_id, name, state_json, base_revision, version, created_at, updated_at
       FROM document_perspectives WHERE document_id = ? ORDER BY updated_at DESC, perspective_id LIMIT 20`).all(documentId)
@@ -2063,6 +2187,10 @@ export class SqliteKnowledgeStore {
   }
 
   getDocument(documentId) {
+    return this.#readDocumentSnapshot(() => this.#getDocument(documentId))
+  }
+
+  #getDocument(documentId) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
     const nodes = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id').all(documentId).map(nodeFromRow)
@@ -2093,6 +2221,10 @@ export class SqliteKnowledgeStore {
   }
 
   getDocumentWindow(documentId, options = {}) {
+    return this.#readDocumentSnapshot(() => this.#getDocumentWindow(documentId, options))
+  }
+
+  #getDocumentWindow(documentId, options) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? Math.min(2000, options.limit) : 800
@@ -2211,6 +2343,10 @@ export class SqliteKnowledgeStore {
   }
 
   getGraphNeighborhood(documentId, options = {}) {
+    return this.#readDocumentSnapshot(() => this.#getGraphNeighborhood(documentId, options))
+  }
+
+  #getGraphNeighborhood(documentId, options) {
     const row = this.db.prepare('SELECT graph_revision FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
     const revision = row.graph_revision
@@ -2285,7 +2421,6 @@ export class SqliteKnowledgeStore {
         (direction === 'both' || (e.from_node_id !== centerId && e.to_node_id !== centerId) ||
           (direction === 'in' ? e.to_node_id === centerId : e.from_node_id === centerId)))
     edgeRows.sort((a, b) => cmp(a.from_node_id, b.from_node_id) || cmp(a.to_node_id, b.to_node_id) || cmp(a.relation, b.relation))
-    if (this.getDocumentRevision(documentId) !== revision) return { error: { code: 'revision_conflict', message: '知识图在查询期间已更新，请重新载入后聚拢' } }
     return { documentId, revision, centerId, direction, relation, hops,
       relationTypes: [...relationTypesSet].sort(), offset, nextOffset, neighborsTotal: neighbors.length,
       visibleTotal, truncated: visibleTotal < neighbors.length, hasMore: nextOffset < visibleTotal,
@@ -2294,6 +2429,10 @@ export class SqliteKnowledgeStore {
   }
 
   queryDocumentGraph(documentId, options = {}) {
+    return this.#readDocumentSnapshot(() => this.#queryDocumentGraph(documentId, options))
+  }
+
+  #queryDocumentGraph(documentId, options) {
     const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
     if (!row) return null
     const revision = Number.isInteger(row.graph_revision) ? row.graph_revision : 0
@@ -2303,13 +2442,26 @@ export class SqliteKnowledgeStore {
       error.currentRevision = revision
       throw error
     }
+    const meta = parseJson(row.graph_meta_json, {})
+    const sourceRaw = parseJson(row.source_json, {
+      id: row.source_id,
+      documentId: row.document_id,
+      title: row.title,
+      chars: row.chars,
+      paragraphCount: row.paragraph_count,
+      chunkCount: row.chunk_count,
+      sectionCount: row.section_count,
+    })
+    // Validate against the canonical ontology inside the same snapshot as the
+    // selected graph. Dropping an invalid filter would silently broaden it.
+    const allowed = validateConsumeOptions(options, getOntology(ontologyIdOf({ ...meta, source: sourceRaw })))
     const queryRaw = text(options.query).trim().slice(0, 600)
     const query = normalizeConsumeText(queryRaw)
     const terms = consumeTerms(queryRaw)
     const requestedNodeIds = boundedConsumeList(options.nodeIds, null, 40)
     const explicitIds = new Set(requestedNodeIds)
-    const types = boundedConsumeList(options.types, CONSUME_NODE_TYPES, CONSUME_NODE_TYPES.size)
-    const relations = boundedConsumeList(options.relations, CONSUME_RELATIONS, CONSUME_RELATIONS.size)
+    const types = boundedConsumeList(options.types, allowed.types, allowed.types.size)
+    const relations = boundedConsumeList(options.relations, allowed.relations, allowed.relations.size)
     const sectionIds = boundedConsumeList(options.sectionIds, null, 40)
     const grounding = boundedConsumeList(options.groundingStatuses, CONSUME_GROUNDING, CONSUME_GROUNDING.size)
     const entailment = boundedConsumeList(options.entailmentStatuses, CONSUME_ENTAILMENT, CONSUME_ENTAILMENT.size)
@@ -2323,7 +2475,8 @@ export class SqliteKnowledgeStore {
     const relationSeedOrder = new Map()
     let relationCandidateEdges = 0
     const hasNodeSelector = Boolean(query || requestedNodeIds.length > 0 || types.length > 0 || sectionIds.length > 0 || grounding.length > 0 || entailment.length > 0)
-    if (relations.length > 0 && !hasNodeSelector) {
+    const relationOnly = relations.length > 0 && !hasNodeSelector
+    if (relationOnly) {
       const marks = relations.map(() => '?').join(',')
       const relationWhere = 'document_id = ? AND relation IN (' + marks + ')'
       const count = this.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE ' + relationWhere).get(documentId, ...relations)
@@ -2356,6 +2509,7 @@ export class SqliteKnowledgeStore {
     addInFilter('entailment_status', entailment)
     const where = ['document_id = ?', ...filterSql]
     const params = [documentId, ...filterParams]
+    if (relationOnly && explicitIds.size === 0) where.push('0')
     if (terms.length > 0) {
       const termSql = []
       for (const term of terms) {
@@ -2363,7 +2517,10 @@ export class SqliteKnowledgeStore {
         termSql.push('(LOWER(node_id) LIKE ? OR LOWER(type) LIKE ? OR LOWER(text) LIKE ? OR LOWER(quote) LIKE ? OR LOWER(COALESCE(section_id, \'\')) LIKE ? OR LOWER(COALESCE(section_title, \'\')) LIKE ?)')
         params.push(pattern, pattern, pattern, pattern, pattern, pattern)
       }
-      where.push('(' + termSql.join(' OR ') + ')')
+      // Structured fields need parsed, normalized text, not serialized JSON
+      // matches (which can accidentally match provenance notes or escaped text).
+      // Model candidates use the same bounded paging and ranking as other hits.
+      where.push('(' + termSql.join(' OR ') + " OR type = 'connection_model')")
     }
     if (explicitIds.size > 0 && terms.length === 0) {
       const values = Array.from(explicitIds)
@@ -2372,18 +2529,19 @@ export class SqliteKnowledgeStore {
     }
     const whereSql = where.join(' AND ')
     const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + whereSql).get(...params)
-    const candidateCount = countRow ? Number(countRow.count) || 0 : 0
+    let candidateCount = countRow ? Number(countRow.count) || 0 : 0
+    let lexicalCandidateCount = 0
     const scored = []
     const seenCandidates = new Set()
     const scoreRow = (item) => {
       if (!item || seenCandidates.has(item.node_id)) return
       seenCandidates.add(item.node_id)
-      const value = consumeScore(item, query, terms, explicitIds)
+      const value = consumeScore(item, query, terms, explicitIds, queryRaw)
       if (value && relationSeedOrder.has(item.node_id)) {
         value.score = Math.round((value.score + 500 - Math.min(100, relationSeedOrder.get(item.node_id) / 1000)) * 100) / 100
         value.reasons.unshift('关系端点')
       }
-      if (value) scored.push({ row: item, ...value })
+      if (value) { lexicalCandidateCount++; scored.push({ row: item, ...value }) }
     }
     const trimScored = () => {
       scored.sort((a, b) => b.score - a.score || (Number.isInteger(a.row.paragraph) ? a.row.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.row.paragraph) ? b.row.paragraph : Number.MAX_SAFE_INTEGER) || a.row.node_id.localeCompare(b.row.node_id))
@@ -2419,6 +2577,7 @@ export class SqliteKnowledgeStore {
       const explicitRows = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + explicitWhere + ' ORDER BY paragraph, node_id').all(documentId, ...filterParams, ...values)
       for (const item of explicitRows) scoreRow(item)
     }
+    if (terms.length > 0) candidateCount = lexicalCandidateCount
     trimScored()
     const direct = scored.slice(0, directLimit)
     const selectedRows = new Map(direct.map((item) => [item.row.node_id, item.row]))
@@ -2488,16 +2647,6 @@ export class SqliteKnowledgeStore {
         if (edgeRows.size >= maxEdges) break
       }
     }
-    const meta = parseJson(row.graph_meta_json, {})
-    const sourceRaw = parseJson(row.source_json, {
-      id: row.source_id,
-      documentId: row.document_id,
-      title: row.title,
-      chars: row.chars,
-      paragraphCount: row.paragraph_count,
-      chunkCount: row.chunk_count,
-      sectionCount: row.section_count,
-    })
     const source = consumeSourceProjection(sourceRaw, row, revision)
     const returnedEdges = Array.from(edgeRows.values())
       .filter((edge) => selectedRows.has(edge.from_node_id) && selectedRows.has(edge.to_node_id))
@@ -2508,6 +2657,30 @@ export class SqliteKnowledgeStore {
     const boundedGraph = boundConsumeGraph(projectedNodes, projectedEdges, directIds)
     const selectedNodes = boundedGraph.nodes
     const selectedEdges = boundedGraph.edges
+    const graphSummary = text(meta.summary).slice(0, 2000)
+    if (JSON.stringify(source).length + graphSummary.length > 60000) {
+      throw Object.assign(new Error('来源与章节的完整身份超过检索预算'), { code: 'limit_exceeded' })
+    }
+    const modelNodes = selectedNodes.filter(node => node.type === 'connection_model').map(node => {
+      const row = selectedRows.get(node.id)
+      return { ...nodeFromRow(row), modelStructure: parseJson(row.attributes_json, {}).modelStructure }
+    })
+    const modelReadContext = {
+      documentId, revision, budget: 60000 - JSON.stringify(source).length - graphSummary.length - 256,
+      loadNodes: ids => new Map(fetchNodesByIds(ids).map(row => [row.node_id, nodeFromRow(row)])),
+      loadUnits: paragraphs => {
+        const units = new Map()
+        for (let start = 0; start < paragraphs.length; start += 240) {
+          const part = paragraphs.slice(start, start + 240), marks = part.map(() => '?').join(',')
+          for (const unit of this.db.prepare('SELECT paragraph, text FROM document_units WHERE document_id = ? AND paragraph IN (' + marks + ')')
+            .all(documentId, ...part)) units.set(unit.paragraph, unit.text)
+        }
+        return units
+      },
+    }
+    const modelContexts = modelConsumptionTools.build(modelNodes, modelReadContext)
+    const modelExampleContexts = modelConsumptionTools.buildExamples(modelNodes, modelContexts, { ...modelReadContext,
+      budget: 60000 - JSON.stringify(source).length - graphSummary.length - JSON.stringify(modelContexts).length })
     const paragraphRefs = new Map()
     const addParagraphRef = (paragraph, nodeId, edgeId, quote, priority) => {
       if (!Number.isInteger(paragraph) || paragraph < 0) return
@@ -2532,6 +2705,15 @@ export class SqliteKnowledgeStore {
       const key = edgeIdentity(edge)
       const priority = directIds.has(edge.fromNodeId) || directIds.has(edge.toNodeId) ? 1 : 2
       for (const item of Array.isArray(edge.evidence) ? edge.evidence : []) addParagraphRef(Number(item && item.paragraph), '', key, item && item.quote, priority)
+    }
+    for (const item of modelContexts.items.filter(item => item.status === 'recorded_core')) {
+      for (const { provenance } of modelConsumptionTools.provenances(item.structure)) {
+        if (provenance.kind === 'source') addParagraphRef(provenance.paragraph, item.modelId, '', provenance.quote, 0)
+      }
+    }
+    for (const item of modelExampleContexts.items) {
+      const provenance = item.example.provenance
+      if (provenance.kind === 'source') addParagraphRef(provenance.paragraph, item.modelId, '', provenance.quote, 0)
     }
     const unitTextByParagraph = new Map()
     const referencedParagraphs = Array.from(paragraphRefs.keys()).sort((a, b) => a - b)
@@ -2604,9 +2786,10 @@ export class SqliteKnowledgeStore {
         sourceFallbackUnits += 1
       }
     }
-    const matches = direct.map((item) => ({ nodeId: item.row.node_id, score: item.score, reasons: item.reasons.slice(0, 4) }))
-    const graphSummary = text(meta.summary).slice(0, 2000)
+    const matches = direct.map((item) => ({ nodeId: item.row.node_id, score: item.score, reasons: item.reasons.slice(0, 4),
+      ...(item.modelFieldMatches ? { modelFieldMatches: item.modelFieldMatches } : {}) }))
     const contextChars = boundedGraph.contextChars + sourceChars + graphSummary.length + JSON.stringify(source).length
+      + JSON.stringify(modelContexts).length + JSON.stringify(modelExampleContexts).length
     const view = {
       kind: 'consumption', query: queryRaw, directMatches: direct.length,
       candidateMatches: candidateCount, relationCandidateEdges, totalNodes, totalEdges,
@@ -2614,7 +2797,7 @@ export class SqliteKnowledgeStore {
       hops, direction,
       truncated: candidateCount > direct.length || selectedRows.size >= maxNodes || edgeRows.size >= maxEdges || boundedGraph.truncated,
     }
-    return {
+    const result = {
       queryId: 'kgq-' + stableHash(JSON.stringify({
         documentId, revision, query: queryRaw,
         nodeIds: requestedNodeIds.slice().sort(), types: types.slice().sort(), relations: relations.slice().sort(),
@@ -2625,6 +2808,8 @@ export class SqliteKnowledgeStore {
       revision,
       query: queryRaw,
       matches,
+      modelContexts,
+      modelExampleContexts,
       graph: {
         summary: graphSummary,
         source,
@@ -2643,11 +2828,17 @@ export class SqliteKnowledgeStore {
         sourceRefsOmitted: Math.max(0, paragraphRefs.size - sourceUnits.filter((unit) => unit.sourceFallback !== true).length),
         sourceFallbackUnits,
         sourceFallbackEvaluated,
+        modelContextChars: JSON.stringify(modelContexts).length,
+        modelExampleContextChars: JSON.stringify(modelExampleContexts).length,
         contextChars,
         contextBudget: CONSUME_CONTEXT_CHARS + CONSUME_SOURCE_CHARS + 60000,
         hops,
       },
     }
+    if (contextChars > result.metrics.contextBudget || JSON.stringify(result).length > result.metrics.contextBudget + 20000) {
+      throw Object.assign(new Error('完整身份与引用超过检索响应预算，请缩小范围'), { code: 'limit_exceeded' })
+    }
+    return result
   }
 
   commitViewGraph(options = {}) {

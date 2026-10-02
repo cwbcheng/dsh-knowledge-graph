@@ -74,6 +74,36 @@ export default function clientPlugin() {
 .kg-model-learning-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .kg-model-learning-grid label { margin: 0; }
 .kg-model-learning-grid textarea { min-height: 100px; }
+.kg-target-map { --kg-accent: #0d9488; --kg-accent-soft: rgba(13,148,136,0.08); container-type: inline-size; min-width: 0; overflow-wrap: anywhere; }
+.kg-target-layout { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: 16px; }
+.kg-target-catalogue { min-width: 0; border-right: 1px solid var(--kg-border); padding-right: 12px; }
+.kg-target-catalogue ul, .kg-target-outcomes { list-style: none; padding: 0; margin: 0; }
+.kg-target-catalogue li { border-bottom: 1px solid var(--kg-border); }
+.kg-target-catalogue li button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.kg-target-map input:not([type=checkbox]), .kg-target-map select, .kg-target-map textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: var(--kg-text); background: var(--kg-edge-label-bg); border: 1px solid var(--kg-border); border-radius: 4px; padding: 7px; }
+.kg-target-map input[type=checkbox] { width: 16px; height: 16px; flex: 0 0 16px; }
+.kg-target-map textarea { min-height: 72px; resize: vertical; white-space: pre-wrap; }
+.kg-target-map button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.kg-target-map label { display: block; margin-block: 8px; min-width: 0; }
+.kg-target-map h3 { font-size: 16px; margin: 10px 0; }
+.kg-target-map h4 { font-size: 14px; margin: 10px 0; }
+.kg-target-map section, .kg-target-map fieldset { min-width: 0; }
+.kg-target-map fieldset { padding: 0; border: 0; margin: 0; }
+.kg-target-map [aria-pressed=true] { border-color: var(--kg-accent); background: var(--kg-accent-soft); }
+.kg-target-upper { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; border-block: 2px solid var(--kg-accent); padding-block: 8px; }
+.kg-target-slot { border-top: 1px dashed var(--kg-border); padding-block: 8px; }
+.kg-target-slot[data-selected=true] { outline: 2px solid var(--kg-accent); outline-offset: 2px; }
+.kg-target-outcomes li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 32px; gap: 6px; align-items: start; padding: 8px 0; border-bottom: 1px dashed var(--kg-border); }
+.kg-target-outcomes small, .kg-target-outcomes details { grid-column: 1 / -1; }
+.kg-target-case { border-block: 1px solid var(--kg-border); padding: 10px 0; }
+.kg-target-case summary { cursor: pointer; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kg-target-pair { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr); gap: 12px; }
+.kg-target-case p, .kg-target-archive p { white-space: pre-wrap; }
+.kg-target-archive { border-top: 2px solid var(--kg-border); padding-top: 10px; }
+.kg-target-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 10px; }
+.kg-target-toolbar label { display: flex; align-items: start; gap: 6px; }
+.kg-target-icon { width: 32px; height: 32px; flex: 0 0 32px; }
+@container (max-width: 700px) { .kg-target-layout { grid-template-columns: minmax(0,1fr); } .kg-target-catalogue { border-right: 0; padding-right: 0; max-height: 260px; overflow: auto; } .kg-target-upper, .kg-target-pair { grid-template-columns: minmax(0,1fr); } }
 .kg-model-understanding .kg-model-learning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .kg-model-understanding label[data-field='mapping'], .kg-model-understanding label[data-field='questions'], .kg-model-understanding label[data-field='revisionReason'] { grid-column: 1 / -1; }
 .kg-model-understanding textarea { min-height: 80px; }
@@ -103,7 +133,7 @@ export default function clientPlugin() {
 .kg-learning-references > div, .kg-learning-feedback, .kg-learning-history { border-top: 1px solid var(--kg-border); padding: 9px 0; margin-top: 9px; }
 .kg-learning-references p, .kg-learning-feedback p { margin: 4px 0; }
 .kg-learning-history { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.kg-models { border-block: 1px solid var(--kg-border); margin-block: 12px; min-width: 0; font-size: 13px; letter-spacing: 0; }
+.kg-models { container: kg-models / inline-size; border-block: 1px solid var(--kg-border); margin-block: 12px; min-width: 0; font-size: 13px; letter-spacing: 0; }
 .kg-model-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; }
 .kg-models input, .kg-models select { font: inherit; min-width: 0; max-width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid var(--kg-border); border-radius: 4px; color: var(--kg-text); background: var(--kg-edge-label-bg); }
 .kg-models input[type=search] { flex: 1 1 180px; }
@@ -112,20 +142,27 @@ export default function clientPlugin() {
 .kg-models .kg-consume-tabs button { border-radius: 4px; }
 .kg-model-toolbar button[aria-pressed=true], .kg-models button[aria-pressed=true] { background: rgba(8,145,178,.12); color: #08738c; border-color: #0891b2; }
 .kg-models summary { cursor: pointer; }
-.kg-model-workspace { display: grid; grid-template-columns: minmax(170px, 24%) minmax(0, 1fr); min-height: 430px; }
-.kg-model-directory { border-right: 1px solid var(--kg-border); padding-right: 12px; max-height: 720px; overflow: auto; }
+.kg-model-workspace { display: grid; grid-template-columns: minmax(0,1fr); min-height: 430px; }
+.kg-model-directory { border-bottom: 1px solid var(--kg-border); max-height: 220px; overflow: auto; }
 .kg-model-list-item { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--kg-border); padding: 12px 8px; color: var(--kg-text); background: transparent; cursor: pointer; overflow-wrap: anywhere; }
 .kg-model-list-item[aria-current=true] { background: rgba(8,145,178,.10); border-left: 3px solid #0891b2; }
 .kg-model-list-item strong, .kg-model-list-item small { display: block; }
 .kg-model-list-item small { color: var(--kg-text-dim); margin-top: 4px; }
-.kg-model-detail { padding: 12px 0 16px 16px; min-width: 0; overflow-wrap: anywhere; }
+.kg-model-field-hits { padding: 4px 8px 10px; border-bottom: 1px solid var(--kg-border); min-width: 0; }
+.kg-model-field-link { display: block; width: 100%; box-sizing: border-box; border: 0; border-left: 2px solid #0891b2; padding: 6px 8px; margin-top: 4px; text-align: left; color: var(--kg-text); background: transparent; cursor: pointer; overflow-wrap: anywhere; }
+.kg-model-field-link small { display: block; color: var(--kg-text-dim); margin-top: 3px; white-space: pre-wrap; }
+.kg-model-field-link:hover, .kg-model-field-link:focus-visible { background: rgba(8,145,178,.08); }
+.kg-model-detail [data-model-field-hit] { border-left: 3px solid #0891b2; padding-left: 8px; white-space: break-spaces; }
+.kg-model-detail [data-model-field-hit] mark { background: #fef3c7; color: inherit; }
+.kg-query-literal-hit { background: #fef3c7; color: inherit; padding: 0; }
+.kg-model-detail { container: kg-model-detail / inline-size; padding: 12px 0 16px; min-width: 0; overflow-wrap: anywhere; }
 .kg-model-detail h3, .kg-model-detail h4 { font-size: 14px; margin: 8px 0; }
 .kg-model-detail p { margin: 6px 0; }
-.kg-model-flow { display: grid; grid-template-columns: minmax(0,1fr) 20px minmax(0,1.5fr) 20px minmax(0,1fr); gap: 6px; margin: 14px 0; align-items: start; }
+.kg-model-flow { display: grid; grid-template-columns: minmax(0,1fr); gap: 6px; margin: 14px 0; align-items: start; }
 .kg-model-flow section { min-width: 0; border-top: 3px solid #0891b2; padding: 8px 0; }
 .kg-model-flow section:nth-of-type(2) { border-color: #be5677; }
 .kg-model-flow section:nth-of-type(3) { border-color: #27885e; }
-.kg-model-arrow { align-self: center; text-align: center; font-size: 18px; }
+.kg-model-arrow { align-self: center; justify-self: center; width: 20px; height: 27px; line-height: 27px; text-align: center; font-size: 18px; transform: rotate(90deg); pointer-events: none; }
 .kg-model-port { padding-block: 5px; border-bottom: 1px solid var(--kg-border); }
 .kg-model-port button { white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .kg-model-warning { padding: 7px 10px; border-left: 3px solid #b87b15; background: rgba(184,123,21,.08); margin-block: 8px; }
@@ -165,8 +202,40 @@ export default function clientPlugin() {
 .kg-model-compare-row { border-top: 1px solid var(--kg-border); padding: 10px 0; }
 .kg-model-compare-row p { white-space: pre-wrap; }
 .kg-model-compare-column-label { display: none; color: var(--kg-text-dim); font-size: 12px; }
+.kg-chain-field { display: grid; gap: 4px; margin: 10px 0; min-width: 0; font-size: 12px; }
+.kg-chain-field textarea, .kg-chain-field select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; font: inherit; color: var(--kg-text); background: var(--kg-bg); border: 1px solid var(--kg-border); border-radius: 4px; padding: 7px 8px; }
+.kg-chain-field textarea { resize: vertical; min-height: 54px; line-height: 1.5; }
+.kg-chain-step { min-width: 0; overflow-wrap: anywhere; padding: 12px 0; border-top: 1px solid var(--kg-border); }
+.kg-chain-step p { white-space: pre-wrap; }
+.kg-chain-slot, .kg-chain-branch { padding: 8px 0; border-bottom: 1px dashed var(--kg-border); }
+.kg-chain-result { margin-top: 12px; border-top: 2px solid var(--kg-border); }
+.kg-chain-import { min-width: 0; overflow-wrap: anywhere; padding: 12px 0; border-block: 1px solid var(--kg-border); }
+.kg-chain-import p { white-space: pre-wrap; }
+.kg-model-chain h3 { font-size: 16px; }
+.kg-model-chain h4 { font-size: 14px; }
+.kg-model-chain h5 { font-size: 13px; margin: 12px 0 8px; }
 @media (max-width: 680px) { .kg-model-compare-grid, .kg-model-compare-choices { grid-template-columns: minmax(0, 1fr); } .kg-model-compare-grid > div + div { border-left: 0; border-top: 1px dashed var(--kg-border); padding: 10px 0 0; } .kg-model-compare-column-label { display: block; } }
-@media (max-width: 760px) { .kg-model-workspace { grid-template-columns: minmax(0,1fr); } .kg-model-directory { border-right: 0; border-bottom: 1px solid var(--kg-border); padding-right: 0; max-height: 220px; } .kg-model-detail { padding-left: 0; } .kg-model-flow { grid-template-columns: minmax(0,1fr); } .kg-model-arrow { transform: rotate(90deg); } }
+/* The resizable workbench and its detail pane have different available widths. */
+.kg-models .kg-model-learning-grid, .kg-models .kg-model-feedback-fields, .kg-models .kg-model-structure-grid, .kg-models .kg-model-compare-grid, .kg-models .kg-model-compare-choices, .kg-models .kg-model-review-row { grid-template-columns: minmax(0,1fr); }
+.kg-models .kg-model-compare-grid > div + div { border-left: 0; border-top: 1px dashed var(--kg-border); padding: 10px 0 0; }
+.kg-models .kg-model-compare-column-label { display: block; }
+@container kg-models (min-width: 840px) {
+  .kg-model-workspace { grid-template-columns: minmax(170px, 24%) minmax(0,1fr); }
+  .kg-model-directory { border-right: 1px solid var(--kg-border); border-bottom: 0; padding-right: 12px; max-height: 720px; }
+  .kg-model-detail { padding-left: 16px; }
+}
+@container kg-model-detail (min-width: 560px) {
+  .kg-models .kg-model-understanding .kg-model-learning-grid, .kg-models .kg-model-feedback-fields, .kg-models .kg-model-structure-grid, .kg-models .kg-model-compare-grid, .kg-models .kg-model-compare-choices { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .kg-models .kg-model-review-row { grid-template-columns: minmax(0,1fr) 110px; }
+  .kg-models .kg-model-compare-grid > div + div { border-left: 1px solid var(--kg-border); border-top: 0; padding: 0 0 0 16px; }
+  .kg-models .kg-model-compare-column-label { display: none; }
+}
+@container kg-model-detail (min-width: 640px) {
+  .kg-model-flow { grid-template-columns: minmax(0,1fr) 20px minmax(0,1.5fr) 20px minmax(0,1fr); }
+  .kg-model-arrow { transform: none; }
+  .kg-models .kg-model-learning-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .kg-models .kg-model-understanding .kg-model-learning-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
 .kg-learning-feedback ul { margin: 6px 0; padding-left: 20px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .kg-delete-progress { position: sticky; top: 0; z-index: 20; margin: 0; padding: 8px 0; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 13px; }
@@ -275,6 +344,8 @@ export default function clientPlugin() {
 .kg-image-review { border-block: 1px solid var(--kg-border); padding: 12px 0; margin: 12px 0; min-width: 0; }
 .kg-image-review fieldset { border: 0; padding: 0; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 12px; }
 .kg-image-review label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.kg-image-review input { flex-shrink: 0; }
+.kg-image-review blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--kg-border); overflow-wrap: anywhere; }
 .kg-image-review .kg-image-review-note { display: block; margin: 8px 0; }
 .kg-image-review textarea { display: block; box-sizing: border-box; width: 100%; min-height: 72px; margin-top: 6px; padding: 8px; resize: vertical; border: 1px solid var(--kg-border); border-radius: 4px; background: var(--kg-edge-label-bg); color: var(--kg-text); font: inherit; font-size: 13px; }
 .kg-image-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -409,21 +480,48 @@ export default function clientPlugin() {
 .kg-verdict { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid transparent; font-size: 10.5px; line-height: 16px; font-weight: 600; }
 .kg-verdict-supported { color: #047857; background: rgba(5,150,105,0.08); border-color: rgba(5,150,105,0.22); } .kg-verdict-contradicted { color: #dc2626; background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.22); } .kg-verdict-insufficient { color: #b45309; background: rgba(217,119,6,0.08); border-color: rgba(217,119,6,0.22); } .kg-verdict-out_of_scope { color: #475569; background: rgba(100,116,139,0.10); border-color: rgba(100,116,139,0.25); }
 @media (prefers-color-scheme: dark) { .kg-verdict-supported { color: #6ee7b7; } .kg-verdict-contradicted { color: #fca5a5; } .kg-verdict-insufficient { color: #fcd34d; } .kg-verdict-out_of_scope { color: #cbd5e1; } }
-.kg-consume-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.kg-consume-tabs { display: inline-flex; padding: 3px; border: 1px solid var(--kg-border); border-radius: 9px; background: rgba(127,127,127,0.06); }
+.kg-consume-panel { min-width: 0; container-type: inline-size; container-name: kg-consume; overflow-wrap: anywhere; }
+.kg-consume-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.kg-consume-head > div:first-child { flex: 1 1 220px; min-width: 0; }
+.kg-consume-tabs { display: inline-flex; flex-wrap: wrap; max-width: 100%; padding: 3px; border: 1px solid var(--kg-border); border-radius: 9px; background: rgba(127,127,127,0.06); }
 .kg-consume-tab { border: 0; border-radius: 7px; padding: 5px 11px; background: transparent; color: var(--kg-text-dim); font: inherit; font-size: 12px; cursor: pointer; }
 .kg-consume-tab.on { color: #2563eb; background: rgba(59,130,246,0.12); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .kg-consume-tab.on { color: #93c5fd; } }
-.kg-consume-form { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(5, minmax(105px, auto)); gap: 8px; margin-top: 10px; align-items: stretch; }
-.kg-consume-form .kg-question-input { width: 100%; box-sizing: border-box; }
-.kg-consume-select { min-width: 112px; border: 1px solid var(--kg-border); border-radius: 9px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; }
+.kg-consume-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; align-items: stretch; }
+.kg-consume-form .kg-question-input { grid-column: 1 / -1; width: 100%; box-sizing: border-box; }
+.kg-consume-form > .kg-primary { min-width: 0; box-sizing: border-box; overflow-wrap: anywhere; }
+.kg-consume-select { min-width: 0; width: 100%; box-sizing: border-box; border: 1px solid var(--kg-border); border-radius: 9px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; }
 .kg-consume-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; max-height: 360px; overflow: auto; }
-.kg-consume-result { width: 100%; text-align: left; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 11px; background: var(--kg-panel); color: var(--kg-text); font: inherit; cursor: pointer; }
+.kg-consume-result { width: 100%; min-width: 0; box-sizing: border-box; text-align: left; border: 1px solid var(--kg-border); border-radius: 10px; padding: 9px 11px; background: var(--kg-panel); color: var(--kg-text); font: inherit; overflow-wrap: anywhere; cursor: pointer; }
 .kg-consume-result:hover, .kg-consume-result:focus-visible { border-color: rgba(59,130,246,0.65); outline: none; box-shadow: 0 0 0 1px rgba(59,130,246,0.18); }
 .kg-consume-result-top { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.kg-consume-result-top > .kg-hint { min-width: 0; max-width: 100%; }
+.kg-consume-result-top > .kg-consume-identity { flex: 1 1 180px; margin-bottom: 0; white-space: pre-wrap; }
 .kg-consume-result-text { margin-top: 5px; font-size: 13px; font-weight: 600; line-height: 1.55; }
 .kg-consume-result-quote { margin-top: 4px; font-size: 12px; color: var(--kg-text-dim); line-height: 1.55; }
-.kg-consume-state { margin: 10px 0 0; padding: 8px 10px; border-radius: 9px; background: rgba(127,127,127,0.06); color: var(--kg-text-dim); font-size: 12px; }
+.kg-consume-field-hits { margin-top: 8px; font-size: 12px; line-height: 1.6; }
+.kg-consume-field-hit { margin-top: 6px; padding-left: 8px; border-left: 2px solid #168579; }
+.kg-consume-field-label { background: rgba(22,133,121,0.12); color: var(--kg-text); padding: 1px 3px; }
+.kg-consume-field-text { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kg-consume-result-group { min-width: 0; }
+.kg-consume-examples { padding: 7px 11px; font-size: 12px; line-height: 1.6; }
+.kg-consume-examples > summary { cursor: pointer; overflow-wrap: anywhere; }
+.kg-consume-examples > summary:focus-visible { outline: 2px solid #168579; outline-offset: 2px; }
+.kg-consume-example { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--kg-border); min-width: 0; }
+.kg-consume-example-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.kg-consume-example-head > * { min-width: 0; max-width: 100%; }
+.kg-consume-example-text, .kg-consume-example code { white-space: break-spaces; overflow-wrap: anywhere; }
+.kg-consume-example-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin: 9px 0; }
+.kg-consume-example-grid > div { min-width: 0; }
+.kg-consume-example h4 { font-size: 12px; margin: 0 0 5px; }
+.kg-consume-example-slot, .kg-consume-example-field { margin-top: 7px; padding-left: 7px; border-left: 2px solid var(--kg-border); }
+.kg-consume-example blockquote { margin: 4px 0; padding-left: 7px; border-left: 2px solid #168579; color: var(--kg-text-dim); }
+.kg-consume-example-origin { margin-top: 6px; }
+.kg-consume-example .kg-secondary { margin-top: 5px; max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
+@container (min-width: 640px) {
+  .kg-consume-example-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr); }
+}
+.kg-consume-state { margin: 10px 0 0; padding: 8px 10px; border-radius: 9px; background: rgba(127,127,127,0.06); color: var(--kg-text-dim); font-size: 12px; overflow-wrap: anywhere; }
 .kg-consume-error { border: 1px solid rgba(220,38,38,0.28); background: rgba(220,38,38,0.06); color: #dc2626; }
 .kg-consume-answer { margin-top: 10px; padding: 11px 13px; border: 1px solid rgba(59,130,246,0.35); border-radius: 10px; background: rgba(59,130,246,0.055); }
 .kg-consume-answer-text { margin: 9px 0 0; white-space: pre-wrap; font-size: 14px; line-height: 1.7; }
@@ -438,7 +536,8 @@ export default function clientPlugin() {
 .kg-consume-citation { width: 100%; text-align: left; border: 1px solid var(--kg-border); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 7px 9px; background: var(--kg-panel); color: var(--kg-text); font: inherit; font-size: 12px; line-height: 1.55; cursor: pointer; }
 .kg-consume-citation:hover { border-color: rgba(59,130,246,0.65); }
 .kg-consume-followups { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-@media (max-width: 760px) { .kg-consume-form { grid-template-columns: 1fr 1fr; } .kg-consume-form .kg-question-input { grid-column: 1 / -1; } }
+@container kg-consume (min-width: 800px) { .kg-consume-form { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@container kg-consume (max-width: 240px) { .kg-consume-form { grid-template-columns: minmax(0, 1fr); } }
 .kg-fact-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .kg-fact-rules { margin: 8px 0 10px; }
 .kg-fact-head-text { flex: 1; min-width: 0; }
@@ -504,8 +603,9 @@ export default function clientPlugin() {
 .knowledge-type-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 18px; background: #64748b; color: #fff; font-weight: 500; }
 .kg-para.kg-flash { animation: kg-para-glow 1.4s ease; }
 @keyframes kg-para-glow { 0%, 100% { background: transparent; } 30% { background: rgba(59,130,246,0.22); } }
-.kg-graph { position: relative; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); user-select: none; }
-.kg-graph > svg { touch-action: none; }
+.kg-graph { position: relative; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--kg-border); border-radius: 10px; height: 460px; background: var(--kg-panel); user-select: none; }
+.kg-graph-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.kg-graph-viewport > svg { touch-action: none; }
 .kg-graph.kg-panning { cursor: grabbing; }
 .kg-graph-loading { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--kg-muted); cursor: default; }
 .kg-graph-stage { position: relative; min-width: 0; }
@@ -554,10 +654,12 @@ export default function clientPlugin() {
 @media (prefers-reduced-motion: reduce) { .kg-graph-spinner { animation: none; } }
 .kg-panning .kg-node, .kg-panning .kg-edge { pointer-events: none; }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
-.kg-graph-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; pointer-events: auto; }
+.kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
+.kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }
 .kg-graph-toolbar button { min-width: 30px; height: 28px; padding: 0 8px; border: 1px solid var(--kg-border); border-radius: 7px; background: var(--kg-edge-label-bg); color: var(--kg-text); font-size: 12px; cursor: pointer; }
 .kg-graph-toolbar button:hover { border-color: rgba(59,130,246,0.6); color: #3b82f6; }
 .kg-graph-toolbar button:disabled { opacity: 0.45; cursor: default; }
+.kg-graph-toolbar .kg-graph-zoom { flex: none; width: 56px; padding: 0; }
 .kg-node-search { width: min(360px, 100%); min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px; box-sizing: border-box; background: var(--kg-edge-label-bg); color: var(--kg-text); border: 1px solid var(--kg-border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.18); pointer-events: auto; user-select: text; }
 .kg-node-search-head, .kg-node-search-filters, .kg-node-search-pages { display: flex; align-items: center; gap: 6px; }
 .kg-node-search-head strong { flex: 1; font-size: 13px; }
@@ -1386,15 +1488,21 @@ export default function clientPlugin() {
       let toastTimer = null
       const toastStore = {
         get() { return toastMsg },
-        show(msg) {
+        show(msg, timerContext) {
           toastMsg = msg
           for (const fn of toastListeners) fn()
           if (toastTimer) { toastTimer(); toastTimer = null }
-          toastTimer = ctx.timeout(() => {
+          const dismiss = () => {
             toastTimer = null
             toastMsg = null
             for (const fn of toastListeners) fn()
-          }, 3000)
+          }
+          const owner = timerContext || (typeof ctx === 'undefined' ? null : ctx)
+          if (owner && typeof owner.timeout === 'function') toastTimer = owner.timeout(dismiss, 3000)
+          else {
+            const timer = setTimeout(dismiss, 3000)
+            toastTimer = () => clearTimeout(timer)
+          }
         },
         clear() {
           if (toastTimer) { toastTimer(); toastTimer = null }
@@ -2002,6 +2110,153 @@ export default function clientPlugin() {
       })()
       // <<< END MODEL STRUCTURE TOOLS <<<
 
+      // >>> GENERATED MODEL CHAIN TOOLS >>>
+      const MODEL_CHAIN_TOOLS = (function createModelChainTools() {
+        const fail = message => { throw Object.assign(new Error(message), { code: 'invalid_chain_draft' }) }
+        const object = (value, keys) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) fail('推测草稿包含不支持的字段')
+        }
+        const text = (value, limit = 1000) => { if (typeof value !== 'string' || value.length > limit) fail('推测草稿的文字格式或长度无效') }
+        const array = (value, limit) => { if (!Array.isArray(value) || value.length > limit) fail('推测草稿的条目数量无效') }
+        const identity = value => { if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(value)) fail('推测草稿缺少有效身份') }
+        const unique = items => {
+          const seen = new Set()
+          for (const item of items) { identity(item.slotId); if (seen.has(item.slotId)) fail('同一步骤的槽位重复'); seen.add(item.slotId) }
+        }
+        const validateDraft = draft => {
+          object(draft, ['version', 'scenario', 'goal', 'steps'])
+          if (JSON.stringify(draft).length > 100000 || draft.version !== 1) fail('推测草稿版本或大小无效')
+          text(draft.scenario, 2000); text(draft.goal, 2000); array(draft.steps, 2)
+          if (draft.steps.length !== 2) fail('请选择且只选择两个步骤')
+          for (const step of draft.steps) {
+            object(step, ['modelId', 'branchId', 'inputs', 'outputs', 'conditions', 'reasoning'])
+            text(step.modelId, 100000)
+            if (!step.modelId.trim()) fail('步骤缺少模型身份')
+            text(step.branchId, 80); text(step.conditions, 2000); text(step.reasoning, 2000)
+            array(step.inputs, 40); array(step.outputs, 40); unique(step.inputs); unique(step.outputs)
+            for (const binding of step.inputs) {
+              object(binding, ['slotId', 'source', 'value', 'basis', 'fromSlotId', 'meaning', 'unit', 'timeState', 'objectScope'])
+              if (!['known', 'link'].includes(binding.source)) fail('输入来源无效')
+              for (const key of ['value', 'basis', 'meaning', 'unit', 'timeState', 'objectScope']) text(binding[key])
+              text(binding.fromSlotId, 80)
+            }
+            for (const binding of step.outputs) { object(binding, ['slotId', 'value']); text(binding.value) }
+          }
+          return draft
+        }
+        const parseExchange = (raw, context) => {
+          if (typeof raw !== 'string' || raw.length > 2 * 1024 * 1024) fail('草稿文件过大或不是文字')
+          let value
+          try { value = JSON.parse(raw) } catch { fail('草稿文件不是有效 JSON') }
+          if (!value || typeof value !== 'object' || Array.isArray(value)) fail('草稿文件必须是对象')
+          const legacy = !Object.hasOwn(value, 'format') && value.basis === 'recorded_fields_and_learner_reports_not_semantic_validity' && value.persisted === false
+          if (value.version !== 1 || (value.format !== 'dsh.model-chain-draft' && !legacy)) fail('草稿文件格式或版本不支持')
+          if (typeof value.documentId !== 'string' || value.documentId !== context.documentId) fail('草稿属于其他文档，请在原文档打开')
+          if (!Number.isSafeInteger(value.revision) || value.revision < 1) fail('草稿来源版本无效')
+          if (value.revision > context.revision) fail('草稿来源版本高于当前文档，未导入')
+          validateDraft(value.draft)
+          if (!Array.isArray(value.modelIds) || value.modelIds.length !== 2 || value.modelIds.some((id, index) => id !== value.draft.steps[index].modelId)) fail('草稿模型身份不一致')
+          if (value.modelIds[0] !== context.modelId) fail('草稿的第一个模型不同，请在原模型打开')
+          if (value.modelIds[0] === value.modelIds[1]) fail('两步须使用不同模型')
+          // File receipts and model snapshots are untrusted; only the editable draft is restored.
+          return { documentId: value.documentId, revision: value.revision, peerId: value.modelIds[1], draft: value.draft }
+        }
+        const evaluate = (pair, draft) => {
+          validateDraft(draft)
+          const details = [pair.left, pair.right]
+          if (draft.steps.some((step, index) => step.modelId !== details[index]?.model?.nodeId) || draft.steps[0].modelId === draft.steps[1].modelId) fail('草稿与所选两个模型的身份不一致')
+          const issues = [], warnings = [], steps = []
+          const present = value => typeof value === 'string' && !!value.trim()
+          const normalized = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ')
+          const issue = (step, code, message, slotId = '', field = '') => issues.push({ step, code, message, slotId, field })
+          const warn = (step, code, message) => warnings.push({ step, code, message })
+          if (!present(draft.scenario)) issue(1, 'scenario_missing', '第 1 步前：具体情境尚未填写', '', 'scenario')
+          if (!present(draft.goal)) issue(1, 'goal_missing', '第 1 步前：推测目标尚未填写', '', 'goal')
+          // Check both canonical models before allowing an upstream prediction to feed the next step.
+          details.forEach((detail, index) => {
+            const number = index + 1, structure = detail.structure, step = draft.steps[index]
+            if (!structure) issue(number, 'structure_missing', '第 ' + number + ' 步：模型尚无有效独立槽位与分支')
+            if (detail.model.state === 'rejected' || detail.model.entailmentStatus === 'unsupported') issue(number, 'model_rejected', '第 ' + number + ' 步：模型已有驳回或原文不支持记录')
+            if (structure && !['assertion', 'hypothesis'].includes(structure.identity)) issue(number, 'identity_unusable', '第 ' + number + ' 步：模型内容身份尚未确认，或是错误示例、类型说明')
+            if (structure?.identity === 'hypothesis') warn(number, 'hypothesis', '第 ' + number + ' 步保留为假设，不是已成立的规律')
+            for (const caution of detail.model.warnings || []) warn(number, 'model_caution', '第 ' + number + ' 步：' + caution)
+            const slots = structure?.slots || [], byId = new Map(slots.map(slot => [slot.id, slot]))
+            if (!slots.some(slot => slot.role === 'input')) issue(number, 'input_role_missing', '第 ' + number + ' 步：尚无明确输入槽位')
+            if (!slots.some(slot => slot.role === 'output')) issue(number, 'output_role_missing', '第 ' + number + ' 步：尚无明确输出槽位')
+            if (slots.some(slot => slot.role === 'unknown')) issue(number, 'role_unknown', '第 ' + number + ' 步：仍有未定角色的槽位')
+            for (const [key, role] of [['inputs', 'input'], ['outputs', 'output']]) {
+              for (const binding of step[key]) {
+                if (!structure) continue
+                if (byId.get(binding.slotId)?.role !== role) fail('草稿引用了缺失槽位或逆向角色')
+              }
+            }
+            const branch = structure?.branches.find(item => item.id === step.branchId) || null
+            if (!branch) issue(number, 'branch_missing', '第 ' + number + ' 步：尚未选择当前模型的有效分支', '', 'branchId')
+            for (const key of ['condition', 'mapping', 'boundary']) {
+              if (!branch) continue
+              if (!present(branch[key]?.text)) issue(number, 'branch_' + key + '_missing', '第 ' + number + ' 步：所选分支的' + { condition: '条件', mapping: '映射', boundary: '边界' }[key] + '尚未记录', '', key)
+              else if (!present(branch[key].provenance?.quote)) issue(number, 'branch_' + key + '_source_missing', '第 ' + number + ' 步：所选分支的' + { condition: '条件', mapping: '映射', boundary: '边界' }[key] + '缺少可核对引文', '', key)
+              if (branch[key]?.provenance?.kind !== 'source') warn(number, 'non_source_field', '第 ' + number + ' 步的' + { condition: '条件', mapping: '映射', boundary: '边界' }[key] + '不是原文字段；保留其用户整理、AI 建议或未定来源身份')
+            }
+            if (!present(step.conditions)) issue(number, 'conditions_missing', '第 ' + number + ' 步：尚未记录情境符合条件及未越过边界的依据', '', 'conditions')
+            if (!present(step.reasoning)) issue(number, 'reasoning_missing', '第 ' + number + ' 步：尚未记录应用过程', '', 'reasoning')
+            for (const slot of slots.filter(item => item.role === 'output')) {
+              if (!present(step.outputs.find(item => item.slotId === slot.id)?.value)) issue(number, 'output_prediction_missing', '第 ' + number + ' 步：输出预测未填写 · ' + (slot.label || slot.conceptText || slot.id), slot.id)
+            }
+            steps.push({ number, model: detail.model, branch, slots, inputs: [], outputs: step.outputs, conditions: step.conditions, reasoning: step.reasoning })
+          })
+          let linked = 0
+          steps.forEach((step, index) => {
+            const number = index + 1
+            for (const slot of step.slots.filter(item => item.role === 'input')) {
+              const binding = draft.steps[index].inputs.find(item => item.slotId === slot.id)
+              if (!binding) { issue(number, 'input_missing', '第 ' + number + ' 步：输入未填写 · ' + (slot.label || slot.conceptText || slot.id), slot.id); continue }
+              if (binding.source === 'known') {
+                if (!present(binding.value)) issue(number, 'input_missing', '第 ' + number + ' 步：已知输入未填写 · ' + (slot.label || slot.conceptText || slot.id), slot.id)
+                if (!present(binding.basis)) issue(number, 'input_basis_missing', '第 ' + number + ' 步：已知输入缺少判别或取得依据 · ' + (slot.label || slot.id), slot.id)
+                step.inputs.push({ slotId: slot.id, source: 'learner_known_input', value: binding.value, basis: binding.basis })
+                continue
+              }
+              if (number !== 2) fail('第 1 步不能引用未来输出或逆转映射')
+              linked++
+              const upstream = steps[0].slots.find(item => item.id === binding.fromSlotId)
+              if (!upstream || upstream.role !== 'output') {
+                issue(number, 'link_output_missing', '第 2 步：所连的第 1 步输出槽位已缺失或角色不符', slot.id)
+                step.inputs.push({ slotId: slot.id, source: 'blocked_link', value: null, fromSlotId: binding.fromSlotId }); continue
+              }
+              const before = issues.length
+              if (upstream.conceptId !== slot.conceptId) issue(number, 'concept_mismatch', '第 2 步：联结两端的概念身份不同；同名或用户声明不能替代身份核对', slot.id)
+              for (const [key, label] of [['unit', '单位'], ['state', '时间状态']]) {
+                if (!present(upstream[key]) || !present(slot[key])) issue(number, key + '_unknown', '第 2 步：联结两端的' + label + '尚未明确', slot.id)
+                else if (normalized(upstream[key]) !== normalized(slot[key])) issue(number, key + '_mismatch', '第 2 步：联结两端已记录的' + label + '不同；未自动换算或视为同义', slot.id)
+              }
+              for (const [key, label] of [['meaning', '含义'], ['unit', '单位口径'], ['timeState', '时间状态'], ['objectScope', '对象范围']]) {
+                if (!present(binding[key])) issue(number, 'link_' + key + '_missing', '第 2 步：尚未记录联结两端' + label + '相容的核对依据', slot.id)
+              }
+              const upstreamBlocked = issues.some(item => item.step === 1)
+              if (upstreamBlocked) issue(number, 'upstream_blocked', '第 2 步：第 1 步尚有缺口，不能将其输出当作已有输入', slot.id)
+              const blocked = issues.length !== before
+              step.inputs.push({ slotId: slot.id, source: blocked ? 'blocked_link' : 'learner_predicted_link',
+                fromSlotId: upstream.id, value: blocked ? null : draft.steps[0].outputs.find(item => item.slotId === upstream.id)?.value || null,
+                compatibility: { meaning: binding.meaning, unit: binding.unit, timeState: binding.timeState, objectScope: binding.objectScope },
+                semanticStatus: 'learner_report_not_independently_verified' })
+            }
+          })
+          if (!linked) issue(2, 'link_missing', '第 2 步：尚未明确选择承接第 1 步输出的输入槽位')
+          const initialConcepts = new Set(steps[0].slots.filter(slot => slot.role === 'input').map(slot => slot.conceptId))
+          if (steps[1].slots.some(slot => slot.role === 'output' && initialConcepts.has(slot.conceptId))) warn(2, 'return_to_initial_concept', '链条回到起始概念；即使时间状态不同，也不构成独立新证据')
+          warn(0, 'not_verified', '含义、对象范围及适用性核对是用户自述，未独立核验；不是正确答案或事实成立的证明')
+          warn(0, 'not_executed', '输出均为用户预测；规律、限定语与不同来源原样保留，未执行公式、逆向推理或合成概率')
+          for (const step of steps) step.blocked = issues.some(item => item.step <= step.number)
+          return { version: 1, documentId: pair.documentId, revision: pair.revision,
+            modelIds: draft.steps.map(step => step.modelId), status: issues.length ? 'blocked' : 'worksheet_complete',
+            firstStop: issues.length ? Math.min(...issues.map(item => item.step)) : null,
+            basis: 'recorded_fields_and_learner_reports_not_semantic_validity', persisted: false, draft, steps, issues, warnings }
+        }
+        return { validateDraft, parseExchange, evaluate }
+      })()
+      // <<< END MODEL CHAIN TOOLS <<<
+
       function connectionRolePatch(graph, modelId, changes) {
         const model = graph.nodes.find(node => node.id === modelId)
         if (model?.type !== 'connection_model') throw new Error('联结模型已变化')
@@ -2089,15 +2344,20 @@ export default function clientPlugin() {
 
       const MODEL_PROVENANCE_LABELS = { unknown: '来源待核对', source: '原文引用 · 语义待核对', user: '用户整理 · 未独立验证', ai: 'AI 建议 · 未独立验证' }
       const MODEL_IDENTITY_LABELS = { undetermined: '尚未判定', assertion: '原文断言，仍需核验', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明' }
-      function ModelStructureEvidence({ value, onLocate, label = '' }) {
+      function ModelStructureEvidence({ value, documentId, revision, onLocate, label = '' }) {
+        const source = value.kind === 'source'
+        const canLocate = source && typeof documentId === 'string' && documentId.trim() === documentId && documentId.length > 0 && documentId.length <= 160
+          && Number.isSafeInteger(revision) && revision > 0 && Number.isSafeInteger(value.paragraph) && value.paragraph >= 0
+          && typeof value.quote === 'string' && !!value.quote.trim() && value.quote.length <= 2000 && typeof onLocate === 'function'
         return h('div', { className: 'kg-model-meta' }, (label ? label + '：' : '') + MODEL_PROVENANCE_LABELS[value.kind],
           value.note ? h('p', null, value.note) : null,
           value.quote ? h('details', null, h('summary', null, '来源依据'), h('p', null, value.quote),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: typeof onLocate !== 'function',
-              onClick: () => onLocate?.({ paragraph: value.paragraph }) }, '原文 P' + (value.paragraph + 1))) : null)
+            source ? h('button', { type: 'button', className: 'kg-secondary', disabled: !canLocate,
+              onClick: () => { if (canLocate) onLocate({ documentId, revision, paragraph: value.paragraph, quote: value.quote, sourceQuoteOnly: true }) } },
+              '原文' + (Number.isSafeInteger(value.paragraph) && value.paragraph >= 0 ? ' P' + (value.paragraph + 1) : '')) : null) : null)
       }
 
-      function ModelPairedExamples({ structure, selectedSlot, selectedExample, onSlot, onLocate, onPage }) {
+      function ModelPairedExamples({ documentId, revision, structure, selectedSlot, selectedExample, onSlot, onLocate, onPage }) {
         const slots = new Map(structure.slots.map(slot => [slot.id, slot]))
         const bindings = (example, key) => example[key].map(binding => {
           const slot = slots.get(binding.slotId)
@@ -2115,7 +2375,7 @@ export default function clientPlugin() {
               h('section', null, h('h4', null, '输出状态'), bindings(example, 'outputs'))),
             example.missing.length ? h('p', { className: 'kg-model-warning' }, '缺少槽位状态：' + example.missing.map(id => slots.get(id).label || id).join('、')) : null,
             h('p', null, '推测过程：' + (example.reasoning || '尚未记录')),
-            h(ModelStructureEvidence, { value: example.provenance, onLocate }))),
+            h(ModelStructureEvidence, { value: example.provenance, documentId, revision, onLocate }))),
           !structure.examples.length ? h('p', null, '当前分支尚未找到对应实例') : null,
           h('div', { className: 'kg-model-toolbar' }, h('span', null, '实例 ' + structure.examples.length + ' / ' + structure.filteredTotal + ' · 全模型 ' + structure.exampleTotal),
             h('button', { type: 'button', className: 'kg-secondary', disabled: structure.exampleOffset === 0, onClick: () => onPage(Math.max(0, structure.exampleOffset - 20)) }, '前页实例'),
@@ -2507,35 +2767,601 @@ export default function clientPlugin() {
               h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消结构预览')) : null) : null)
       }
 
-      function ConnectionModelPanel({ documentId, revision, load, learningCall, onLocate, onReview, onRoles, onStructure, onRefresh, focusRequest, busy }) {
-        const [query, setQuery] = useState(''), [search, setSearch] = useState('')
-        const [section, setSection] = useState(''), [offset, setOffset] = useState(0)
-        const [needsReview, setNeedsReview] = useState(false), [concept, setConcept] = useState(null), [role, setRole] = useState('')
-        const [page, setPage] = useState(null), [modelId, setModelId] = useState(''), [detail, setDetail] = useState(null)
-        const [materialOffset, setMaterialOffset] = useState(0), [tab, setTab] = useState('materials')
-        const [exercise, setExercise] = useState('prediction')
+      // >>> GENERATED TARGET MAP TOOLS >>>
+      const TARGET_MAP_TOOLS = (function createTargetMapTools() {
+        const clone = value => JSON.parse(JSON.stringify(value))
+        const fail = (message, code = 'invalid_input') => { throw Object.assign(new Error(message), { code }) }
+        const text = (value, limit = 4000) => typeof value === 'string' && value.length <= limit
+        const identity = value => text(value, 4096) && !!value.trim()
+        const object = value => value && typeof value === 'object' && !Array.isArray(value)
+        const exact = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key)) && keys.every(key => Object.hasOwn(value, key))
+        const types = ['connection_model', 'discrimination_model', 'concept']
+        const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+        const slot = (id, role, name = '') => ({ id, role, name, meaning: '', unit: '', scope: '' })
+        function blank(target) {
+          const mode = target.type === 'connection_model' ? 'connection' : 'discrimination'
+          return { version: 1, mode, title: target.text, mapping: '', conditions: '', boundary: '',
+            slots: [slot('input-1', 'input', mode === 'discrimination' ? '万物' : ''), slot('output-1', 'output', mode === 'discrimination' ? 'A 或非 A' : '')],
+            outcomes: mode === 'discrimination' ? [{ id: 'yes', slotId: 'output-1', label: 'A', detail: '' }, { id: 'no', slotId: 'output-1', label: '非 A', detail: '' }] : [], examples: [] }
+        }
+        function example(map, id, stage = 'material') {
+          return { id, stage, context: '', process: '', exposure: 'unsure',
+            inputs: map.slots.filter(item => item.role === 'input').map(item => ({ slotId: item.id, value: '' })),
+            outputs: map.slots.filter(item => item.role === 'output').map(item => ({ slotId: item.id, outcomeId: '', detail: '' })),
+            feedback: { kind: 'personal', text: '', source: '' } }
+        }
+        function validate(value, { draft = false } = {}) {
+          if (!exact(value, ['version', 'mode', 'title', 'mapping', 'conditions', 'boundary', 'slots', 'outcomes', 'examples']) ||
+              value.version !== 1 || !['connection', 'discrimination'].includes(value.mode) || !text(value.title) || !draft && !value.title.trim() ||
+              !['mapping', 'conditions', 'boundary'].every(key => text(value[key], 8000)) || JSON.stringify(value).length > 240000) fail('靶图格式无效或内容超过单张容量')
+          const unique = (items, max) => Array.isArray(items) && items.length <= max && items.every(item => object(item) && identity(item.id) && item.id.length <= 120) && new Set(items.map(item => item.id)).size === items.length
+          if (!unique(value.slots, 16) || !unique(value.outcomes, 80) || !unique(value.examples, 40)) fail('槽位、输出或例子身份重复，或数量超出限制')
+          for (const item of value.slots) if (!exact(item, ['id', 'role', 'name', 'meaning', 'unit', 'scope']) ||
+            !['input', 'output'].includes(item.role) || !['name', 'meaning', 'unit', 'scope'].every(key => text(item[key]))) fail('槽位字段无效')
+          const inputs = value.slots.filter(item => item.role === 'input'), outputs = value.slots.filter(item => item.role === 'output')
+          if (!inputs.length || !outputs.length || inputs.length > 8 || outputs.length > 8) fail('每侧需要 1 至 8 个独立槽位')
+          for (const item of value.outcomes) if (!exact(item, ['id', 'slotId', 'label', 'detail']) || !outputs.some(out => out.id === item.slotId) ||
+            !text(item.label) || !draft && !item.label.trim() || !text(item.detail)) fail('输出范围中的取值未对应有效输出槽位')
+          const bindings = (items, slots, keys) => Array.isArray(items) && items.length === slots.length && new Set(items.map(item => item?.slotId)).size === items.length &&
+            items.every(item => exact(item, keys) && slots.some(slot => slot.id === item.slotId))
+          for (const item of value.examples) {
+            if (!exact(item, ['id', 'stage', 'context', 'process', 'exposure', 'inputs', 'outputs', 'feedback']) ||
+                !['material', 'prediction', 'reviewed'].includes(item.stage) || !['known', 'unsure', 'self_reported_new'].includes(item.exposure) ||
+                !text(item.context, 8000) || !text(item.process, 8000) || !bindings(item.inputs, inputs, ['slotId', 'value']) ||
+                item.inputs.some(input => !text(input.value)) || !bindings(item.outputs, outputs, ['slotId', 'outcomeId', 'detail']) ||
+                item.outputs.some(out => !text(out.detail) || !text(out.outcomeId, 120) || out.outcomeId && !value.outcomes.some(candidate => candidate.id === out.outcomeId && candidate.slotId === out.slotId)) ||
+                !exact(item.feedback, ['kind', 'text', 'source']) || !['personal', 'source', 'observation', 'ai'].includes(item.feedback.kind) ||
+                !text(item.feedback.text, 8000) || !text(item.feedback.source, 4000)) fail('具体推测、输出配对或对照结果无效')
+            if (!draft && item.stage !== 'material' && (!item.context.trim() || !item.process.trim() || item.inputs.some(input => !input.value.trim()) ||
+                item.outputs.some(out => !out.outcomeId && !out.detail.trim()))) fail('记录预测前需填写完整情境、所有输入、推测过程与预测输出')
+            if (item.stage !== 'reviewed' && (item.feedback.text || item.feedback.source)) fail('先保存预测，再记录对照结果')
+            if (!draft && item.stage === 'reviewed' && (!item.feedback.text.trim() || !item.feedback.source.trim())) fail('对照结果需要内容和来源说明')
+          }
+          return clone(value)
+        }
+        function transition(next, previous, records, knownContexts = []) {
+          const old = previous?.map
+          // Operators, exponents and token spacing may change the situation being predicted.
+          const contextKey = value => value.normalize('NFC').trim()
+          for (const item of next.examples) {
+            const prior = old?.examples.find(example => example.id === item.id)
+            if (item.stage === 'reviewed' && (!prior || !['prediction', 'reviewed'].includes(prior.stage))) fail('对照结果必须对应已经保存的预测')
+            if (prior?.stage === 'material' && item.stage !== 'material') fail('已有材料不能改称未见验证，请保留材料并另选情境')
+            if (!prior && item.stage === 'prediction' && item.exposure === 'self_reported_new') {
+              const key = contextKey(item.context)
+              if (next.examples.some(example => example.id !== item.id && contextKey(example.context) === key) ||
+                  knownContexts.some(context => contextKey(context) === key) ||
+                  records.some(record => record.map.examples.some(example => contextKey(example.context) === key))) fail('这个情境已存在于靶图记录中，不能标记为自报未见')
+            }
+          }
+          for (const prior of old?.examples || []) {
+            if (prior.stage === 'material') continue
+            const item = next.examples.find(example => example.id === prior.id)
+            if (!item || item.stage === 'material') fail('已保存预测不能删除或改回材料；历史记录必须保留')
+            const core = item => ({ ...item, stage: '', feedback: {} })
+            if (!same(core(item), core(prior))) fail('已保存预测的情境、输入、过程和预测输出不能事后改写')
+            if (prior.stage === 'reviewed' && !same(item, prior)) fail('已有对照结果不能改写；请新增例子记录修订')
+            // A renamed shared output would silently change every old prediction pointing to it.
+            for (const out of prior.outputs) if (out.outcomeId && !same(next.outcomes.find(value => value.id === out.outcomeId), old.outcomes.find(value => value.id === out.outcomeId))) fail('已用于预测的输出取值不能删除或改名')
+            const identityOfSlot = value => value ? { ...value, meaning: '' } : null
+            for (const binding of [...prior.inputs, ...prior.outputs]) if (!same(identityOfSlot(next.slots.find(value => value.id === binding.slotId)), identityOfSlot(old.slots.find(value => value.id === binding.slotId)))) fail('已用于预测的槽位身份、单位或对象范围不能改写；内涵表述仍可修订')
+          }
+        }
+        function gaps(map) {
+          const result = []
+          for (const item of map.slots) {
+            if (!item.name.trim()) result.push('槽位名称未填写：' + item.id)
+            if (map.mode === 'connection' && !item.meaning.trim()) result.push('判别表述待整理：' + (item.name || item.id))
+          }
+          if (!map.mapping.trim()) result.push(map.mode === 'discrimination' ? '判别规律待整理' : '映射规律待整理')
+          if (!map.examples.length) result.push('尚无具体推测')
+          for (const item of map.examples) if (!item.context.trim() || !item.process.trim() || item.inputs.some(input => !input.value.trim()) || item.outputs.some(out => !out.outcomeId && !out.detail.trim())) result.push('例子要素未完整：' + item.id)
+          return result
+        }
+        function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null) {
+          try {
+            if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
+                !['catalog', 'read', 'save', 'record', 'history'].includes(args.action)) fail('靶图请求身份或操作无效')
+            if (!saved || saved.documentId !== args.documentId) fail('找不到该文档', 'not_found')
+            if (saved.revision !== args.expectedRevision) return { error: { code: 'revision_conflict', message: '知识图已更新；旧靶图和草稿保留，请重新载入', currentRevision: saved.revision } }
+            const nodes = saved.graph?.nodes || [], documentId = args.documentId, revision = saved.revision
+            if (args.action === 'catalog') {
+              const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0
+              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
+                (!query || (node.text + ' ' + node.id).toLowerCase().includes(query.toLowerCase())))
+              return { version: 1, documentId, revision, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type })) }
+            }
+            if (!identity(args.targetId)) fail('靶图目标身份无效')
+            const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))
+            if (targets.length !== 1) fail('目标节点不存在或身份不唯一', 'not_found')
+            const target = { id: targets[0].id, type: targets[0].type, text: targets[0].text }
+            const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+            const current = records.find(record => record.baseRevision === revision) || null
+            if (args.action === 'history') {
+              const offset = args.offset ?? 0
+              if (!Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份无效')
+              const page = historyPage || { historyHead: records[0]?.id || '', historyTotal: records.length,
+                history: records.slice(offset, offset + 20).map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason })) }
+              if (args.historyHead !== undefined && args.historyHead !== page.historyHead) fail('修订记录有更新，请重新读取列表；当前草稿保留。', 'history_conflict')
+              return { version: 1, documentId, revision, target, offset, ...page }
+            }
+            if (args.action === 'record') {
+              const record = records.find(record => record.id === args.recordId)
+              if (!record) fail('找不到该目标的靶图记录', 'not_found')
+              return { version: 1, documentId, revision, record: clone(record), stale: record.baseRevision !== revision }
+            }
+            if (args.action === 'read') return { version: 1, documentId, revision, target, current: clone(current), template: blank(target),
+              history: records.slice(0, 20).map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason })), historyTotal: totalRecords }
+            if (!identity(args.id) || args.id.length > 120 || !text(args.parentId, 120) || !text(args.reason, 2000) || args.confirm !== true ||
+                args.startRound !== undefined && typeof args.startRound !== 'boolean') fail('保存靶图需要确认及有效的修订身份')
+            const map = validate(args.map)
+            if (map.mode !== (target.type === 'connection_model' ? 'connection' : 'discrimination')) fail('靶图类型与目标不一致')
+            const record = { id: args.id, documentId, baseRevision: revision, target, parentId: args.parentId, reason: args.reason,
+              origin: 'personal_target_map_not_mastery', ...(args.startRound ? { startsRound: true } : {}), map, createdAt: now }
+            const existing = allRecords.find(item => item.id === args.id)
+            if (existing) {
+              const retry = value => { const { createdAt, bases, ...rest } = value; return rest }
+              if (!same(retry(existing), retry(record))) fail('保存请求与已有记录冲突', 'attempt_conflict')
+              return { version: 1, documentId, revision, saved: clone(existing), unchanged: true }
+            }
+            if ((current?.id || '') !== args.parentId) fail('靶图已有新修订；草稿保留，请先读取最新记录', 'attempt_conflict')
+            if (current && !args.reason.trim()) fail('修订靶图需要填写修改理由')
+            if (args.startRound) {
+              // Restart the example set explicitly; old predictions and their meanings remain in their immutable snapshots.
+              if (!current || !args.reason.trim() || !same(map, { ...current.map, examples: [] })) fail('新一轮须沿用已保存的上层表述、填写理由并从空白例组开始；随后可另存结构修订')
+            } else transition(map, current, records, knownContexts)
+            record.bases = Object.fromEntries(map.examples.filter(item => item.stage !== 'material').map(item => [item.id,
+              current?.bases && Object.hasOwn(current.bases, item.id) ? clone(current.bases[item.id]) : { recordId: record.id, baseRevision: revision }]))
+            record.createdAt = Math.max(now, (records[0]?.createdAt || 0) + 1)
+            return { version: 1, documentId, revision, saved: clone(record), appendRecord: record }
+          } catch (error) {
+            if (['invalid_input', 'not_found', 'attempt_conflict', 'history_conflict'].includes(error.code)) return { error: { code: error.code, message: error.message } }
+            throw error
+          }
+        }
+        return { blank, slot, example, validate, transition, gaps, handle }
+      })()
+      // <<< END TARGET MAP TOOLS <<<
+
+      function TargetMapPanel({ documentId, revision, active, busy, onLocate, onRefresh, focusRequest,
+        call = (args, signal) => host.call('target-map', args, { signal }) }) {
+        const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [mode, setMode] = useState('all'), [offset, setOffset] = useState(0)
+        const [catalog, setCatalog] = useState(null), [targetId, setTargetId] = useState(''), [detail, setDetail] = useState(null)
+        const [draft, setDraft] = useState(null), [archive, setArchive] = useState(null), [selectedSlot, setSelectedSlot] = useState('')
+        const [error, setError] = useState(null), [notice, setNotice] = useState(''), [saving, setSaving] = useState(false), [loading, setLoading] = useState(false)
+        const [confirmed, setConfirmed] = useState(false), [compared, setCompared] = useState(false), [reload, setReload] = useState(0)
+        const [roundConfirmed, setRoundConfirmed] = useState(false)
+        const [cacheWarning, setCacheWarning] = useState('')
+        const [historyPage, setHistoryPage] = useState(null), [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState(null)
+        const api = useRef(call), current = useRef(null), request = useRef(null), cache = useRef(new Map()), alive = useRef(true), sequence = useRef(0)
+        const damaged = useRef(new Set()), storedDraftKeys = useRef(new Set()), writeBusy = useRef(false)
+        const historyRequest = useRef(null), historyRetry = useRef(null)
+        api.current = call; current.current = { documentId, revision, targetId, draft }
+        useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++ } }, [])
+        const copy = value => JSON.parse(JSON.stringify(value))
+        const clearHistory = () => { historyRequest.current?.abort(); historyRequest.current = null; historyRetry.current = null; setHistoryPage(null); setHistoryError(null); setHistoryLoading(false) }
+        useEffect(() => { clearHistory(); return () => { historyRequest.current?.abort(); historyRequest.current = null } }, [documentId, revision, targetId, active, reload])
+        const key = value => 'dsh-kg-target-map:' + JSON.stringify([value.documentId, value.targetId, value.baseRevision])
+        const remember = value => {
+          cache.current.set(key(value), value)
+          if (damaged.current.has(key(value))) return
+          try { localStorage.setItem(key(value), JSON.stringify(value)); setCacheWarning('') }
+          catch { setCacheWarning('本地草稿存储不可用；当前内容仍在此窗口，关闭前请保存个人靶图。') }
+        }
+        const install = value => { setDraft(value); remember(value); setConfirmed(false); setCompared(false); setRoundConfirmed(false) }
+        const readDraft = (id, rev) => {
+          const storageKey = key({ documentId, targetId: id, baseRevision: rev })
+          let value = cache.current.get(storageKey)
+          if (!value) { try { const raw = localStorage.getItem(storageKey) || 'null'; if (raw.length > 500000) throw new Error('size'); value = JSON.parse(raw) }
+            catch { damaged.current.add(storageKey); setCacheWarning('本地草稿无法读取，原存储内容未清除；当前编辑暂留窗口。') } }
+          if (!value) return null
+          try {
+            if (value.documentId !== documentId || value.targetId !== id || value.baseRevision !== rev || typeof value.parentId !== 'string' || typeof value.reason !== 'string' ||
+                value.roundReason !== undefined && (typeof value.roundReason !== 'string' || value.roundReason.length > 2000)) throw new Error('scope')
+            TARGET_MAP_TOOLS.validate(value.map, { draft: true })
+            return value
+          } catch { damaged.current.add(storageKey); setCacheWarning('本地草稿身份或格式不兼容，原存储内容未清除；当前编辑暂留窗口。'); return null }
+        }
+        useEffect(() => {
+          if (!active || !targetId) return
+          try { for (let i = 0; i < localStorage.length; i++) { const item = localStorage.key(i); if (item?.startsWith('dsh-kg-target-map:')) storedDraftKeys.current.add(item) } } catch {}
+        }, [active, documentId, targetId])
+        const draftVersions = () => {
+          const keys = new Set([...cache.current.keys(), ...storedDraftKeys.current]), prefix = 'dsh-kg-target-map:'
+          const versions = new Set()
+          for (const item of keys) {
+            try { const [doc, target, rev] = JSON.parse(item.slice(prefix.length))
+              if (doc === documentId && target === targetId && Number.isSafeInteger(rev) && rev > 0) versions.add(rev)
+            } catch {}
+          }
+          return [...versions].sort((a, b) => b - a)
+        }
+        useEffect(() => {
+          if (focusRequest?.documentId === documentId && focusRequest.revision === revision && focusRequest.targetId) setTargetId(focusRequest.targetId)
+        }, [focusRequest, documentId, revision])
+        useEffect(() => {
+          if (!active) return
+          const abort = new AbortController(); setCatalog(null)
+          api.current({ action: 'catalog', documentId, expectedRevision: revision, query: search, mode, offset }, abort.signal).then(result => {
+            if (abort.signal.aborted) return
+            if (result?.error) throw result.error
+            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || !Array.isArray(result.items)) throw new Error('靶图目录响应身份不一致')
+            setCatalog(result)
+          }).catch(value => { if (!abort.signal.aborted) setError(value) })
+          return () => abort.abort()
+        }, [active, documentId, revision, search, mode, offset, reload])
+        useEffect(() => {
+          if (!targetId || !active) return
+          const abort = new AbortController(), token = ++sequence.current
+          setLoading(true); setError(null); setConfirmed(false); setCompared(false); setRoundConfirmed(false); setArchive(null)
+          api.current({ action: 'read', documentId, targetId, expectedRevision: revision }, abort.signal).then(result => {
+            if (abort.signal.aborted || sequence.current !== token) return
+            if (result?.error) throw result.error
+            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.target?.id !== targetId || !Array.isArray(result.history)) throw new Error('靶图响应身份不一致')
+            TARGET_MAP_TOOLS.validate(result.current?.map || result.template)
+            setDetail(result)
+            const previous = current.current.draft
+            const kept = previous?.targetId === targetId && previous.documentId === documentId ? previous : readDraft(targetId, revision)
+            install(kept || { documentId, targetId, baseRevision: revision, parentId: result.current?.id || '', reason: '', map: copy(result.current?.map || result.template) })
+          }).catch(value => { if (!abort.signal.aborted && sequence.current === token) { setError(value); setDetail(null) } })
+            .finally(() => { if (!abort.signal.aborted && sequence.current === token) setLoading(false) })
+          return () => { abort.abort(); sequence.current++ }
+        }, [documentId, revision, targetId, active, reload])
+        const edit = mutate => {
+          if (!draft || writeBusy.current || saving || draft.baseRevision !== revision || archive) return
+          const next = copy(draft); mutate(next.map); install(next); setNotice('')
+        }
+        const changeExample = (id, mutate) => edit(map => { const item = map.examples.find(item => item.id === id); if (item) mutate(item) })
+        const sameContext = value => alive.current && current.current.documentId === value.documentId && current.current.revision === value.revision && current.current.targetId === value.targetId
+        const cleanForRound = () => !!detail?.current && draft?.parentId === detail.current.id && !draft.reason.trim() && JSON.stringify(draft.map) === JSON.stringify(detail.current.map)
+        const save = async (startRound = false) => {
+          if (!draft || writeBusy.current || saving || busy || !(startRound ? roundConfirmed : confirmed) || draft.baseRevision !== revision || !detail || loading || archive || error?.code === 'revision_conflict') return
+          if (startRound && (!cleanForRound() || !draft.roundReason?.trim())) return
+          const head = detail.current?.id || ''
+          if (draft.parentId !== head && !compared) return
+          const context = { documentId, targetId, revision }, submitted = copy(draft)
+          if (startRound) { submitted.map.examples = []; submitted.reason = submitted.roundReason }
+          const body = { action: 'save', documentId, targetId, expectedRevision: revision, parentId: head, reason: submitted.reason, map: submitted.map, confirm: true,
+            ...(startRound ? { startRound: true } : {}) }
+          const fingerprint = JSON.stringify(body)
+          if (request.current?.fingerprint !== fingerprint) request.current = { fingerprint, body: { ...body, id: crypto.randomUUID() } }
+          writeBusy.current = true; setSaving(true); setError(null); setNotice('')
+          try {
+            const result = await api.current(request.current.body)
+            if (!sameContext(context)) return
+            if (result?.error) throw result.error
+            if (result.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.saved?.target?.id !== targetId ||
+                result.saved.id !== request.current.body.id || result.saved.baseRevision !== revision || result.saved.origin !== 'personal_target_map_not_mastery' ||
+                (result.saved.startsRound === true) !== startRound || result.saved.parentId !== head || result.saved.reason !== submitted.reason ||
+                JSON.stringify(result.saved.map) !== JSON.stringify(submitted.map)) throw new Error('保存响应未对应本次靶图，草稿保留')
+            setDetail(value => ({ ...value, current: result.saved, history: [{ id: result.saved.id, baseRevision: revision, title: result.saved.map.title, createdAt: result.saved.createdAt, reason: result.saved.reason },
+              ...value.history.filter(item => item.id !== result.saved.id)].slice(0, 20), historyTotal: value.historyTotal + (value.history.some(item => item.id === result.saved.id) ? 0 : 1) }))
+            clearHistory()
+            install({ ...submitted, parentId: result.saved.id, reason: '', roundReason: startRound ? '' : submitted.roundReason || '' })
+            setNotice(startRound ? '新一轮已开启；旧例组与预测依据保留在历史记录中。' : '个人靶图已保存；正式知识图未改动。')
+          } catch (value) { if (sameContext(context)) setError(value) }
+          finally { writeBusy.current = false; if (alive.current) setSaving(false) }
+        }
+        const openRecord = async id => {
+          if (loading || saving) return
+          const context = { documentId, targetId, revision }, token = ++sequence.current
+          setError(null); setConfirmed(false); setRoundConfirmed(false)
+          try {
+            const result = await api.current({ action: 'record', documentId, targetId, expectedRevision: revision, recordId: id })
+            if (!sameContext(context) || token !== sequence.current) return
+            if (result?.error) throw result.error
+            if (result.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.record?.id !== id || result.record.target?.id !== targetId) throw new Error('历史靶图身份不一致')
+            TARGET_MAP_TOOLS.validate(result.record.map); setArchive(result.record)
+          } catch (value) { if (sameContext(context) && token === sequence.current) setError(value) }
+        }
+        const loadHistory = async (offset, head) => {
+          if (!detail || saving || loading || !active) return
+          const context = { documentId, targetId, revision }, abort = new AbortController()
+          historyRequest.current?.abort(); historyRequest.current = abort; historyRetry.current = { offset, head }
+          setHistoryLoading(true); setHistoryError(null); setConfirmed(false)
+          try {
+            const result = await api.current({ action: 'history', documentId, targetId, expectedRevision: revision, offset, ...(head === undefined ? {} : { historyHead: head }) }, abort.signal)
+            if (abort.signal.aborted || historyRequest.current !== abort || !sameContext(context)) return
+            if (result?.error) throw result.error
+            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.target?.id !== targetId || result.offset !== offset ||
+                typeof result.historyHead !== 'string' || result.historyHead.length > 120 || head !== undefined && result.historyHead !== head ||
+                !Number.isSafeInteger(result.historyTotal) || result.historyTotal < 0 || !Array.isArray(result.history) ||
+                result.history.length !== Math.min(20, Math.max(0, result.historyTotal - offset)) || new Set(result.history.map(item => item.id)).size !== result.history.length ||
+                result.history.some(item => typeof item.id !== 'string' || !item.id.trim() || item.id.length > 120 || !Number.isSafeInteger(item.baseRevision) || item.baseRevision < 1 ||
+                  !Number.isSafeInteger(item.createdAt) || typeof item.title !== 'string' || typeof item.reason !== 'string') ||
+                (result.historyTotal === 0) !== (result.historyHead === '') || offset === 0 && result.history.length && result.history[0].id !== result.historyHead) throw new Error('修订记录响应身份或分页范围不一致')
+            setHistoryPage(result)
+          } catch (value) {
+            if (!abort.signal.aborted && historyRequest.current === abort && sameContext(context)) { setHistoryError(value); if (value.code === 'revision_conflict') setError(value) }
+          } finally { if (!abort.signal.aborted && historyRequest.current === abort && sameContext(context)) setHistoryLoading(false) }
+        }
+        const visibleHistory = historyPage?.documentId === documentId && historyPage.target?.id === targetId && historyPage.revision === revision ? historyPage : null
+        const historyItems = visibleHistory?.history || detail?.history || [], historyTotal = visibleHistory?.historyTotal ?? detail?.historyTotal ?? 0
+        const historyOffset = visibleHistory?.offset || 0, historyHead = visibleHistory?.historyHead ?? detail?.history[0]?.id ?? ''
+        const ownsDraft = draft?.documentId === documentId && draft.targetId === targetId
+        const map = archive?.map || (ownsDraft ? draft.map : null)
+        const stale = ownsDraft && draft.baseRevision !== revision
+        const frozen = saving || busy || stale || !!archive || loading || !detail || error?.code === 'revision_conflict'
+        const locked = new Set((detail?.current?.map.examples || []).filter(item => item.stage !== 'material').map(item => item.id))
+        const existing = new Set((detail?.current?.map.examples || []).map(item => item.id))
+        const conflict = ownsDraft && detail && draft.parentId !== (detail.current?.id || '')
+        const field = (label, value, change, disabled = frozen, large = false, visibleLabel = label, maxLength) => h('label', null, visibleLabel,
+          h(large ? 'textarea' : 'input', { 'aria-label': label, value, disabled, maxLength, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => change(event.target.value) }))
+        const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
+        const slotFields = role => map.slots.filter(item => item.role === role).map(item => h('div', { key: item.id, className: 'kg-target-slot', 'data-selected': selectedSlot === item.id },
+          field('槽位 ' + item.id + ' 名称', item.name, value => edit(map => { map.slots.find(slot => slot.id === item.id).name = value }), frozen || locked.size > 0, false, '概念名'),
+          map.mode === 'connection' ? field('槽位 ' + item.id + ' 内涵表述', item.meaning, value => edit(map => { map.slots.find(slot => slot.id === item.id).meaning = value }), frozen, true, '我的内涵表述') : null,
+          h('details', null, h('summary', null, '单位与对象、时间状态'),
+            field('槽位 ' + item.id + ' 单位', item.unit, value => edit(map => { map.slots.find(slot => slot.id === item.id).unit = value }), frozen || locked.size > 0, false, '单位'),
+            field('槽位 ' + item.id + ' 对象与时间', item.scope, value => edit(map => { map.slots.find(slot => slot.id === item.id).scope = value }), frozen || locked.size > 0, false, '对象与时间状态')),
+          button('×', () => edit(map => { map.slots = map.slots.filter(slot => slot.id !== item.id); map.outcomes = map.outcomes.filter(out => out.slotId !== item.id);
+            for (const example of map.examples) { example.inputs = example.inputs.filter(value => value.slotId !== item.id); example.outputs = example.outputs.filter(value => value.slotId !== item.id) } }),
+          frozen || locked.size > 0 || map.slots.filter(slot => slot.role === role).length === 1, { className: 'kg-secondary kg-target-icon', title: '删除槽位', 'aria-label': '删除槽位 ' + item.id })))
+        const addSlot = role => edit(map => {
+          const id = role + '-' + crypto.randomUUID(); map.slots.push(TARGET_MAP_TOOLS.slot(id, role))
+          for (const item of map.examples) (role === 'input' ? item.inputs : item.outputs).push(role === 'input' ? { slotId: id, value: '' } : { slotId: id, outcomeId: '', detail: '' })
+        })
+        return h('section', { className: 'kg-target-map', 'aria-label': '渐构靶图工作台' },
+          h('h3', null, '渐构靶图'), h('p', { className: 'kg-model-meta' }, '个人学习记录 · 资料中的目标与我的表述分开保存 · 不代表掌握或独立验证'),
+          error ? h('div', { role: 'alert' }, error.message || String(error), h('div', { className: 'kg-target-toolbar' },
+            button('重读靶图', () => setReload(value => value + 1), saving), button('重新载入知识图', () => onRefresh?.(), saving || !onRefresh))) : null,
+          notice ? h('p', { role: 'status' }, notice) : null, cacheWarning ? h('p', { role: 'alert' }, cacheWarning) : null,
+          h('div', { className: 'kg-target-layout' },
+            h('aside', { className: 'kg-target-catalogue', 'aria-label': '靶图目标目录' },
+              h('form', { onSubmit: event => { event.preventDefault(); setSearch(query); setOffset(0) } },
+                h('input', { type: 'search', 'aria-label': '搜索靶图目标', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
+                h('select', { 'aria-label': '靶图类型', value: mode, onChange: event => { setMode(event.target.value); setOffset(0) } },
+                  h('option', { value: 'all' }, '全部目标'), h('option', { value: 'connection' }, '联结靶图'), h('option', { value: 'discrimination' }, '概念靶图')),
+                h('button', { type: 'submit', className: 'kg-secondary' }, '查找')),
+              catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, '全图目标 ' + catalog.total + ' 个 · 当前 ' + catalog.items.length + ' 个') : h('p', { role: 'status' }, '正在读取目标…'),
+              h('ul', null, (catalog?.items || []).map(item => h('li', { key: item.id }, button(item.text, () => { if (targetId !== item.id) { setDetail(null); setArchive(null); setTargetId(item.id) } }, saving,
+                { 'aria-pressed': targetId === item.id, 'aria-label': '打开靶图 ' + item.id }), h('small', null, item.id + ' · ' + (item.type === 'connection_model' ? '联结' : '判别'))))),
+              h('div', { className: 'kg-target-toolbar' }, button('上一页', () => setOffset(Math.max(0, offset - 20)), saving || offset === 0), button('下一页', () => setOffset(offset + 20), saving || !catalog || offset + catalog.items.length >= catalog.total))),
+            h('div', { 'aria-label': '个人靶图编辑区', 'aria-busy': loading },
+              loading ? h('p', { role: 'status' }, '正在读取个人靶图…') : null,
+              detail ? h('details', null, h('summary', null, '资料中的目标 · ' + detail.target.id), h('p', null, detail.target.text),
+                button('定位目标原文', () => onLocate?.({ nodeId: detail.target.id, text: detail.target.text }), saving || !onLocate)) : null,
+              ownsDraft && draftVersions().length > 1 ? h('label', null, '本地草稿版本', h('select', { 'aria-label': '本地草稿版本', value: draft.baseRevision,
+                disabled: saving || loading || !!archive, onChange: event => { const value = readDraft(targetId, Number(event.target.value)); if (value) install(value) } },
+                draftVersions().map(value => h('option', { key: value, value }, '知识图第 ' + value + ' 版' + (value === revision ? ' · 当前' : ' · 只读草稿'))))) : null,
+              stale ? h('div', { role: 'alert' }, '草稿属于知识图第 ' + draft.baseRevision + ' 版，不能保存到第 ' + revision + ' 版。',
+                detail ? button('开启当前版本靶图', () => install(readDraft(targetId, revision) || { documentId, targetId, baseRevision: revision, parentId: detail.current?.id || '', reason: '', map: copy(detail.current?.map || detail.template) }), saving) : null) : null,
+              archive ? h('div', { className: 'kg-target-archive', role: 'status' }, '历史快照 · ' + (archive.startsRound ? '新一轮起点 · ' : '') + '知识图第 ' + archive.baseRevision + ' 版 · ' + archive.reason,
+                archive.startsRound && archive.parentId ? button('查看上一轮末版', () => openRecord(archive.parentId), saving || loading) : null,
+                button('返回未保存草稿', () => setArchive(null), saving)) : null,
+              map ? h(React.Fragment, null,
+                field('靶图标题', map.title, value => edit(map => { map.title = value })),
+                h('p', { className: 'kg-model-meta' }, map.mode === 'connection' ? '联结靶图 · 输入到输出' : '概念靶图 · 万物到 A 或非 A'),
+                h('h4', null, '上层 · 我的模型表述'),
+                h('div', { className: 'kg-target-upper' },
+                  h('section', null, h('h4', null, '输入概念与内涵'), slotFields('input'), button('+', () => addSlot('input'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'input').length >= 8,
+                    { className: 'kg-secondary kg-target-icon', title: '增加必要输入', 'aria-label': '增加必要输入' })),
+                  h('section', null, h('h4', null, '输入 → 规律 → 输出'), field(map.mode === 'connection' ? '映射规律表述' : '判别规律表述', map.mapping, value => edit(map => { map.mapping = value }), frozen, true),
+                    field('适用条件', map.conditions, value => edit(map => { map.conditions = value }), frozen, true), field('边界与不确定处', map.boundary, value => edit(map => { map.boundary = value }), frozen, true)),
+                  h('section', null, h('h4', null, '输出概念与内涵'), slotFields('output'), button('+', () => addSlot('output'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'output').length >= 8,
+                    { className: 'kg-secondary kg-target-icon', title: '增加输出槽位', 'aria-label': '增加输出槽位' }))),
+                h('section', { 'aria-label': '输出陪域' }, h('h4', null, '可能的输出范围 · 陪域'),
+                  h('ul', { className: 'kg-target-outcomes' }, map.outcomes.map(out => {
+                    const linked = map.examples.filter(item => item.outputs.some(value => value.outcomeId === out.id)).length
+                    const used = (detail?.current?.map.examples || []).some(item => item.stage !== 'material' && item.outputs.some(value => value.outcomeId === out.id))
+                    return h('li', { key: out.id }, h('select', { 'aria-label': '输出取值 ' + out.id + ' 槽位', value: out.slotId, disabled: frozen || used, onChange: event => edit(map => {
+                      map.outcomes.find(item => item.id === out.id).slotId = event.target.value
+                      for (const example of map.examples) for (const value of example.outputs) if (value.outcomeId === out.id) value.outcomeId = ''
+                    }) },
+                      map.slots.filter(slot => slot.role === 'output').map(slot => h('option', { key: slot.id, value: slot.id }, slot.name || slot.id))),
+                      h('input', { 'aria-label': '输出取值 ' + out.id + ' 名称', value: out.label, disabled: frozen || used, onChange: event => edit(map => { map.outcomes.find(item => item.id === out.id).label = event.target.value }) }),
+                      button('×', () => edit(map => { map.outcomes = map.outcomes.filter(item => item.id !== out.id); for (const example of map.examples) for (const value of example.outputs) if (value.outcomeId === out.id) value.outcomeId = '' }), frozen || used,
+                        { className: 'kg-secondary kg-target-icon', title: '删除输出取值', 'aria-label': '删除输出取值 ' + out.id }),
+                      h('small', null, linked ? '当前有 ' + linked + ' 个例子指向此取值' : '尚无例子指向 · 仍属于记录的输出范围'),
+                      h('details', null, h('summary', null, '取值说明'), field('输出取值 ' + out.id + ' 说明', out.detail,
+                        value => edit(map => { map.outcomes.find(item => item.id === out.id).detail = value }), frozen || used, true, '取值的完整说明')))
+                  })), button('增加输出取值', () => edit(map => { map.outcomes.push({ id: crypto.randomUUID(), slotId: map.slots.find(slot => slot.role === 'output').id, label: '未命名取值', detail: '' }) }), frozen || map.outcomes.length >= 80)),
+                h('section', { 'aria-label': '靶图具体推测' }, h('h4', null, '下层 · 具体情境与推测 (' + map.examples.length + ')'),
+                  map.examples.map((item, index) => {
+                    const lockedCase = locked.has(item.id), original = detail?.current?.map.examples.find(value => value.id === item.id)
+                    const names = item.outputs.map(value => map.outcomes.find(out => out.id === value.outcomeId)?.label || value.detail || '输出未填').join('、')
+                    return h('details', { className: 'kg-target-case', key: item.id, open: !existing.has(item.id) || undefined },
+                      h('summary', null, (index + 1) + '. ' + (item.context.slice(0, 90) || '情境未填') + ' → ' + names.slice(0, 90)),
+                      h('p', { className: 'kg-model-meta' }, item.stage === 'material' ? '学习材料' : item.stage === 'prediction'
+                        ? lockedCase || archive ? '预测已记录 · 待对照' : '预测草稿 · 尚未保存'
+                        : original?.stage === 'reviewed' || archive ? '对照结果已记录 · 未独立验证' : '对照草稿 · 尚未保存'),
+                      field('例子 ' + (index + 1) + ' 完整情境', item.context, value => changeExample(item.id, example => { example.context = value }), frozen || lockedCase, true),
+                      h('label', null, '情境接触记录', h('select', { 'aria-label': '例子 ' + (index + 1) + ' 接触记录', value: item.exposure, disabled: frozen || lockedCase,
+                        onChange: event => changeExample(item.id, example => { example.exposure = event.target.value }) },
+                        h('option', { value: 'unsure' }, '不确定是否见过'), h('option', { value: 'known' }, '已经见过'), h('option', { value: 'self_reported_new' }, '自报未见 · 非独立证明'))),
+                      h('div', { className: 'kg-target-pair' },
+                        h('section', null, h('h4', null, '具体输入'), item.inputs.map(value => h('div', { key: value.slotId },
+                          button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => setSelectedSlot(value.slotId), false, { title: '对应上层槽位', 'aria-label': '对应输入槽位 ' + value.slotId }),
+                          field('例子 ' + (index + 1) + ' 输入 ' + value.slotId, value.value, input => changeExample(item.id, example => { example.inputs.find(item => item.slotId === value.slotId).value = input }), frozen || lockedCase, true, '具体输入')))),
+                        h('section', null, h('h4', null, '具体推测过程'), field('例子 ' + (index + 1) + ' 推测过程', item.process, value => changeExample(item.id, example => { example.process = value }), frozen || lockedCase, true)),
+                        h('section', null, h('h4', null, '预测或材料输出'), item.outputs.map(value => h('div', { key: value.slotId },
+                          button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => setSelectedSlot(value.slotId), false, { title: '对应上层槽位', 'aria-label': '对应输出槽位 ' + value.slotId }),
+                          h('select', { 'aria-label': '例子 ' + (index + 1) + ' 对应输出 ' + value.slotId, value: value.outcomeId, disabled: frozen || lockedCase,
+                            onChange: event => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).outcomeId = event.target.value }) },
+                            h('option', { value: '' }, '未对应陪域取值'), map.outcomes.filter(out => out.slotId === value.slotId).map(out => h('option', { key: out.id, value: out.id }, out.label))),
+                          field('例子 ' + (index + 1) + ' 输出细节 ' + value.slotId, value.detail, input => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).detail = input }), frozen || lockedCase, true, '输出细节'))))),
+                      !existing.has(item.id) ? h('label', null, h('input', { type: 'checkbox', checked: item.stage === 'prediction', disabled: frozen,
+                        'aria-label': '例子 ' + (index + 1) + ' 先记录预测', onChange: event => changeExample(item.id, example => { example.stage = event.target.checked ? 'prediction' : 'material' }) }), '先记录预测，保存后再对照') : null,
+                      lockedCase && original?.stage === 'prediction' && item.stage === 'prediction' ? button('填写对照结果', () => changeExample(item.id, example => { example.stage = 'reviewed' })) : null,
+                      item.stage === 'reviewed' ? h('div', null,
+                        h('select', { 'aria-label': '例子 ' + (index + 1) + ' 结果来源', value: item.feedback.kind, disabled: frozen || original?.stage === 'reviewed',
+                          onChange: event => changeExample(item.id, example => { example.feedback.kind = event.target.value }) },
+                          [['personal', '个人判断'], ['source', '资料答案'], ['observation', '观察记录'], ['ai', 'AI 建议']].map(([id, name]) => h('option', { key: id, value: id }, name))),
+                        field('例子 ' + (index + 1) + ' 对照结果', item.feedback.text, value => changeExample(item.id, example => { example.feedback.text = value }), frozen || original?.stage === 'reviewed', true),
+                        field('例子 ' + (index + 1) + ' 结果来源说明', item.feedback.source, value => changeExample(item.id, example => { example.feedback.source = value }), frozen || original?.stage === 'reviewed', true)) : null,
+                      lockedCase && detail?.current?.bases?.[item.id] ? button('查看预测时的上层表述', () => openRecord(detail.current.bases[item.id].recordId), saving) : null,
+                      button('×', () => edit(map => { map.examples = map.examples.filter(value => value.id !== item.id) }), frozen || lockedCase,
+                        { className: 'kg-secondary kg-target-icon', title: '删除例子', 'aria-label': '删除例子 ' + (index + 1) }))
+                  }), button('增加具体推测', () => edit(map => { map.examples.push(TARGET_MAP_TOOLS.example(map, crypto.randomUUID())) }), frozen || map.examples.length >= 40)),
+                h('details', null, h('summary', null, '待整理要素 (' + TARGET_MAP_TOOLS.gaps(map).length + ')'), h('ul', null, TARGET_MAP_TOOLS.gaps(map).map((value, index) => h('li', { key: index }, value)))),
+                !archive ? h('div', null, field('本次修订理由', draft.reason, value => install({ ...draft, reason: value })),
+                  conflict ? h('div', { role: 'alert' }, '个人靶图记录与草稿基线不同，当前草稿未覆盖。', detail.current ? button('查看最新修订', () => openRecord(detail.current.id), saving || loading) : null,
+                    h('label', null, h('input', { type: 'checkbox', checked: compared, disabled: frozen, onChange: event => { setCompared(event.target.checked); setConfirmed(false) } }), '已对照最新修订，以当前草稿另存一版')) : null,
+                  h('div', { className: 'kg-target-toolbar' }, h('label', null,
+                    h('input', { type: 'checkbox', 'aria-label': '确认保存个人靶图', checked: confirmed, disabled: frozen, onChange: event => setConfirmed(event.target.checked) }), '保存个人靶图，不改正式知识图'),
+                    button(saving ? '保存中…' : '保存个人靶图', () => save(), frozen || !confirmed || conflict && !compared)),
+                  detail?.current ? h('details', { 'aria-label': '开启新一轮靶图' }, h('summary', null, '另开一轮'),
+                    !cleanForRound() ? h('p', { role: 'status' }, '当前草稿与已保存版本不同；先保存或核对当前改动，才能另开一轮。') : null,
+                    field('新一轮理由', draft.roundReason || '', value => install({ ...draft, roundReason: value }), frozen, true, '新一轮理由', 2000),
+                    h('label', null, h('input', { type: 'checkbox', 'aria-label': '确认开启新一轮', checked: roundConfirmed, disabled: frozen || !cleanForRound() || !draft.roundReason?.trim(),
+                      onChange: event => { setRoundConfirmed(event.target.checked); setConfirmed(false) } }), '保留旧记录，沿用上层表述，开启空白例组'),
+                    button('开启新一轮', () => save(true), frozen || !roundConfirmed || !cleanForRound() || !draft.roundReason?.trim())) : null) : null) : !loading ? h('p', null, '选择一个概念或模型') : null,
+              detail ? h('details', { 'aria-label': '个人靶图修订记录' }, h('summary', null, '个人修订记录 · ' + (historyOffset ? '第 ' + (historyOffset + 1) + '-' + (historyOffset + historyItems.length) : '最近 ' + historyItems.length) + ' / ' + historyTotal + ' 版'),
+                historyLoading ? h('p', { role: 'status' }, '正在读取修订记录…') : null,
+                historyError ? h('div', { role: 'alert' }, historyError.message || String(historyError),
+                  historyError.code !== 'history_conflict' && historyError.code !== 'revision_conflict' ? button('重试读取修订记录', () => loadHistory(historyRetry.current.offset, historyRetry.current.head), saving || loading || historyLoading) : null) :
+                  historyItems.map(item => h('div', { key: item.id }, button('知识图第 ' + item.baseRevision + ' 版 · ' + new Date(item.createdAt).toLocaleString(), () => openRecord(item.id), saving || loading || historyLoading,
+                    { 'aria-label': '查看靶图修订 ' + item.id }), h('p', null, item.reason))),
+                h('div', { className: 'kg-target-toolbar' },
+                  button('←', () => loadHistory(Math.max(0, historyOffset - 20), historyHead), saving || loading || historyLoading || !!historyError || historyOffset === 0,
+                    { title: '较新的修订记录', 'aria-label': '较新的修订记录', className: 'kg-secondary kg-target-icon' }),
+                  button('→', () => loadHistory(historyOffset + 20, historyHead), saving || loading || historyLoading || !!historyError || historyOffset + historyItems.length >= historyTotal,
+                    { title: '较早的修订记录', 'aria-label': '较早的修订记录', className: 'kg-secondary kg-target-icon' }),
+                  button('重新读取修订记录', () => loadHistory(0), saving || loading || historyLoading || error?.code === 'revision_conflict'))) : null)))
+      }
+
+      function readConnectionDirectoryAnchor(element) {
+        if (!element || element.clientHeight <= 0 || element.getBoundingClientRect().height <= 0) return null
+        const top = element.getBoundingClientRect().top + element.clientTop
+        const rows = [...element.querySelectorAll('[data-model-catalogue-row]')]
+        const row = rows.find(item => item.getBoundingClientRect().bottom > top) || rows.at(-1)
+        if (!row || !row.dataset.modelCatalogueRow) return null
+        const rect = row.getBoundingClientRect()
+        if (!Number.isFinite(rect.height) || rect.height <= 0) return null
+        return { nodeId: row.dataset.modelCatalogueRow, fraction: Math.max(0, Math.min(1, (top - rect.top) / rect.height)) }
+      }
+
+      function restoreConnectionDirectoryAnchor(element, position) {
+        if (!element || element.clientHeight <= 0 || element.getBoundingClientRect().height <= 0 || !position
+          || typeof position.nodeId !== 'string' || !position.nodeId || !Number.isFinite(position.fraction)
+          || position.fraction < 0 || position.fraction > 1) return false
+        const rows = [...element.querySelectorAll('[data-model-catalogue-row]')]
+          .filter(item => item.dataset.modelCatalogueRow === position.nodeId)
+        if (rows.length !== 1) return false
+        const row = rows[0].getBoundingClientRect(), top = element.getBoundingClientRect().top + element.clientTop
+        if (!Number.isFinite(row.height) || row.height <= 0) return false
+        element.scrollTop += row.top - top + row.height * position.fraction
+        return true
+      }
+
+      function renderLiteralQueryText(value, query) {
+        const needle = typeof query === 'string' ? query.trim() : ''
+        if (typeof value !== 'string' || !needle || needle.length > 200 || value.length > 2000
+          || typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') return value
+        // Retrieval may normalize characters; only intact, unchanged literal spans get a mark.
+        const boundaries = new Set([value.length])
+        for (const part of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)) boundaries.add(part.index)
+        const parts = []
+        let cursor = 0, offset = 0, count = 0
+        while (count < 32) {
+          const start = value.indexOf(needle, offset)
+          if (start < 0) break
+          const end = start + needle.length
+          offset = start + 1
+          if (!boundaries.has(start) || !boundaries.has(end)) continue
+          if (start > cursor) parts.push(value.slice(cursor, start))
+          parts.push(h('mark', { key: start, className: 'kg-query-literal-hit', title: '查询的逐字片段' }, value.slice(start, end)))
+          cursor = offset = end
+          count++
+        }
+        if (!count) return value
+        if (cursor < value.length) parts.push(value.slice(cursor))
+        return parts
+      }
+      function connectionModelBrowseState(value, documentId, revision) {
+        const same = value?.documentId === documentId && value?.revision === revision
+        const saved = same ? value : {}
+        const string = value => typeof value === 'string' ? value : ''
+        const offset = value => Number.isSafeInteger(value) && value >= 0 ? value : 0
+        const concept = value => value && typeof value.nodeId === 'string'
+          ? { nodeId: value.nodeId, text: string(value.text) } : null
+        const tabs = ['materials', 'source', 'understanding', 'gaps', 'compare', 'chain', 'learn', 'history', 'review', 'structure']
+        const location = item => ({
+          modelId: string(item.modelId), materialOffset: offset(item.materialOffset), concept: concept(item.concept),
+          role: ['input', 'output', 'unknown'].includes(item.role) ? item.role : '', offset: offset(item.offset),
+          branchId: string(item.branchId), exampleOffset: offset(item.exampleOffset),
+          focusField: ['condition', 'mapping', 'boundary'].includes(item.focusField) ? item.focusField : '',
+          selectedSlot: string(item.selectedSlot), selectedExample: string(item.selectedExample), selectedMaterial: string(item.selectedMaterial),
+          tab: tabs.includes(item.tab) ? item.tab : 'materials',
+        })
+        const query = string(saved.query)
+        // Only browsing intent is cached. Current responses, edits and approvals
+        // must be read or checked again after the history panel unmounts us.
+        const state = { documentId, revision, query, search: query, section: string(saved.section),
+          needsReview: saved.needsReview === true, exercise: saved.exercise === 'counterexample' ? 'counterexample' : 'prediction',
+          ...location(saved), offset: query === string(saved.search) ? offset(saved.offset) : 0,
+          history: Array.isArray(saved.history) ? saved.history.filter(item => item && typeof item === 'object').slice(-30).map(location) : [],
+          focusRequest: same ? saved.focusRequest : null }
+        const scope = JSON.stringify([documentId, revision, state.search, state.section, state.offset, state.needsReview, state.concept?.nodeId || '', state.role])
+        const position = saved.directoryPosition
+        state.directoryPosition = query === string(saved.search) && position?.scope === scope
+          && typeof position.nodeId === 'string' && position.nodeId && Number.isFinite(position.fraction)
+          && position.fraction >= 0 && position.fraction <= 1
+          ? { scope, nodeId: position.nodeId, fraction: position.fraction } : null
+        return state
+      }
+
+      function ConnectionModelPanel({ documentId, revision, load, learningCall, onLocate, onReview, onRoles, onStructure, onRefresh, focusRequest, busy, restoreState, onStateChange }) {
+        const [initial] = useState(() => connectionModelBrowseState(restoreState, documentId, revision))
+        const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search)
+        const [section, setSection] = useState(initial.section), [offset, setOffset] = useState(initial.offset)
+        const [needsReview, setNeedsReview] = useState(initial.needsReview), [concept, setConcept] = useState(initial.concept), [role, setRole] = useState(initial.role)
+        const [page, setPage] = useState(null), [modelId, setModelId] = useState(initial.modelId), [detail, setDetail] = useState(null)
+        const [materialOffset, setMaterialOffset] = useState(initial.materialOffset), [tab, setTab] = useState(initial.tab)
+        const [exercise, setExercise] = useState(initial.exercise)
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
         const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [reload, setReload] = useState(0)
         const [roles, setRoles] = useState({}), [preview, setPreview] = useState(null), [saving, setSaving] = useState(false)
-        const [notice, setNotice] = useState(''), [selectedMaterial, setSelectedMaterial] = useState('')
-        const [branchId, setBranchId] = useState(''), [exampleOffset, setExampleOffset] = useState(0)
-        const [selectedSlot, setSelectedSlot] = useState(''), [selectedExample, setSelectedExample] = useState('')
+        const [notice, setNotice] = useState(''), [selectedMaterial, setSelectedMaterial] = useState(initial.selectedMaterial)
+        const [branchId, setBranchId] = useState(initial.branchId), [exampleOffset, setExampleOffset] = useState(initial.exampleOffset)
+        const [focusField, setFocusField] = useState(initial.focusField)
+        const [fieldRequest, setFieldRequest] = useState(0)
+        const [selectedSlot, setSelectedSlot] = useState(initial.selectedSlot), [selectedExample, setSelectedExample] = useState(initial.selectedExample)
         const [structureFocus, setStructureFocus] = useState(null)
-        const api = useRef({ load, onRoles, onLocate, onReview, onRefresh })
-        api.current = { load, onRoles, onLocate, onReview, onRefresh }
+        const fieldRef = useRef(null)
+        const api = useRef({ load, onRoles, onLocate, onReview, onRefresh, onStateChange })
+        api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const sequence = useRef(0), detailSequence = useRef(0), writeSequence = useRef(0)
-        const history = useRef([])
+        const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
+        const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
+        const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
+        const publishBrowseState = () => {
+          const state = connectionModelBrowseState({ documentId, revision, query, search, section, offset, needsReview, concept, role,
+            modelId, materialOffset, tab, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial,
+            history: history.current, focusRequest: lastFocus.current, directoryPosition: directoryPositionRef.current }, documentId, revision)
+          directoryPositionRef.current = state.directoryPosition
+          api.current.onStateChange?.({ ...state, search })
+        }
+        const rememberDirectory = () => {
+          if (loading || error || !page || directoryPageScope.current !== directoryScope || query !== search) return
+          const anchor = readConnectionDirectoryAnchor(directoryRef.current)
+          if (!anchor) return
+          directoryPositionRef.current = { scope: directoryScope, ...anchor }
+          publishBrowseState()
+        }
+        directoryContext.current = { scope: directoryScope, ready: !loading && !error && !!page
+          && directoryPageScope.current === directoryScope && query === search, remember: rememberDirectory }
         useEffect(() => { setStructureFocus(null) }, [documentId, revision, modelId])
-        useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
         useEffect(() => {
-          if (!focusRequest) return
+          if (query === search) return
+          const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220)
+          return () => clearTimeout(timer)
+        }, [query, search])
+        useEffect(() => {
+          if (!focusRequest || focusRequest.documentId !== documentId || focusRequest.revision !== revision
+            || focusRequest === lastFocus.current) return
+          lastFocus.current = focusRequest
           if (focusRequest.type === 'connection_model') {
             if (focusRequest.nodeId !== modelId && Object.keys(roles).length && !window.confirm('放弃当前未保存的方向修改并切换模型？')) return
+            setFocusField('')
             setModelId(focusRequest.nodeId)
           }
-          else { setConcept({ nodeId: focusRequest.nodeId, text: focusRequest.text }); setRole(''); setOffset(0) }
+          else { setConcept({ nodeId: focusRequest.nodeId, text: focusRequest.text }); setRole(''); setOffset(0); setFocusField('') }
         }, [focusRequest])
+        useEffect(publishBrowseState, [documentId, revision, query, search, section, offset, needsReview, concept, role, modelId, materialOffset,
+          tab, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial, focusRequest])
         useEffect(() => {
           const id = ++sequence.current, abort = new AbortController()
           setLoading(true); setError(''); setPage(null)
@@ -2544,12 +3370,31 @@ export default function clientPlugin() {
             if (id !== sequence.current || abort.signal.aborted) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision) throw new Error('模型目录版本不一致')
+            directoryPageScope.current = directoryScope
             setPage(result)
             setModelId(current => current || result.items[0]?.nodeId || '')
           }).catch(reason => { if (id === sequence.current && !abort.signal.aborted) setError(reason.message || '模型目录读取失败') })
             .finally(() => { if (id === sequence.current && !abort.signal.aborted) setLoading(false) })
           return () => { abort.abort(); sequence.current++ }
         }, [documentId, revision, search, section, offset, needsReview, concept?.nodeId, role, reload])
+        useEffect(() => {
+          const element = directoryRef.current
+          if (!element || loading || error || !page || directoryPageScope.current !== directoryScope || query !== search) return
+          let active = true
+          const align = () => {
+            if (!active || !directoryContext.current.ready || directoryContext.current.scope !== directoryScope) return
+            if (element.clientHeight <= 0 || element.getBoundingClientRect().height <= 0) return
+            const position = directoryPositionRef.current
+            // The row and relative point survive reflow; pixels and cached responses do not.
+            if (position?.scope !== directoryScope || !restoreConnectionDirectoryAnchor(element, position)) element.scrollTop = 0
+            directoryContext.current.remember()
+          }
+          align()
+          if (typeof ResizeObserver === 'undefined') return
+          const observer = new ResizeObserver(align)
+          observer.observe(element)
+          return () => { active = false; observer.disconnect() }
+        }, [page, loading, error, directoryScope, query])
         useEffect(() => {
           const id = ++detailSequence.current, abort = new AbortController()
           setDetail(null); setDetailError(''); setPreview(null); setNotice('')
@@ -2567,11 +3412,11 @@ export default function clientPlugin() {
         }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
         useEffect(() => { setRoles({}) }, [documentId, modelId])
         const select = (id, nextTab = 'materials') => {
-          if (id === modelId) { setTab(nextTab); return true }
+          if (id === modelId) { setTab(nextTab); setFocusField(''); return true }
           if (saving || Object.keys(roles).length && !window.confirm('放弃当前未保存的方向修改并切换模型？')) return false
-          history.current.push({ modelId, materialOffset, concept, role, offset, branchId, exampleOffset, selectedSlot, selectedExample, selectedMaterial })
+          history.current.push({ modelId, materialOffset, concept, role, offset, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial, tab })
           setModelId(id); setMaterialOffset(0); setSelectedMaterial(''); setTab(nextTab)
-          setBranchId(''); setExampleOffset(0); setSelectedSlot(''); setSelectedExample('')
+          setBranchId(''); setExampleOffset(0); setFocusField(''); setSelectedSlot(''); setSelectedExample('')
           return true
         }
         const back = () => {
@@ -2581,7 +3426,31 @@ export default function clientPlugin() {
           setModelId(previous.modelId); setMaterialOffset(previous.materialOffset)
           setConcept(previous.concept); setRole(previous.role); setOffset(previous.offset)
           setBranchId(previous.branchId || ''); setExampleOffset(previous.exampleOffset || 0)
+          setFocusField(previous.focusField || '')
           setSelectedSlot(previous.selectedSlot || ''); setSelectedExample(previous.selectedExample || ''); setSelectedMaterial(previous.selectedMaterial || '')
+          setTab(previous.tab || 'materials')
+        }
+        const fieldLabels = { condition: '条件', mapping: '规律', boundary: '边界' }
+        const fieldHits = model => {
+          const matches = model?.modelFieldMatches
+          return matches?.version === 1 && matches.basis === 'recorded_text_not_applicability' && Array.isArray(matches.items)
+            ? matches.items.slice(0, 8).filter(item => item && typeof item.branchId === 'string' && item.branchId
+              && Object.hasOwn(fieldLabels, item.field) && ['phrase', 'partial'].includes(item.match)) : []
+        }
+        const chosenHit = page?.documentId === documentId && page.revision === revision
+          && detail?.documentId === documentId && detail.revision === revision && detail.model?.nodeId === modelId
+          ? fieldHits(page.items.find(item => item.nodeId === modelId)).find(item => item.branchId === branchId && item.field === focusField) : null
+        const activeField = chosenHit && detail.structure?.branches?.some(branch => branch.id === chosenHit.branchId
+          && branch[chosenHit.field]?.provenance?.kind === chosenHit.provenanceKind) ? focusField : ''
+        useEffect(() => {
+          if (!activeField || tab !== 'materials') return
+          fieldRef.current?.scrollIntoView?.({ block: 'nearest' })
+          fieldRef.current?.focus?.({ preventScroll: true })
+        }, [detail, page, modelId, branchId, focusField, tab, activeField, fieldRequest])
+        const openField = (id, item) => {
+          if (saving || !select(id)) return
+          setBranchId(item.branchId); setExampleOffset(0); setFocusField(item.field)
+          setFieldRequest(value => value + 1)
         }
         const act = async fn => { try { await fn() } catch (reason) { setDetailError(reason.message || '操作未完成') } }
         const refresh = () => act(async () => {
@@ -2611,7 +3480,7 @@ export default function clientPlugin() {
         const port = item => h('div', { key: item.edgeIndex, className: 'kg-model-port', 'data-active': selectedSlot === item.slotId },
           h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setConcept(item.node); setRole(''); setOffset(0) } }, item.node.text),
           item.source === 'structured' ? h('p', { className: 'kg-model-meta' }, (item.unit || '单位未定') + ' · ' + (item.timeState || '状态未定')) : null,
-          item.provenance ? h(ModelStructureEvidence, { value: item.provenance, onLocate: reference => act(() => api.current.onLocate(reference)) }) : null,
+          item.provenance ? h(ModelStructureEvidence, { value: item.provenance, documentId, revision, onLocate: reference => act(() => api.current.onLocate(reference)) }) : null,
           h('details', null, h('summary', null, '端点依据'), evidence(item.node)))
         const material = item => h('article', { key: item.nodeId, className: 'kg-model-material', 'aria-current': selectedMaterial === item.nodeId },
           h('div', { className: 'kg-model-meta' }, (item.label || TYPE_META[item.type]?.label || item.type) + ' · ' + item.nodeId),
@@ -2637,10 +3506,19 @@ export default function clientPlugin() {
           error ? h('p', { role: 'alert' }, error) : null,
           h('div', { className: 'kg-model-meta', role: 'status' }, loading ? '正在读取全图模型…' : page ? '全图 ' + page.totalModels + ' 个模型 · 筛选 ' + page.total + ' 个 · 当前 ' + page.items.length + ' 个' : ''),
           h('div', { className: 'kg-model-workspace' },
-            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录' },
-              page?.items.map(model => h('button', { key: model.nodeId, type: 'button', className: 'kg-model-list-item', 'aria-current': modelId === model.nodeId,
+            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', ref: directoryRef, onScroll: rememberDirectory },
+              page?.items.map(model => h('div', { key: model.nodeId, 'data-model-catalogue-row': model.nodeId }, h('button', { type: 'button', className: 'kg-model-list-item', 'aria-current': modelId === model.nodeId,
                 onClick: () => select(model.nodeId) }, h('strong', null, title(model)), h('small', null, model.sectionTitle),
-                h('small', null, model.warnings.join(' · ') || '角色已记录 · 结论待核对'))),
+                h('small', null, model.warnings.join(' · ') || '角色已记录 · 结论待核对')),
+                fieldHits(model).length ? h('div', { className: 'kg-model-field-hits', 'aria-label': '模型检索命中 ' + model.nodeId },
+                  h('small', { className: 'kg-model-meta' }, '记录文字命中，非适用性验证'),
+                  fieldHits(model).map((item, index) => h('button', { key: index, type: 'button', className: 'kg-model-field-link', disabled: saving,
+                    'aria-label': '查看' + fieldLabels[item.field] + '命中：' + model.nodeId + ' / ' + item.branchId,
+                    onClick: () => openField(model.nodeId, item) },
+                    fieldLabels[item.field] + ' · ' + (item.match === 'phrase' ? '规范化短语命中' : '部分词命中'),
+                    h('small', null, '分支 ' + item.branchId + ' · ' + ({ source: '原文记录', user: '个人表述', ai: 'AI 建议', unknown: '来源未判定' }[item.provenanceKind] || '来源未判定')))),
+                  Number.isSafeInteger(model.modelFieldMatches.omitted) && model.modelFieldMatches.omitted > 0
+                    ? h('small', { className: 'kg-model-meta' }, '另有 ' + model.modelFieldMatches.omitted + ' 处命中未显示') : null) : null)),
               page && !page.items.length ? h('p', null, '没有匹配的联结模型') : null,
               h('div', { className: 'kg-model-toolbar' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页'),
@@ -2654,9 +3532,10 @@ export default function clientPlugin() {
               detailLoading ? h('p', { role: 'status' }, '正在读取模型及原文…') : null,
               detail ? h(React.Fragment, null,
                 page && !page.items.some(item => item.nodeId === modelId) ? h('p', { className: 'kg-model-meta' }, '当前模型不在本页目录中') : null,
-                tab !== 'understanding' && tab !== 'history' ? h(React.Fragment, null,
+                tab !== 'understanding' && tab !== 'history' && tab !== 'chain' ? h(React.Fragment, null,
                 h('h3', null, detail.model.inputs.length && detail.model.outputs.length ? title(detail.model) : '模型表述'),
                 h('p', { className: 'kg-model-meta' }, '图谱抽取表述 · ' + (detail.model.entailmentStatus === 'unverified' ? '语义未独立核验' : detail.model.entailmentStatus)),
+                chosenHit && !activeField ? h('p', { role: 'status', className: 'kg-model-warning' }, '命中字段未能与本次模型详情对应，请重新读取。') : null,
                 detail.model.warnings.length ? h('div', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
                 h('div', { className: 'kg-model-flow', 'aria-label': '输入到输出的模型' },
                   h('section', null, h('h4', null, '输入'), detail.ports.filter(item => item.role === 'input').map(port),
@@ -2665,13 +3544,18 @@ export default function clientPlugin() {
                   h('section', null, h('h4', null, '映射与适用条件'), h('p', null, detail.model.text),
                     detail.structure ? h('div', null, detail.structure.branches.map(branch => h('div', { key: branch.id, className: 'kg-model-branch' },
                       h('button', { type: 'button', className: 'kg-secondary', 'aria-pressed': branchId === branch.id,
-                        onClick: () => { setBranchId(current => current === branch.id ? '' : branch.id); setExampleOffset(0); setTab('materials') } }, branch.label),
-                      h('p', null, '条件：' + (branch.condition.text || '尚未核对')),
-                      h('p', null, '映射：' + (branch.mapping.text || '尚未整理')),
-                      h('p', null, '边界：' + (branch.boundary.text || '尚未核对')),
+                        onClick: () => { setBranchId(current => current === branch.id ? '' : branch.id); setExampleOffset(0); setFocusField(''); setTab('materials') } }, branch.label),
+                      ['condition', 'mapping', 'boundary'].map(key => {
+                        const hit = activeField === key && branchId === branch.id
+                        const label = { condition: '条件', mapping: '映射', boundary: '边界' }[key]
+                        const value = branch[key].text || (key === 'mapping' ? '尚未整理' : '尚未核对')
+                        return h('p', { key, ...(hit ? { ref: fieldRef, tabIndex: -1, 'data-model-field-hit': key } : {}) },
+                          hit ? h('mark', null, label) : label, '：',
+                          hit && query === search ? renderLiteralQueryText(value, search) : value)
+                      }),
                       h('p', { className: 'kg-model-meta' }, branch.pairedExamples ? '已有完整配对实例 ' + branch.pairedExamples + ' 个 · 不代表验证通过' : '暂未找到完整配对实例'),
                       branch.incompleteExamples ? h('p', { className: 'kg-model-meta' }, '另有未完整配对实例 ' + branch.incompleteExamples + ' 个') : null,
-                      ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch[key].provenance,
+                      ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch[key].provenance, documentId, revision,
                         label: { condition: '条件来源', mapping: '规律来源', boundary: '边界来源' }[key], onLocate: reference => act(() => api.current.onLocate(reference)) })))),
                       !detail.structure.branches.length ? h('p', null, '条件分支尚未整理') : null) :
                       h('p', { className: 'kg-model-meta' }, '条件未单独结构化，需核对完整表述'),
@@ -2687,12 +3571,13 @@ export default function clientPlugin() {
                       (item.role === 'unknown' && item.storedRole ? ' · 原记录值：' + item.storedRole : '')),
                     evidence(item))), !detail.legacyPorts.length ? h('p', null, '尚无 maps_between 端点记录') : null) : null) : h('h3', null, detail.model.text),
                 h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '模型详情页签' },
-                  [['materials', '下上对照'], ['source', '原文依据'], ['understanding', '我的理解'], ['gaps', '结构缺口'], ['compare', '模型比较'], ['learn', '情境预测'], ['history', '学习记录'], ['review', '核对方向'], ['structure', '核对结构']].map(([id, label]) => h('button', {
+                  [['materials', '下上对照'], ['source', '原文依据'], ['understanding', '我的理解'], ['gaps', '结构缺口'], ['compare', '模型比较'], ['chain', '两步推测'], ['learn', '情境预测'], ['history', '学习记录'], ['review', '核对方向'], ['structure', '核对结构']].map(([id, label]) => h('button', {
                     key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': tab === id,
                     disabled: id === 'structure' && detail.modelStructureVersion !== 1 || id === 'gaps' && detail.modelDiagnosticsVersion !== 1 ||
-                      id === 'understanding' && detail.modelUnderstandingVersion !== 1 || id === 'history' && detail.modelLearningHistoryVersion !== 1, onClick: () => setTab(id) }, label))),
+                      id === 'understanding' && detail.modelUnderstandingVersion !== 1 || id === 'history' && detail.modelLearningHistoryVersion !== 1 || id === 'chain' && detail.modelChainVersion !== 1, onClick: () => setTab(id) }, label))),
                 detail.modelUnderstandingVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '个人表述版本尚未就绪：当前 Host 不支持保存我的理解；现有阅读与练习仍可使用。') : null,
                 detail.modelLearningHistoryVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '学习记录统计版本尚未就绪；当前 Host 未支持可追溯统计，现有预测和结果记录仍可使用。') : null,
+                detail.modelChainVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '两步推测版本尚未就绪；当前 Host 不支持槽位承接检查，现有阅读与比较仍可使用。') : null,
                 detail.modelStructureVersion !== 1 ? h('p', { className: 'kg-model-warning', role: 'status' }, '结构核对版本尚未就绪：当前 Host 与前端版本不匹配。') : null,
                 detail.modelStructureVersion === 1 && detail.modelDiagnosticsVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '结构缺口与原文选取版本尚未就绪；现有阅读和手工核对仍可使用。') : null,
                 h(ModelGapPanel, { documentId, revision, modelId, active: tab === 'gaps', load, busy: busy || saving,
@@ -2706,6 +3591,9 @@ export default function clientPlugin() {
                   onChallenge: id => {
                     if (select(id, 'learn')) setExercise('counterexample')
                   } }),
+                h(ConnectionModelChain, { documentId, revision, modelId, active: tab === 'chain' && detail.modelChainVersion === 1, load,
+                  onLocate: reference => api.current.onLocate(reference), onOpen: id => select(id),
+                  onStructure: id => select(id, 'structure') }),
                 tab === 'learn' ? h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '模型练习类型' },
                   [['prediction', '新情境预测'], ['counterexample', '反例挑战']].map(([id, label]) => h('button', { key: id, type: 'button', className: 'kg-secondary',
                     'aria-pressed': exercise === id, onClick: () => setExercise(id) }, label))) : null,
@@ -2725,7 +3613,7 @@ export default function clientPlugin() {
                   focusRequest: structureFocus, onLocate: reference => act(() => api.current.onLocate(reference)),
                   onBusy: setSaving, onRefresh: () => api.current.onRefresh?.() }),
                 tab === 'materials' ? h('div', null,
-                  detail.structure ? h(ModelPairedExamples, { structure: detail.structure, selectedSlot, selectedExample,
+                  detail.structure ? h(ModelPairedExamples, { documentId, revision, structure: detail.structure, selectedSlot, selectedExample,
                     onSlot: (slotId, exampleId) => { setSelectedSlot(slotId); setSelectedExample(exampleId) },
                     onLocate: reference => act(() => api.current.onLocate(reference)), onPage: setExampleOffset }) : null,
                   h('h4', null, '上层 · 规律与关系材料'), rules.length ? rules.map(material) : h('p', { className: 'kg-model-meta' }, '本页暂无独立规律材料'),
@@ -2875,12 +3763,270 @@ export default function clientPlugin() {
               h('p', null, detail.model.text), detail.structure ? detail.structure.branches.map(branch => h('div', { key: branch.id, className: 'kg-model-branch' },
                 h('strong', null, branch.label), h('p', null, '条件：' + (branch.condition.text || '待核对')), h('p', null, '映射：' + (branch.mapping.text || '待整理')),
                 h('p', null, '边界：' + (branch.boundary.text || '待核对')),
-                ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch[key].provenance,
+                ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch[key].provenance, documentId, revision,
                   label: { condition: '条件来源', mapping: '规律来源', boundary: '边界来源' }[key], onLocate: locate })))) :
                 h('p', { className: 'kg-model-meta' }, '条件尚未单独结构化，需核对原文限定。'), citations(detail.model))),
             row('输出', detail => ports(detail, 'output')), row('未定角色的端点', detail => ports(detail, 'unknown')),
             row('规律、例子与验证材料', materials),
             row('原文上下文', detail => h('details', null, h('summary', null, '展开原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, onLocate: locate })))) : null)
+      }
+
+      function ConnectionModelChain({ documentId, revision, modelId, active = true, load, onLocate, onOpen, onStructure }) {
+        const scope = JSON.stringify([documentId, modelId]), storageKey = 'dsh-kg-model-chain:' + scope
+        const emptyStep = id => ({ modelId: id, branchId: '', inputs: [], outputs: [], conditions: '', reasoning: '' })
+        const empty = () => ({ scope, revision, peerId: '', draft: { version: 1, scenario: '', goal: '', steps: [emptyStep(modelId), emptyStep('unselected-model')] } })
+        const restore = () => {
+          try {
+            const raw = sessionStorage.getItem(storageKey)
+            if (!raw) return empty()
+            if (raw.length > 110000) throw new Error('标签页草稿过大')
+            const value = JSON.parse(raw)
+            MODEL_CHAIN_TOOLS.validateDraft(value.draft)
+            if (value.scope !== scope || !Number.isSafeInteger(value.revision) || value.revision < 1 || typeof value.peerId !== 'string'
+              || value.draft.steps[0].modelId !== modelId || value.draft.steps[1].modelId !== (value.peerId || 'unselected-model')) throw new Error('标签页草稿身份不一致')
+            return value
+          } catch (reason) { return { ...empty(), restoreError: '标签页草稿未能恢复，原缓存未覆盖：' + reason.message } }
+        }
+        const [work, setWork] = useState(restore), [query, setQuery] = useState(''), [search, setSearch] = useState('')
+        const [candidatesOnly, setCandidatesOnly] = useState(true), [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null)
+        const [loadedPair, setPair] = useState(null), [result, setResult] = useState(null), [reload, setReload] = useState(0)
+        const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false)
+        const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
+        const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
+        const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
+        const importInput = useRef(null), importSequence = useRef(0), importAbort = useRef(null)
+        const api = useRef({ load, onLocate, onOpen, onStructure }), catalogSequence = useRef(0), pairSequence = useRef(0)
+        const checkSequence = useRef(0), checkAbort = useRef(null), checkPending = useRef(false)
+        const workRef = useRef(work)
+        workRef.current = work
+        api.current = { load, onLocate, onOpen, onStructure }
+        const current = work.scope === scope ? work : empty(), peerId = current.peerId, draft = current.draft
+        const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset])
+        const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const pairKey = JSON.stringify([scope, revision, peerId])
+        const pair = loadedPair?.scope === pairKey ? loadedPair : null
+        const stale = current.revision !== revision
+        const checked = result?.scope === pairKey && result.draftKey === JSON.stringify(draft) && !stale ? result.chain : null
+        const cancelImport = (keepNotice = false) => { importSequence.current++; importAbort.current?.abort(); setIncoming(null); setImporting(false); setImportError(''); if (!keepNotice) setImportNotice('') }
+        const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); cancelImport(keepImportNotice) }
+        useEffect(() => { setWork(restore()); invalidate(); setQuery(''); setSearch(''); setOffset(0); setStorageError('') }, [documentId, modelId])
+        useEffect(() => {
+          cancelImport()
+          return () => { importSequence.current++; importAbort.current?.abort() }
+        }, [scope, revision, active])
+        useEffect(() => {
+          if (work.scope !== scope || work.restoreError) return
+          try { sessionStorage.setItem(storageKey, JSON.stringify(work)); setStorageError('') }
+          catch (reason) { setStorageError('标签页草稿未缓存，请保留当前页面：' + reason.message) }
+        }, [work, scope])
+        useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
+        useEffect(() => {
+          const id = ++catalogSequence.current, abort = new AbortController()
+          setPage(null); setCatalogError('')
+          if (!active) return () => { abort.abort(); catalogSequence.current++ }
+          api.current.load({ documentId, expectedRevision: revision, query: search, offset, excludeModelId: modelId,
+            chainOf: candidatesOnly ? modelId : '' }, abort.signal).then(value => {
+            if (id !== catalogSequence.current || abort.signal.aborted) return
+            if (value?.error) throw new Error(value.error.message)
+            if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || !Array.isArray(value.items)) throw new Error('两步推测目录版本或身份不一致，请等待同版本 Host 部署')
+            setPage({ ...value, scope: catalogKey })
+          }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogError(reason.message || '模型目录读取失败') })
+          return () => { abort.abort(); catalogSequence.current++ }
+        }, [scope, revision, active, search, candidatesOnly, offset, reload])
+        useEffect(() => {
+          const id = ++pairSequence.current, abort = new AbortController()
+          setPair(null); invalidate(true); setLoading(active && !!peerId)
+          if (!active || !peerId) return () => { abort.abort(); pairSequence.current++ }
+          api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: peerId }, abort.signal).then(value => {
+            if (id !== pairSequence.current || abort.signal.aborted) return
+            if (value?.error) throw new Error(value.error.message)
+            if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision
+              || value.left?.model?.nodeId !== modelId || value.right?.model?.nodeId !== peerId) throw new Error('两步推测模型版本或身份不一致')
+            setPair({ ...value, scope: pairKey })
+          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setError(reason.message || '模型读取失败') })
+            .finally(() => { if (id === pairSequence.current && !abort.signal.aborted) setLoading(false) })
+          return () => { abort.abort(); pairSequence.current++; checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false }
+        }, [scope, revision, peerId, active, reload])
+        const update = transform => {
+          const value = workRef.current, next = transform(value.scope === scope ? value : empty())
+          try { MODEL_CHAIN_TOOLS.validateDraft(next.draft) }
+          catch (reason) { setError(reason.message + '；本次输入未覆盖原草稿'); return }
+          invalidate(); workRef.current = next; setWork(next)
+        }
+        const changeDraft = transform => update(value => ({ ...value, draft: transform(value.draft) }))
+        const changeStep = (index, transform) => changeDraft(value => ({ ...value, steps: value.steps.map((step, i) => i === index ? transform(step) : step) }))
+        const binding = (step, slotId) => step.inputs.find(item => item.slotId === slotId) || { slotId, source: 'known', value: '', basis: '', fromSlotId: '', meaning: '', unit: '', timeState: '', objectScope: '' }
+        const changeInput = (index, slotId, key, value) => changeStep(index, step => ({ ...step,
+          inputs: [...step.inputs.filter(item => item.slotId !== slotId), { ...binding(step, slotId), [key]: value }] }))
+        const changeOutput = (index, slotId, value) => changeStep(index, step => ({ ...step,
+          outputs: [...step.outputs.filter(item => item.slotId !== slotId), { slotId, value }] }))
+        const selectPeer = id => {
+          if (id === peerId) return
+          if (peerId && !window.confirm('切换第二个模型会清空第 2 步的槽位与应用草稿，第 1 步和情境保留。继续？')) return
+          update(value => ({ ...value, peerId: id, draft: { ...value.draft, steps: [value.draft.steps[0], emptyStep(id)] } }))
+        }
+        const previewImport = async event => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (!file) return
+          cancelImport()
+          const id = ++importSequence.current, abort = new AbortController()
+          importAbort.current = abort; setImporting(true)
+          try {
+            if (!Number.isSafeInteger(file.size) || file.size > 2 * 1024 * 1024 || typeof file.text !== 'function') throw new Error('草稿文件过大或无法读取，最多 2 MiB')
+            const raw = await file.text()
+            if (id !== importSequence.current || abort.signal.aborted) return
+            const value = MODEL_CHAIN_TOOLS.parseExchange(raw, { documentId, modelId, revision })
+            const models = await api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: value.peerId }, abort.signal)
+            if (id !== importSequence.current || abort.signal.aborted) return
+            if (models?.error) throw new Error(models.error.message)
+            if (models.modelChainVersion !== 1 || models.documentId !== documentId || models.revision !== revision
+              || models.left?.model?.nodeId !== modelId || models.right?.model?.nodeId !== value.peerId
+              || typeof models.left.model.text !== 'string' || typeof models.right.model.text !== 'string') throw new Error('导入模型的当前身份或 Host 版本不一致')
+            setIncoming({ ...value, titles: [models.left.model.text, models.right.model.text] })
+          } catch (reason) { if (id === importSequence.current && !abort.signal.aborted) setImportError((reason.message || '草稿未能导入') + '；当前草稿未覆盖') }
+          finally { if (id === importSequence.current && !abort.signal.aborted) setImporting(false) }
+        }
+        const applyImport = () => {
+          if (!incoming || importing || !window.confirm('以文件中的两步草稿替换当前文字并更新标签页缓存？仅导入文字，不恢复旧检查结果；旧来源版本仍须对照。')) return
+          update(() => ({ scope, revision: incoming.revision, peerId: incoming.peerId, draft: incoming.draft }))
+          setImportNotice('草稿文字已导入；旧检查结果未恢复，尚未检查当前草稿。')
+        }
+        const exportDraft = () => {
+          try {
+            const value = checked || { format: 'dsh.model-chain-draft', version: 1, documentId, revision: current.revision,
+              modelIds: draft.steps.map(step => step.modelId), draft }
+            MODEL_CHAIN_TOOLS.validateDraft(value.draft)
+            if (!downloadBrowserBlob(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }), 'model-chain-draft.json')) throw new Error('当前浏览器无法导出草稿')
+          } catch (reason) { setError(reason.message + '，页面文字仍保留') }
+        }
+        const check = async () => {
+          if (!pair || stale || checkPending.current) return
+          const id = ++checkSequence.current, abort = new AbortController(), snapshot = JSON.parse(JSON.stringify(draft))
+          checkAbort.current?.abort(); checkAbort.current = abort; checkPending.current = true
+          setChecking(true); setResult(null); setError('')
+          try {
+            const value = await api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: peerId, chainDraft: snapshot }, abort.signal)
+            if (id !== checkSequence.current || abort.signal.aborted) return
+            if (value?.error) throw new Error(value.error.message)
+            const chain = value.chain
+            if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || chain?.documentId !== documentId
+              || chain.revision !== revision || JSON.stringify(chain.modelIds) !== JSON.stringify([modelId, peerId])
+              || JSON.stringify(chain.draft) !== JSON.stringify(snapshot) || !['blocked', 'worksheet_complete'].includes(chain.status)
+              || chain.basis !== 'recorded_fields_and_learner_reports_not_semantic_validity' || chain.persisted !== false
+              || !Array.isArray(chain.issues) || chain.issues.length > 500 || !chain.issues.every(item => [1, 2].includes(item.step) && typeof item.message === 'string')
+              || !Array.isArray(chain.warnings) || !chain.warnings.every(item => [0, 1, 2].includes(item.step) && typeof item.message === 'string')
+              || !Array.isArray(chain.steps) || chain.steps.length !== 2 || !chain.steps.every((step, index) => step.number === index + 1
+                && step.model?.nodeId === [modelId, peerId][index] && Array.isArray(step.inputs) && step.inputs.every(item => typeof item.source === 'string' && (item.value === null || typeof item.value === 'string')))
+              || (chain.status === 'blocked' ? !chain.issues.length || ![1, 2].includes(chain.firstStop) : chain.issues.length || chain.firstStop !== null)) throw new Error('检查回应与当前推测草稿不一致')
+            setResult({ scope: pairKey, draftKey: JSON.stringify(snapshot), chain })
+          } catch (reason) { if (id === checkSequence.current && !abort.signal.aborted) setError(reason.message || '推测草稿未检查，文字仍保留') }
+          finally { if (id === checkSequence.current && !abort.signal.aborted) { checkPending.current = false; setChecking(false) } }
+        }
+        const locate = reference => Promise.resolve().then(() => api.current.onLocate?.(reference)).catch(reason => setError(reason.message || '原文定位失败'))
+        const field = (label, value, onChange, maxLength = 1000) => h('label', { className: 'kg-chain-field' }, h('span', null, label),
+          h('textarea', { 'aria-label': label, value, maxLength, rows: 2, onChange: event => onChange(event.target.value) }))
+        const stepEditor = (detail, index) => {
+          const step = draft.steps[index], number = index + 1, structure = detail.structure
+          const selectedBranch = structure?.branches.find(item => item.id === step.branchId)
+          const slots = structure?.slots || []
+          const missingBindings = [...step.inputs.filter(item => !slots.some(slot => slot.id === item.slotId && slot.role === 'input')),
+            ...step.outputs.filter(item => !slots.some(slot => slot.id === item.slotId && slot.role === 'output'))]
+          return h('section', { key: detail.model.nodeId, className: 'kg-chain-step', 'aria-label': '第 ' + number + ' 步' },
+            h('h4', null, '第 ' + number + ' 步 · ' + detail.model.nodeId), h('p', null, detail.model.text),
+            h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[detail.model.state] || detail.model.state) +
+              ' · ' + ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[detail.model.entailmentStatus] || '原文语义未核验')),
+            detail.model.warnings.length ? h('p', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
+            h('div', { className: 'kg-model-toolbar' },
+              onOpen ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onOpen(detail.model.nodeId) }, '查看第 ' + number + ' 步模型') : null,
+              onStructure ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onStructure(detail.model.nodeId) }, '核对第 ' + number + ' 步结构') : null),
+            !structure ? h('p', { className: 'kg-model-warning' }, '此模型尚无有效独立槽位与分支，不能组成可检查的推测草稿。') : h(React.Fragment, null,
+              h('label', { className: 'kg-chain-field' }, '第 ' + number + ' 步分支', h('select', { value: step.branchId, 'aria-label': '第 ' + number + ' 步分支',
+                onChange: event => changeStep(index, value => ({ ...value, branchId: event.target.value })) }, h('option', { value: '' }, '明确选择适用分支'),
+                step.branchId && !selectedBranch ? h('option', { value: step.branchId }, '旧草稿分支已不存在 · ' + step.branchId) : null,
+                structure.branches.map(branch => h('option', { key: branch.id, value: branch.id }, branch.label)))),
+              selectedBranch ? h('div', { className: 'kg-chain-branch' }, ['condition', 'mapping', 'boundary'].map(key => h('div', { key },
+                h('p', null, { condition: '条件', mapping: '规律', boundary: '边界' }[key] + '：' + (selectedBranch[key].text || '尚未记录')),
+                h(ModelStructureEvidence, { value: selectedBranch[key].provenance, documentId, revision, onLocate: locate })))) : null,
+              h('h5', null, '全部输入'), slots.filter(slot => slot.role === 'input').map(slot => {
+                const value = binding(step, slot.id), label = '第 ' + number + ' 步 · ' + (slot.label || slot.conceptText || slot.id)
+                return h('div', { key: slot.id, className: 'kg-chain-slot' }, h('strong', null, slot.label || slot.conceptText || slot.id),
+                  h('p', { className: 'kg-model-meta' }, slot.id + ' · ' + slot.conceptId + ' · ' + (slot.unit || '单位未定') + ' · ' + (slot.state || '时间状态未定')),
+                  h(ModelStructureEvidence, { value: slot.provenance, documentId, revision, onLocate: locate }),
+                  index ? h('label', { className: 'kg-chain-field' }, label + '输入来源', h('select', { 'aria-label': label + '输入来源', value: value.source,
+                    onChange: event => changeInput(index, slot.id, 'source', event.target.value) }, h('option', { value: 'known' }, '情境中的已知输入'), h('option', { value: 'link' }, '承接第 1 步的预测输出'))) : null,
+                  value.source === 'known' ? h(React.Fragment, null,
+                    field(label + '已知值或状态', value.value, text => changeInput(index, slot.id, 'value', text)),
+                    field(label + '输入依据', value.basis, text => changeInput(index, slot.id, 'basis', text))) : h(React.Fragment, null,
+                    h('label', { className: 'kg-chain-field' }, label + '承接槽位', h('select', { 'aria-label': label + '承接槽位', value: value.fromSlotId,
+                      onChange: event => changeInput(index, slot.id, 'fromSlotId', event.target.value) }, h('option', { value: '' }, '选择第 1 步输出'),
+                      value.fromSlotId && !pair.left.structure?.slots.some(item => item.role === 'output' && item.id === value.fromSlotId) ? h('option', { value: value.fromSlotId }, '旧草稿槽位已不存在 · ' + value.fromSlotId) : null,
+                      (pair.left.structure?.slots || []).filter(item => item.role === 'output').map(item => h('option', { key: item.id, value: item.id },
+                        (item.label || item.conceptText) + ' · ' + item.id + ' · ' + (item.unit || '单位未定') + ' · ' + (item.state || '时间状态未定'))))),
+                    ['meaning', 'unit', 'timeState', 'objectScope'].map(key => field(label + { meaning: '含义核对', unit: '单位口径核对', timeState: '时间状态核对', objectScope: '对象范围核对' }[key], value[key], text => changeInput(index, slot.id, key, text)))))
+              }),
+              h('h5', null, '我的输出预测'), slots.filter(slot => slot.role === 'output').map(slot => h('div', { key: slot.id, className: 'kg-chain-slot' },
+                h('p', { className: 'kg-model-meta' }, slot.id + ' · ' + (slot.unit || '单位未定') + ' · ' + (slot.state || '时间状态未定')),
+                h(ModelStructureEvidence, { value: slot.provenance, documentId, revision, onLocate: locate }),
+                field('第 ' + number + ' 步 · ' + (slot.label || slot.conceptText || slot.id) + '预测', step.outputs.find(item => item.slotId === slot.id)?.value || '', text => changeOutput(index, slot.id, text))))),
+            field('第 ' + number + ' 步适用条件与边界依据', step.conditions, text => changeStep(index, value => ({ ...value, conditions: text })), 2000),
+            field('第 ' + number + ' 步应用过程', step.reasoning, text => changeStep(index, value => ({ ...value, reasoning: text })), 2000),
+            missingBindings.length ? h('div', { role: 'status', className: 'kg-model-warning' }, '旧草稿仍引用已失效槽位：' + missingBindings.map(item => item.slotId).join('、'),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+                if (window.confirm('仅移除当前已失效槽位的草稿内容？有效槽位和应用过程保留。')) changeStep(index, value => ({ ...value,
+                  inputs: value.inputs.filter(item => slots.some(slot => slot.id === item.slotId && slot.role === 'input')),
+                  outputs: value.outputs.filter(item => slots.some(slot => slot.id === item.slotId && slot.role === 'output')) }))
+              } }, '移除第 ' + number + ' 步失效槽位草稿')) : null,
+            h('details', null, h('summary', null, '第 ' + number + ' 步模型引文'), detail.model.citations.map((citation, i) => h('div', { key: i, className: 'kg-model-evidence' },
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate(citation) }, '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote)))))
+        }
+        if (!active) return null
+        return h('section', { className: 'kg-model-chain', 'aria-label': '两步推测工作台' },
+          h('h3', null, '两步推测草稿'), h('p', { className: 'kg-model-meta' }, '标签页草稿 · 未写入图谱或长期学习记录 · 输出为我的预测'),
+          h('div', { className: 'kg-model-toolbar' },
+            h('input', { ref: importInput, type: 'file', accept: '.json,application/json', className: 'kg-image-input', 'aria-label': '选择推测草稿文件', onChange: previewImport }),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: importing, onClick: () => importInput.current?.click() }, importing ? '正在读取草稿…' : '导入推测草稿')),
+          importError ? h('p', { role: 'alert' }, importError) : null,
+          importNotice ? h('p', { role: 'status' }, importNotice) : null,
+          incoming ? h('section', { className: 'kg-chain-import', 'aria-label': '草稿导入预览' },
+            h('h4', null, '待导入草稿 · 来源版本 ' + incoming.revision + ' / 当前版本 ' + revision),
+            incoming.titles.map((title, index) => h('p', { key: index }, '第 ' + (index + 1) + ' 步 · ' + incoming.draft.steps[index].modelId + ' · ' + title)),
+            h('p', null, '情境：' + (incoming.draft.scenario || '未填写')), h('p', null, '目标：' + (incoming.draft.goal || '未填写')),
+            incoming.draft.steps.map((step, index) => h('p', { key: index }, '第 ' + (index + 1) + ' 步草稿：' + step.inputs.length + ' 个输入、' + step.outputs.length + ' 个输出 · 分支 ' + (step.branchId || '未选择'))),
+            h('p', { className: 'kg-model-warning' }, '文件中的检查状态与模型快照未用作当前依据；旧版本文字仍须对照。'),
+            h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', onClick: applyImport }, '确认替换为导入草稿'),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => cancelImport() }, '取消导入'))) : null,
+          current.restoreError ? h('div', { role: 'alert' }, current.restoreError, h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+            if (window.confirm('重新建立标签页草稿并覆盖无法恢复的旧缓存？')) setWork(empty())
+          } }, '重新建立标签页草稿')) : null,
+          storageError ? h('p', { role: 'alert' }, storageError) : null,
+          stale ? h('div', { role: 'status', className: 'kg-model-warning' }, '草稿来源版本 ' + current.revision + '，当前版本 ' + revision + '；旧文字保留，检查已暂停。',
+            h('button', { type: 'button', className: 'kg-secondary', disabled: !pair || loading, onClick: () => {
+              if (window.confirm('已逐项对照当前两个模型？仅更换草稿的来源基准，保留文字；不会认为旧预测已经验证。')) update(value => ({ ...value, revision }))
+            } }, '对照后使用当前版本')) : null,
+          field('具体情境', draft.scenario, text => changeDraft(value => ({ ...value, scenario: text })), 2000),
+          field('推测目标', draft.goal, text => changeDraft(value => ({ ...value, goal: text })), 2000),
+          h('div', { className: 'kg-model-toolbar' }, h('input', { type: 'search', maxLength: 200, value: query, 'aria-label': '搜索第 2 步模型', placeholder: '第二个模型', onChange: event => setQuery(event.target.value) }),
+            h('label', null, h('input', { type: 'checkbox', checked: candidatesOnly, onChange: event => { setCandidatesOnly(event.target.checked); setOffset(0) } }), ' 输出承接候选'),
+            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取两步推测模型', title: '重新读取两步推测模型', onClick: () => { invalidate(); setReload(value => value + 1) } }, '↻')),
+          catalogError ? h('p', { role: 'alert' }, catalogError) : null,
+          page ? h('div', null, h('p', { className: 'kg-model-meta' }, '候选 ' + page.total + ' 个 · 仅按概念与已记录方向筛选，相容性尚未核对'),
+            h('div', { className: 'kg-model-compare-choices' }, page.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
+              'aria-pressed': peerId === item.nodeId, onClick: () => selectPeer(item.nodeId) }, h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
+            !page.total && candidatesOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setCandidatesOnly(false); setOffset(0) } }, '查看全部第 2 步模型') : null,
+            h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '前页第 2 步模型'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '后页第 2 步模型'))) : null,
+          error ? h('p', { role: 'alert' }, error) : null,
+          loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
+          pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
+          h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: !peerId, onClick: exportDraft }, '导出推测草稿')),
+          checked ? h('section', { className: 'kg-chain-result', 'aria-label': '推测缺口检查' },
+            h('h4', { role: 'status' }, checked.status === 'blocked' ? '停在第 ' + checked.firstStop + ' 步 · ' + checked.issues.length + ' 处缺口' : '草稿字段已齐备 · 相容性与结果尚未独立核验'),
+            checked.issues.map((item, index) => h('p', { key: index, className: 'kg-model-warning' }, item.message)),
+            checked.steps.map(step => h('div', { key: step.number, className: 'kg-chain-step' }, h('h5', null, '第 ' + step.number + ' 步 · ' + (step.blocked ? '承接暂停' : '仅用户推测')),
+              step.inputs.filter(item => item.source.includes('link')).map(item => h('p', { key: item.slotId }, item.fromSlotId + ' → ' + item.slotId + '：' + (item.value ?? '未承接上一步预测'))))),
+            checked.warnings.map((item, index) => h('p', { key: index, className: 'kg-model-meta' }, item.message))) : null)
       }
 
       const MODEL_FEEDBACK_TYPES = { observation: '真实观察（自述）', reference: '参考资料', derivation: '公式或规则推导', ai_suggestion: 'AI 建议', reflection: '个人复盘' }
@@ -3233,7 +4379,7 @@ export default function clientPlugin() {
                 (snapshot.model.branches || []).map(branch => h('div', { key: branch.id, className: 'kg-model-branch' }, h('strong', null, branch.label),
                   h('p', null, '条件：' + (branch.condition || '尚未整理')), h('p', null, '映射：' + (branch.mapping || '尚未整理')),
                   h('p', null, '边界：' + (branch.boundary || '尚未整理')),
-                  ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch.provenance[key],
+                  ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch.provenance[key], documentId, revision: snapshotRevision,
                     onLocate: snapshotRevision === revision ? locate : undefined })))),
                 h('details', null, h('summary', null, '来源引文 (' + snapshot.references.length + ')'),
                   snapshot.references.map(reference => h('div', { key: reference.nodeId }, h('strong', null, reference.text),
@@ -4173,6 +5319,41 @@ export default function clientPlugin() {
         if (typeof Blob === 'undefined' || !downloadBrowserBlob(new Blob([content], { type: mime }), filename, ctx)) return null
         return filename
       }
+      function graphImageBackground(container) {
+        const canvas = document.createElement('canvas')
+        canvas.width = canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('当前浏览器不支持 Canvas')
+        // Panel colors are translucent overlays, not the underlying surface.
+        // Composite ancestor surfaces once on an opaque base before exporting.
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, 1, 1)
+        const ancestors = []
+        for (let element = container; element; element = element.parentElement) ancestors.push(element)
+        for (const element of ancestors.reverse()) {
+          const color = getComputedStyle(element).backgroundColor
+          if (color) { context.fillStyle = color; context.fillRect(0, 0, 1, 1) }
+        }
+        const pixel = context.getImageData(0, 0, 1, 1).data
+        return 'rgb(' + pixel[0] + ',' + pixel[1] + ',' + pixel[2] + ')'
+      }
+      function freezeGraphImageStyles(svg, clone) {
+        const sources = [svg, ...svg.querySelectorAll('*')]
+        const targets = [clone, ...clone.querySelectorAll('*')]
+        const properties = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity', 'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'text-anchor', 'dominant-baseline', 'paint-order', 'visibility', 'display']
+        for (let index = 0; index < sources.length; index++) {
+          const source = sources[index], target = targets[index], computed = getComputedStyle(source)
+          for (const property of properties) {
+            let value = computed.getPropertyValue(property)
+            // Export the rendered projection, retaining selected borders and
+            // issue colors, but not transient focus dimming or animated glow.
+            if (property === 'opacity' && source.matches('.kg-node, .kg-edge, .kg-edge-label, .kg-edge > path')) value = '1'
+            if (value) { target.style.removeProperty(property); target.setAttribute(property, value) }
+          }
+          target.style.removeProperty('filter')
+          target.setAttribute('filter', 'none')
+        }
+      }
       function exportRenderedGraphImage(container, title, ctx, exportBBox) {
         return new Promise((resolve, reject) => {
           try {
@@ -4188,6 +5369,8 @@ export default function clientPlugin() {
             const width = hasExportBBox ? Math.max(320, Math.ceil(exportBBox.w + padding * 2)) : Math.max(320, Math.round(rect.width || 0))
             const height = hasExportBBox ? Math.max(240, Math.ceil(exportBBox.h + padding * 2)) : Math.max(240, Math.round(rect.height || 0))
             const clone = svg.cloneNode(true)
+            freezeGraphImageStyles(svg, clone)
+            const backgroundColor = graphImageBackground(container)
             const svgNs = 'http://www.w3.org/2000/svg'
             // Blob URLs and HTML foreignObjects are not portable in a saved SVG.
             // Embed decoded source thumbnails as SVG images before rasterizing.
@@ -4219,20 +5402,13 @@ export default function clientPlugin() {
                 scene.setAttribute('transform', 'translate(' + (padding - (exportBBox.cx - exportBBox.w / 2)) + ' ' + (padding - (exportBBox.cy - exportBBox.h / 2)) + ')')
               }
             }
-            const computed = typeof getComputedStyle === 'function' ? getComputedStyle(container) : null
-            const textColor = computed && computed.getPropertyValue('--kg-text').trim() ? computed.getPropertyValue('--kg-text').trim() : '#1f2937'
-            const panelColor = computed && computed.getPropertyValue('--kg-panel').trim() ? computed.getPropertyValue('--kg-panel').trim() : '#ffffff'
-            const borderColor = computed && computed.getPropertyValue('--kg-border').trim() ? computed.getPropertyValue('--kg-border').trim() : '#cbd5e1'
-            const style = document.createElementNS(svgNs, 'style')
-            style.textContent = 'text{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.kg-node-name{fill:' + textColor + '}.kg-edge-label rect{fill:' + panelColor + ';stroke:' + borderColor + ';stroke-width:1}.kg-edge-label text{fill:' + textColor + ';font-size:10px;font-weight:500}'
             const background = document.createElementNS(svgNs, 'rect')
             background.setAttribute('x', '0')
             background.setAttribute('y', '0')
             background.setAttribute('width', String(width))
             background.setAttribute('height', String(height))
-            background.setAttribute('fill', panelColor)
+            background.setAttribute('fill', backgroundColor)
             clone.insertBefore(background, clone.firstChild)
-            clone.insertBefore(style, clone.firstChild)
             const svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }))
             const image = new Image()
             image.onload = () => {
@@ -4243,7 +5419,7 @@ export default function clientPlugin() {
                 canvas.height = height * scale
                 const context = canvas.getContext('2d')
                 if (!context) throw new Error('当前浏览器不支持 Canvas')
-                context.fillStyle = panelColor
+                context.fillStyle = backgroundColor
                 context.fillRect(0, 0, canvas.width, canvas.height)
                 context.drawImage(image, 0, 0, canvas.width, canvas.height)
                 canvas.toBlob((blob) => {
@@ -4284,10 +5460,10 @@ export default function clientPlugin() {
               exportGraph = loaded.graph
             }
             const filename = exportGraphFile(exportGraph, title, kind, ctx)
-            if (filename) toastStore.show('已导出 ' + filename)
-            else toastStore.show('当前浏览器不支持文件下载')
+            if (filename) toastStore.show('已导出 ' + filename, ctx)
+            else toastStore.show('当前浏览器不支持文件下载', ctx)
           } catch (error) {
-            toastStore.show('导出失败：' + (error && error.message ? error.message : '未知错误'))
+            toastStore.show('导出失败：' + (error && error.message ? error.message : '未知错误'), ctx)
           }
         }
         return h('span', { className: 'kg-export-actions', title: '导出完整知识图，不受章节筛选影响' },
@@ -4914,7 +6090,7 @@ export default function clientPlugin() {
         const ontology = applyGraphOntology(graph && graph.graphOntology)
         if (graph?.nodes?.some(node => node.type === 'image') || graph?.source?.visualSource?.images?.length) {
           TYPE_META = { ...TYPE_META, image: { label: '图片', color: '#0f766e', fill: '#ecfdf5' } }
-          REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片' }
+          REL_LABEL = { ...REL_LABEL, visual_source: '解读自图片', visual_reference: '正文引用图片' }
           TYPE_ORDER = [...TYPE_ORDER, 'image']
         }
         const paragraphs = splitParagraphs(sourceText)
@@ -7478,6 +8654,41 @@ export default function clientPlugin() {
         return { x1, y1, x2, y2, cx, cy, ex: (x2 - x1) / chordLen, ey: (y2 - y1) / chordLen }
       }
       const GRAPH_MIN_SCALE = 0.3
+      function graphFitScale(width, height, bbox) {
+        const padding = Math.min(16, width / 4, height / 4)
+        return Math.min((width - padding * 2) / Math.max(bbox.w, 1), (height - padding * 2) / Math.max(bbox.h, 1), 1)
+      }
+      function initialGraphView(width, height, prepared, preferredId, layoutMode) {
+        const { bbox, layout, sizes } = prepared
+        const fit = graphFitScale(width, height, bbox)
+        const centered = k => ({ k, tx: width / 2 - bbox.cx * k, ty: height / 2 - bbox.cy * k })
+        if (layoutMode === 'overview') return centered(fit)
+        if (fit >= GRAPH_MIN_SCALE) {
+          return layoutMode === 'neighborhood' ? { k: fit, tx: width / 2, ty: height / 2 } : centered(fit)
+        }
+        // A sparse graph's bounding-box center can be empty at a readable zoom.
+        // Anchor the first local view to a real body without changing selection.
+        const valid = id => {
+          const point = layout.pos.get(id), size = sizes.get(id)
+          return point && size && Number.isFinite(point.x) && Number.isFinite(point.y)
+            && Number.isFinite(size.w) && Number.isFinite(size.h) && size.w > 0 && size.h > 0
+        }
+        let anchorId = valid(preferredId) ? preferredId : null
+        if (anchorId === null) {
+          const centerX = layoutMode === 'neighborhood' ? 0 : bbox.cx
+          const centerY = layoutMode === 'neighborhood' ? 0 : bbox.cy
+          let nearest = Infinity
+          for (const [id, point] of layout.pos) {
+            if (!valid(id)) continue
+            const distance = Math.hypot(point.x - centerX, point.y - centerY)
+            if (distance < nearest) { nearest = distance; anchorId = id }
+          }
+        }
+        if (anchorId === null) return centered(Math.max(fit, GRAPH_MIN_SCALE))
+        const point = layout.pos.get(anchorId), size = sizes.get(anchorId)
+        const k = Math.min(0.85, graphFitScale(width, height, size))
+        return { k, tx: width / 2 - point.x * k, ty: height / 2 - point.y * k }
+      }
       function zoomAround(v, factor, px, py, minScale = GRAPH_MIN_SCALE) {
         const wx = (px - v.tx) / v.k
         const wy = (py - v.ty) / v.k
@@ -7964,6 +9175,7 @@ export default function clientPlugin() {
         const containerRef = useRef(null)
         const viewportSizeRef = useRef(null)
         const pendingFocusRef = useRef(null)
+        const initialAnchorRef = useRef(layoutMode === 'neighborhood' ? nodes[0]?.id : selectedNodeId)
         const [view, commitView] = useState({ k: layoutMode === 'overview' ? 0.02 : 1, tx: 0, ty: 0 })
         const viewScheduler = useRef(null)
         if (!viewScheduler.current) viewScheduler.current = createGraphViewScheduler(view, commitView, requestAnimationFrame, cancelAnimationFrame)
@@ -8045,7 +9257,7 @@ export default function clientPlugin() {
         const zoomAt = useCallback((factor, x, y) => {
           const el = containerRef.current
           if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return
-          const floor = Math.min(minScale, el.clientWidth / Math.max(bbox.w, 1), el.clientHeight / Math.max(bbox.h, 1))
+          const floor = Math.min(minScale, graphFitScale(el.clientWidth, el.clientHeight, bbox))
           setView(v => zoomAround(v, factor, x, y, floor))
         }, [minScale, bbox, setView])
         useEffect(() => {
@@ -8180,10 +9392,11 @@ export default function clientPlugin() {
           const ch = el.clientHeight
           if (cw <= 0 || ch <= 0) return
           viewportSizeRef.current = { width: cw, height: ch }
-          const fit = Math.min(cw / Math.max(bbox.w, 1), ch / Math.max(bbox.h, 1), 1)
-          const k = all ? fit : clamp(fit, minScale, 1)
-          setView({ k, tx: cw / 2 - (!all && layoutMode === 'neighborhood' ? 0 : bbox.cx * k), ty: ch / 2 - (!all && layoutMode === 'neighborhood' ? 0 : bbox.cy * k) })
-        }, [bbox, layoutMode, minScale])
+          if (all) {
+            const k = graphFitScale(cw, ch, bbox)
+            setView({ k, tx: cw / 2 - bbox.cx * k, ty: ch / 2 - bbox.cy * k })
+          } else setView(initialGraphView(cw, ch, prepared, initialAnchorRef.current, layoutMode))
+        }, [prepared, layoutMode])
 
         useEffect(() => { fitView() }, [fitView])
 
@@ -8349,10 +9562,10 @@ export default function clientPlugin() {
         const exportImage = async () => {
           try {
             const filename = await exportRenderedGraphImage(containerRef.current, exportTitle || 'knowledge-graph', ctx, bbox)
-            if (filename) toastStore.show('已导出图片 ' + filename)
-            else toastStore.show('当前浏览器不支持图片下载')
+            if (filename) toastStore.show('已导出图片 ' + filename, ctx)
+            else toastStore.show('当前浏览器不支持图片下载', ctx)
           } catch (error) {
-            toastStore.show('图片导出失败：' + (error && error.message ? error.message : '未知错误'))
+            toastStore.show('图片导出失败：' + (error && error.message ? error.message : '未知错误'), ctx)
           }
         }
 
@@ -8752,13 +9965,13 @@ export default function clientPlugin() {
               h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)
                 + attributeDetailSuffix(edgeDetail)),
               h('div', { className: 'kg-node-detail-actions' },
-                edgeDetail.relation !== 'visual_source' && typeof onQuestionEdge === 'function'
+                !['visual_source', 'visual_reference'].includes(edgeDetail.relation) && typeof onQuestionEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',
                       onClick: () => onQuestionEdge(edgeDetail, selectedEdgeId),
                     }, '质疑此关系')
                   : null,
-                edgeDetail.relation !== 'visual_source' && typeof onDeleteEdge === 'function'
+                !['visual_source', 'visual_reference'].includes(edgeDetail.relation) && typeof onDeleteEdge === 'function'
                   ? h('button', {
                       type: 'button', className: 'kg-secondary kg-danger',
                       onClick: () => onDeleteEdge(edgeDetail, selectedEdgeId),
@@ -8768,10 +9981,33 @@ export default function clientPlugin() {
           : null
 
         return h('div', {
-          className: 'kg-graph' + (dragging ? ' kg-panning' : ''), ref: containerRef,
+          className: 'kg-graph' + (dragging ? ' kg-panning' : ''),
           role: 'group',
           style: height ? { height: height + 'px' } : undefined,
           'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
+        },
+          h('div', { className: 'kg-graph-toolbar', role: 'group', 'aria-label': '图谱浏览' },
+            h('button', { type: 'button', ref: searchButton, title: '查找当前视图节点', 'aria-label': '查找节点', 'aria-expanded': searchOpen,
+              onClick: () => setSearchOpen(value => !value) }, '⌕'),
+            h('button', { type: 'button', title: '返回上一位置', 'aria-label': '返回上一位置', disabled: !navigation.length, onClick: goBack }, '←'),
+            onGather ? h('button', { type: 'button', title: '聚拢选中节点的关系', 'aria-label': '聚拢选中节点的关系',
+              disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
+            layoutMode !== 'neighborhood' && !overview ? h('select', {
+              className: 'kg-layout-select',
+              value: layoutMode || 'layered',
+              'aria-label': '布局形态',
+              title: '切换布局形态',
+              onChange: (e) => onLayoutModeChange(e.target.value),
+            }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))) : null,
+            !overview ? h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG') : null,
+            h('button', { type: 'button', 'aria-label': '适合画布', title: '显示当前视图全部节点', onClick: () => { rememberPosition(); setDetail(null); fitView(true) } }, '⛶'),
+            h('button', { type: 'button', 'aria-label': '缩小（10%）', title: '缩小', onClick: () => zoomBy(-0.1) }, '−'),
+            h('button', { type: 'button', className: 'kg-graph-zoom', 'aria-label': '重置缩放为 100%', title: '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),
+            h('button', { type: 'button', 'aria-label': '放大（10%）', title: '放大', onClick: () => zoomBy(0.1) }, '+'),
+          ),
+          // All camera and pointer geometry uses the canvas, excluding toolbar rows.
+          h('div', {
+          className: 'kg-graph-viewport', ref: containerRef,
           onPointerDown: onBgPointerDown,
           onPointerMove: onBgPointerMove,
           onPointerUp: (e) => endPan(e, false),
@@ -8792,25 +10028,6 @@ export default function clientPlugin() {
             }, edgeEls, nodeEls),
           ),
           h('div', { className: 'kg-graph-controls' },
-          h('div', { className: 'kg-graph-toolbar', role: 'group', 'aria-label': '图谱浏览' },
-            h('button', { type: 'button', ref: searchButton, title: '查找当前视图节点', 'aria-label': '查找节点', 'aria-expanded': searchOpen,
-              onClick: () => setSearchOpen(value => !value) }, '⌕'),
-            h('button', { type: 'button', title: '返回上一位置', 'aria-label': '返回上一位置', disabled: !navigation.length, onClick: goBack }, '←'),
-            onGather ? h('button', { type: 'button', title: '聚拢选中节点的关系', 'aria-label': '聚拢选中节点的关系',
-              disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
-            layoutMode !== 'neighborhood' && !overview ? h('select', {
-              className: 'kg-layout-select',
-              value: layoutMode || 'layered',
-              'aria-label': '布局形态',
-              title: '切换布局形态',
-              onChange: (e) => onLayoutModeChange(e.target.value),
-            }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))) : null,
-            !overview ? h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG') : null,
-            h('button', { type: 'button', 'aria-label': '适合画布', title: '显示当前视图全部节点', onClick: () => { rememberPosition(); setDetail(null); fitView(true) } }, '⛶'),
-            h('button', { type: 'button', 'aria-label': '缩小（10%）', title: '缩小', onClick: () => zoomBy(-0.1) }, '−'),
-            h('button', { type: 'button', 'aria-label': '重置缩放为 100%', title: '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),
-            h('button', { type: 'button', 'aria-label': '放大（10%）', title: '放大', onClick: () => zoomBy(0.1) }, '+'),
-          ),
           searchOpen ? h('section', { className: 'kg-node-search', 'aria-label': '查找当前视图节点', onKeyDown: event => {
             if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSearch() }
           } },
@@ -8837,7 +10054,7 @@ export default function clientPlugin() {
           tooltipEl,
           detailEl,
           edgeDetailEl,
-        )
+        ))
       }
 
       // --------------------- candidate review panel ---------------------
@@ -9632,31 +10849,57 @@ export default function clientPlugin() {
 
       // --------------------------- window floor ---------------------------
       // ---------------- knowledge consumption: search + evidence answer ----------------
-      function KnowledgeConsumePanel({ ctx, graph, sourceText, mode, model, onLocateReference, onNotify, restoreState, onStateChange, readOnly = false }) {
+      function exactSourceQuoteTarget(view, reference) {
+        const currentRevision = view?.graph?.revision ?? view?.graph?.source?.revision
+        if (reference.documentId !== documentIdOfGraph(view?.graph) || reference.revision !== currentRevision) throw new Error('原文定位的文档或版本已变化')
+        if (!Number.isSafeInteger(reference.paragraph) || reference.paragraph < 0 || typeof reference.quote !== 'string'
+          || !reference.quote.trim() || reference.quote.length > 2000 || typeof view?.sourceText !== 'string') throw new Error('原文定位记录不完整')
+        // Stored units and the reading view can split the same source differently.
+        const start = view.sourceText.indexOf(reference.quote)
+        if (start < 0) throw new Error('当前原文没有逐字匹配的完整片段，未进行近似定位')
+        if (view.sourceText.indexOf(reference.quote, start + 1) >= 0) throw new Error('原文包含多个相同片段，无法唯一定位')
+        const end = start + reference.quote.length
+        const first = view.paragraphs.findIndex(item => item.start <= start && item.end > start)
+        const last = view.paragraphs.findIndex(item => item.start < end && item.end >= end)
+        if (first < 0 || last < first) throw new Error('完整片段不在当前阅读范围内')
+        return { first, last }
+      }
+      function KnowledgeConsumePanel({ ctx, graph, sourceText, mode, model, onLocateReference, onNotify, draftState, restoreState, onRestoreConsumed, onStateChange, readOnly = false }) {
         const documentId = documentIdOfGraph(graph)
         const revision = Number.isInteger(graph && graph.revision)
           ? graph.revision
           : (graph && graph.source && Number.isInteger(graph.source.revision) ? graph.source.revision : 0)
         const scopeKey = (documentId || 'local') + ':' + revision
         const sections = chapterSectionsOf(graph)
-        const [tab, setTab] = useState('search')
-        const [query, setQuery] = useState('')
-        const [typeFilter, setTypeFilter] = useState('all')
-        const [sectionFilter, setSectionFilter] = useState('all')
-        const [groundingFilter, setGroundingFilter] = useState('all')
-        const [entailmentFilter, setEntailmentFilter] = useState('all')
+        const relationLabels = {
+          ...(Array.isArray(graph?.graphOntology?.relationTypes)
+            ? Object.fromEntries(graph.graphOntology.relationTypes.map(item => [item.id, item.zh || item.label || item.id]))
+            : PROPOSITION_REL_LABEL),
+          visual_source: '解读自图片',
+          visual_reference: '正文引用图片',
+        }
+        const draft = documentId && draftState?.documentId === documentId ? draftState.state : null
+        const [tab, setTab] = useState(draft?.tab ?? 'search')
+        const [query, setQuery] = useState(draft?.query ?? '')
+        const [question, setQuestion] = useState(draft?.question ?? '')
+        const [typeFilter, setTypeFilter] = useState(draft?.filters?.type ?? 'all')
+        const [relationFilter, setRelationFilter] = useState(draft?.filters?.relation ?? 'all')
+        const undeclaredRelation = relationFilter !== 'all' && !Object.hasOwn(relationLabels, relationFilter)
+        const [sectionFilter, setSectionFilter] = useState(draft?.filters?.section ?? 'all')
+        const [groundingFilter, setGroundingFilter] = useState(draft?.filters?.grounding ?? 'all')
+        const [entailmentFilter, setEntailmentFilter] = useState(draft?.filters?.entailment ?? 'all')
         useEffect(() => {
-          onStateChange?.({ tab, query, filters: { type: typeFilter, section: sectionFilter,
+          onStateChange?.({ tab, query, question, filters: { type: typeFilter, relation: relationFilter, section: sectionFilter,
             grounding: groundingFilter, entailment: entailmentFilter } })
-        }, [tab, query, typeFilter, sectionFilter, groundingFilter, entailmentFilter])
+        }, [documentId, tab, query, question, typeFilter, relationFilter, sectionFilter, groundingFilter, entailmentFilter])
         const [searchState, setSearchState] = useState({ phase: 'idle', rows: [], total: 0, error: null, result: null })
-        const [question, setQuestion] = useState('')
         const [askState, setAskState] = useState({ phase: 'idle', taskId: null, progress: null, result: null, error: null })
         const searchSeqRef = useRef(0)
         const askGenerationRef = useRef(0)
         const askTimerRef = useRef(null)
         const askTaskRef = useRef(null)
         const scopeRef = useRef(scopeKey)
+        const documentRef = useRef(documentId)
         const notify = (message) => { if (typeof onNotify === 'function') onNotify(message) }
         const identityPayload = () => documentId
           ? { documentId, ...(revision > 0 ? { expectedRevision: revision } : {}) }
@@ -9668,6 +10911,14 @@ export default function clientPlugin() {
           askTimerRef.current = null
         }
         useEffect(() => {
+          if (documentRef.current !== documentId) {
+            setTab('search'); setQuery(''); setQuestion('')
+            setTypeFilter('all'); setRelationFilter('all'); setGroundingFilter('all'); setEntailmentFilter('all')
+            setSectionFilter('all')
+          } else if (sectionFilter !== 'all' && !sections.some(section => section.id === sectionFilter)) {
+            setSectionFilter('all')
+          }
+          documentRef.current = documentId
           scopeRef.current = scopeKey
           searchSeqRef.current += 1
           askGenerationRef.current += 1
@@ -9677,15 +10928,17 @@ export default function clientPlugin() {
           askTaskRef.current = null
           setSearchState({ phase: 'idle', rows: [], total: 0, error: null, result: null })
           setAskState({ phase: 'idle', taskId: null, progress: null, result: null, error: null })
-          setSectionFilter('all')
           return () => {}
         }, [scopeKey])
         useEffect(() => {
-          if (!restoreState?.seq || restoreState.documentId !== documentId || restoreState.revision !== revision) return
+          // History remounts must not replay an already applied task view.
+          if (!restoreState?.seq || restoreState.consumedSeq === restoreState.seq || restoreState.documentId !== documentId || restoreState.revision !== revision) return
           const next = restoreState.state
           setTab(next.tab); setQuery(next.query)
           setTypeFilter(next.filters.type); setSectionFilter(next.filters.section)
+          setRelationFilter(next.filters.relation === undefined ? 'all' : next.filters.relation)
           setGroundingFilter(next.filters.grounding); setEntailmentFilter(next.filters.entailment)
+          onRestoreConsumed?.(restoreState)
         }, [restoreState?.seq])
         useEffect(() => () => {
           askGenerationRef.current += 1
@@ -9694,13 +10947,53 @@ export default function clientPlugin() {
           if (taskId) host.call('task-cancel', { taskId }).catch(() => {})
         }, [])
 
+        const recordedExamples = (response, cores, node) => {
+          if (node.type !== 'connection_model') return null
+          const unavailable = { available: false }
+          const candidates = cores.filter(item => item?.modelId === node.id)
+          const core = candidates.length === 1 ? candidates[0] : null
+          if (core?.status !== 'recorded_core' || core.documentId !== response.documentId || core.revision !== response.revision
+            || documentId && core.documentId !== documentId || revision && core.revision !== revision) return unavailable
+          const context = response.modelExampleContexts
+          const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 12000
+          if (!count(core.examplesOmitted) || !context || context.version !== 1 || context.basis !== 'recorded_examples_not_validation'
+            || context.scope !== 'returned_model_cores' || !count(context.totalExamples) || !count(context.examplesIncluded)
+            || !count(context.examplesOmitted) || context.totalExamples !== context.examplesIncluded + context.examplesOmitted
+            || !Array.isArray(context.items) || context.items.length > 8 || context.items.length !== context.examplesIncluded
+            || JSON.stringify(context).length > 12000) return unavailable
+          let metadata
+          if (context.status === 'omitted_budget' && context.items.length === 0) {
+            metadata = { totalExamples: core.examplesOmitted, examplesIncluded: 0, examplesOmitted: core.examplesOmitted }
+          } else {
+            if (context.status || !Array.isArray(context.models) || context.models.length > 120) return unavailable
+            const matches = context.models.filter(item => item?.modelId === node.id)
+            metadata = matches.length === 1 ? matches[0] : null
+            if (!metadata || !['totalExamples', 'checkedExamples', 'examplesIncluded', 'examplesOmitted', 'invalidExamples', 'budgetOmittedExamples']
+              .every(key => count(metadata[key])) || metadata.totalExamples !== core.examplesOmitted
+              || metadata.totalExamples !== metadata.examplesIncluded + metadata.examplesOmitted
+              || metadata.checkedExamples > 2 || metadata.examplesIncluded + metadata.invalidExamples + metadata.budgetOmittedExamples > metadata.checkedExamples) return unavailable
+          }
+          const items = context.items.filter(item => item?.modelId === node.id)
+          if (items.length !== metadata.examplesIncluded || items.length > 2 || items.some(item => item.status !== 'recorded_example'
+            || item.documentId !== core.documentId || item.revision !== core.revision)) return unavailable
+          const structure = { ...core.structure, examples: items.map(item => item.example) }
+          try { MODEL_STRUCTURE_TOOLS.validateShape(structure) }
+          catch (error) {
+            if (error.code !== 'invalid_model_structure') throw error
+            return unavailable
+          }
+          return { available: true, structure, metadata, documentId: core.documentId, revision: core.revision,
+            entailmentStatus: core.entailmentStatus, items: items.map(item => ({ example: item.example,
+              fields: MODEL_STRUCTURE_TOOLS.exampleStatus(structure, item.example) })) }
+        }
         const runSearch = async (overrideQuery) => {
           const nextQuery = typeof overrideQuery === 'string' ? overrideQuery.trim() : query.trim()
           const types = typeFilter === 'all' ? [] : [typeFilter]
+          const relations = relationFilter === 'all' ? [] : [relationFilter]
           const sectionIds = sectionFilter === 'all' ? [] : [sectionFilter]
           const groundingStatuses = groundingFilter === 'all' ? [] : [groundingFilter]
           const entailmentStatuses = entailmentFilter === 'all' ? [] : [entailmentFilter]
-          if (!nextQuery && types.length === 0 && sectionIds.length === 0 && groundingStatuses.length === 0 && entailmentStatuses.length === 0) {
+          if (!nextQuery && types.length === 0 && relations.length === 0 && sectionIds.length === 0 && groundingStatuses.length === 0 && entailmentStatuses.length === 0) {
             setSearchState({ phase: 'error', rows: [], total: 0, result: null, error: '请输入关键词，或至少选择一个结构化筛选条件。' })
             return
           }
@@ -9708,19 +11001,39 @@ export default function clientPlugin() {
           setSearchState((previous) => ({ ...previous, phase: 'loading', error: null }))
           try {
             const response = await host.call('graph-query', {
-              ...identityPayload(), query: nextQuery, types, sectionIds, groundingStatuses, entailmentStatuses,
+              ...identityPayload(), query: nextQuery, types, relations, sectionIds, groundingStatuses, entailmentStatuses,
               limit: 40, hops: 1, maxNodes: 120, maxEdges: 360,
             })
             if (seq !== searchSeqRef.current || scopeRef.current !== scopeKey) return
             if (!response || response.error) throw new Error(response && response.error && response.error.message ? response.error.message : '知识检索失败')
             const byId = new Map((response.graph && Array.isArray(response.graph.nodes) ? response.graph.nodes : []).map((node) => [node.id, node]))
+            const cores = response.modelContexts?.version === 1 && response.modelContexts.basis === 'recorded_fields_not_semantic_truth'
+              && Array.isArray(response.modelContexts.items) ? response.modelContexts.items : []
             const rows = (Array.isArray(response.matches) ? response.matches : []).map((match) => {
               const node = byId.get(match.nodeId)
               if (!node) return null
               const evidence = Array.isArray(node.evidence) && node.evidence.length > 0 ? node.evidence[0] : null
-              return { ...node, matchScore: match.score, matchReasons: match.reasons || [], evidenceQuote: evidence && evidence.quote ? evidence.quote : node.quote }
+              const positions = match.modelFieldMatches
+              const validPositions = positions?.version === 1 && positions.basis === 'recorded_text_not_applicability'
+                && Array.isArray(positions.items)
+              const core = cores.find(item => item.modelId === node.id && item.status === 'recorded_core'
+                && item.documentId === response.documentId && item.revision === response.revision
+                && (!documentId || item.documentId === documentId) && (!revision || item.revision === revision))
+              const fieldHits = validPositions ? positions.items.slice(0, 8).filter(item => item
+                && typeof item.branchId === 'string' && ['condition', 'mapping', 'boundary'].includes(item.field)
+                && ['phrase', 'partial'].includes(item.match)).map(item => {
+                  const branch = core?.structure?.branches?.find(branch => branch.id === item.branchId)
+                  const field = branch?.[item.field]
+                  const available = typeof field?.text === 'string' && field.provenance?.kind === item.provenanceKind
+                  return { ...item, branchLabel: available ? branch.label : '', text: available ? field.text : null }
+                }) : []
+              return { ...node, matchScore: match.score, matchReasons: match.reasons || [],
+                evidenceQuote: evidence && evidence.quote ? evidence.quote : node.quote, fieldHits,
+                recordedIdentity: core?.structure?.identity || 'undetermined', examples: recordedExamples(response, cores, node),
+                fieldHitsOmitted: validPositions && Number.isSafeInteger(positions.omitted) && positions.omitted > 0 ? positions.omitted : 0 }
             }).filter(Boolean)
-            setSearchState({ phase: rows.length > 0 ? 'success' : 'empty', rows, total: response.metrics && Number.isInteger(response.metrics.candidateMatches) ? response.metrics.candidateMatches : rows.length, error: null, result: response })
+            setSearchState({ phase: rows.length > 0 ? 'success' : 'empty', rows, total: response.metrics && Number.isInteger(response.metrics.candidateMatches) ? response.metrics.candidateMatches : rows.length, error: null, result: response,
+              relationContext: relations.length ? { id: relationFilter, label: relationLabels[relationFilter] || relationFilter } : null })
           } catch (error) {
             if (seq !== searchSeqRef.current || scopeRef.current !== scopeKey) return
             setSearchState((previous) => ({ ...previous, phase: 'error', error: error && error.message ? error.message : '知识检索失败' }))
@@ -9734,6 +11047,71 @@ export default function clientPlugin() {
           } catch (error) {
             notify('定位失败：' + (error && error.message ? error.message : '未知错误'))
           }
+        }
+        const originLabel = provenance => ({ source: '原文记录', user: '个人表述', ai: 'AI 建议', unknown: '来源未判定' }[provenance.kind])
+        const exampleOrigin = provenance => h('div', { className: 'kg-consume-example-origin' },
+          h('div', { className: 'kg-hint' }, originLabel(provenance)
+            + (Number.isInteger(provenance.paragraph) ? ' · P' + provenance.paragraph : '')),
+          provenance.quote ? h('blockquote', { className: 'kg-consume-example-text' }, provenance.quote) : null,
+          provenance.note ? h('div', { className: 'kg-consume-example-text kg-hint' }, provenance.note) : null,
+        )
+        const exampleSlots = (structure, example, role) => {
+          const slots = structure.slots.filter(slot => slot.role === role)
+          return slots.length ? slots.map(slot => {
+            const binding = [...example.inputs, ...example.outputs].find(item => item.slotId === slot.id)
+            return h('div', { key: slot.id, className: 'kg-consume-example-slot', 'data-slot-id': slot.id },
+              h('strong', { className: 'kg-consume-example-text' }, slot.label || slot.conceptId),
+              h('div', { className: 'kg-hint' }, '槽位 ', h('code', null, slot.id), ' · 概念 ', h('code', null, slot.conceptId)),
+              h('div', { className: 'kg-consume-example-text' }, '单位：' + (slot.unit || '未记录') + ' · 对象与时间状态：' + (slot.state || '未记录')),
+              h('div', { className: 'kg-consume-example-text' }, role === 'unknown' ? '方向未判定，不作为输入或输出'
+                : binding?.value.trim() ? binding.value : '未填写'),
+              exampleOrigin(slot.provenance),
+            )
+          }) : h('div', { className: 'kg-hint' }, role === 'input' ? '尚未记录输入槽位' : '尚未记录输出槽位')
+        }
+        const renderExamples = node => {
+          const context = node.examples
+          if (!context) return null
+          if (!context.available) return h('div', { className: 'kg-consume-examples kg-hint' }, '成对实例未随本次检索有效返回')
+          const { structure, metadata } = context
+          return h('details', { className: 'kg-consume-examples' },
+            h('summary', null, '成对实例：本次 ' + metadata.examplesIncluded + ' / 已记录 ' + metadata.totalExamples
+              + (metadata.examplesOmitted ? '（' + metadata.examplesOmitted + ' 个未返回）' : '')),
+            h('div', { className: 'kg-hint' }, '已保存情境，非新情境测试；不核验适用性、数值正确或掌握程度。'),
+            h('div', { className: 'kg-hint' }, ({ undetermined: '内容身份尚未判定', assertion: '原文断言，仍需核验',
+              hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明' }[structure.identity]) + ' · '
+              + ({ verified: '已记录语义验证', unverified: '语义未验证', uncertain: '语义不确定', unsupported: '语义不支持' }[context.entailmentStatus] || '语义未验证')),
+            metadata.totalExamples === 0 ? h('div', { className: 'kg-hint' }, '尚未记录成对实例') : null,
+            metadata.invalidExamples > 0 ? h('div', { className: 'kg-hint' }, metadata.invalidExamples + ' 个实例记录无效，未展示') : null,
+            metadata.budgetOmittedExamples > 0 ? h('div', { className: 'kg-hint' }, metadata.budgetOmittedExamples + ' 个实例因返回预算省略，未截断输入输出') : null,
+            context.items.map(({ example, fields }) => {
+              const branch = structure.branches.find(item => item.id === example.branchId)
+              return h('article', { key: example.id, className: 'kg-consume-example', 'data-example-id': example.id, 'data-field-complete': String(fields.complete) },
+                h('div', { className: 'kg-consume-example-head' }, h('strong', { className: 'kg-consume-example-text' }, example.title), h('code', null, example.id)),
+                h('div', { className: 'kg-consume-example-text' }, example.scenario),
+                h('div', { className: 'kg-hint' }, fields.complete ? '输入、输出和规律字段已填，非适用性验证' : '仍有记录缺项，非适用性验证'),
+                h('div', { className: 'kg-consume-example-grid' },
+                  h('div', null, h('h4', null, '输入记录'), exampleSlots(structure, example, 'input')),
+                  h('div', null, h('h4', null, '使用的分支'),
+                    branch ? h(React.Fragment, null,
+                      h('strong', { className: 'kg-consume-example-text' }, branch.label), h('div', null, h('code', null, branch.id)),
+                      ['condition', 'mapping', 'boundary'].map(field => h('div', { key: field, className: 'kg-consume-example-field' },
+                        h('strong', null, { condition: '条件', mapping: '规律', boundary: '边界' }[field]),
+                        h('div', { className: 'kg-consume-example-text' }, branch[field].text || '未记录'), exampleOrigin(branch[field].provenance))),
+                    ) : h('div', { className: 'kg-hint' }, '尚未关联分支'),
+                  ),
+                  h('div', null, h('h4', null, '输出记录'), exampleSlots(structure, example, 'output')),
+                ),
+                structure.slots.some(slot => slot.role === 'unknown') ? h('div', null,
+                  h('h4', null, '方向未判定槽位'), exampleSlots(structure, example, 'unknown')) : null,
+                h('h4', null, '推测过程'), h('div', { className: 'kg-consume-example-text' }, example.reasoning || '尚未记录推测过程'),
+                exampleOrigin(example.provenance),
+                example.provenance.kind === 'source' ? h('button', { type: 'button', className: 'kg-secondary',
+                  onClick: () => locate({ documentId: context.documentId, revision: context.revision,
+                    paragraph: example.provenance.paragraph, quote: example.provenance.quote, sourceQuoteOnly: true }) }, '定位实例原文') : null,
+              )
+            }),
+          )
         }
         const scheduleAskPoll = (taskId, generation, startedAt, delay) => {
           stopAskTimer()
@@ -9793,6 +11171,7 @@ export default function clientPlugin() {
             const response = await host.call('answer-graph', {
               ...identityPayload(), question: draft,
               types: typeFilter === 'all' ? [] : [typeFilter],
+              relations: relationFilter === 'all' ? [] : [relationFilter],
               sectionIds: sectionFilter === 'all' ? [] : [sectionFilter],
               groundingStatuses: groundingFilter === 'all' ? [] : [groundingFilter],
               entailmentStatuses: entailmentFilter === 'all' ? [] : [entailmentFilter],
@@ -9823,6 +11202,7 @@ export default function clientPlugin() {
           searchSeqRef.current += 1
           setQuery('')
           setTypeFilter('all')
+          setRelationFilter('all')
           setSectionFilter('all')
           setGroundingFilter('all')
           setEntailmentFilter('all')
@@ -9833,7 +11213,7 @@ export default function clientPlugin() {
         const visibleCitations = answerCitations.filter((citation, index) => answerCitations.findIndex((item) => item.paragraph === citation.paragraph && item.quote === citation.quote) === index)
         const answerStatusLabel = answer && answer.status === 'answered' ? '有证据答案' : answer && answer.status === 'out_of_scope' ? '超出范围' : '证据不足'
         const answerVerdictClass = answer && answer.status === 'answered' ? 'kg-verdict-supported' : answer && answer.status === 'out_of_scope' ? 'kg-verdict-out_of_scope' : 'kg-verdict-insufficient'
-        return h('section', { className: 'kg-card', 'aria-label': '使用这张知识图' },
+        return h('section', { className: 'kg-card kg-consume-panel', 'aria-label': '使用这张知识图' },
           h('div', { className: 'kg-consume-head' },
             h('div', null,
               h('h3', { className: 'kg-section-title', style: { marginBottom: 2 } }, '使用这张知识图'),
@@ -9863,6 +11243,11 @@ export default function clientPlugin() {
               h('option', { value: 'all' }, '全部类型'),
               TYPE_ORDER.map((type) => h('option', { key: type, value: type }, TYPE_META[type] ? TYPE_META[type].label : type)),
             ),
+            h('select', { className: 'kg-consume-select', value: relationFilter, 'aria-label': '关系上下文筛选', onChange: (e) => setRelationFilter(e.target.value) },
+              h('option', { value: 'all' }, '全部关系上下文'),
+              undeclaredRelation ? h('option', { value: relationFilter }, '当前本体未声明') : null,
+              Object.entries(relationLabels).map(([id, label]) => h('option', { key: id, value: id }, label)),
+            ),
             h('select', { className: 'kg-consume-select', value: sectionFilter, 'aria-label': '章节筛选', onChange: (e) => setSectionFilter(e.target.value) },
               h('option', { value: 'all' }, '全部章节'),
               sections.map((section) => h('option', { key: section.id, value: section.id }, section.title || section.id)),
@@ -9884,6 +11269,8 @@ export default function clientPlugin() {
               ? h('button', { type: 'button', className: 'kg-primary', disabled: searchState.phase === 'loading', onClick: () => runSearch() }, searchState.phase === 'loading' ? '检索中…' : '检索')
               : h('button', { type: 'button', className: 'kg-primary', disabled: readOnly || askState.phase === 'submitting' || askState.phase === 'running', onClick: () => startAsk() }, askState.phase === 'submitting' || askState.phase === 'running' ? '回答中…' : '基于证据回答'),
           ),
+          undeclaredRelation ? h('div', { className: 'kg-consume-state kg-consume-error', role: 'status', 'aria-label': '未声明的关系条件' },
+            '当前本体未声明此关系：', h('code', null, relationFilter)) : null,
           tab === 'search'
             ? h(React.Fragment, null,
                 searchState.phase === 'idle' ? h('div', { className: 'kg-consume-state' }, '输入关键词，或按类型、章节、证据状态、语义状态筛选。结果只显示直接命中，关系邻居用于上下文。') : null,
@@ -9891,21 +11278,42 @@ export default function clientPlugin() {
                 searchState.phase === 'error' ? h('div', { className: 'kg-consume-state kg-consume-error', role: 'alert' }, searchState.error) : null,
                 searchState.phase === 'empty' ? h('div', { className: 'kg-consume-state' }, '没有匹配节点。', h('button', { type: 'button', className: 'kg-secondary', style: { marginLeft: 8 }, onClick: clearSearch }, '清除筛选')) : null,
                 searchState.phase === 'success' ? h(React.Fragment, null,
-                  h('div', { className: 'kg-hint', style: { marginTop: 9 } }, '显示 ' + searchState.rows.length + ' 个直接命中' + (searchState.total > searchState.rows.length ? '（候选共 ' + searchState.total + ' 个）' : '') + ' · 点击可回链图与原文'),
+                  h('div', { className: 'kg-hint', style: { marginTop: 9 } }, '显示 ' + searchState.rows.length + ' 个直接命中' + (searchState.total > searchState.rows.length ? '（候选共 ' + searchState.total + ' 个）' : '') + ' · 点击可回链图与原文',
+                    searchState.relationContext ? h('span', null, ' · 关系上下文：' + searchState.relationContext.label
+                      + '（' + (searchState.result.metrics?.returnedEdges || 0) + ' 条记录）') : null),
                   h('div', { className: 'kg-consume-list' }, searchState.rows.map((node) => {
                     const meta = TYPE_META[node.type] || { label: node.type || '节点', color: '#64748b' }
-                    return h('button', {
-                      key: node.id, type: 'button', className: 'kg-consume-result',
+                    return h('div', { key: node.id, className: 'kg-consume-result-group', 'data-model-id': node.id }, h('button', {
+                      type: 'button', className: 'kg-consume-result',
                       onClick: () => locate({ nodeId: node.id, paragraph: node.paragraph, quote: node.evidenceQuote, sectionId: node.sectionId, sectionTitle: node.sectionTitle }),
                     },
                       h('div', { className: 'kg-consume-result-top' },
                         h('span', { className: 'kg-type', style: { color: meta.color, borderColor: meta.color + '55', background: meta.color + '12' } }, meta.label),
-                        h('span', { className: 'kg-hint' }, node.id + (Number.isInteger(node.paragraph) ? ' · P' + node.paragraph : '') + (node.sectionTitle ? ' · ' + node.sectionTitle : '')),
+                        h('span', { className: 'kg-hint kg-consume-identity' }, node.id + (Number.isInteger(node.paragraph) ? ' · P' + node.paragraph : '') + (node.sectionTitle ? ' · ' + node.sectionTitle : '')),
                         h('span', { className: 'kg-hint', style: { marginLeft: 'auto' } }, '相关度 ' + Math.round(Number(node.matchScore || 0))),
                       ),
                       h('div', { className: 'kg-consume-result-text' }, node.text),
                       node.evidenceQuote ? h('div', { className: 'kg-consume-result-quote' }, '证据：' + node.evidenceQuote) : null,
-                    )
+                      node.fieldHits.length > 0 ? h('div', { className: 'kg-consume-field-hits', 'aria-label': '模型字段命中' },
+                        h('div', { className: 'kg-hint' }, '记录文字匹配，非适用性验证'),
+                        h('div', { className: 'kg-hint' },
+                          ({ undetermined: '内容身份尚未判定', assertion: '原文断言，仍需核验', hypothesis: '假设',
+                            wrong_example: '错误示例', type_definition: '类型说明' }[node.recordedIdentity] || '内容身份尚未判定') + ' · '
+                          + ({ verified: '已记录语义验证', unverified: '语义未验证', uncertain: '语义不确定',
+                            unsupported: '语义不支持' }[node.entailmentStatus] || '语义未验证')),
+                        node.fieldHits.map((item, index) => h('div', { key: index, className: 'kg-consume-field-hit' },
+                          h('div', null,
+                            h('mark', { className: 'kg-consume-field-label' }, { condition: '条件', mapping: '规律', boundary: '边界' }[item.field]),
+                            ' · ' + (item.match === 'phrase' ? '规范化短语命中' : '部分词命中') + ' · '
+                              + ({ source: '原文记录', user: '个人表述', ai: 'AI 建议', unknown: '来源未判定' }[item.provenanceKind] || '来源未判定')),
+                          h('div', { className: 'kg-hint', style: { whiteSpace: 'pre-wrap' } },
+                            (item.branchLabel ? item.branchLabel + ' · ' : '') + '分支 ' + item.branchId),
+                          item.text !== null ? h('div', { className: 'kg-consume-field-text' }, item.text)
+                            : h('div', { className: 'kg-hint' }, '字段内容未随本次检索返回'),
+                        )),
+                        node.fieldHitsOmitted > 0 ? h('div', { className: 'kg-hint' }, '另有 ' + node.fieldHitsOmitted + ' 处命中位置未返回') : null,
+                      ) : null,
+                    ), renderExamples(node))
                   })),
                 ) : null,
               )
@@ -10053,7 +11461,7 @@ export default function clientPlugin() {
               if (original) original.style.width = originalWidth + 'px'
               // A percentage-sized SVG invalidates every node when its viewport
               // changes. Resize the clipping container, then fit the SVG once.
-              const svg = surface.querySelector('.kg-graph > svg')
+              const svg = surface.querySelector('.kg-graph-viewport > svg')
               const width = svg?.style.width, height = svg?.style.height
               if (svg) {
                 const bounds = svg.getBoundingClientRect()
@@ -10623,7 +12031,93 @@ export default function clientPlugin() {
             h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: onRefresh }, '刷新核对状态')))
       }
 
-      function VisualInterpretationPanel({ visualSource, documentId, revision, selected, setSelected, busy, taskImageIds, imageSupport, onSubmit, onOpen, onLocate }) {
+      function ImageReferencePanel({ documentId, revision, imageId, busy, drafts, onLocate, onSave, onRefresh }) {
+        const key = documentId + ':' + imageId
+        const [selected, setSelected] = useState(() => drafts.current.get(key) || [])
+        const [data, setData] = useState(null)
+        const [error, setError] = useState('')
+        const [retry, setRetry] = useState(0)
+        const [saving, setSaving] = useState(false)
+        const [confirmed, setConfirmed] = useState(false)
+        const [page, setPage] = useState(0)
+        const current = useRef('')
+        const context = key + ':' + revision
+        current.current = context
+        useEffect(() => () => { current.current = '' }, [])
+        useEffect(() => {
+          let disposed = false
+          setData(null); setError(''); setConfirmed(false)
+          host.call('image-references', { action: 'preview', documentId, imageId, expectedRevision: revision }).then(result => {
+            if (disposed) return
+            if (result?.error) throw new Error(result.error.message)
+            if (result?.documentId !== documentId || result.imageId !== imageId || result.revision !== revision
+              || !Array.isArray(result.candidates)) throw new Error('图文关联与当前文档版本不一致')
+            setData(result)
+          }).catch(failure => { if (!disposed) setError(failure.message || '无法读取图文关联') })
+          return () => { disposed = true }
+        }, [documentId, imageId, revision, retry])
+        const ready = data?.revision === revision && data?.imageId === imageId
+        const candidates = ready ? data.candidates : []
+        const selectable = candidates.filter(item => !item.saved)
+        const chosen = selectable.filter(item => selected.includes(item.nodeId))
+        const missing = ready && selected.some(id => !candidates.some(item => item.nodeId === id))
+        const pageCount = Math.max(1, Math.ceil(candidates.length / 20)), currentPage = Math.min(page, pageCount - 1)
+        const choose = (id, checked) => {
+          const next = checked ? [...new Set([...selected, id])] : selected.filter(item => item !== id)
+          drafts.current.set(key, next); setSelected(next); setConfirmed(false)
+        }
+        const save = async () => {
+          if (!ready || busy || saving || !confirmed || !chosen.length || missing) return
+          setSaving(true); setError('')
+          try {
+            await onSave({ imageId, expectedRevision: revision, nodeIds: chosen.map(item => item.nodeId), confirm: true })
+            drafts.current.delete(key)
+            if (current.current === context) { setSelected([]); setRetry(value => value + 1); setConfirmed(false) }
+          } catch (failure) { if (current.current === context) setError(failure.message || '图文关联未保存，选择已保留') }
+          finally { if (current.current === context) setSaving(false) }
+        }
+        // A successful save changes revision before its promise settles.
+        useEffect(() => { setSaving(false) }, [revision])
+        return h('section', { className: 'kg-image-review', 'aria-label': '正文与图片关联' },
+          h('h4', null, '正文引用图片'),
+          h('p', { className: 'kg-visual-message' }, '原书图号引用 · 不代表模型成立、语义相同或独立验证'),
+          !ready && !error ? h('p', { role: 'status' }, '正在核对原书引用…') : null,
+          error ? h('p', { role: 'alert' }, error, ' ', h('button', { type: 'button', className: 'kg-secondary', disabled: saving,
+            onClick: () => setRetry(value => value + 1) }, '重试图文关联'), ' ',
+            h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: async () => {
+              setSaving(true); setConfirmed(false)
+              try { await onRefresh(); if (current.current === context) setRetry(value => value + 1) }
+              catch (failure) { if (current.current === context) setError(failure.message || '知识图版本未刷新，选择已保留') }
+              finally { if (current.current === context) setSaving(false) }
+            } }, '重新载入知识图')) : null,
+          missing ? h('p', { role: 'alert' }, '部分已选节点的原文或图片已变化，选择已保留但不能保存。',
+            h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+              const next = selected.filter(id => candidates.some(item => item.nodeId === id))
+              drafts.current.set(key, next); setSelected(next); setConfirmed(false)
+            } }, '移除失效选择')) : null,
+          ready && !candidates.length ? h('p', null, '未找到可唯一对应的原书图号引用；未按段落距离或同名概念自动关联。') : null,
+          ready ? h('ul', { className: 'kg-visual-node-list' }, candidates.slice(currentPage * 20, currentPage * 20 + 20).map(item =>
+            h('li', { key: item.nodeId },
+              h('label', null, h('input', { type: 'checkbox', checked: item.saved || selected.includes(item.nodeId),
+                disabled: item.saved || saving || busy || (!selected.includes(item.nodeId) && selected.length >= 50),
+                onChange: event => choose(item.nodeId, event.currentTarget.checked), 'aria-label': '关联正文 ' + item.nodeId }),
+                item.nodeText, item.saved ? ' · 已保存' : ' · 待确认'),
+              h('blockquote', null, item.quote),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => Promise.resolve(onLocate({ nodeId: item.nodeId, paragraph: item.paragraph }))
+                .catch(failure => setError(failure.message)) }, '定位正文 P' + (item.paragraph + 1))))) : null,
+          pageCount > 1 ? h('div', { className: 'kg-visual-pagination' },
+            h('button', { type: 'button', disabled: currentPage === 0, onClick: () => setPage(currentPage - 1) }, '上一页引用'),
+            h('span', null, (currentPage + 1) + '/' + pageCount),
+            h('button', { type: 'button', disabled: currentPage + 1 >= pageCount, onClick: () => setPage(currentPage + 1) }, '下一页引用')) : null,
+          selectable.length ? h(React.Fragment, null,
+            h('label', null, h('input', { type: 'checkbox', checked: confirmed, disabled: saving || busy || !chosen.length || missing,
+              onChange: event => setConfirmed(event.currentTarget.checked) }), '确认将所选原文引用保存到知识图'),
+            h('div', { className: 'kg-image-review-actions' }, h('button', { type: 'button', className: 'kg-primary',
+              disabled: saving || busy || !confirmed || !chosen.length || missing, onClick: save },
+              saving ? '正在保存图文关联…' : '保存图文关联（' + chosen.length + '）'))) : null)
+      }
+
+      function VisualInterpretationPanel({ visualSource, documentId, revision, selected, setSelected, busy, taskImageIds, imageSupport, onSubmit, onOpen, onLocate, onSaveReferences, onRefresh }) {
         const images = visualSource.images || []
         const pending = image => visualSource.kind === 'markdown-assets' && image.interpretationStatus === 'not_requested'
         const [filter, setFilter] = useState('all')
@@ -10641,6 +12135,7 @@ export default function clientPlugin() {
         const [reviewError, setReviewError] = useState('')
         const [readyImage, setReadyImage] = useState('')
         const reviewDrafts = useRef(new Map())
+        const referenceDrafts = useRef(new Map())
         const reviewAnchor = useRef(null)
         const reviewRead = useRef(0)
         const currentContext = useRef('')
@@ -10751,6 +12246,8 @@ export default function clientPlugin() {
               h('div', { className: 'kg-visual-original' }, h(SourceFigure, { key: active.id + ':' + revision, image: active, documentId, revision, onOpen,
                 onReady: ready => setReadyImage(ready ? context + ':' + active.id : '') })),
               active.paragraphs?.length ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ paragraph: active.paragraphs[0] }) }, '定位原书插图') : null,
+              h(ImageReferencePanel, { key: active.id, documentId, revision, imageId: active.id, busy: disabled,
+                drafts: referenceDrafts, onLocate: locate, onSave: onSaveReferences, onRefresh }),
               loading ? h('p', { role: 'status' }, '正在读取解读结果…') : null,
               loadError ? h('p', { className: 'kg-visual-message', role: 'alert' }, loadError, ' ', h('button', { type: 'button', className: 'kg-secondary', onClick: () => setRetry(retry + 1) }, '重试读取')) : null,
               inspection?.imageId === active.id && inspection?.revision === revision ? h(React.Fragment, null,
@@ -11071,11 +12568,12 @@ export default function clientPlugin() {
         const [readingMapOpen, setReadingMapOpen] = useState(false)
         const [readMode, setReadMode] = useState('graph')
         const [connectionFocus, setConnectionFocus] = useState(null)
+        const [targetMapFocus, setTargetMapFocus] = useState(null)
         useEffect(() => {
           if (!workspaceDocumentId) return
           let mode = resultView?.graph?.ontology === 'learning-view-v1' ? 'models' : 'graph'
-          try { const saved = localStorage.getItem('dsh-kg-read-mode:' + workspaceDocumentId); if (['models', 'graph'].includes(saved)) mode = saved } catch (error) {}
-          setReadMode(mode); setConnectionFocus(null)
+          try { const saved = localStorage.getItem('dsh-kg-read-mode:' + workspaceDocumentId); if (['models', 'graph', 'targets'].includes(saved)) mode = saved } catch (error) {}
+          setReadMode(mode); setConnectionFocus(null); setTargetMapFocus(null)
         }, [workspaceDocumentId])
         const changeReadMode = mode => {
           setReadMode(mode)
@@ -11088,6 +12586,7 @@ export default function clientPlugin() {
         const [learningOpen, setLearningOpen] = useState(false)
         const consumptionPerspectiveRef = useRef(null)
         const readingPerspectiveRef = useRef(null)
+        const connectionPerspectiveRef = useRef(null)
         const gatherPerspectiveRef = useRef(null)
         const [consumptionRestore, setConsumptionRestore] = useState(null)
         const [readingRestore, setReadingRestore] = useState(null)
@@ -13798,6 +15297,7 @@ export default function clientPlugin() {
           }
           if (!stillCurrent()) throw new Error('知识图已切换，旧定位已取消')
           const node = nodeId ? (targetGraph.nodes || []).find((item) => item.id === nodeId) : null
+          const sourceTarget = reference.sourceQuoteOnly ? exactSourceQuoteTarget(targetView, reference) : null
           navigateWorkspace('read', 'kg-workspace-read')
           const sectionId = (node && node.sectionId) || reference.sectionId || 'all'
           setChapterFilter(sectionId && chapterSectionsOf(targetGraph).some((section) => section.id === sectionId) ? sectionId : 'all')
@@ -13806,7 +15306,7 @@ export default function clientPlugin() {
             setSelectedEdgeId(null)
             setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
           }
-          let paragraph = Number(reference.paragraph)
+          let paragraph = sourceTarget ? sourceTarget.first : Number(reference.paragraph)
           if (!Number.isInteger(paragraph) && nodeId) {
             const off = targetView.anchors[nodeId]
             paragraph = off == null ? -1 : targetView.paragraphs.findIndex((item) => off >= item.start && off < item.end)
@@ -13911,6 +15411,24 @@ export default function clientPlugin() {
             if (currentResultRef.current === openingView) setError({ message: error.message || '无法打开图片节点' })
           } finally { imageNodesSubmitting.current = false; setImageNodesLoading(false) }
         }
+        const saveImageReferences = async args => {
+          if (imageNodesSubmitting.current || taskId || phase === 'extracting' || !resultView) throw new Error('当前有任务运行，选择已保留')
+          imageNodesSubmitting.current = true
+          const openingView = resultView
+          try {
+            await graphCommitQueueRef.current
+            if (currentResultRef.current !== openingView || graphRevisionRef.current !== args.expectedRevision) throw new Error('知识图已变化，请重新载入后核对；选择已保留')
+            const documentId = documentIdOfGraph(openingView.graph)
+            const response = await host.call('image-references', { ...args, action: 'save', documentId })
+            if (response?.error) throw new Error(response.error.message || '图文关联未保存')
+            if (response?.documentId !== documentId || !response.graph || !Number.isSafeInteger(response.revision)) throw new Error('图文关联返回的文档版本不一致，请重新载入核对')
+            if (currentResultRef.current !== openingView || graphRevisionRef.current !== args.expectedRevision) throw new Error('保存请求已返回，但当前视图已切换；请重新载入原文档核对结果')
+            graphRevisionRef.current = response.revision
+            setResultView(makeView(response.graph, fullText || openingView.sourceText || ''))
+            setGraphQueryDraft('image:'); setGraphPageDraft('1')
+            toastStore.show(response.changed ? '所选图文引用已保存，知识层关系未改变' : '所选图文引用已经保存')
+          } finally { imageNodesSubmitting.current = false }
+        }
         const capturePerspective = () => {
           const documentId = documentIdOfGraph(resultView?.graph)
           const consumption = consumptionPerspectiveRef.current?.documentId === documentId
@@ -13920,7 +15438,7 @@ export default function clientPlugin() {
           const gather = gatherPerspectiveRef.current?.documentId === documentId
             ? gatherPerspectiveRef.current.request : null
           return { tab: consumption?.tab || 'search', query: consumption?.query || '',
-            filters: consumption?.filters || { type: 'all', section: 'all', grounding: 'all', entailment: 'all' },
+            filters: consumption?.filters || { type: 'all', relation: 'all', section: 'all', grounding: 'all', entailment: 'all' },
             chapterId: chapterFilter, layout: layoutMode, focusNodeId: selectedNodeId,
             gather, reading: { open: readingMapOpen, topicId: reading?.topicId || '',
               themeId: reading?.themeId || '', offset: reading?.offset || 0,
@@ -13939,7 +15457,9 @@ export default function clientPlugin() {
           if (!stillCurrent()) {
             throw new Error('打开视图期间知识图已切换，请重试')
           }
-          consumptionPerspectiveRef.current = { documentId, state: { tab: state.tab, query: state.query, filters: state.filters } }
+          const question = consumptionPerspectiveRef.current?.documentId === documentId ? consumptionPerspectiveRef.current.state.question : undefined
+          consumptionPerspectiveRef.current = { documentId, state: { tab: state.tab, query: state.query, filters: state.filters,
+            ...(typeof question === 'string' ? { question } : {}) } }
           readingPerspectiveRef.current = { documentId, state: state.reading }
           gatherPerspectiveRef.current = { documentId, request: state.gather }
           setReadingMapOpen(state.reading.open)
@@ -14299,6 +15819,8 @@ export default function clientPlugin() {
                   selected: visualSelection, setSelected: setVisualSelection,
                   imageSupport: effectiveModelImageSupport, onSubmit: appendImagesSubmit,
                   onOpen: setOpenFigure, onLocate: locateConsumptionReference,
+                  onSaveReferences: saveImageReferences,
+                  onRefresh: refreshConnectionModels,
                 }) : null,
                 documentIdOfGraph(resultView.graph) && readingMapOpen ? h(ReadingMapPanel, {
                     key: documentIdOfGraph(resultView.graph) + ':' + graphRevisionRef.current,
@@ -14308,22 +15830,39 @@ export default function clientPlugin() {
                     onStateChange: state => { readingPerspectiveRef.current = { documentId: documentIdOfGraph(resultView.graph), state } },
                   }) : null,
                 documentIdOfGraph(resultView.graph) ? h('div', { className: 'kg-model-toolbar', role: 'group', 'aria-label': '知识浏览方式' },
-                  [['models', '联结模型'], ['graph', '材料图与原文']].map(([id, label]) => h('button', {
+                  [['models', '联结模型'], ['targets', '渐构靶图'], ['graph', '材料图与原文']].map(([id, label]) => h('button', {
                     key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': readMode === id, onClick: () => changeReadMode(id) }, label)),
                   ['concept', 'connection_model'].includes(resultView.graph.nodes.find(node => node.id === selectedNodeId)?.type)
                     ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
                       const node = resultView.graph.nodes.find(item => item.id === selectedNodeId)
-                      setConnectionFocus({ nodeId: node.id, type: node.type, text: node.text }); changeReadMode('models')
-                    } }, '查看选中节点的联结模型') : null) : null,
+                      setConnectionFocus({ documentId: workspaceDocumentId, revision: graphRevisionRef.current,
+                        nodeId: node.id, type: node.type, text: node.text }); changeReadMode('models')
+                    } }, '查看选中节点的联结模型') : null,
+                  ['concept', 'connection_model', 'discrimination_model'].includes(resultView.graph.nodes.find(node => node.id === selectedNodeId)?.type)
+                    ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => {
+                      setTargetMapFocus({ documentId: workspaceDocumentId, revision: graphRevisionRef.current, targetId: selectedNodeId, nonce: Date.now() }); changeReadMode('targets')
+                    } }, '为选中节点建立靶图') : null) : null,
+                documentIdOfGraph(resultView.graph) ? h('div', { style: { display: readMode === 'targets' ? 'block' : 'none' } },
+                  h(TargetMapPanel, { key: documentIdOfGraph(resultView.graph), documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current,
+                    active: readMode === 'targets', focusRequest: targetMapFocus, busy: generationTaskActive || verifyPhase === 'running' || questionPhase === 'running',
+                    onRefresh: refreshConnectionModels, onLocate: async reference => {
+                      const located = await locateConsumptionReference(reference); if (located) changeReadMode('graph'); return located
+                    } })) : null,
                 documentIdOfGraph(resultView.graph) ? h('div', { style: { display: readMode === 'models' ? 'block' : 'none' } },
                   h(ConnectionModelPanel, { key: documentIdOfGraph(resultView.graph),
                     documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current, focusRequest: connectionFocus,
+                    restoreState: connectionPerspectiveRef.current,
+                    onStateChange: state => { connectionPerspectiveRef.current = state },
                     load: (args, signal) => host.call('connection-models', args, { signal }),
-                    onLocate: async reference => { changeReadMode('graph'); return locateConsumptionReference(reference) },
+                    onLocate: async reference => {
+                      const located = await locateConsumptionReference(reference)
+                      if (located) changeReadMode('graph')
+                      return located
+                    },
                     onReview: reviewConnectionModel, onRoles: reviewConnectionRoles, onStructure: reviewConnectionRoles, onRefresh: refreshConnectionModels,
                     busy: generationTaskActive || verifyPhase === 'running' || questionPhase === 'running',
                   })) : null,
-                h('div', { style: { display: readMode === 'models' && documentIdOfGraph(resultView.graph) ? 'none' : 'block' } },
+                h('div', { style: { display: ['models', 'targets'].includes(readMode) && documentIdOfGraph(resultView.graph) ? 'none' : 'block' } },
                 h('details', { className: 'kg-workbench-tools' },
                   h('summary', null, '图谱状态与生成记录'),
                 h('div', { className: 'kg-stats' },
@@ -14667,9 +16206,13 @@ export default function clientPlugin() {
                     ? h(KnowledgeConsumePanel, {
                         ctx, graph: resultView.graph, sourceText: fullText || resultView.sourceText || '',
                         mode: 'document', model: effectiveModelArg, readOnly: generationTaskActive,
-                        onLocateReference: locateConsumptionReference,
+                        onLocateReference: reference => { changeReadMode('graph'); return locateConsumptionReference(reference) },
                         onNotify: (message) => toastStore.show(message),
+                        draftState: consumptionPerspectiveRef.current,
                         restoreState: consumptionRestore,
+                        onRestoreConsumed: request => setConsumptionRestore(previous => previous?.seq === request.seq && previous.consumedSeq !== request.seq
+                          && previous.documentId === request.documentId && previous.revision === request.revision
+                          ? { ...previous, consumedSeq: request.seq } : previous),
                         onStateChange: state => { consumptionPerspectiveRef.current = { documentId: documentIdOfGraph(resultView.graph), state } },
                       })
                     : null,
@@ -16133,7 +17676,8 @@ export default function clientPlugin() {
             setSelectedEdgeId(null)
             setFocusReq((value) => ({ nodeId, seq: value.seq + 1 }))
           }
-          let paragraph = Number(reference.paragraph)
+          const sourceTarget = reference.sourceQuoteOnly ? exactSourceQuoteTarget(targetView, reference) : null
+          let paragraph = sourceTarget ? sourceTarget.first : Number(reference.paragraph)
           if (!Number.isInteger(paragraph) && nodeId) {
             const off = targetView.anchors[nodeId]
             paragraph = off == null ? -1 : targetView.paragraphs.findIndex((item) => off >= item.start && off < item.end)

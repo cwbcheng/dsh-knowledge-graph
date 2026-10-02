@@ -78,7 +78,7 @@ assert.equal(imageAt({ kind: 'image-derived', images: [{ id: 'legacy-upload', st
 
 for (const file of ['../src/index.client.js', '../lib/client.js']) {
   const text = readFileSync(new URL(file, import.meta.url), 'utf8')
-  const panelStart = text.indexOf('      function VisualInterpretationPanel(')
+  const panelStart = text.indexOf('      function ImageReferencePanel(')
   const panelEnd = text.indexOf('      function ModelPicker(', panelStart)
   assert(panelStart >= 0 && panelEnd > panelStart)
   const h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) })

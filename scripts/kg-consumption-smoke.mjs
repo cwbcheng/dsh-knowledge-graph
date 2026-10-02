@@ -385,6 +385,11 @@ assert(dynamicRelationOnly.graph.edges.some((edge) => edge.relation === 'causes'
 assert(dynamicRelationOnly.metrics.relationCandidateEdges === 1, 'dynamic relation-only candidate metric is wrong')
 const dynamicOtherRelation = await dynamicHandlers.get('graph-query')({ graph: fixture.dynamicGraph, text: fixture.sourceText, relations: ['supports'], hops: 0 })
 assert(dynamicOtherRelation.queryId !== dynamicRelationOnly.queryId, 'dynamic queryId omitted relation selectors')
+const emptyRelationGraph = { ...fixture.dynamicGraph, edges: [] }
+const emptyRelation = await dynamicHandlers.get('graph-query')({ graph: emptyRelationGraph, text: fixture.sourceText, relations: ['causes'], hops: 1 })
+assert(!emptyRelation.error && emptyRelation.matches.length === 0 && emptyRelation.graph.nodes.length === 0 && emptyRelation.graph.edges.length === 0,
+  'A valid relation selector without matching edges must not silently return every node')
+assert(emptyRelation.metrics.candidateMatches === 0 && emptyRelation.metrics.relationCandidateEdges === 0, 'Empty relation metrics cannot claim unfiltered candidates')
 const dynamicSaturated = await dynamicHandlers.get('graph-query')({
   graph: fixture.dynamicGraph,
   text: fixture.sourceText,

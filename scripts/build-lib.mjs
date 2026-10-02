@@ -2,6 +2,9 @@ import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import './gen-image-nodes-inline.mjs'
 import './gen-model-structure-inline.mjs'
+import './gen-model-consumption-inline.mjs'
+import './gen-model-chain-inline.mjs'
+import './gen-target-map-inline.mjs'
 
 // ---------- HOST ----------
 // Extract the plugin body directly from the source file (previously the
@@ -120,9 +123,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (checkpoint?.postprocess || checkpoint?.relationWeave) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '后处理记录只能由 Host 按 runId 从可信存储恢复，不能接纳客户端提供的候选或审校结论' } })
               if (checkpoint && imageInputs.length > 0) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 恢复不能重新附带图片' } })
               if (checkpointHasVisualSourceHost(checkpoint)) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '包含图片来源的 checkpoint 只能由 Host 按 runId 从 SQLite 恢复' } })
-              const requestedDocumentId = typeof a.documentId === 'string' && a.documentId.trim()
-                ? a.documentId.trim().slice(0, 160)
-                : (checkpoint && typeof checkpoint.documentId === 'string' ? checkpoint.documentId.slice(0, 160) : '')
+              if ([a.documentId, checkpoint?.documentId].some(value => value != null && value !== '' && !canonicalDocumentInputHost(value))) {
+                return writeJson(res, 200, { error: { code: 'invalid_input', message: '当前写入仅支持不超过 160 字且无首尾空白的 documentId；未截断或改写标识' } })
+              }
+              const requestedDocumentId = canonicalDocumentInputHost(a.documentId) || canonicalDocumentInputHost(checkpoint?.documentId)
               let task
               busy = true
               try {
@@ -255,11 +259,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
               const options = {
-                documentId: typeof a.documentId === 'string' ? a.documentId.slice(0, 160) : '',
+                documentId: canonicalDocumentInputHost(a.documentId, true),
                 kind: a.kind,
                 status: a.status,
                 limit: Number.isInteger(a.limit) ? a.limit : 100,
               }
+              if (a.documentId != null && a.documentId !== '' && !options.documentId) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               try {
                 const store = await getSqliteStore()
                 return writeJson(res, 200, { candidates: store.listCandidates(options), source: 'sqlite' })
@@ -290,8 +296,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
-              const documentId = payload && typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
-              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const documentId = canonicalDocumentInputHost(payload?.documentId, true)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               const store = await getSqliteStore()
               const nodeOffset = Number.isInteger(payload.nodeOffset) ? payload.nodeOffset : 0
               const query = typeof payload.query === 'string' ? payload.query : ''
@@ -317,30 +323,27 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的联结模型查询' } }) }
-              const documentId = typeof a?.documentId === 'string' && a.documentId.length <= 160 ? a.documentId : ''
-              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const documentId = canonicalDocumentInputHost(a?.documentId, true)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               const store = await getSqliteStore()
-              const saved = store.getDocument(documentId)
-              return writeJson(res, 200, connectionModelsHost(saved ? { documentId, revision: saved.revision,
-                sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved } : null, a))
+              return writeJson(res, 200, connectionModelsHost(store.getCanonicalDocument(documentId), a))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/reading-map') {
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的阅读地图查询' } }) }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
-              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '阅读地图缺少 documentId' } })
+              const documentId = canonicalDocumentInputHost(a?.documentId, true)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               const store = await getSqliteStore()
-              const saved = store.getDocument(documentId)
+              const saved = store.getCanonicalDocument(documentId)
               if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到 canonical 知识图' } })
-              return writeJson(res, 200, readingMapHost({ documentId, revision: saved.revision,
-                sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved }, a))
+              return writeJson(res, 200, readingMapHost(saved, a))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/perspectives') {
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的任务视图请求' } }) }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a?.documentId)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '任务视图缺少 documentId' } })
               const store = await getSqliteStore()
               const revision = store.getDocumentRevision(documentId)
@@ -389,12 +392,20 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 throw error
               }
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/target-map') {
+              res.setHeader('Cache-Control', 'no-store')
+              let args
+              try { args = JSON.parse(await readBody(req, 768 * 1024)) }
+              catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '靶图请求无效或过大' } }) }
+              if (args?.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
+              return writeJson(res, 200, (await getSqliteStore()).targetMap(args))
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/learning-mode') {
               res.setHeader('Cache-Control', 'no-store')
               const raw = await readBody(req, 64 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的学习任务请求' } }) }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim() : ''
+              const documentId = canonicalDocumentInputHost(a?.documentId)
               if (!documentId || documentId.length > 160) return writeJson(res, 200,
                 { error: { code: 'invalid_input', message: '学习任务缺少有效的 documentId' } })
               const modelId = a.modelId ?? ''
@@ -446,12 +457,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                     })) })
                   }
                 }
-                const saved = store.getDocument(documentId)
+                const saved = store.getCanonicalDocument(documentId)
                 if (!saved) return writeJson(res, 200,
                   { error: { code: 'not_found', message: '找不到 canonical 知识图' } })
-                const plan = learningPlanHost({ documentId, revision: saved.revision,
-                  sourceText: saved.sourceText, sourceUnits: store.getDocumentSourceUnits(documentId), graph: saved },
-                  { expectedRevision: a.expectedRevision, modelId, exercise })
+                const plan = learningPlanHost(saved, { expectedRevision: a.expectedRevision, modelId, exercise })
                 if (plan?.error) return writeJson(res, 200, plan)
                 if (a.action === 'plan') return writeJson(res, 200, { ...plan, tasks: plan.tasks.map(task => taskView(task, false)) })
                 if (a.action === 'save') {
@@ -478,7 +487,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { a = {} }
-              const documentId = typeof a?.documentId === 'string' && a.documentId.length <= 160 ? a.documentId : ''
+              const documentId = canonicalDocumentInputHost(a?.documentId)
               const store = await getSqliteStore()
               if (a?.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
               const saved = documentId ? store.getDocument(documentId) : null
@@ -501,7 +510,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               const store = await getSqliteStore()
               return writeJson(res, 200, inspectImageHost(documentId ? store.getDocument(documentId) : null, a))
             }
@@ -509,10 +518,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { a = {} }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a?.documentId)
               const store = await getSqliteStore()
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
-              const current = documentId ? store.getDocument(documentId) : null
+              const current = documentId ? store.getCanonicalDocument(documentId) : null
               const prepared = prepareImageNodesHost(current, a || {})
               if (prepared.error) return writeJson(res, 200, prepared)
               if (prepared.changed) store.saveGraph(prepared.graph, { sourceText: current.sourceText,
@@ -524,6 +533,33 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { documentId, revision: saved.revision, changed: prepared.changed,
                 graph: buildGraphViewHost(graph, 0, 'image:') })
             }
+            if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-references') {
+              res.setHeader('Cache-Control', 'no-store')
+              const raw = await readBody(req, 16 * 1024)
+              let a
+              try { a = JSON.parse(raw) } catch { a = {} }
+              a = a && typeof a === 'object' ? a : {}
+              if (a.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
+              const documentId = canonicalDocumentInputHost(a.documentId)
+              const store = await getSqliteStore()
+              const current = documentId ? store.getCanonicalDocument(documentId) : null
+              const prepared = prepareImageReferencesHost(current, a)
+              if (!prepared.graph) return writeJson(res, 200, prepared)
+              try {
+                if (prepared.changed) store.saveGraph(prepared.graph, { sourceText: current.sourceText,
+                  expectedRevision: current.revision, kind: 'image_references' })
+              } catch (error) {
+                if (error?.code === 'revision_conflict') return writeJson(res, 200, { error: { code: error.code,
+                  message: '知识图已更新；未保存图文关联，请重新载入后核对', currentRevision: error.currentRevision } })
+                throw error
+              }
+              const saved = store.getCanonicalDocument(documentId)
+              const graph = { ...saved.graph }
+              delete graph.sourceText
+              rememberCanonicalGraphHost(graph, saved.sourceText, saved.revision, saved.sourceUnits)
+              return writeJson(res, 200, { documentId, revision: saved.revision, changed: prepared.changed,
+                graph: buildGraphViewHost(graph, 0, 'image:') })
+            }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/image-load') {
               res.setHeader('Cache-Control', 'no-store')
               res.setHeader('Pragma', 'no-cache')
@@ -531,7 +567,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               const imageId = typeof a.imageId === 'string' ? a.imageId.trim().slice(0, 80) : ''
               const store = await getSqliteStore()
               const saved = documentId ? store.getDocument(documentId) : null
@@ -556,8 +592,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
-              const documentId = payload && typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
-              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少 documentId' } })
+              const documentId = canonicalDocumentInputHost(payload?.documentId, true)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               const store = await getSqliteStore()
               const saved = store.getDocument(documentId)
               if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要导出的 canonical graph' } })
@@ -574,7 +610,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               if (!documentId || typeof a.nodeId !== 'string' || !a.nodeId || !a.patch || typeof a.patch !== 'object') {
                 return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少节点修复的来源核对参数' } })
               }
@@ -592,7 +628,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               if (!documentId || !a.graph || typeof a.graph !== 'object') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } })
               try {
                 const store = await getSqliteStore()
@@ -698,7 +734,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { a = {} }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a?.documentId)
               const expectedRevision = a?.expectedRevision
               const parentRevision = a?.parentRevision
               const reportId = typeof a?.reportId === 'string' ? a.reportId : ''
@@ -733,8 +769,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 16 * 1024)
               let a
               try { a = JSON.parse(raw) } catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '无效的关系聚拢查询' } }) }
-              const documentId = typeof a?.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
-              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '关系聚拢缺少 documentId' } })
+              const documentId = canonicalDocumentInputHost(a?.documentId, true)
+              if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
               const store = await getSqliteStore()
               return writeJson(res, 200, store.getGraphNeighborhood(documentId, a) || { error: { code: 'not_found', message: '找不到知识图文档' } })
             }
@@ -743,9 +779,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = typeof a.documentId === 'string' ? a.documentId : ''
               const query = typeof a.query === 'string' ? a.query.trim() : ''
-              const validationError = validateConsumptionOptionsHost(a)
+              // SQLite validates ontology membership atomically with retrieval.
+              const validationError = validateConsumptionOptionsHost(a, undefined, true)
               if (validationError) return writeJson(res, 200, { error: validationError })
               const hasSelector = query || ['nodeIds', 'types', 'relations', 'sectionIds', 'groundingStatuses', 'entailmentStatuses'].some((field) => Array.isArray(a[field]) && a[field].length > 0)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识检索缺少 documentId' } })
@@ -759,6 +796,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (error && error.code === 'revision_conflict') {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后检索', currentRevision: error.currentRevision } })
                 }
+                if (error && ['invalid_input', 'limit_exceeded'].includes(error.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message } })
+                }
                 throw error
               }
               if (!result) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可检索的 canonical knowledge graph' } })
@@ -769,9 +809,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = typeof a.documentId === 'string' ? a.documentId : ''
               const question = typeof a.question === 'string' ? a.question.trim() : ''
-              const validationError = validateConsumptionOptionsHost(a)
+              const validationError = validateConsumptionOptionsHost(a, undefined, true)
               if (validationError) return writeJson(res, 200, { error: validationError })
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问答缺少 documentId' } })
               if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要向知识图提问的问题' } })
@@ -792,6 +832,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               } catch (error) {
                 if (error && error.code === 'revision_conflict') {
                   return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后提问', currentRevision: error.currentRevision } })
+                }
+                if (error && ['invalid_input', 'limit_exceeded'].includes(error.code)) {
+                  return writeJson(res, 200, { error: { code: error.code, message: error.message } })
                 }
                 throw error
               }
@@ -1040,7 +1083,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const raw = await readBody(req, 256 * 1024)
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (error) { payload = {} }
-              const documentId = typeof payload.documentId === 'string' ? payload.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(payload.documentId)
               if (!documentId || !Number.isSafeInteger(payload.expectedRevision)) return writeJson(res, 200, {
                 error: { code: 'invalid_input', message: '全图审校预览需要文档 ID 和当前 revision' },
               })
@@ -1093,7 +1136,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               })
               let input, currentRevision = null
               if (canonicalFull) {
-                const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+                const documentId = canonicalDocumentInputHost(a.documentId)
                 if (!documentId || !Number.isSafeInteger(a.expectedRevision)) return writeJson(res, 200, {
                   error: { code: 'invalid_input', message: '全图审校需要文档 ID 和当前 revision' },
                 })
@@ -1241,7 +1284,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const sessions = ctx.get('sessions')
               const session = sessions ? sessions.get(sessionId) : undefined
               if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '轨迹追加缺少 documentId；请先重新拆解当前轨迹' } })
               const store = await getSqliteStore()
               const canonical = store.getDocument(documentId)
@@ -1294,7 +1337,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const a = payload && typeof payload === 'object' ? payload : {}
               if (a.continuous != null && typeof a.continuous !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'continuous 必须为布尔值' } })
               if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } })
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } })
               const store = await getSqliteStore()
               const canonical = store.getDocument(documentId)
@@ -1333,7 +1376,9 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!text && !interpretingImages) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴要追加的资料正文或选择待解读图片' } })
               if (text && interpretingImages) return writeJson(res, 200, { error: { code: 'invalid_input', message: '图片视觉解读不能混入客户端正文' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '追加正文不能超过 ' + MAX_TEXT + ' 字' } })
-              const documentId = typeof a.documentId === 'string' ? a.documentId.trim().slice(0, 160) : ''
+              const documentId = canonicalDocumentInputHost(a.documentId)
+              if (a.documentId != null && a.documentId !== '' && !documentId) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: '当前写入仅支持不超过 160 字且无首尾空白的 documentId；未截断或改写标识' } })
               let canonical = null
               if (documentId) {
                 const store = await getSqliteStore()
@@ -1565,4 +1610,6 @@ copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib
 copyFileSync(new URL('../src/kg-ontology.mjs', import.meta.url), new URL('../lib/kg-ontology.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-image-nodes.mjs', import.meta.url), new URL('../lib/kg-image-nodes.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-model-structure.mjs', import.meta.url), new URL('../lib/kg-model-structure.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-model-chain.mjs', import.meta.url), new URL('../lib/kg-model-chain.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-target-map.mjs', import.meta.url), new URL('../lib/kg-target-map.mjs', import.meta.url))
 console.log('host written, lines:', host.split('\n').length)

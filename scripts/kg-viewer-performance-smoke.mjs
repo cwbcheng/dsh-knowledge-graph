@@ -32,30 +32,89 @@ const compile = name => new Function('return (' + extractFunction(source, name) 
 // Async preparation, worker cancellation and loading-stage tests live in
 // kg-viewer-loading-smoke.mjs; pointer scheduling stays independent here.
 const schedulerFactory = compile('createGraphViewScheduler')
+const graphFitScale = compile('graphFitScale')
+for (const [width, height, bbox] of [[1, 1, {w:1,h:1}], [32, 12, {w:100,h:100}], [390, 320, {w:600,h:900}], [1000,600,{w:10000,h:20000}], [1000,600,{w:0,h:0}]]) {
+  const scale = graphFitScale(width,height,bbox), inset = Math.min(16,width/4,height/4)
+  assert(scale > 0 && scale <= 1, 'Visible canvas fit must remain finite and positive')
+  assert(scale * Math.max(bbox.w,1) <= width - inset * 2 + 1e-8)
+  assert(scale * Math.max(bbox.h,1) <= height - inset * 2 + 1e-8)
+}
 const minScale = Number(source.match(/const GRAPH_MIN_SCALE = ([0-9.]+)/)[1])
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+const initialGraphView = new Function('graphFitScale', 'GRAPH_MIN_SCALE', 'return (' + extractFunction(source, 'initialGraphView') + ')')(graphFitScale, minScale)
 const zoomAround = new Function('clamp', 'GRAPH_MIN_SCALE', 'return (' + extractFunction(source, 'zoomAround') + ')')(clamp, minScale)
 const fitSource = source.slice(source.indexOf('const fitView = useCallback('), source.indexOf('useEffect(() => { fitView() }'))
 let fitted
 const viewport = { current: null }, element = { clientWidth: 1000, clientHeight: 600 }
-const fitView = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', 'viewportSizeRef', fitSource + '; return fitView')(
-  fn => fn, { current: element }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'layered', value => { fitted = value }, clamp, minScale, viewport,
+const prepared = {
+  bbox: { w: 10000, h: 20000, cx: 300, cy: 400 },
+  layout: { pos: new Map([['same:model', { x: -4600, y: -9560 }], ['same:model ', { x: 5200, y: 10360 }]]) },
+  sizes: new Map([['same:model', { w: 200, h: 80 }], ['same:model ', { w: 200, h: 80 }]]),
+}
+const preparedBefore = JSON.stringify([prepared.bbox, [...prepared.layout.pos], [...prepared.sizes]])
+function assertBodyVisible(view, id, width, height, graph = prepared) {
+  const point = graph.layout.pos.get(id), size = graph.sizes.get(id), inset = Math.min(16, width / 4, height / 4)
+  assert(point.x * view.k + view.tx - size.w * view.k / 2 >= inset - 1e-8)
+  assert(point.x * view.k + view.tx + size.w * view.k / 2 <= width - inset + 1e-8)
+  assert(point.y * view.k + view.ty - size.h * view.k / 2 >= inset - 1e-8)
+  assert(point.y * view.k + view.ty + size.h * view.k / 2 <= height - inset + 1e-8)
+}
+for (const width of [1, 32, 344, 1000]) {
+  for (const preferred of [null, 'missing', 'same:model', 'same:model ']) {
+    const view = initialGraphView(width, 600, prepared, preferred, 'layered')
+    assertBodyVisible(view, preferred === 'same:model ' ? preferred : 'same:model', width, 600)
+    assert.equal(view.k, Math.min(0.85, graphFitScale(width, 600, { w: 200, h: 80 })))
+  }
+  const overview = initialGraphView(width, 600, prepared, 'same:model ', 'overview')
+  assert.equal(overview.k, graphFitScale(width, 600, prepared.bbox))
+  assertBodyVisible(overview, 'same:model', width, 600)
+  assertBodyVisible(overview, 'same:model ', width, 600)
+}
+const neighborhood = initialGraphView(344, 600, prepared, 'same:model', 'neighborhood')
+assertBodyVisible(neighborhood, 'same:model', 344, 600)
+const compact = { bbox: { w: 200, h: 80, cx: 70, cy: 90 }, layout: { pos: new Map() }, sizes: new Map() }
+assert.deepEqual(initialGraphView(344, 600, compact, null, 'layered'), { k: 1, tx: 102, ty: 210 })
+assert.deepEqual(initialGraphView(344, 600, compact, null, 'neighborhood'), { k: 1, tx: 172, ty: 300 })
+const empty = { bbox: { w: 0, h: 0, cx: 0, cy: 0 }, layout: { pos: new Map() }, sizes: new Map() }
+assert.deepEqual(initialGraphView(344, 600, empty, null, 'layered'), { k: 1, tx: 172, ty: 300 })
+const oversized = { ...prepared, sizes: new Map([['same:model', { w: 4000, h: 2000 }]]) }
+const oversizedView = initialGraphView(344, 600, oversized, 'same:model ', 'layered')
+assertBodyVisible(oversizedView, 'same:model', 344, 600, oversized)
+assert(oversizedView.k < minScale, 'An oversized body must fit rather than be clipped by the ordinary zoom floor')
+const invalidGeometry = { ...prepared, sizes: new Map([['same:model', { w: 200, h: 80 }], ['same:model ', { w: Infinity, h: 80 }]]) }
+assertBodyVisible(initialGraphView(344, 600, invalidGeometry, 'same:model ', 'layered'), 'same:model', 344, 600, invalidGeometry)
+assert.equal(JSON.stringify([prepared.bbox, [...prepared.layout.pos], [...prepared.sizes]]), preparedBefore, 'Initial framing must not mutate layout, identity, or graph data')
+const fitFactory = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'viewportSizeRef', 'graphFitScale', 'prepared', 'initialAnchorRef', 'initialGraphView', fitSource + '; return fitView')
+const fitView = fitFactory(
+  fn => fn, { current: element }, prepared.bbox, 'layered', value => { fitted = value }, viewport,
+  graphFitScale, prepared, { current: 'same:model ' }, initialGraphView,
 )
 fitView()
-assert.equal(fitted.k, minScale)
+assert.equal(fitted.k, 0.85, 'A sparse first view must show a readable actual node rather than empty bounding-box space')
+assertBodyVisible(fitted, 'same:model ', 1000, 600)
 assert.deepEqual(viewport.current, { width: 1000, height: 600 })
+fitView(true)
+assert.equal(fitted.k, 0.0284, 'Explicit fit includes the entire model inside the actual canvas inset')
+const wholeFit = fitted
+assertBodyVisible(wholeFit, 'same:model', 1000, 600)
+assertBodyVisible(wholeFit, 'same:model ', 1000, 600)
+fitView()
 const priorFit = fitted
 element.clientWidth = 0
 fitView()
 assert.equal(fitted, priorFit, 'Fitting a hidden graph must not reset the camera')
 assert.deepEqual(viewport.current, { width: 1000, height: 600 }, 'Keep the last visible size until reveal')
 let overviewFitted
-const fitOverview = new Function('useCallback', 'containerRef', 'bbox', 'layoutMode', 'setView', 'clamp', 'minScale', 'viewportSizeRef', fitSource + '; return fitView')(
-  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, { w: 10000, h: 20000, cx: 300, cy: 400 }, 'overview', value => { overviewFitted = value }, clamp, 0.02, { current: null },
+const fitOverview = fitFactory(
+  fn => fn, { current: { clientWidth: 1000, clientHeight: 600 } }, prepared.bbox, 'overview', value => { overviewFitted = value }, { current: null },
+  graphFitScale, prepared, { current: null }, initialGraphView,
 )
 fitOverview()
-assert.equal(overviewFitted.k, 0.03, 'Overview must fit below the editor zoom floor')
-assert.equal(zoomAround(fitted, 0.9, 500, 300).k, fitted.k, 'zoom-out at the fit minimum must never zoom in')
+assert.equal(overviewFitted.k, 0.0284, 'Overview must fit below the editor zoom floor with the same canvas inset')
+const floorView = { ...fitted, k: minScale }
+assert.equal(zoomAround(floorView, 0.9, 500, 300).k, floorView.k, 'zoom-out at the editor minimum must never zoom in')
+assert.equal(zoomAround(wholeFit, 0.9, 500, 300, wholeFit.k).k, wholeFit.k, 'zoom-out at the explicit fit minimum must never zoom in')
+assert.equal(zoomAround(wholeFit, 1.1, 500, 300, wholeFit.k).k, wholeFit.k * 1.1, 'zoom-in from a whole-graph fit must not jump to the editor floor')
 assert.equal(zoomAround(fitted, 1.1, 500, 300).k, fitted.k * 1.1, 'zoom-in from a large-graph fit must not jump to a different minimum')
 for (const factor of [0.9, 1.1, 10, 0.01]) {
   const next = zoomAround(fitted, factor, 123, 456)
@@ -174,8 +233,8 @@ assert.equal(sorts, 0, 'Unobstructed labels must not build/sort a candidate grid
 
 for (const file of ['lib/client.js', 'extension/viewer.js']) {
   const generated = readFileSync(new URL('../' + file, import.meta.url), 'utf8')
-  for (const name of ['createGraphViewScheduler', 'wrapText', 'placeLayeredEdgeLabel']) {
+  for (const name of ['createGraphViewScheduler', 'graphFitScale', 'initialGraphView', 'wrapText', 'placeLayeredEdgeLabel']) {
     assert.equal(extractFunction(generated, name), extractFunction(source, name), file + ' must contain the optimized implementation')
   }
 }
-console.log(JSON.stringify({ ok: true, frameCoalescing: true, latestInputPreserved: true, unmountSafe: true, previewMeasurements: measured, labelParity: true, unobstructedLabelSorts: sorts, generatedParity: true }))
+console.log(JSON.stringify({ ok: true, sparseFirstView: true, exactInitialIdentity: true, overviewFit: true, oversizedBodyFit: true, frameCoalescing: true, latestInputPreserved: true, unmountSafe: true, previewMeasurements: measured, labelParity: true, unobstructedLabelSorts: sorts, generatedParity: true }))

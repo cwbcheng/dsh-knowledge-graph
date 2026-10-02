@@ -170,11 +170,18 @@ try {
   const oldEnv = Object.fromEntries(['KG_LLM_BASE_URL', 'KG_LLM_API_KEY', 'KG_LLM_MODEL'].map(key => [key, process.env[key]]))
   Object.assign(process.env, Object.fromEntries(Object.keys(oldEnv).map(key => [key, env[key]])))
   try {
-    for (const slow of ['slow-success', 'slow-error']) {
+    const realNow = Date.now
+    for (const clockShift of [0, 1500, -1500]) for (const slow of ['slow-success', 'slow-error']) {
       mode = slow
-      const started = Date.now()
-      await assert.rejects(callLLM({ system: '', user: '', timeoutMs: 50 }), /abort/i)
-      assert(Date.now() - started < 900)
+      const started = performance.now(), wallStarted = realNow()
+      // Elapsed deadlines must neither fail nor pass because wall time was corrected.
+      const shiftTimer = setTimeout(() => { Date.now = () => realNow() + clockShift }, 10)
+      try {
+        await assert.rejects(callLLM({ system: '', user: '', timeoutMs: 50 }), /abort/i)
+        const elapsedMs = performance.now() - started
+        console.log(JSON.stringify({ bodyDeadline: slow, elapsedMs, wallElapsedMs: Date.now() - wallStarted, clockShift }))
+        assert(elapsedMs < 900, 'LLM abort exceeded the unchanged 900 ms deadline: ' + elapsedMs)
+      } finally { clearTimeout(shiftTimer); Date.now = realNow }
     }
     mode = 'oversized'
     await assert.rejects(callLLM({ system: '', user: '', maxResponseBytes: 64 }), /byte limit/)

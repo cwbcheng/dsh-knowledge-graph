@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { modelLearningHarness, learnerResponse, learnerReview } from './kg-model-learning-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 
@@ -37,6 +39,47 @@ try {
   assert(!JSON.stringify(first.attempt.task.practiceSnapshots).includes('references'), 'linking a prediction does not reveal its reference')
   assert.deepEqual(store.getLearningAttempt('practice'), practiceBefore, 'linking leaves practice immutable')
   assert.deepEqual((await save('understanding-1', firstResponse)).attempt, first.attempt, 'lost save response retry is idempotent')
+  const { SqliteKnowledgeStore } = await import('../lib/kg-store.mjs')
+  const originalGet = SqliteKnowledgeStore.prototype.getLearningAttempt
+  let preflightMiss = true
+  // Another connection may commit after the Host's preflight read but before the storage transaction.
+  SqliteKnowledgeStore.prototype.getLearningAttempt = function (id) {
+    if (id === 'understanding-1' && preflightMiss) { preflightMiss = false; return null }
+    return originalGet.call(this, id)
+  }
+  let interleavedRetry
+  try { interleavedRetry = await save('understanding-1', firstResponse) }
+  finally { SqliteKnowledgeStore.prototype.getLearningAttempt = originalGet }
+  assert.equal(preflightMiss, false)
+  assert(!interleavedRetry.error, JSON.stringify(interleavedRetry))
+  assert.deepEqual(interleavedRetry.attempt, first.attempt, 'the real Host route remains idempotent after a stale preflight')
+  const originalSave = { attemptId: 'understanding-1', documentId: document.documentId, expectedRevision: 1,
+    task: plan.tasks[0], selfRating: 'not_assessed', response: firstResponse }
+  assert.deepEqual(store.saveLearningAttempt(originalSave), first.attempt,
+    'the storage transaction must recognize the original request without Host reloading server-owned snapshots')
+  assert.deepEqual(store.saveLearningAttempt({ ...originalSave, task: { ...originalSave.task,
+    practiceSnapshots: [{ assessment: 'mastered', version: 999 }] } }), first.attempt,
+    'caller-supplied derived snapshots cannot replace the frozen evidence')
+  assert.throws(() => store.saveLearningAttempt({ ...originalSave, task: { ...originalSave.task,
+    model: { ...originalSave.task.model, text: 'Changed source identity' } } }), error => error.code === 'attempt_conflict')
+  assert.throws(() => store.saveLearningAttempt({ ...originalSave, task: { ...originalSave.task, assessment: 'mastered' } }),
+    error => error.code === 'attempt_conflict')
+  assert.throws(() => store.saveLearningAttempt({ ...originalSave, response: { ...firstResponse, mapping: 'Changed learner content' } }),
+    error => error.code === 'attempt_conflict')
+  assert.throws(() => store.saveLearningAttempt({ ...originalSave, response: { ...firstResponse, practiceIds: [] } }),
+    error => error.code === 'attempt_conflict')
+  const runWorker = promisify(execFile)
+  const worker = `const { openSqliteStore } = await import(process.argv[1]);
+    const store = await openSqliteStore(process.argv[2]);
+    try { process.stdout.write(JSON.stringify(store.saveLearningAttempt(JSON.parse(process.argv[3])))); }
+    finally { store.close(); }`
+  const concurrentRetries = await Promise.all([0, 1].map(async () => {
+    const { stdout } = await runWorker(process.execPath, ['--input-type=module', '-e', worker,
+      new URL('../src/kg-store.mjs', import.meta.url).href, harness.database, JSON.stringify(originalSave)], { timeout: 20000 })
+    return JSON.parse(stdout)
+  }))
+  assert.deepEqual(concurrentRetries, [first.attempt, first.attempt], 'independent SQLite connections retry the same original request')
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM learning_attempts WHERE attempt_id = ?').get(originalSave.attemptId).count, 1)
   assert.equal((await save('understanding-1', { ...firstResponse, mapping: 'Attempted overwrite' })).error.code, 'attempt_conflict')
   assert.equal((await save('bad-rating', firstResponse, 1, { selfRating: 'confident' })).error.code, 'invalid_input')
   assert.equal((await save('blank', { ...firstResponse, mapping: '  ' })).error.code, 'invalid_input')
@@ -58,6 +101,7 @@ try {
   const revealed = await post({ documentId: document.documentId, modelId: 'taxi', action: 'reveal', attemptId: 'practice', expectedVersion: 1 })
   await post({ documentId: document.documentId, modelId: 'taxi', action: 'review', attemptId: 'practice', expectedVersion: revealed.attempt.version, review: learnerReview })
   assert.deepEqual(store.getLearningAttempt('understanding-1'), first.attempt, 'later reflection does not rewrite earlier attached evidence')
+  assert.deepEqual(store.saveLearningAttempt(originalSave), first.attempt, 'a retry must not recapture newer practice evidence')
   const revision2 = { ...firstResponse, parentAttemptId: first.attempt.attemptId, revisionReason: '复盘发现需要保留时段限制。', mapping: '仅在条件明确的分支内使用里程计价。' }
   const [second, competing] = await Promise.all([save('understanding-2', revision2), save('understanding-competing', { ...revision2, mapping: 'Another concurrent opinion' })])
   assert(!second.error, JSON.stringify(second))
@@ -73,6 +117,8 @@ try {
   store.saveGraph(updated, { sourceText: document.sourceText, sourceUnits: document.sourceUnits, expectedRevision: 1 })
   assert.equal((await save('stale', { ...revision2, parentAttemptId: 'understanding-2' })).error.code, 'revision_conflict')
   assert.equal((await save('understanding-2', revision2)).attempt.stale, true, 'old successful saves remain retryable after source revision changes')
+  assert.deepEqual(store.saveLearningAttempt(originalSave), { ...first.attempt, stale: true },
+    'storage retries retain the original source and frozen evidence after revision changes')
   const third = await save('understanding-3', { ...revision2, parentAttemptId: 'understanding-2' }, 2)
   assert(!third.error)
   assert.equal(third.attempt.task.model.text, 'Changed canonical statement')
@@ -84,6 +130,13 @@ try {
   const ungrounded = await post({ ...base, action: 'plan', expectedRevision: 3 })
   assert.equal(ungrounded.tasks[0].references.length, 0)
   assert.equal(ungrounded.tasks.length, 1, 'personal expression is allowed without pretending it has a source answer')
+  const emptySave = { attemptId: 'understanding-empty', documentId: document.documentId, expectedRevision: 3,
+    task: ungrounded.tasks[0], selfRating: 'not_assessed', response: { ...understandingResponse,
+      parentAttemptId: 'understanding-3', revisionReason: 'Reconsidered after the source was removed.' } }
+  const empty = store.saveLearningAttempt(emptySave)
+  assert.deepEqual(empty.task.practiceSnapshots, [])
+  assert.deepEqual(store.saveLearningAttempt(emptySave), empty, 'empty derived snapshots are also excluded from retry identity')
   console.log(JSON.stringify({ ok: true, actualSqliteHttp: true, serverSnapshots: true, appendOnly: true, parentCAS: true,
-    idempotentRetry: true, sourceRevisionFence: true, frozenPracticeEvidence: true, noMasteryCertification: true, canonicalUnchanged: true }))
+    idempotentRetry: true, interleavedHostRetry: true, concurrentSqliteRetries: true, transactionRetryIdentity: true, sourceRevisionFence: true,
+    frozenPracticeEvidence: true, noMasteryCertification: true, canonicalUnchanged: true }))
 } finally { harness.stop() }
