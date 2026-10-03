@@ -12,8 +12,12 @@ import * as host from '../lib/index.js'
 const source = ['甲', '乙', '丙', '丁'].map((name, i) => '# ' + name + '\n\n' + name + '设备功率为' + (i + 1) + '瓦。').join('\n\n')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const cleanups = []
+let relationSearches = 0
 function createHost(extractor, llm = null) {
   let api
+  // Resumed tasks retain their model choice; the fixture must also supply the
+  // relation phase instead of relying on a missing provider being tolerated.
+  if (typeof extractor === 'function') extractor.weaveRelations = async () => { relationSearches++; return { edges: [] } }
   host.apply({ get(name) {
     if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') api = route.handler; return () => {} } }
     return name === 'kgExtractor' ? extractor : name === 'llm' ? llm : null
@@ -84,7 +88,11 @@ if (process.argv[2] === 'kill-worker') {
     assert.equal(calls.length, 0)
     const resumed = await recoveredApi('resume-extract', { runId: started.taskId, resumePaused: true })
     assert.equal(resumed.taskId, started.taskId)
-    assert.equal((await settled(recoveredApi, resumed.taskId)).status, 'succeeded')
+    const resumedStatus = await settled(recoveredApi, resumed.taskId)
+    assert.equal(resumedStatus.status, 'succeeded', JSON.stringify(resumedStatus))
+    assert(relationSearches > 0, 'the resumed task must finish its explicit synthetic relation phase')
+    assert.equal(resumedStatus.result.nodes.length, 4)
+    assert(!resumedStatus.result.warnings.some(value => String(value).startsWith('relation_weave_failed:')))
     assert.equal(store.loadCheckpoint(started.taskId).checkpoint.model.model, 'original', 'resume preserves the original model')
 
     // A completed sibling remains buffered while an uncooperative sibling drains.

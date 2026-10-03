@@ -15,6 +15,11 @@ const endIdx = lines.findIndex((l) => l.includes('// ---------------------------
 if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) throw new Error('viewer slice bounds not found')
 
 const body = lines.slice(startIdx, endIdx).join('\n')
+const scopeStart = src.indexOf('      function contentScopeCanvasProps(')
+const scopeEnd = src.indexOf('      function ModelUsageStatus(', scopeStart)
+if (scopeStart < 0 || scopeEnd <= scopeStart) throw new Error('viewer content-scope helper bounds not found')
+// GraphViewer also uses this helper from the workbench controls preceding h.
+const contentScopeHelper = src.slice(scopeStart, scopeEnd)
 
 const bundle = `/**
  * dsh-knowledge-graph — viewer bundle for the Chrome extension popup.
@@ -29,6 +34,7 @@ const bundle = `/**
 (function () {
   'use strict'
   const React = window.React
+${contentScopeHelper}
 ${body}
   window.KGViewer = {
     TargetMapPanel,

@@ -8,7 +8,20 @@ function assert(condition, message) {
 
 const handlers = new Map()
 const coverageCalls = []
+const reviewedRelations = []
 const extractor = {
+  async reviewRelations({ candidates, units }) {
+    return { verdicts: candidates.map(item => {
+      const key = item.edge.fromNodeId + '>' + item.edge.toNodeId + ':' + item.edge.relation
+      const fixtureChain = ['m1>m2:causes', 'm2>m3:causes', 'm3>m4:causes', 'm4>m5:causes', 'm5>n1:causes', 'm6>m3:example', 'm1>n1:example', 'b1>b2:supports', 'b2>b3:supports'].includes(key)
+      const fixtureLimitation = ['b1', 'b2', 'b3'].includes(item.from.id) && item.edge.relation === 'supports'
+        && item.to.text === '经验预测在与自然直接交互的物质世界中行不通。'
+      assert(fixtureChain || fixtureLimitation, 'unexpected coverage review candidate: ' + key)
+      assert(item.edge.evidence.length > 0 && item.edge.evidence.every(e => units.some(u => u.num === e.paragraph && u.text.includes(e.quote))), 'coverage review lost its source evidence')
+      reviewedRelations.push(key)
+      return { id: item.id, verdict: 'supported', reason: 'Synthetic mechanism-coverage fixture acceptance', evidence: item.edge.evidence }
+    }) }
+  },
   async extractChunk({ title }) {
     if (title === 'mechanism-coverage') {
       return {
@@ -185,6 +198,7 @@ assert(initial && initial.nodes === 1 && initial.edges === 0, 'primary-pass meta
 assert(coverage && coverage.attemptedBatches === 1 && coverage.repairedBatches === 1 && coverage.addedNodes === 6 && coverage.prunedNodes === 0, 'coverage metadata is incorrect: ' + JSON.stringify(coverage))
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm5' && edge.toNodeId === 'n1' && edge.relation === 'causes'), 'recovered mechanism chain is not connected to the original endpoint')
 assert(completed.result.edges.some((edge) => edge.fromNodeId === 'm6' && edge.toNodeId === 'm3' && edge.relation === 'example'), 'mechanism-bearing function example was not integrated')
+assert(reviewedRelations.length === 6, 'recovered mechanism relations bypassed independent review')
 
 const partialText = [
   '预测能力支撑着人的行动。',

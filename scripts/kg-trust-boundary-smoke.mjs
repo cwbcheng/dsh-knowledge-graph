@@ -167,11 +167,22 @@ try {
   assert(unsafe.status === 'succeeded', 'unsafe seed fixture failed unexpectedly: ' + JSON.stringify(unsafe))
   assert(unsafe.result.edges.length === 0, 'endpoint evidence was promoted into a canonical relation: ' + JSON.stringify(unsafe.result.edges))
 
+  const unreviewedStart = await handlers.get('extract')({ title: 'safe-relation-seed', text: ['缺少目标，因此方法会走形', '另一事实'].join('\n\n') })
+  const unreviewed = await waitTask(handlers, unreviewedStart.taskId)
+  assert(unreviewed.status === 'succeeded' && unreviewed.result.edges.length === 0, 'relation-bearing source text bypassed the required independent review')
+  let reviewed = 0
+  extractor.reviewRelations = async ({ candidates, units }) => ({ verdicts: candidates.map(item => {
+    assert(item.edge.fromNodeId === 'r1' && item.edge.toNodeId === 'r2' && item.edge.relation === 'infers', 'unexpected trust-boundary review candidate')
+    assert(item.edge.evidence.length === 1 && item.edge.evidence[0].quote === '缺少目标，因此方法会走形' && units.some(u => u.num === 0 && u.text === item.edge.evidence[0].quote), 'independent review did not receive the relation-bearing source')
+    reviewed += 1
+    return { id: item.id, verdict: 'supported', reason: 'Synthetic explicit-relation fixture acceptance', evidence: item.edge.evidence }
+  }) })
   const safeStart = await handlers.get('extract')({ title: 'safe-relation-seed', text: ['缺少目标，因此方法会走形', '另一事实'].join('\n\n') })
   const safe = await waitTask(handlers, safeStart.taskId)
   assert(safe.status === 'succeeded', 'safe seed fixture failed unexpectedly: ' + JSON.stringify(safe))
   assert(safe.result.edges.length === 1 && safe.result.edges[0].fromNodeId === 'r1' && safe.result.edges[0].toNodeId === 'r2' && safe.result.edges[0].relation === 'infers', 'explicit same-source relation was not seeded')
   assert(safe.result.edges[0].evidence.length === 1 && safe.result.edges[0].evidence[0].quote.includes('因此'), 'safe seed evidence does not contain the relation-bearing source span')
+  assert(reviewed === 1, 'explicit relation was not independently reviewed exactly once')
 
   console.log(JSON.stringify({
     ok: true,

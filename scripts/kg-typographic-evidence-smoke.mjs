@@ -45,6 +45,20 @@ async function waitTask(taskId) {
 }
 
 const uniqueSource = '"感觉懂了"并不是明确的行为目标。'
+const pendingStarted = await handlers.get('extract')({ title: 'typography-pending', text: uniqueSource })
+const pendingDone = await waitTask(pendingStarted.taskId)
+assert(pendingDone.status === 'succeeded', JSON.stringify(pendingDone))
+assert(pendingDone.result.edges.length === 0, 'authenticated typography alone must not admit a high-risk relation without review')
+const pendingEdge = pendingDone.result.generation.semanticReview.withheld.find(item => item.verdict === 'pending')?.edge
+assert(pendingEdge?.evidence.some(item => item.quote === '"感觉懂了"并不是明确的行为目标'), 'pending review must retain the uniquely rebound evidence')
+let reviewed = 0
+extractor.reviewRelations = async ({ candidates, units }) => {
+  assert(candidates.length === 1 && candidates[0].edge.relation === 'not_is', 'review only the fixture negative relation')
+  assert(units.length === 1 && units[0].text === uniqueSource, 'review must receive exact original source spelling')
+  assert(candidates[0].edge.evidence.some(item => item.quote === '"感觉懂了"并不是明确的行为目标'), 'review must receive rebound evidence')
+  reviewed++
+  return { verdicts: [{ id: candidates[0].id, verdict: 'supported', reason: 'Synthetic fixture reviewer', evidence: candidates[0].edge.evidence }] }
+}
 const uniqueStarted = await handlers.get('extract')({ title: 'typography-unique', text: uniqueSource })
 const uniqueDone = await waitTask(uniqueStarted.taskId)
 assert(uniqueDone.status === 'succeeded', 'unique typography extraction failed: ' + JSON.stringify(uniqueDone))
@@ -54,6 +68,7 @@ assert(uniqueNode && uniqueNode.groundingStatus === 'grounded', 'unique typograp
 assert(uniqueNode.quote === '"感觉懂了"', 'node quote was not rebound to the exact source spelling: ' + JSON.stringify(uniqueNode && uniqueNode.quote))
 assert(uniqueNode.evidence.some((item) => item.quote === '"感觉懂了"'), 'node evidence did not preserve exact source quote')
 assert(uniqueEdge && uniqueEdge.evidence.some((item) => item.quote === '"感觉懂了"并不是明确的行为目标'), 'relation evidence was dropped instead of uniquely rebound')
+assert(reviewed === 1, 'typographic repair must not bypass independent relation review')
 
 mode = 'ambiguous'
 const ambiguousSource = '"感觉懂了"不是目标；再次说"感觉懂了"也不是目标。'
@@ -63,5 +78,6 @@ assert(ambiguousDone.status === 'succeeded', 'ambiguous typography extraction fa
 const ambiguousNode = ambiguousDone.result.nodes.find((node) => node.id === 'n1')
 assert(ambiguousNode && ambiguousNode.groundingStatus === 'unsupported', 'ambiguous typography match was incorrectly authenticated')
 assert(Array.isArray(ambiguousNode.evidence) && ambiguousNode.evidence.length === 0, 'ambiguous typography match received evidence')
+assert(reviewed === 1, 'ambiguous node evidence must not create a relation candidate')
 
-console.log(JSON.stringify({ ok: true, uniqueRebound: true, ambiguousFailClosed: true }))
+console.log(JSON.stringify({ ok: true, uniqueRebound: true, ambiguousFailClosed: true, unreviewedRelationWithheld: true }))

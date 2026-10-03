@@ -33,7 +33,7 @@ ctx.provide('webServer', { register(route) { routes.set(route.path, route); retu
 await ctx.plugin(plugin).await()
 const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Relationship gathering fixture</title><link rel="stylesheet" href="/viewer.css">
-<style>body{margin:0;font:14px system-ui}.kg-root{padding:12px}.kg-cols{height:740px;grid-template-columns:minmax(180px,32%) minmax(0,1fr)}.kg-original{overflow:auto;max-height:740px}.fixture-header{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}#metrics{white-space:pre-wrap;font-size:12px}@media(max-width:600px){.kg-cols{height:auto;grid-template-columns:1fr}.kg-original{max-height:120px}}</style>
+<style>body{margin:0;font:14px system-ui}.kg-root{padding:12px}.kg-cols{height:740px;grid-template-columns:minmax(180px,32%) minmax(0,1fr)}.kg-original{overflow:auto;max-height:740px}.fixture-header{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}#metrics{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}@media(max-width:600px){.kg-cols{height:auto;grid-template-columns:1fr}.kg-original{max-height:120px}}</style>
 <script src="/react.js"></script><script src="/react-dom.js"></script><script src="/viewer.js"></script></head>
 <body><div id="root"></div><pre id="metrics"></pre><script>
 const h=React.createElement, stats={requests:0,workers:0,commits:0,located:null,longTasks:[]}; window.fixtureStats=stats;

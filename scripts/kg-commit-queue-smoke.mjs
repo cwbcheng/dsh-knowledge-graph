@@ -49,6 +49,7 @@ function makeFixture(kind, replyForCall) {
   const calls = []
   const errors = []
   const history = []
+  const contentScopes = []
   const operations = new WeakMap()
   const host = { call: async (name, payload) => {
     assert.equal(name, 'graph-commit')
@@ -91,6 +92,7 @@ function makeFixture(kind, replyForCall) {
         assert.equal(tab, 'read')
         assert.equal(targetId, 'kg-workspace-read')
       },
+      setContentScope: value => { assert.equal(value, 'all'); contentScopes.push(value) },
       loadGraphDocument: loadOverride || (async () => failed ? { error: { message: 'Fixture document load failed' } }
         : { graph, revision: graph.revision, sourceText: 'navigated source' }),
       setError: error => { if (error) errors.push(error) } }
@@ -103,7 +105,7 @@ function makeFixture(kind, replyForCall) {
       + '; return loadHistoryEntry')(...Object.values(deps))
     return load(entryOverride || { documentId: graph.source.documentId, title: 'Navigation fixture' })
   }
-  return { base, refs, calls, errors, history, operations, makeView, setResultView, makeCommit, navigate }
+  return { base, refs, calls, errors, history, contentScopes, operations, makeView, setResultView, makeCommit, navigate }
 }
 
 for (const kind of ['document', 'trajectory']) {
@@ -214,6 +216,7 @@ for (const outcome of ['failure', 'success', 'missing-receipt']) {
   assert.equal(departed.calls.length, 1)
   const newBase = { ...departed.base, source: { documentId, revision: 7 }, revision: 7 }
   assert.ok(await departed.navigate(newBase), 'actual history loading must replace the view successfully')
+  assert.deepEqual(departed.contentScopes, ['all'], 'a loaded document must not inherit the previous content-layer filter')
   const newChange = { ...newBase, summary: 'Ignored a different issue in the current view' }
   const newSave = departed.makeCommit(departed.refs.currentResultRef.current)(newChange, newBase)
   departed.setResultView(departed.makeView(newChange, 'navigated source'))
@@ -244,6 +247,7 @@ const stayedSave = stayed.makeCommit(stayed.refs.currentResultRef.current)(staye
 stayed.setResultView(stayed.makeView(stayedChange, 'source'))
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(await stayed.navigate({ ...stayed.base, source: { documentId: 'unavailable' } }, true), undefined)
+assert.deepEqual(stayed.contentScopes, [], 'a failed load must preserve the current content-layer filter')
 assert.equal(stayed.refs.graphCommitEpochRef.current, 0, 'verification cancellation or a failed history load does not leave the current graph')
 releaseFailedNavigation({ error: { code: 'revision_conflict', message: 'Current view save rejected' } })
 await stayedSave

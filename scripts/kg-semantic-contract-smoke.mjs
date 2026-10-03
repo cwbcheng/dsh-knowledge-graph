@@ -59,6 +59,15 @@ const extractor = async ({ title, attempt, systemPrompt, prompt }) => {
   throw new Error('unexpected fixture ' + title)
 }
 
+const reviewedRelations = []
+extractor.reviewRelations = async ({ candidates }) => ({ verdicts: candidates.map(item => {
+  const key = item.edge.fromNodeId + '>' + item.edge.toNodeId + ':' + item.edge.relation
+  assert(['n1>n3:driven_by', 'n4>n3:not_is', 'n9>n5:aims_at'].includes(key), 'unexpected semantic contract review candidate: ' + key)
+  assert(item.edge.evidence.length === 1, 'the fixture relation must retain its explicit source sentence')
+  reviewedRelations.push(item.edge.relation)
+  return { id: item.id, verdict: 'supported', reason: 'Synthetic relation-vocabulary fixture acceptance', evidence: item.edge.evidence }
+}) })
+
 globalThis.harness = { handle(name, handler) { handlers.set(name, handler) } }
 hostPlugin().apply({
   get(name) { return name === 'kgExtractor' ? extractor : null },
@@ -117,6 +126,7 @@ const relationStart = await handlers.get('extract')({ title: 'semantic-relations
 const relation = await waitTask(relationStart.taskId)
 assert(relation.status === 'succeeded', 'new relation vocabulary was rejected: ' + JSON.stringify(relation))
 const rels = new Set(relation.result.edges.map((edge) => edge.relation))
+assert(reviewedRelations.length === 3, 'cross-paragraph and negative relations must still receive independent review')
 for (const expected of ['is_a', 'driven_by', 'not_is', 'contains', 'analogy', 'aims_at']) {
   assert(rels.has(expected), 'missing accepted semantic relation: ' + expected + ' / ' + JSON.stringify(relation.result.edges))
 }

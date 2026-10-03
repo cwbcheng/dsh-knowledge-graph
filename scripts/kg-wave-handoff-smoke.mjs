@@ -22,7 +22,8 @@ function createHost(calls, beforeExtract = () => {}) {
         calls.push(index)
         await beforeExtract(index)
         const unit = chunk.units.find(unit => unit.text.startsWith('Device'))
-        return { summary: '', nodes: [{ id: 'n1', type: 'fact', text: unit.text, quote: unit.text, paragraph: unit.num }], edges: [] }
+        return { summary: '', nodes: [{ id: 'n1', type: 'fact', text: unit.text, quote: unit.text, paragraph: unit.num,
+          contentLayer: index % 2 ? 'main' : 'source_context' }], edges: [] }
       },
       async reviewCoverage() { throw new Error('fully covered fixture requested coverage repair') },
       async weaveRelations() { return { edges: [] } },
@@ -92,6 +93,12 @@ if (process.argv[2] === 'kill-worker') {
       assert.equal(result.status, 'succeeded', JSON.stringify(result.error))
       assert.deepEqual(calls, [0, 1, 2, 3, 4])
       assert.equal(result.result.nodes.length, 5, 'colliding batch-local IDs must all survive ordered merge')
+      assert.deepEqual(result.result.nodes.map(node => node.contentLayer), ['source_context', 'main', 'source_context', 'main', 'source_context'])
+      const persisted = store.getDocument(result.result.source.documentId)
+      assert.deepEqual(persisted.nodes.map(node => node.contentLayer), result.result.nodes.map(node => node.contentLayer),
+        'SQLite reload must retain explicit node layers, not merely infer them from chapter titles')
+      const window = await api('document-load', { documentId: persisted.source.documentId, nodeLimit: 1, includeSourceText: false })
+      assert.equal(window.graph.nodes[0].contentLayer, 'source_context', 'The actual Host route must preserve classification in a bounded window')
       assert.equal(writes.filter(cp => cp.nextBatchIndex > 0 && cp.nextBatchIndex < cp.totalBatches && !cp.pendingWave).length, 0,
         'do not write the same merged graph twice between adjacent waves')
       for (let index = 0; index < 5; index++) assert.equal(writes.filter(cp => cp.pendingWave?.results?.[index]?.stage === 'complete').length,
@@ -123,6 +130,8 @@ if (process.argv[2] === 'kill-worker') {
       assert.equal(resumed.status, 'succeeded', JSON.stringify(resumed.error))
       assert.deepEqual(calls, [2, 3, 4], 'neither completed batch may be regenerated across a handoff crash')
       assert.deepEqual(shape(resumed.result), expected, 'recovery must preserve graph, evidence and generation metrics')
+      assert.deepEqual(store.getDocument(resumed.result.source.documentId).nodes.map(node => node.contentLayer),
+        expected.nodes.map(node => node.contentLayer), 'recovered layers must also survive persistent reload')
       assert.equal(store.loadCheckpoint(run.runId).status, 'succeeded')
     }
 
@@ -155,6 +164,31 @@ if (process.argv[2] === 'kill-worker') {
     assert.deepEqual(legacyCalls, [2, 3, 4])
     assert.deepEqual(shape(legacy.result), expected, 'legacy between-wave checkpoints must remain resumable')
 
+    const oldLayerStore = await open('legacy-without-layer')
+    const oldLayerCheckpoint = structuredClone(legacyCheckpoint)
+    for (const node of oldLayerCheckpoint.graph.nodes) delete node.contentLayer
+    oldLayerStore.saveCheckpoint(oldLayerCheckpoint, { runId: 'legacy-without-layer', status: 'failed', sourceText: source })
+    const oldLayerCalls = [], oldLayerApi = createHost(oldLayerCalls)
+    const oldLayer = await settle(oldLayerApi, await oldLayerApi('resume-extract', { runId: 'legacy-without-layer', retryFailed: true }))
+    assert.equal(oldLayer.status, 'succeeded', JSON.stringify(oldLayer.error))
+    assert.deepEqual(oldLayerCalls, [2, 3, 4])
+    const expectedOldLayer = structuredClone(expected)
+    for (const node of expectedOldLayer.nodes.slice(0, 2)) delete node.contentLayer
+    assert.deepEqual(shape(oldLayer.result), expectedOldLayer, 'legacy absence is preserved, not silently classified as main')
+    assert(oldLayerStore.getDocument(oldLayer.result.source.documentId).nodes.slice(0, 2).every(node => !Object.hasOwn(node, 'contentLayer')))
+
+    for (const invalidLayer of ['unknown-layer', '', { layer: 'main' }]) {
+      const invalidStore = await open('invalid-layer-' + typeof invalidLayer + '-' + String(invalidLayer).length)
+      const checkpoint = structuredClone(legacyCheckpoint)
+      checkpoint.graph.nodes[0].contentLayer = invalidLayer
+      invalidStore.saveCheckpoint(checkpoint, { runId: 'invalid-layer', status: 'failed', sourceText: source })
+      const invalidCalls = [], invalidApi = createHost(invalidCalls)
+      const invalid = await settle(invalidApi, await invalidApi('resume-extract', { runId: 'invalid-layer', retryFailed: true }))
+      assert.equal(invalid.status, 'failed'); assert.equal(invalid.error.code, 'checkpoint_invalid')
+      assert.deepEqual(invalidCalls, [], 'invalid stored classification stops before any model request')
+      assert.equal(invalidStore.listDocuments().length, 0, 'invalid classification never publishes a partial graph')
+    }
+
     const pauseStore = await open('pause-handoff')
     let release, entered = false
     const pauseApi = createHost([], async index => {
@@ -174,7 +208,8 @@ if (process.argv[2] === 'kill-worker') {
     assert.deepEqual(resumedCalls, [2, 4], 'a completed sibling in the newly admitted wave must survive pause and a new Host')
     assert.deepEqual(shape(resumed.result), expected)
     console.log(JSON.stringify({ ok: true, concurrency: [1, 2, 4], redundantHandoffWrites: 0, durableBeforeModel: true,
-      sigkillBoundaries: ['results', 'admission'], sqliteFailureRecovery: true, legacyResume: true, pauseNewHostResume: true }))
+      sigkillBoundaries: ['results', 'admission'], sqliteFailureRecovery: true, legacyResume: true, pauseNewHostResume: true,
+      contentLayerPreserved: true, missingLegacyLayerPreserved: true, invalidStoredLayerRejected: true }))
   } finally {
     SqliteKnowledgeStore.prototype.saveCheckpoint = save
     for (const cleanup of cleanups.reverse()) cleanup()

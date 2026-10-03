@@ -8,7 +8,7 @@ const from = hostSource.indexOf('function graphNeighborhoodHost(')
 const hostQuery = new Function(hostSource.slice(from, hostSource.indexOf('function buildGraphViewHost(', from)) + '; return graphNeighborhoodHost')()
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const sandbox = { window: { React: {} }, setTimeout, clearTimeout, setInterval, clearInterval, console }
-vm.runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = {mergeNeighborhoodPage, neighborhoodEdgeKey, neighborhoodAnchors, layoutNeighborhood,'), sandbox)
+vm.runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = {contentScopeCanvasProps, mergeNeighborhoodPage, neighborhoodEdgeKey, neighborhoodAnchors, layoutNeighborhood,'), sandbox)
 const engine = sandbox.window.KGViewer
 const plain = value => JSON.parse(JSON.stringify(value))
 const store = await openSqliteStore(':memory:')
@@ -165,7 +165,8 @@ const props = { documentId: 'ui', revision: 1, nodes: [{ id: 'a' }], edges: [], 
   selectedNodeId: 'a', loadNeighborhood(args, signal) { return new Promise((resolve, reject) => jobs.push({ args, signal, resolve, reject })) },
   onGatherEnd() { restored++ }, onGatherProjection(value) { projections.push(value) } }
 const controller = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
-  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors,
+  contentScopeCanvasProps: engine.contentScopeCanvasProps, REL_LABEL: {} })
 const find = (tree, predicate) => !tree || typeof tree !== 'object' ? null : predicate(tree) ? tree : tree.children?.map(child => find(child, predicate)).find(Boolean)
 const action = (tree, label) => { const node = find(tree, n => n.props['aria-label'] === label || n.children?.includes(label)); assert(node, label); return node.props.onClick }
 const base = tree => tree.children[0].children[0]
@@ -225,7 +226,8 @@ let edited = null
 const rightEdge = reply('a').edges[0], wrongRelation = { ...rightEdge, relation: 'analogy' }
 const editProps = { ...props, edges: [wrongRelation, rightEdge], onDeleteEdge: (edge, index) => { edited = { edge, index } } }
 const editing = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
-  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors,
+  contentScopeCanvasProps: engine.contentScopeCanvasProps, REL_LABEL: {} })
 tree = editing.render(editProps); base(tree).props.onGather('a'); editing.render(editProps)
 jobs.at(-1).resolve(reply('a')); await flush(); tree = editing.render(editProps)
 local(tree).props.onSelectEdge(0); tree = editing.render(editProps)
@@ -234,7 +236,8 @@ editing.dispose()
 console.log(JSON.stringify({ stableEdgeIdentity: true, parallelRelationMappedToCanonicalIndex: true }))
 
 const depthController = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
-  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors,
+  contentScopeCanvasProps: engine.contentScopeCanvasProps, REL_LABEL: {} })
 tree = depthController.render(props); base(tree).props.onGather('a'); tree = depthController.render(props)
 const firstDepthJob = jobs.at(-1)
 find(tree, n => n.props['aria-label'] === '聚拢层数').props.onChange({ target: { value: '3' } })
@@ -252,7 +255,8 @@ depthController.dispose()
 console.log(JSON.stringify({ depthSelection: true, staleDepthProjectionHidden: true }))
 
 const legacyController = hooks(engine.GraphViewer, { GraphCanvas: Canvas, mergeNeighborhoodPage: engine.mergeNeighborhoodPage,
-  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors, REL_LABEL: {} })
+  neighborhoodEdgeKey: engine.neighborhoodEdgeKey, neighborhoodAnchors: engine.neighborhoodAnchors,
+  contentScopeCanvasProps: engine.contentScopeCanvasProps, REL_LABEL: {} })
 const legacyPage = reply('a')
 delete legacyPage.hops; delete legacyPage.visibleTotal; delete legacyPage.truncated
 legacyPage.nodes.forEach(node => { delete node.gatherDepth })

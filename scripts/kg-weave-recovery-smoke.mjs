@@ -10,6 +10,16 @@ import * as host from '../lib/index.js'
 
 const source = Array.from({ length: 20 }, (_, section) => '# Section ' + section + '\n\n' +
   Array.from({ length: 4 }, (_, i) => 'Record ' + (section * 4 + i) + ' describes an independent observation.').join('\n\n')).join('\n\n')
+function singleBatchJournal(checkpoint) {
+  const wrapper = checkpoint.relationWeave
+  assert.equal(wrapper.version, 3)
+  assert.equal(wrapper.maxBatches, 1)
+  assert.equal(wrapper.finished, false)
+  assert.equal(wrapper.batches.length, 1)
+  assert.equal(wrapper.batches[0].complete, false)
+  assert.equal(wrapper.batches[0].journal.version, 2)
+  return wrapper.batches[0].journal
+}
 function request(api, endpoint, body = {}, method = 'POST') {
   return new Promise((resolve, reject) => {
     const req = new EventEmitter()
@@ -111,7 +121,7 @@ if (process.argv[2] === 'worker') {
     const first = await worker('crash')
     assert(first.events.some(event => event.event === 'kill-ready'), 'must kill during a model call, not after completion')
     const saved = store.loadCheckpoint(first.id)
-    const journal = saved.checkpoint.relationWeave
+    const journal = singleBatchJournal(saved.checkpoint)
     assert.equal(saved.status, 'running')
     assert.equal(Object.keys(journal.results).length, 2)
     assert(journal.results[0].norm.edges.length > 0)
@@ -121,12 +131,25 @@ if (process.argv[2] === 'worker') {
     const listed = store.listIncompleteRuns().find(run => run.runId === first.id)
     assert.equal(listed.savedRelationGroups, 2)
     assert.equal(listed.totalRelationGroups, journal.totalGroups)
+    const multiBatch = structuredClone(saved.checkpoint)
+    multiBatch.relationWeave.maxBatches = 2
+    multiBatch.relationWeave.batches.push(structuredClone(multiBatch.relationWeave.batches[0]))
+    delete multiBatch.relationWeave.batches[1].journal.results[1]
+    store.saveCheckpoint(multiBatch, { runId: 'multi-batch-summary', status: 'running', sourceText: saved.sourceText })
+    const multiListed = store.listIncompleteRuns().find(run => run.runId === 'multi-batch-summary')
+    assert.equal(multiListed.savedRelationGroups, 3, 'summary must count saved groups across every stored batch')
+    assert.equal(multiListed.totalRelationGroups, journal.totalGroups * 2)
+    const legacy = { ...saved.checkpoint, relationWeave: journal }
+    store.saveCheckpoint(legacy, { runId: 'legacy-summary', status: 'running', sourceText: saved.sourceText })
+    const legacyListed = store.listIncompleteRuns().find(run => run.runId === 'legacy-summary')
+    assert.equal(legacyListed.savedRelationGroups, 2)
+    assert.equal(legacyListed.totalRelationGroups, journal.totalGroups)
     assert.equal((await worker('injected', first.id)).events.length, 0)
     const restore = checkpoint => store.saveCheckpoint(checkpoint, { runId: first.id, status: 'running', sourceText: saved.sourceText })
     for (const mutate of [
-      checkpoint => { checkpoint.relationWeave.binding = 'wrong-plan' },
-      checkpoint => { checkpoint.relationWeave.results[0].norm.edges[0].relation = 'contradicts' },
-      checkpoint => { checkpoint.relationWeave.results[9999] = checkpoint.relationWeave.results[0] },
+      checkpoint => { singleBatchJournal(checkpoint).binding = 'wrong-plan' },
+      checkpoint => { singleBatchJournal(checkpoint).results[0].norm.edges[0].relation = 'contradicts' },
+      checkpoint => { const results = singleBatchJournal(checkpoint).results; results[9999] = results[0] },
       checkpoint => { checkpoint.graph.nodes[0].text = 'Changed base' },
     ]) {
       const bad = structuredClone(saved.checkpoint)
@@ -151,18 +174,18 @@ if (process.argv[2] === 'worker') {
 
     // Fail only the second group write, after one successful durable commit.
     store.db.exec(`CREATE TRIGGER fail_weave_save BEFORE UPDATE ON extraction_runs
-      WHEN json_extract(NEW.checkpoint_json, '$.relationWeave.results."1"') IS NOT NULL
+      WHEN json_extract(NEW.checkpoint_json, '$.relationWeave.batches[0].journal.results."1"') IS NOT NULL
       BEGIN SELECT RAISE(ABORT, 'fixture disk write failure'); END`)
     const failed = await worker('write-fail')
     assert.equal(failed.done.error?.code, 'persistence_failed', JSON.stringify(failed.done))
     assert.equal(failed.events.filter(event => event.event === 'weave').length, 2, 'no further model calls after failed persistence')
     assert.equal(failed.events.filter(event => event.event === 'review').length, 0)
-    assert.equal(Object.keys(store.loadCheckpoint(failed.id).checkpoint.relationWeave.results).length, 1, 'failed write cannot advance recovery cursor')
+    assert.equal(Object.keys(singleBatchJournal(store.loadCheckpoint(failed.id).checkpoint).results).length, 1, 'failed write cannot advance recovery cursor')
     store.db.exec('DROP TRIGGER fail_weave_save')
     const recovered = await worker('resume', failed.id)
     assert.equal(recovered.done.status, 'succeeded', JSON.stringify(recovered.done))
     const hole = await worker('hole-crash')
-    const holeSaved = store.loadCheckpoint(hole.id).checkpoint.relationWeave
+    const holeSaved = singleBatchJournal(store.loadCheckpoint(hole.id).checkpoint)
     assert.deepEqual(Object.keys(holeSaved.results), ['1', '2'], 'failed groups must not get a completed marker')
     const filled = await worker('resume', hole.id)
     assert.equal(filled.done.status, 'succeeded', JSON.stringify(filled.done))
@@ -172,7 +195,7 @@ if (process.argv[2] === 'worker') {
     assert.deepEqual(filledCalls[1], holeCalls[4], 'then skip the saved later groups')
     const parallel = await worker('parallel-crash')
     assert(parallel.events.some(event => event.event === 'parallel-saved'), 'kill only after out-of-order candidates reached SQLite')
-    const parallelSaved = store.loadCheckpoint(parallel.id).checkpoint.relationWeave
+    const parallelSaved = singleBatchJournal(store.loadCheckpoint(parallel.id).checkpoint)
     assert.deepEqual(Object.keys(parallelSaved.results), ['1', '2'])
     assert.equal(parallelSaved.results[2].norm.edges.length, 0)
     const parallelResume = await worker('parallel-resume', parallel.id)
@@ -184,7 +207,8 @@ if (process.argv[2] === 'worker') {
     assert.equal(replayed.length, parallelSaved.totalGroups - 2)
     assert.equal(parallelResume.events.filter(event => event.event === 'extract').length, 0)
     console.log(JSON.stringify({ hardKillRecovery: true, candidateSurvives: true, emptyGroupSurvives: true,
-      independentReview: true, tamperingRejected: true, writeFailureStopsProgress: true, failedGroupRecovery: true, parallelHardKillRecovery: true }))
+      independentReview: true, tamperingRejected: true, writeFailureStopsProgress: true, failedGroupRecovery: true, parallelHardKillRecovery: true,
+      batchWrapperSummary: true, legacySummary: true }))
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })

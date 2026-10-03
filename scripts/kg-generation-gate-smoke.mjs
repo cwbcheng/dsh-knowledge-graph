@@ -95,6 +95,16 @@ const extractor = async ({ title, attempt, prompt }) => {
   }
 }
 
+const reviewedPairs = []
+extractor.reviewRelations = async ({ candidates }) => ({ verdicts: candidates.map(item => {
+  const pair = item.edge.fromNodeId + '>' + item.edge.toNodeId
+  assert(['n1>n2', 'c1>c2'].includes(pair) && item.edge.relation === 'supports', 'unexpected relation reached the fixture reviewer')
+  assert(item.edge.evidence.length > 0 && item.edge.evidence.every(value => value.documentId && value.sourceId && value.chunkId),
+    'independent review must receive full candidate provenance')
+  reviewedPairs.push(pair)
+  return { id: item.id, verdict: 'supported', reason: 'Synthetic provenance fixture acceptance', evidence: item.edge.evidence }
+}) })
+
 globalThis.harness = { handle(name, handler) { handlers.set(name, handler) } }
 hostPlugin().apply({
   get(name) { return name === 'kgExtractor' ? extractor : null },
@@ -124,6 +134,7 @@ const provenanceNode = completed.result.nodes.find((node) => node.id === 'n1')
 const provenanceEdge = completed.result.edges[0]
 assert(provenanceNode && provenanceNode.evidence[0] && provenanceNode.evidence[0].documentId && provenanceNode.evidence[0].sourceId && provenanceNode.evidence[0].chunkId, 'node evidence does not carry full provenance')
 assert(provenanceEdge && provenanceEdge.evidence[0] && provenanceEdge.evidence[0].documentId && provenanceEdge.evidence[0].sourceId && provenanceEdge.evidence[0].chunkId, 'edge evidence does not carry full provenance')
+assert(reviewedPairs.includes('n1>n2'), 'a repaired cross-paragraph edge must still pass independent review')
 assert(provenanceNode.groundingStatus === 'grounded' && provenanceNode.entailmentStatus === 'unverified', 'anchor/evidence/entailment states are not separated')
 
 const collapseSource = Array.from({ length: 10 }, (_, index) => '候选节点 ' + (index + 1)).join('\n\n')

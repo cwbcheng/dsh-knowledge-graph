@@ -37,6 +37,7 @@
 .kg-target-layout { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: 16px; }
 .kg-target-catalogue { min-width: 0; border-right: 1px solid var(--kg-border); padding-right: 12px; }
 .kg-target-catalogue ul, .kg-target-outcomes { list-style: none; padding: 0; margin: 0; }
+.kg-target-catalogue .kg-target-directory { max-height: min(40vh, 360px); overflow-y: auto; overscroll-behavior-y: contain; overflow-anchor: none; scrollbar-gutter: stable; }
 .kg-target-catalogue li { border-bottom: 1px solid var(--kg-border); }
 .kg-target-catalogue li button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .kg-target-map input:not([type=checkbox]), .kg-target-map select, .kg-target-map textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: var(--kg-text); background: var(--kg-edge-label-bg); border: 1px solid var(--kg-border); border-radius: 4px; padding: 7px; }
@@ -50,10 +51,13 @@
 .kg-target-map fieldset { padding: 0; border: 0; margin: 0; }
 .kg-target-map [aria-pressed=true] { border-color: var(--kg-accent); background: var(--kg-accent-soft); }
 .kg-target-upper { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; border-block: 2px solid var(--kg-accent); padding-block: 8px; }
-.kg-target-slot { border-top: 1px dashed var(--kg-border); padding-block: 8px; }
+.kg-target-slot { border-top: 1px dashed var(--kg-border); padding-block: 8px; scroll-margin-block: 12px; }
 .kg-target-slot[data-selected=true] { outline: 2px solid var(--kg-accent); outline-offset: 2px; }
 .kg-target-outcomes li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 32px; gap: 6px; align-items: start; padding: 8px 0; border-bottom: 1px dashed var(--kg-border); }
 .kg-target-outcomes small, .kg-target-outcomes details { grid-column: 1 / -1; }
+.kg-target-case[hidden] { display: none; }
+.kg-target-example-filter { display: grid; gap: 6px; margin-block: 10px; min-width: 0; }
+.kg-target-example-filter select { width: 100%; min-width: 0; }
 .kg-target-case { border-block: 1px solid var(--kg-border); padding: 10px 0; }
 .kg-target-case summary { cursor: pointer; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
 .kg-target-pair { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr); gap: 12px; }
@@ -62,7 +66,13 @@
 .kg-target-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 10px; }
 .kg-target-toolbar label { display: flex; align-items: start; gap: 6px; }
 .kg-target-icon { width: 32px; height: 32px; flex: 0 0 32px; }
-@container (max-width: 700px) { .kg-target-layout { grid-template-columns: minmax(0,1fr); } .kg-target-catalogue { border-right: 0; padding-right: 0; max-height: 260px; overflow: auto; } .kg-target-upper, .kg-target-pair { grid-template-columns: minmax(0,1fr); } }
+.kg-target-compare-row { border-top: 1px solid var(--kg-border); padding-block: 10px; }
+.kg-target-compare-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.kg-target-compare-values > div { min-width: 0; }
+.kg-target-compare-values pre, .kg-target-basis-context { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 6px 0; max-height: 260px; overflow-y: auto; }
+.kg-target-compare-values small, .kg-target-compare-values em { color: var(--kg-text-dim); }
+@container (max-width: 520px) { .kg-target-compare-values { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 700px) { .kg-target-layout { grid-template-columns: minmax(0,1fr); } .kg-target-catalogue { border-right: 0; padding-right: 0; } .kg-target-catalogue .kg-target-directory { max-height: 200px; } .kg-target-upper, .kg-target-pair { grid-template-columns: minmax(0,1fr); } }
 .kg-model-understanding .kg-model-learning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .kg-model-understanding label[data-field='mapping'], .kg-model-understanding label[data-field='questions'], .kg-model-understanding label[data-field='revisionReason'] { grid-column: 1 / -1; }
 .kg-model-understanding textarea { min-height: 80px; }

@@ -2,6 +2,7 @@ import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import './gen-image-nodes-inline.mjs'
 import './gen-model-structure-inline.mjs'
+import './gen-generation-structure-inline.mjs'
 import './gen-model-consumption-inline.mjs'
 import './gen-model-chain-inline.mjs'
 import './gen-target-map-inline.mjs'
@@ -111,6 +112,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
+              const relationBudget = relationBatchBudgetHost(a)
+              if (relationBudget.error) return writeJson(res, 200, relationBudget)
               const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
               const text = typeof a.text === 'string' ? a.text.trim() : ''
               const imageInputs = Array.isArray(a.images) ? a.images : []
@@ -151,6 +154,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  id: 'kg-' + Date.now().toString(36) + '-' + seq,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
+                  relationBatchBudget: relationBudget.maxBatches,
                  concurrency: a.concurrency,
                  imageAttachments,
                  imageSource: markdownSource,
@@ -307,7 +311,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 edgeLimit: graphViewNodeLimitHost(payload.nodeLimit) * 6,
                 query,
                 includeSourceText: payload.includeSourceText !== false,
-              })
+              }, GENERATION_STRUCTURE_TOOLS.inspect)
               if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该文档' } })
               const revision = Number.isInteger(saved.revision) ? saved.revision : 0
               const sourceText = saved.sourceText || ''
@@ -879,6 +883,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
+              const relationBudget = relationBatchBudgetHost(a)
+              if (relationBudget.error) return writeJson(res, 200, relationBudget)
               const runId = typeof a.runId === 'string' ? a.runId.trim().slice(0, 200) : ''
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少待恢复的 runId' } })
               const store = await getSqliteStore()
@@ -926,6 +932,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 id: runId,
                 status: 'running',
                 kind: 'resume',
+                relationBatchBudget: relationBudget.maxBatches,
                 concurrency: a.concurrency,
                 title: savedRun.title || checkpoint.title || '',
                 text: savedRun.sourceText,
@@ -1335,6 +1342,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
+              const relationBudget = relationBatchBudgetHost(a, a.continuous === true)
+              if (relationBudget.error) return writeJson(res, 200, relationBudget)
               if (a.continuous != null && typeof a.continuous !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'continuous 必须为布尔值' } })
               if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } })
               const documentId = canonicalDocumentInputHost(a.documentId)
@@ -1357,6 +1366,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 status: 'running', kind: 'relation-retry',
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 continuous: a.continuous === true, reviewPendingOnly: a.reviewPendingOnly === true,
+                relationBatchBudget: relationBudget.maxBatches,
                 title: canonical.source && canonical.source.title ? canonical.source.title : '',
                 text: canonical.sourceText, documentId,
                 ontology: continuity.ontology,
@@ -1369,6 +1379,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let payload = {}
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const a = payload && typeof payload === 'object' ? payload : {}
+              const relationBudget = relationBatchBudgetHost(a)
+              if (relationBudget.error) return writeJson(res, 200, relationBudget)
               const title = typeof a.title === 'string' ? a.title.trim().slice(0, 200) : ''
               const text = typeof a.text === 'string' ? a.text.trim() : ''
               const imageIds = Array.isArray(a.imageIds) ? a.imageIds : []
@@ -1413,6 +1425,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (appendContinuity.error) return writeJson(res, 200, { error: appendContinuity.error })
               const task = {
                 id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'append',
+                relationBatchBudget: relationBudget.maxBatches,
                 concurrency: a.concurrency,
                 title, text, imageAttachments, imageInterpretation: interpretingImages,
                 existing, existingSourceText, documentId, paragraphOffset,

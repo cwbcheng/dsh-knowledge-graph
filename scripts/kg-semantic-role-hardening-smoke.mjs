@@ -8,12 +8,23 @@ const handlers = new Map()
 const extractCalls = []
 const coverageCalls = []
 const weaveCalls = []
+const reviewedRelations = []
 
 const counterText = '如果不明确目标，运动可能被执行成减肥。'
 const boundaryText = '并非这些学习手段本身有问题，而是这些手段缺少正确行为目标驱动。'
 const analogyText = '任何手段都必须由正确的行为目标驱动，否则执行会走形。拿增肌来说，运动只有以肌纤维微损伤为目标才能增肌。'
 
 const extractor = {
+  async reviewRelations({ candidates, units }) {
+    return { verdicts: candidates.map(item => {
+      const key = item.edge.fromNodeId + '>' + item.edge.toNodeId + ':' + item.edge.relation
+      assert(['a1>p1:analogy', 'm1>b1:supports'].includes(key), 'unexpected semantic-role review candidate: ' + key)
+      reviewedRelations.push(key)
+      if (key === 'm1>b1:supports') return { id: item.id, verdict: 'insufficient', reason: 'Coverage of the boundary alone does not establish support for the proposed cause.' }
+      assert(item.edge.evidence.length === 1 && item.edge.evidence[0].quote === analogyText && units.some(u => u.text === analogyText), 'analogy review lost the explicit comparison')
+      return { id: item.id, verdict: 'supported', reason: 'Synthetic explicit-analogy fixture acceptance', evidence: item.edge.evidence }
+    }) }
+  },
   async extractChunk(args) {
     extractCalls.push({ title: args.title, attempt: args.attempt, prompt: args.prompt })
     if (args.title === 'counter-role-hardening') {
@@ -153,6 +164,7 @@ const analogyDone = await waitTask(analogyStarted.taskId)
 assert(analogyDone.status === 'succeeded', 'analogy relation task failed: ' + JSON.stringify(analogyDone))
 assert(weaveCalls.some((call) => call.title === 'analogy-role-hardening'), 'relation weave did not inspect the analogy fixture')
 assert(analogyDone.result.edges.some((edge) => edge.fromNodeId === 'a1' && edge.toNodeId === 'p1' && edge.relation === 'analogy'), 'explicit cross-domain analogy relation was not admitted')
+assert(reviewedRelations.includes('a1>p1:analogy'), 'woven analogy bypassed independent review')
 
 console.log(JSON.stringify({
   ok: true,

@@ -6,6 +6,7 @@ function assert(condition, message) {
 
 const handlers = new Map()
 const coverageCalls = []
+let reviewedRelations = 0
 let producerPrompt = ''
 
 const source = '拿函数定义来说：“函数定义描述一种对应关系。”面对函数定义时，学习者可能反复阅读并记住这句话。'
@@ -15,6 +16,14 @@ const simpleSource = [
 ].join('\n\n')
 
 const extractor = {
+  async reviewRelations({ candidates, units }) {
+    return { verdicts: candidates.map(item => {
+      assert(item.edge.fromNodeId === 'm1' && item.edge.toNodeId === 'n1' && item.edge.relation === 'example', 'unexpected worked-example review candidate')
+      assert(item.edge.evidence.length === 1 && units.some(u => u.num === item.edge.evidence[0].paragraph && u.text.includes(item.edge.evidence[0].quote)), 'worked-example review lost the illustrative source')
+      reviewedRelations += 1
+      return { id: item.id, verdict: 'supported', reason: 'Synthetic illustrative-example fixture acceptance', evidence: item.edge.evidence }
+    }) }
+  },
   async extractChunk(args) {
     producerPrompt = args.systemPrompt
     if (args.title === 'simple-example-coverage') {
@@ -111,10 +120,12 @@ assert(coverageCalls.length === 1, 'worked-example omission did not receive one 
 assert(done.result.nodes.some((node) => node.id === 'm1' && String(node.text || '').includes('函数定义')), 'worked-example context anchor was not recovered')
 assert(done.result.edges.some((edge) => edge.fromNodeId === 'm1' && edge.toNodeId === 'n1' && edge.relation === 'example'), 'worked-example anchor was not connected to the downstream behavior')
 
+const beforeSimpleReview = reviewedRelations
 const simpleStarted = await handlers.get('extract')({ title: 'simple-example-coverage', text: simpleSource })
 const simpleDone = await waitTask(simpleStarted.taskId)
 assert(simpleDone.status === 'succeeded', 'simple illustrative-example extraction failed: ' + JSON.stringify(simpleDone))
 assert(coverageCalls.length === 2, 'simple illustrative omission did not receive one additional bounded coverage review')
 assert(simpleDone.result.nodes.some((node) => node.id === 'm1' && String(node.text || '').includes('翻页')), 'page-turning illustrative example was not recovered')
 assert(simpleDone.result.edges.some((edge) => edge.fromNodeId === 'm1' && edge.toNodeId === 'n1' && edge.relation === 'example'), 'page-turning example was not connected to the abstract prediction claim')
+assert(reviewedRelations === beforeSimpleReview + 1, 'cross-paragraph example bypassed independent review')
 console.log(JSON.stringify({ ok: true, workedExampleRecovered: true, simpleExampleRecovered: true, boundedCoverage: true }))

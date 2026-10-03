@@ -129,13 +129,22 @@ storage.forgetPendingTask('visual-1')
 const retryStart = client.indexOf('        const retryRelations = async () => {')
 const retryEnd = client.indexOf('        const resetAll = () => {', retryStart)
 const script = client.slice(retryStart, retryEnd)
+const budgetStart = client.indexOf('      function relationBatchBudgetValue(')
+const budgetEnd = client.indexOf('      function RelationBatchBudgetInput(', budgetStart)
+assert(budgetStart >= 0 && budgetEnd > budgetStart)
+const relationBatchBudgetValue = new Function(client.slice(budgetStart, budgetEnd) + '; return relationBatchBudgetValue')()
 const values = { resultView: { graph: { source: { documentId: 'doc', revision: 1 } } }, documentIdOfGraph: () => 'doc', cancelVerifyTasks() {}, setError() {}, effectiveModelArg: null, graphRevisionRef: { current: 1 }, submittedRef: { current: null }, submissionBusyRef: { current: false }, resumeAttemptRef: { current: false }, setExtractProgress() {}, setPhase() {}, setSelectedNodeId() {}, setSelectedEdgeId() {}, setActivePara() {}, setTaskId() {}, taskId: null, phase: 'done', title: 'book', fullText: 'source', rememberPendingTask: storage.rememberPendingTask, host: { call(name) { assert.equal(name, 'relation-retry'); calls++; return new Promise(resolve => { release = resolve }) } } }
 values.continuousRelations = true
 values.extractionConcurrency = 4
+values.relationBatchBudgetValue = relationBatchBudgetValue
+values.relationBatchBudget = '3'
+const submissionErrors = []
+values.setError = error => { if (error) submissionErrors.push(error) }
 const submit = values.host.call
 values.host.call = (name, body) => {
   assert.equal(body.continuous, true, 'send the chosen execution mode to Host')
   assert.equal(body.concurrency, 4, 'relation completion must honor the same concurrency control')
+  assert.equal(body.relationBatchBudget, 3, 'send the validated selected budget to Host')
   return submit(name, body)
 }
 const retry = new Function(...Object.keys(values), script + '; return retryRelations')(...Object.values(values))
@@ -146,6 +155,18 @@ release({ taskId: 'relation-accepted' }); await first; await second
 assert.equal(JSON.parse(saved.get('pending')).taskId, 'relation-accepted')
 assert.equal(values.submissionBusyRef.current, false)
 assert.equal(values.resumeAttemptRef.current, false)
+assert.deepEqual(submissionErrors, [], 'fixture dependencies must not hide submission errors')
+for (const budget of ['', '1.5', '21', null]) {
+  const invalidValues = { ...values, relationBatchBudget: budget }
+  const invalidRetry = new Function(...Object.keys(invalidValues), script + '; return retryRelations')(...Object.values(invalidValues))
+  const pendingBefore = saved.get('pending'), errorCount = submissionErrors.length
+  await invalidRetry()
+  assert.equal(calls, 1, 'invalid budget cannot start or replace a task')
+  assert.equal(submissionErrors.length, errorCount + 1, 'invalid budget must give an actionable error')
+  assert(submissionErrors.at(-1).message.includes('1–20'))
+  assert.equal(saved.get('pending'), pendingBefore)
+  assert.equal(values.submissionBusyRef.current, false)
+}
 
 const resumeStart = client.indexOf('         const resumeLostTask = async () => {')
 const resumeEnd = client.indexOf('// ---- adaptive-backoff polling while a task runs ----', resumeStart)

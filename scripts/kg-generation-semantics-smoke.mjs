@@ -65,6 +65,15 @@ try {
       if (attempt === 1 || neverRepair) mutations[mode](graph)
       return graph
     }
+    let reviewedRelations = 0
+    extractor.reviewRelations = async ({ candidates }) => {
+      assert.equal(candidates.length, 1)
+      const edge = candidates[0].edge
+      assert.equal(edge.fromNodeId, 'material'); assert.equal(edge.toNodeId, 'meaning')
+      assert.equal(edge.relation, 'exemplifies'); assert.equal(edge.role, 'input'); assert.equal(edge.mode, 'contrast')
+      reviewedRelations++
+      return { verdicts: [{ id: candidates[0].id, verdict: 'supported', reason: 'Synthetic semantic-attribute fixture acceptance', evidence: edge.evidence }] }
+    }
     const handlers = new Map()
     globalThis.harness = { handle(name, handler) { handlers.set(name, handler) } }
     const ctx = {
@@ -80,7 +89,7 @@ try {
     else persistentHost.apply(ctx)
     const request = transport === 'dynamic' ? (name, body) => handlers.get(name)(body) : (name, body, method) => http(api, name, body, method)
     for (mode of Object.keys(mutations)) {
-      calls.length = 0; snapshots.length = 0
+      calls.length = 0; snapshots.length = 0; reviewedRelations = 0
       const done = await wait(request, await request('extract', { text: sourceText, ontology: 'learning-view-v1' }))
       assert.equal(done.status, 'succeeded', JSON.stringify(done.error))
       assert.equal(snapshots[0].nodes[0].stage, 'data', 'repair prompt must not strip unaffected node attributes')
@@ -93,6 +102,7 @@ try {
       assert.equal(done.result.nodes.find(node => node.id === 'meaning').relKind, 'basic')
       assert.equal(done.result.edges[0].role, 'input')
       assert.equal(done.result.edges[0].mode, 'contrast')
+      assert.equal(reviewedRelations, 1, 'preserving attributes does not replace the independent review stage')
       assert.equal(calls.length, mode === 'none' ? 2 : 3, 'a lossy repair must be corrected within the existing retry budget')
       if (mode !== 'none') assert(calls[2].prompt.includes('repair_semantic_attributes_changed'))
       assert.equal(done.result.generation.invariantErrors, 0)

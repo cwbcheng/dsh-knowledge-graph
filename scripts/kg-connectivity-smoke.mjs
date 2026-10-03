@@ -6,6 +6,7 @@ function assert(condition, message) {
 
 const handlers = new Map()
 const weaveCalls = []
+const reviewedKeys = []
 let manualRetryWeaveCalls = 0
 const extractor = {
   async extractChunk({ title, existingNodeIds }) {
@@ -115,6 +116,18 @@ const extractor = {
         ],
       }],
     }
+  },
+  async reviewRelations({ candidates }) {
+    const allowed = new Set(['n1>n2:infers', 'n2>n3:supports', 'n4>n2:example', 'b1>b2:supports',
+      'v1>v2:supports', 'v2>v3:supports', 'r1>r2:supports', 'r2>e1:analogy', 'e1>r2:analogy',
+      's1>s2:infers', 'm1>m2:infers'])
+    return { verdicts: candidates.map(item => {
+      const key = item.edge.fromNodeId + '>' + item.edge.toNodeId + ':' + item.edge.relation
+      assert(allowed.has(key), 'unexpected candidate reached the synthetic connectivity reviewer: ' + key)
+      assert(item.edge.evidence.length > 0, 'an empty-evidence proposal must be rejected before review')
+      reviewedKeys.push(key)
+      return { id: item.id, verdict: 'supported', reason: 'Synthetic connectivity fixture acceptance', evidence: item.edge.evidence }
+    }) }
   },
   async weaveRelations(args) {
     weaveCalls.push(args)
@@ -254,6 +267,7 @@ assert(weaveCalls[0].systemPrompt.includes('关系编织引擎'), 'relation weav
 assert(weaveCalls[0].prompt.includes('孤立节点'), 'relation-weave prompt omitted connectivity context')
 assert(weaveCalls[0].prompt.includes('重点候选关系对'), 'relation-weave prompt omitted bounded candidate pairs')
 assert(completed.result.edges.length === 3, 'relation weaving did not add exactly two authenticated edges: ' + JSON.stringify(completed.result.edges))
+assert(reviewedKeys.length === 3, 'initial and woven candidates must pass the independent review stage')
 assert(!completed.result.edges.some((edge) => edge.fromNodeId === 'n1' && edge.toNodeId === 'n4'), 'weaving admitted an edge without direct relation evidence')
 const connectivity = completed.result.generation && completed.result.generation.connectivity
 assert(connectivity && connectivity.attempted === true, 'generation metadata does not record relation weaving')

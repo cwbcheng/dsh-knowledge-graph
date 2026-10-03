@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { encodeVerificationRequest } from './verification-wire.mjs'
+import './gen-generation-structure-inline.mjs'
 
 // Extract the plugin body directly from the source file (previously this
 // read an externally prepared /tmp/kg-client-body.js; self-contained now).
