@@ -3563,9 +3563,90 @@ for (const [kind, id, label, impact, verify] of scenarios) {
   assert.equal(next.mapping, material.mapping); assert.equal(next.conditions, material.conditions); assert.equal(next.boundary, material.boundary)
   assert(!owner.control('确认保存个人靶图').props.checked); assert.equal(owner.requests.length, requests)
   assert(!all(owner.tree, item => item.props['data-target-removal']).length)
+  assert(owner.control('撤销上次删除'), 'A confirmed deletion needs a bounded recovery action before another edit')
   assert.equal(owner.focused, kind === 'slots' ? 'data-target-record-view:draft' : kind === 'examples' ? 'data-target-example-list:heading' : 'data-target-outcome-list:heading')
   owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load(); verify(JSON.parse(storage.get(key)).map); owner.unmount()
 }
+for (const [kind, id, label] of scenarios) {
+  seed(); owner = mount({ focusRequest: focus, slotNavigation: true }); await owner.load()
+  owner.change('本次修订理由', '撤销不能恢复旧批准或删除理由'); const original = storage.get(key), requests = owner.requests.length
+  owner.click(label); owner.click('确认' + label)
+  const undo = owner.control('撤销上次删除').props.onClick
+  owner.change('搜索例子文字', '没有匹配例子'); owner.change('确认保存个人靶图', undefined, true)
+  owner.change('映射规律表述', 'x'.repeat(8001))
+  assert(text(owner.tree).includes('本次修改未应用')); assert(owner.control('撤销上次删除'))
+  undo(); undo(); owner.render()
+  assert.equal(storage.get(key), original, 'Undo restores the complete original draft including identities and all hidden cases: ' + kind)
+  assert.equal(owner.control('搜索例子文字').props.value, '没有匹配例子', 'Undo does not silently change browsing filters')
+  assert(!owner.control('确认保存个人靶图').props.checked); assert.equal(owner.requests.length, requests)
+  assert(!all(owner.tree, item => item.props['aria-label'] === '撤销上次删除').length)
+  assert.equal(owner.focused, kind === 'slots' ? 'data-target-record-view:draft' : kind === 'examples' ? 'data-target-example-list:heading' : 'data-target-outcome-list:heading')
+  owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+  assert.equal(storage.get(key), original); assert(!all(owner.tree, item => item.props['aria-label'] === '撤销上次删除').length); owner.unmount()
+}
+seed(); owner = mount({ focusRequest: focus }); await owner.load()
+owner.click('删除槽位 before'); owner.click('确认删除槽位 before')
+const firstUndo = owner.control('撤销上次删除').props.onClick, afterFirst = storage.get(key)
+owner.click('删除槽位 after'); owner.click('确认删除槽位 after')
+const afterSecond = storage.get(key)
+firstUndo(); owner.render(); assert.equal(storage.get(key), afterSecond, 'An older receipt cannot undo two deletions')
+owner.click('撤销上次删除'); assert.equal(storage.get(key), afterFirst)
+firstUndo(); owner.render(); assert.equal(storage.get(key), afterFirst)
+assert(!all(owner.tree, item => item.props['aria-label'] === '撤销上次删除').length); owner.unmount()
+for (const boundary of ['edit-sync', 'reason', 'add', 'busy-return', 'hide-return', 'target-return', 'revision', 'document', 'history-sync', 'history-cancel', 'history-return', 'read-error', 'save-sync', 'save-error', 'unmount', 'reload']) {
+  seed()
+  if (boundary.startsWith('history')) records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+    id: 'undo-history', parentId: '', reason: '', confirm: true, map: motionTargetMap() }, []).saved]
+  owner = mount({ focusRequest: focus }); await owner.load()
+  owner.click('删除例子 1'); owner.click('确认删除例子 1'); const undo = owner.control('撤销上次删除').props.onClick
+  if (boundary === 'edit-sync') owner.control('映射规律表述').props.onChange({ target: { value: '刚刚输入的新限定语，旧撤销不能覆盖' } })
+  if (boundary === 'reason') owner.change('本次修订理由', '另一项改动')
+  if (boundary === 'add') owner.click('增加具体推测')
+  if (boundary === 'busy-return') { owner.props.busy = true; owner.render(); owner.props.busy = false; owner.render() }
+  if (boundary === 'hide-return') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render(); await owner.load() }
+  if (boundary === 'target-return') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'another-document'; owner.render() }
+  if (boundary.startsWith('history')) {
+    owner.control('查看靶图修订 undo-history').props.onClick()
+    if (boundary !== 'history-sync') {
+      owner.render()
+      if (boundary === 'history-cancel') owner.click('取消读取历史靶图')
+      else { await owner.load(); owner.click('返回未保存草稿') }
+    }
+  }
+  if (boundary === 'read-error') {
+    owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion')
+    const read = owner.pending().find(item => item.args.action === 'read'); read.reject(new Error('undo fixture 503')); read.settled = true; await owner.settle()
+  }
+  if (boundary.startsWith('save')) {
+    owner.change('本次修订理由', '本地人工记录，不表示语义成立')
+    owner.click('删除例子 1'); owner.click('确认删除例子 1')
+    const latest = owner.control('撤销上次删除').props.onClick
+    owner.change('确认保存个人靶图', undefined, true); owner.control('保存个人靶图').props.onClick()
+    const bytes = storage.get(key); latest(); owner.render(); assert.equal(storage.get(key), bytes)
+    const request = owner.pending().find(item => item.args.action === 'save'); assert(request)
+    request.reject(new Error('save result unknown')); request.settled = true; await owner.settle()
+    latest(); owner.render(); assert.equal(storage.get(key), bytes)
+  }
+  if (['unmount', 'reload'].includes(boundary)) owner.unmount()
+  const bytes = JSON.stringify([...storage]), requests = owner.requests.length
+  undo(); owner.render(); assert.equal(JSON.stringify([...storage]), bytes, boundary); assert.equal(owner.requests.length, requests, boundary)
+  assert(!all(owner.tree, item => item.props['aria-label'] === '撤销上次删除').length, boundary)
+  if (boundary === 'reload') { owner = mount({ focusRequest: focus }); await owner.load(); assert(!all(owner.tree, item => item.props['aria-label'] === '撤销上次删除').length) }
+  owner.unmount()
+}
+seed(); owner = mount({ focusRequest: focus }); await owner.load()
+owner.click('删除例子 1'); const outdatedConfirmation = owner.control('确认删除例子 1').props.onClick
+owner.control('映射规律表述').props.onChange({ target: { value: '同一批事件中的新内容' } })
+const newBytes = storage.get(key); outdatedConfirmation(); owner.render(); assert.equal(storage.get(key), newBytes)
+assert.equal(JSON.parse(storage.get(key)).map.examples.length, 40, 'An accepted edit invalidates pending deletion synchronously')
+owner.click('删除例子 1'); owner.click('确认删除例子 1'); const cachedDeletion = storage.get(key)
+storageFailure = true; owner.click('撤销上次删除')
+assert.equal(storage.get(key), cachedDeletion); assert(text(owner.tree).includes('本地草稿存储不可用'))
+assert.equal(owner.control('例子 1 完整情境').props.value, material.examples[0].context)
+storageFailure = false; owner.change('本次修订理由', '恢复存储后保留原来的全部例子')
+assert.equal(JSON.parse(storage.get(key)).map.examples.length, 40); owner.unmount()
 for (const boundary of ['edit', 'reason', 'filter', 'filter-return', 'busy', 'busy-return', 'hide', 'hide-return', 'target', 'target-return', 'revision', 'document', 'history', 'history-cancel', 'history-return', 'read-error', 'unmount']) {
   seed()
   if (boundary.startsWith('history')) records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
@@ -3661,4 +3742,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftEditAdmission: true, draftFieldLimitsAndUnicode: true, draftAggregateCapacity: true, rejectedEditNoSideEffects: true,
   draftCapacityReload: true, draftCapacityHistoryAndRetry: true, draftCapacityVersionFence: true,
   removalPreviewNoWrites: true, removalExactCascade: true, removalCancelAndDoubleClick: true, removalContextFences: true,
-  removalFocusAndReload: true, removalSavedPredictionProtection: true }))
+  removalFocusAndReload: true, removalSavedPredictionProtection: true,
+  removalUndoExactRecovery: true, removalUndoReadOnlyBrowsing: true, removalUndoOneStepOnly: true,
+  removalUndoContextAndSyncFences: true, removalUndoNoApprovalOrHttp: true, removalUndoQuotaAndReload: true }))
