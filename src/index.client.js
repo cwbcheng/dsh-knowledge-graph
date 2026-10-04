@@ -3528,7 +3528,7 @@ export default function clientPlugin() {
         const [error, setError] = useState(null), [notice, setNotice] = useState(''), [saving, setSaving] = useState(false), [loading, setLoading] = useState(false)
         const [confirmed, setConfirmed] = useState(false), [compared, setCompared] = useState(false), [reload, setReload] = useState(0)
         const [roundConfirmed, setRoundConfirmed] = useState(false)
-        const [cacheWarning, setCacheWarning] = useState('')
+        const [cacheWarnings, setCacheWarnings] = useState(() => new Map()), [failedDraftRead, setFailedDraftRead] = useState(null)
         const [editError, setEditError] = useState(null), [editErrorId] = useState(() => 'kg-target-edit-' + Date.now() + '-' + Math.random().toString(36).slice(2))
         const [removal, setRemoval] = useState(null), removalCurrent = useRef(null), removalContext = useRef(null), [removalFocus, setRemovalFocus] = useState(null)
         const [removalUndo, setRemovalUndo] = useState(null), undoCurrent = useRef(null), undoContext = useRef(null)
@@ -3600,25 +3600,31 @@ export default function clientPlugin() {
           return () => { recordRequest.current?.abort(); recordRequest.current = null }
         }, [documentId, revision, targetId, active, reload, draft?.baseRevision, draft?.parentId])
         const key = value => 'dsh-kg-target-map:' + JSON.stringify([value.documentId, value.targetId, value.baseRevision])
+        const warnCache = (value, message) => setCacheWarnings(previous => {
+          const next = new Map(previous)
+          if (message) next.set(key(value), message); else next.delete(key(value))
+          return next
+        })
         const remember = value => {
           cache.current.set(key(value), value)
           if (damaged.current.has(key(value))) return
-          try { localStorage.setItem(key(value), JSON.stringify(value)); setCacheWarning('') }
-          catch { setCacheWarning('本地草稿存储不可用；当前内容仍在此窗口，关闭前请保存个人靶图。') }
+          // A write only resolves persistence failures for this exact draft identity.
+          try { localStorage.setItem(key(value), JSON.stringify(value)); warnCache(value, '') }
+          catch { warnCache(value, '本地草稿存储不可用；当前内容仍在此窗口，关闭前请保存个人靶图。') }
         }
-        const install = value => { setDraft(value); remember(value); setConfirmed(false); setCompared(false); setRoundConfirmed(false); setEditError(null) }
+        const install = value => { setDraft(value); remember(value); setFailedDraftRead(null); setConfirmed(false); setCompared(false); setRoundConfirmed(false); setEditError(null) }
         const readDraft = (id, rev) => {
-          const storageKey = key({ documentId, targetId: id, baseRevision: rev })
+          const identity = { documentId, targetId: id, baseRevision: rev }, storageKey = key(identity)
           let value = cache.current.get(storageKey)
           if (!value) { try { const raw = localStorage.getItem(storageKey) || 'null'; if (raw.length > 500000) throw new Error('size'); value = JSON.parse(raw) }
-            catch { damaged.current.add(storageKey); setCacheWarning('本地草稿无法读取，原存储内容未清除；当前编辑暂留窗口。') } }
+            catch { damaged.current.add(storageKey); setFailedDraftRead(identity); warnCache(identity, '本地草稿无法读取，原存储内容未清除；当前编辑暂留窗口。') } }
           if (!value) return null
           try {
             if (value.documentId !== documentId || value.targetId !== id || value.baseRevision !== rev || typeof value.parentId !== 'string' || typeof value.reason !== 'string' ||
                 value.roundReason !== undefined && (typeof value.roundReason !== 'string' || value.roundReason.length > 2000)) throw new Error('scope')
             TARGET_MAP_TOOLS.validate(value.map, { draft: true })
             return value
-          } catch { damaged.current.add(storageKey); setCacheWarning('本地草稿身份或格式不兼容，原存储内容未清除；当前编辑暂留窗口。'); return null }
+          } catch { damaged.current.add(storageKey); setFailedDraftRead(identity); warnCache(identity, '本地草稿身份或格式不兼容，原存储内容未清除；当前编辑暂留窗口。'); return null }
         }
         useEffect(() => {
           if (!active || !targetId) return
@@ -4307,7 +4313,11 @@ export default function clientPlugin() {
           h('h3', null, '渐构靶图'), h('p', { className: 'kg-model-meta' }, '个人学习记录 · 资料中的目标与我的表述分开保存 · 不代表掌握或独立验证'),
           error ? h('div', { role: 'alert' }, error.message || String(error), h('div', { className: 'kg-target-toolbar' },
             button('重读靶图', () => setReload(value => value + 1), saving), button('重新载入知识图', () => onRefresh?.(), saving || !onRefresh))) : null,
-          notice ? h('p', { role: 'status' }, notice) : null, cacheWarning ? h('p', { role: 'alert' }, cacheWarning) : null,
+          notice ? h('p', { role: 'status' }, notice) : null,
+          active && !archive ? [ownsDraft ? draft : null, failedDraftRead && (!ownsDraft || key(failedDraftRead) !== key(draft)) ? failedDraftRead : null]
+            .filter(value => value?.documentId === documentId && value.targetId === targetId && cacheWarnings.has(key(value)))
+            .map(value => h('p', { key: key(value), role: 'alert' }, '知识图第 ' + value.baseRevision + ' 版 · ' +
+              (ownsDraft && key(value) === key(draft) ? cacheWarnings.get(key(value)) : '本地草稿未能打开，原存储内容未清除；当前草稿未被替换。'))) : null,
           navigationWarning ? h('p', { role: 'alert' }, navigationWarning) : null,
           h('div', { className: 'kg-target-layout' },
             h('aside', { className: 'kg-target-catalogue', 'aria-label': '靶图目标目录' },

@@ -23,7 +23,8 @@ const React = {
 }
 const storage = new Map(), tools = createTargetMapTools(), doc = targetMapFixture()
 let storageFailure = false
-const localStorage = { get length() { return storage.size }, key: i => [...storage.keys()][i], getItem: key => storage.get(key) || null,
+const storageReadFailures = new Set()
+const localStorage = { get length() { return storage.size }, key: i => [...storage.keys()][i], getItem: key => { if (storageReadFailures.has(key)) throw new Error('storage read'); return storage.get(key) || null },
   setItem: (key, value) => { if (storageFailure) throw new Error('quota'); storage.set(key, value) } }
 const sessionStorage = {
   getItem(key) { if (current.navigationFailure.read) throw new Error('session read'); return current.navigation.get(key) ?? null },
@@ -227,6 +228,12 @@ storage.set('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'externality'
 owner = mount({ focusRequest: { ...focus, revision: 2, targetId: 'externality' } }); await owner.load()
 assert(text(owner.tree).includes('本地草稿无法读取'))
 owner.change('判别规律表述', '保持损坏存储，另记内存草稿')
+assert.equal(storage.get('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'externality', 2])), '{damaged')
+owner.click('打开靶图 motion'); await owner.load()
+assert(!text(owner.tree).includes('本地草稿无法读取'), 'A healthy target must not inherit another target cache warning')
+owner.click('打开靶图 externality'); await owner.load()
+assert.equal(owner.control('判别规律表述').props.value, '保持损坏存储，另记内存草稿')
+assert(text(owner.tree).includes('本地草稿无法读取'), 'Returning to a memory-only draft must restore its damaged-cache warning')
 assert.equal(storage.get('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'externality', 2])), '{damaged')
 owner.unmount()
 owner = mount({ focusRequest: { ...focus, revision: 2 } })
@@ -3771,6 +3778,85 @@ assert(!all(owner.tree, item => item.props['data-target-removal']).length)
 assert.equal(writes, writeCount); owner.unmount(); storage.clear(); records = []; doc.revision = 1
 }
 
+// A successful write for another identity cannot repair a protected, memory-only draft.
+{
+const writeCount = writes, documentId = doc.documentId
+const draftKey = (targetId, revision = 1) => 'dsh-kg-target-map:' + JSON.stringify([documentId, targetId, revision])
+const cacheAlert = () => all(owner.tree, item => item.props.role === 'alert').map(text).find(value => value.includes('本地草稿')) || ''
+for (const damage of ['json', 'schema', 'identity', 'size', 'read']) {
+  storage.clear(); doc.revision = 1
+  records = [tools.handle(doc, { action: 'save', documentId, expectedRevision: 1, targetId: 'motion', id: 'cache-history', parentId: '', reason: '', confirm: true, map: motionTargetMap() }, []).saved]
+  const valid = { documentId, targetId: 'motion', baseRevision: 1, parentId: 'cache-history', reason: '', map: motionTargetMap() }
+  const raw = damage === 'json' ? '{damaged' : damage === 'schema' ? JSON.stringify({ ...valid, map: {} }) :
+    damage === 'identity' ? JSON.stringify({ ...valid, targetId: 'motion ' }) : damage === 'size' ? ' '.repeat(500001) : JSON.stringify(valid)
+  storage.set(draftKey('motion'), raw)
+  storage.set(draftKey('motion', 3), '{unreadable future cache')
+  if (damage === 'read') storageReadFailures.add(draftKey('motion'))
+  owner = mount({ focusRequest: focus }); await owner.load()
+  storageReadFailures.clear()
+  const originalWarning = cacheAlert()
+  assert(originalWarning.includes('知识图第 1 版') && originalWarning.includes(damage === 'schema' || damage === 'identity' ? '身份或格式不兼容' : '无法读取'), damage)
+  const mapping = '<script>not executable</script>\n方向未知；两个必要输入；对象与时间不同；N 与 m/s；通常；来源冲突；循环不是证明'
+  owner.change('映射规律表述', mapping); owner.change('确认保存个人靶图', undefined, true)
+  assert.equal(cacheAlert(), originalWarning); assert.equal(storage.get(draftKey('motion')), raw)
+  const oldEdit = owner.control('映射规律表述').props.onChange
+  owner.click('打开靶图 externality')
+  assert.equal(cacheAlert(), '', 'Even while loading, another target must not inherit the warning')
+  const failed = owner.pending().find(item => item.args.action === 'read'); failed.reject(new Error('cache fixture read failure')); failed.settled = true; await owner.settle()
+  assert.equal(cacheAlert(), '', 'An HTTP failure cannot relabel the previous draft as this target')
+  owner.click('重读靶图'); await owner.load(); owner.change('判别规律表述', '健康草稿')
+  const healthyBytes = storage.get(draftKey('externality'))
+  oldEdit({ target: { value: 'late edit' } }); owner.render()
+  assert.equal(storage.get(draftKey('externality')), healthyBytes); assert.equal(storage.get(draftKey('motion')), raw)
+  owner.click('打开靶图 motion'); await owner.load()
+  assert.equal(owner.control('映射规律表述').props.value, mapping); assert.equal(cacheAlert(), originalWarning)
+  assert(!owner.control('确认保存个人靶图').props.checked, 'Reopening does not restore approval')
+  owner.click('查看靶图修订 cache-history'); await owner.load()
+  assert.equal(cacheAlert(), '', 'A historical server snapshot is not the memory-only local draft')
+  owner.click('返回未保存草稿'); assert.equal(cacheAlert(), originalWarning)
+  owner.props.active = false; owner.render(); assert.equal(cacheAlert(), '')
+  owner.props.active = true; owner.render(); await owner.load(); assert.equal(cacheAlert(), originalWarning)
+  owner.props.documentId = documentId + ' '; owner.render(); assert.equal(cacheAlert(), '', 'Document identity is exact, not trimmed')
+  owner.props.documentId = documentId; owner.render(); await owner.load(); assert.equal(cacheAlert(), originalWarning)
+  doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+  assert.equal(cacheAlert(), originalWarning, 'The warning refers to the retained old draft, not the new graph revision')
+  assert(owner.control('映射规律表述').props.disabled)
+  owner.click('开启当前版本靶图'); owner.change('映射规律表述', '健康的新版草稿')
+  assert.equal(cacheAlert(), '')
+  owner.change('本地草稿版本', '3')
+  assert(cacheAlert().includes('知识图第 3 版'), 'A failed version selection identifies the cache actually read')
+  assert(cacheAlert().includes('当前草稿未被替换') && !cacheAlert().includes('当前编辑暂留窗口'), 'A failed alternative read must not imply the healthy active draft is memory-only')
+  assert.equal(owner.control('映射规律表述').props.value, '健康的新版草稿')
+  owner.change('本地草稿版本', '1'); assert.equal(cacheAlert(), originalWarning)
+  assert.equal(owner.control('映射规律表述').props.value, mapping)
+  owner.change('本地草稿版本', '3')
+  const warnings = all(owner.tree, item => item.props.role === 'alert').map(text).filter(value => value.includes('本地草稿'))
+  assert.equal(warnings.length, 2, 'A failed read of another version must not erase the active memory-only draft warning')
+  assert.equal(warnings[0], originalWarning); assert(warnings[1].includes('知识图第 3 版'))
+  assert(warnings[1].includes('当前草稿未被替换') && !warnings[1].includes('当前编辑暂留窗口'))
+  assert.equal(storage.get(draftKey('motion')), raw); assert.equal(storage.get(draftKey('externality')), healthyBytes)
+  owner.unmount(); doc.revision = 1
+  owner = mount({ focusRequest: focus }); await owner.load()
+  if (damage !== 'read') assert.equal(cacheAlert(), originalWarning, 'Remount rechecks the untouched damaged bytes')
+  else assert.equal(cacheAlert(), '', 'A new mount can read the intact cache after a transient read failure')
+  owner.unmount()
+}
+storage.clear(); records = []; doc.revision = 1
+owner = mount({ focusRequest: focus }); await owner.load()
+const stored = storage.get(draftKey('motion'))
+storageFailure = true; owner.change('映射规律表述', '尚未落盘的配额失败草稿')
+assert(cacheAlert().includes('存储不可用')); assert.equal(storage.get(draftKey('motion')), stored)
+owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load()
+assert(cacheAlert().includes('知识图第 1 版') && cacheAlert().includes('存储不可用'))
+assert.equal(owner.control('映射规律表述').props.value, '尚未落盘的配额失败草稿')
+storageFailure = false; owner.click('打开靶图 externality'); await owner.load()
+assert.equal(storage.get(draftKey('motion')), stored, 'Writing another draft does not persist the failed one')
+owner.click('打开靶图 motion'); await owner.load()
+assert.equal(cacheAlert(), '', 'Only a successful write of this draft clears its quota warning')
+assert.equal(JSON.parse(storage.get(draftKey('motion'))).map.mapping, '尚未落盘的配额失败草稿')
+assert.equal(writes, writeCount); owner.unmount(); storage.clear(); records = []; doc.revision = 1
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -3830,4 +3916,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   removalPreviewNoWrites: true, removalExactCascade: true, removalCancelAndDoubleClick: true, removalContextFences: true,
   removalFocusAndReload: true, removalSavedPredictionProtection: true,
   removalUndoExactRecovery: true, removalUndoReadOnlyBrowsing: true, removalUndoOneStepOnly: true,
-  removalUndoContextAndSyncFences: true, removalUndoNoApprovalOrHttp: true, removalUndoQuotaAndReload: true }))
+  removalUndoContextAndSyncFences: true, removalUndoNoApprovalOrHttp: true, removalUndoQuotaAndReload: true,
+  draftWarningIdentity: true, draftWarningMemoryRoundTrip: true, draftWarningHistoryAndVersion: true,
+  draftWarningReadFailures: true, draftWarningQuotaRecovery: true, draftWarningRawBytesAndNoWrites: true }))
