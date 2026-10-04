@@ -1631,13 +1631,17 @@ export class SqliteKnowledgeStore {
         const where = "document_id = ? AND model_id = ? AND task_kind = 'target_map'"
         const keys = [args.documentId, targetId]
         const head = this.db.prepare(`SELECT attempt_id FROM learning_attempts WHERE ${where} ORDER BY created_at DESC, attempt_id DESC LIMIT 1`).get(...keys)
-        const historyTotal = this.db.prepare(`SELECT COUNT(*) AS n FROM learning_attempts WHERE ${where}`).get(...keys).n
+        const historyRecordTotal = this.db.prepare(`SELECT COUNT(*) AS n FROM learning_attempts WHERE ${where}`).get(...keys).n
         const offset = Number.isSafeInteger(args.offset) && args.offset >= 0 ? args.offset : 0
-        const history = this.db.prepare(`SELECT attempt_id AS id, base_revision AS baseRevision, created_at AS createdAt,
+        const query = typeof args.query === 'string' && args.query.length <= 256 ? args.query : ''
+        // Search metadata only, using the same Unicode/literal matching as the browser and dynamic Host.
+        const rows = this.db.prepare(`SELECT attempt_id AS id, base_revision AS baseRevision, created_at AS createdAt,
           json_extract(response_json, '$.title') AS title, json_extract(task_json, '$.reason') AS reason
-          FROM learning_attempts WHERE ${where} ORDER BY created_at DESC, attempt_id DESC LIMIT 20 OFFSET ?`).all(...keys, offset)
+          FROM learning_attempts WHERE ${where} ORDER BY created_at DESC, attempt_id DESC${query ? '' : ' LIMIT 20 OFFSET ?'}`).all(...keys, ...(query ? [] : [offset]))
+        const matches = query ? rows.filter(item => targetMapTools.historyMatches(item, query)) : rows
+        const historyTotal = query ? matches.length : historyRecordTotal, history = query ? matches.slice(offset, offset + 20) : rows
         const result = targetMapTools.handle(graph ? { documentId: args.documentId, revision: graph.revision, graph } : null, args, [], Date.now(), historyTotal, [],
-          { historyHead: head?.attempt_id || '', historyTotal, history })
+          { historyHead: head?.attempt_id || '', historyRecordTotal, historyTotal, history })
         this.db.exec('COMMIT')
         return result
       }

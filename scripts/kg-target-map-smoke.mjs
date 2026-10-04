@@ -118,6 +118,28 @@ assert.equal(read({ ...historyArgs, targetId: 'externality', historyHead: histor
 assert.equal(read({ ...historyArgs, expectedRevision: 2 }, historyRecords).error.code, 'revision_conflict')
 assert.equal(read({ ...historyArgs, offset: 60 }, historyRecords).history.length, 0)
 assert(historyFirst.history.every(item => !Object.hasOwn(item, 'map') && !Object.hasOwn(item, 'bases')), 'Page payload is metadata, not 20 full answer snapshots')
+const searchedRecords = structuredClone(historyRecords)
+for (let index = 0; index < searchedRecords.length; index++) {
+  searchedRecords[index].map.title = index < 43 ? '旧标题 Ä_%<b>\n同名' : '最新标题'
+  searchedRecords[index].reason = index === 2 ? '必要输入未知，单位与时间未核对；来源冲突' : '修订 ' + index
+}
+const searchPage = (query, offset = 0) => read({ ...historyArgs, query, offset, historyHead: 'history-46' }, searchedRecords)
+const titlePages = [0, 20, 40].map(offset => searchPage('ä_%<b>\n', offset))
+assert.equal(titlePages[0].historyTotal, 43, 'History search must include old titles beyond the latest 20 revisions')
+assert.equal(titlePages[0].historyRecordTotal, 47)
+assert.equal(titlePages[0].query, 'ä_%<b>\n')
+assert.deepEqual(titlePages.flatMap(page => page.history.map(item => item.id)), searchedRecords.slice(0, 43).map(item => item.id).reverse())
+assert.equal(searchPage('history-02').history[0].id, 'history-02')
+assert.equal(searchPage('单位与时间').history[0].id, 'history-02')
+assert.equal(searchPage('无匹配').historyTotal, 0); assert.equal(searchPage('无匹配').historyHead, 'history-46')
+assert.equal(searchPage(' 旧标题').historyTotal, 0, 'Search is literal; spaces and SQL wildcard characters are not discarded')
+assert.equal(searchPage(map.mapping).historyTotal, 0, 'Metadata search must not claim to search historical answers')
+for (const query of [null, 2, {}, 'x'.repeat(257)]) assert.equal(searchPage(query).error.code, 'invalid_input')
+assert.equal(searchPage('x'.repeat(256)).historyTotal, 0)
+assert.equal(read({ ...historyArgs, query: '无匹配', historyHead: 'history-45' }, searchedRecords).error.code, 'history_conflict')
+const foreignRecords = [{ ...structuredClone(searchedRecords[0]), id: 'other-document', documentId: 'another-document' },
+  { ...structuredClone(searchedRecords[0]), id: 'other-target', target: { ...first.target, id: 'speed-before' } }]
+assert.deepEqual(read({ ...historyArgs, query: 'ä_%<b>\n' }, [...searchedRecords, ...foreignRecords]), titlePages[0], 'History search never crosses target or document identity')
 assert.equal(read(request, [first]).unchanged, true)
 assert.equal(read({ ...request, id: 'lost' }, [first]).error.code, 'attempt_conflict')
 assert(read({ ...request, targetId: 'externality' }).error)
@@ -274,6 +296,7 @@ try {
   const old = await call({ action: 'record', targetId: 'motion', recordId: 'three', expectedRevision: 2 }); assert.equal(old.stale, true)
   let head = ''
   const revising = structuredClone(map)
+  revising.title = '旧标题 Ä_%<b>\n同名'
   for (let index = 0; index < 22; index++) {
     const response = await call({ ...request, expectedRevision: 2, id: 'revision-' + index, parentId: head, reason: '独立修订 ' + index, map: revising })
     assert(response.saved); head = response.saved.id
@@ -294,11 +317,22 @@ try {
   assert.deepEqual(historyOlder.history.map(item => item.id), ['revision-1', 'revision-0', 'three', 'two', 'one'])
   assert(historyOlder.history.every(item => !Object.hasOwn(item, 'map') && typeof item.title === 'string'))
   const rowsBeforeHistory = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  const historySearch = query => call({ action: 'history', targetId: 'motion', expectedRevision: 2, query, historyHead: historyBefore.historyHead })
+  const matchedHistory = await historySearch('ä_%<b>\n')
+  assert.equal(matchedHistory.historyTotal, 22); assert.equal(matchedHistory.historyRecordTotal, 25)
+  assert.equal(matchedHistory.history.length, 20); assert.equal(matchedHistory.query, 'ä_%<b>\n')
+  assert.deepEqual((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, query: 'ä_%<b>\n', offset: 20,
+    historyHead: matchedHistory.historyHead })).history.map(item => item.id), ['revision-1', 'revision-0'])
+  assert.equal((await historySearch('独立修订 0')).history[0].id, 'revision-0')
+  assert.equal((await historySearch('one')).history[0].baseRevision, 1)
+  assert.equal((await historySearch('不存在的修订')).historyTotal, 0)
+  for (const query of [null, 3, {}, 'x'.repeat(257)]) assert.equal((await historySearch(query)).error.code, 'invalid_input')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 1, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'revision_conflict')
   assert.equal((await call({ action: 'history', targetId: 'externality', expectedRevision: 2, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'history_conflict')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: -1 })).error.code, 'invalid_input')
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), rowsBeforeHistory, 'History requests never create or rewrite records')
   assert((await call({ ...request, expectedRevision: 2, id: 'history-concurrent', parentId: head, reason: '另一个窗口的新修订', map })).saved)
+  assert.equal((await historySearch('ä_%<b>\n')).error.code, 'history_conflict', 'Even an unmatched append invalidates the search read fence')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'history_conflict', 'Concurrent append must not silently shift a page')
   const refreshedHistory = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0 })
   assert.equal(refreshedHistory.historyTotal, 26); assert.equal(refreshedHistory.historyHead, 'history-concurrent')
@@ -321,8 +355,8 @@ try {
       }
       return statement
     }
-    const snapshot = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0 })
-    assert(interleaved); assert.equal(snapshot.historyHead, 'history-concurrent'); assert.equal(snapshot.historyTotal, 26)
+    const snapshot = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0, query: 'ä_%<b>\n' })
+    assert(interleaved); assert.equal(snapshot.historyHead, 'history-concurrent'); assert.equal(snapshot.historyTotal, 22); assert.equal(snapshot.historyRecordTotal, 26)
     assert(!snapshot.history.some(item => item.id === 'history-independent-writer'), 'Head, count and page share one read snapshot')
   } finally { DatabaseSync.prototype.prepare = originalPrepare; writer.close() }
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 20, historyHead: refreshedHistory.historyHead })).error.code, 'history_conflict')
@@ -463,6 +497,7 @@ try {
 console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomainNotRange: true, multipleInputsAndManyToOne: true,
   identityAndScope: true, predictionBeforeFeedback: true, frozenPredictionBasis: true, appendOnlyCas: true, actualHttpSqlite: true,
   sourceAndGenerated: true, historyPages: 3, historyNoWrites: true, historyAppendFence: true, historyIndependentWriterSnapshot: true,
+  historyMetadataSearch: true, historySearchLiteralUnicode: true, historySearchAllVersions: true, historySearchUnmatchedAppendFence: true,
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,

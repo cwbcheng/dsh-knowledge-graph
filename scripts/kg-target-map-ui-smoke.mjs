@@ -318,6 +318,72 @@ await owner.resolve(hiddenPage); owner.unmount()
 assert.equal(writes, writesBeforePaging, 'History navigation and retries must not write personal records')
 
 doc.revision = 1
+{
+const recordsBeforeSearch = records
+records = JSON.parse(JSON.stringify(records))
+records.forEach((record, index) => { record.map.title = index < 43 ? '旧标题 Ä_%<b>\n同名' : '最新标题'; record.reason = '修订理由 ' + index })
+storage.clear()
+let searchedBrowseState
+owner = mount({ focusRequest: focus, onStateChange: state => { searchedBrowseState = state } }); await owner.load()
+owner.control('个人靶图修订记录').props.onToggle({ currentTarget: { open: true } }); owner.render()
+owner.change('映射规律表述', '未保存：多个必要输入、单位、对象时间、未知与来源冲突保留')
+const searchDraftBytes = JSON.stringify([...storage]), callsBeforeSearch = owner.requests.length
+const searchRows = () => all(owner.tree, item => item.props['data-target-history-row'])
+assert(searchRows().some(item => text(item).includes('旧标题 Ä_%<b>\n同名')), 'Revision titles must be readable without opening each archive')
+const oldSearchHandler = owner.control('检索修订记录').props.onClick
+owner.change('搜索个人修订记录', 'ä_%<b>')
+oldSearchHandler(); owner.render(); assert.equal(owner.requests.length, callsBeforeSearch, 'A superseded query handler cannot issue a different search')
+for (const event of [{ key: 'Enter', isComposing: true }, { key: 'Enter', nativeEvent: { isComposing: true } }]) {
+  owner.control('搜索个人修订记录').props.onKeyDown({ ...event, preventDefault() { throw new Error('IME confirmation is not a search command') } })
+  owner.render(); assert.equal(owner.requests.length, callsBeforeSearch)
+}
+owner.click('检索修订记录'); await owner.load()
+assert(text(owner.tree).includes('命中 43 / 全部 48 版'))
+assert.equal(searchRows().length, 20); assert(searchRows().every(item => text(item).includes('旧标题 Ä_%<b>\n同名')))
+owner.click('较早的修订记录'); await owner.load()
+assert.equal(owner.requests.at(-1).args.query, 'ä_%<b>')
+assert.equal(searchedBrowseState.historyPosition.offset, 20); assert.equal(searchedBrowseState.historyPosition.query, 'ä_%<b>')
+const queryNavigation = owner.navigation
+owner.unmount(); owner = mount({ navigation: queryNavigation }); await owner.load(); await owner.load()
+assert.equal(owner.control('搜索个人修订记录').props.value, 'ä_%<b>')
+assert(text(owner.tree).includes('第 21-40 / 43 版'))
+owner.click('查看靶图修订 history-10'); await owner.load()
+assert.equal(owner.control('靶图标题').props.value, '旧标题 Ä_%<b>\n同名'); assert(owner.control('靶图标题').props.disabled)
+owner.click('返回未保存草稿'); assert.equal(JSON.stringify([...storage]), searchDraftBytes)
+owner.click('较早的修订记录'); await owner.load(); assert.equal(searchRows().length, 3)
+owner.change('搜索个人修订记录', '修订理由 2'); owner.click('检索修订记录'); await owner.load()
+assert.equal(searchRows().length, 11)
+owner.change('搜索个人修订记录', 'HISTORY-2'); owner.click('检索修订记录'); await owner.load()
+assert.equal(searchRows().length, 11)
+owner.change('搜索个人修订记录', '无匹配'); owner.click('检索修订记录'); await owner.load()
+assert(text(owner.tree).includes('没有匹配的修订记录')); assert(text(owner.tree).includes('命中 0 / 全部 48 版'))
+assert(owner.control('较早的修订记录').props.disabled); assert(owner.control('较新的修订记录').props.disabled)
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录')
+const searchFailure = owner.pending().find(item => item.args.action === 'history')
+searchFailure.reject(new Error('history search unavailable')); searchFailure.settled = true; await owner.settle()
+owner.click('重试读取修订记录'); assert.deepEqual(owner.pending().at(-1).args, searchFailure.args); await owner.load()
+for (const mutate of [value => { value.query = '' }, value => { value.historyRecordTotal = 1 }, value => { value.historyHead = '' },
+  value => { value.history[0].title = 'wrong'; value.history[0].reason = 'wrong' }, value => { value.history[0].baseRevision = 2 },
+  value => { value.history[0].createdAt = -1 }, value => { value.history[0].title = 'x'.repeat(4001) }, value => { value.history[0].reason = 'x'.repeat(2001) }]) {
+  owner.click('重新读取修订记录')
+  const pending = owner.pending().find(item => item.args.action === 'history'), response = tools.handle(doc, pending.args, records)
+  mutate(response); await owner.resolve(pending, response)
+  assert(text(owner.tree).includes('修订记录响应身份或分页范围不一致')); assert.equal(searchRows().length, 0)
+}
+owner.click('重新读取修订记录'); await owner.load()
+owner.click('清除修订检索'); await owner.load(); assert.equal(owner.control('搜索个人修订记录').props.value, '')
+assert(text(owner.tree).includes('最近 20 / 48 版'))
+owner.change('搜索个人修订记录', 'history-10'); owner.click('检索修订记录')
+const staleSearch = owner.pending().find(item => item.args.action === 'history')
+owner.click('打开靶图 externality'); await owner.load(); assert(staleSearch.signal.aborted)
+assert.equal(owner.control('搜索个人修订记录').props.value, '')
+owner.click('打开靶图 motion'); await owner.load()
+assert.equal(owner.control('搜索个人修订记录').props.value, '', 'Unsubmitted input does not revive on a later target visit')
+assert.equal(JSON.stringify([...storage].filter(([key]) => key.includes('motion'))), searchDraftBytes)
+assert.equal(writes, writesBeforePaging)
+owner.unmount(); records = recordsBeforeSearch; storage.clear()
+}
+
 let historyBrowseState
 const publishHistoryBrowse = state => { historyBrowseState = state }
 const toggleHistory = (owner, open) => {
@@ -374,6 +440,7 @@ owner.unmount()
 for (const invalid of [
   { scope: 'foreign' }, { offset: -20 }, { offset: 1 }, { offset: 20.5 }, { offset: Number.MAX_SAFE_INTEGER + 1 },
   { head: null }, { head: ' ' }, { head: 'x'.repeat(121) }, { head: '' }, { open: 'true' },
+  { query: null }, { query: 1 }, { query: 'x'.repeat(257) },
 ]) {
   owner = mount({ restoreState: { ...sameHistoryContext, historyPosition: { ...sameHistoryContext.historyPosition, ...invalid } }, onStateChange: publishHistoryBrowse })
   await owner.load()
@@ -389,7 +456,7 @@ for (const contextChange of [{ documentId: 'another-document' }, { revision: 2 }
 }
 owner = mount({ restoreState: { ...sameHistoryContext, historyPosition: { ...sameHistoryContext.historyPosition, records, confirmed: true } }, onStateChange: publishHistoryBrowse })
 await owner.load()
-assert.deepEqual(Object.keys(historyBrowseState.historyPosition).sort(), ['head', 'offset', 'open', 'scope'])
+assert.deepEqual(Object.keys(historyBrowseState.historyPosition).sort(), ['head', 'offset', 'open', 'query', 'scope'])
 const unmountedResume = owner.pending().find(item => item.args.action === 'history')
 const oldToggle = owner.control('个人靶图修订记录').props.onToggle
 owner.unmount(); assert(unmountedResume.signal.aborted)
@@ -4306,4 +4373,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true, draftImportObjectOrder: true,
   savedCatalogueFilterAndCounts: true, savedCatalogueDraftPreserved: true, savedCatalogueNavigationAndLegacy: true,
   savedCatalogueResponseFence: true, savedCatalogueReadOnly: true, personalTitleDiscovery: true,
-  personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true }))
+  personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true,
+  historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
+  historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true }))

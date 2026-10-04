@@ -7075,6 +7075,7 @@ function createHostPlugin(graphContractOnly) {
           }
           return targets ? result : result.map(item => item.message)
         }
+        const historyMatches = (item, query) => [item.id, item.title, item.reason].some(value => value.toLowerCase().includes(query.toLowerCase()))
         function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null, catalogCounts = null) {
           try {
             if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
@@ -7109,12 +7110,14 @@ function createHostPlugin(graphContractOnly) {
             const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
             const current = records.find(record => record.baseRevision === revision) || null
             if (args.action === 'history') {
-              const offset = args.offset ?? 0
-              if (!Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份无效')
-              const page = historyPage || { historyHead: records[0]?.id || '', historyTotal: records.length,
-                history: records.slice(offset, offset + 20).map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason })) }
+              const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query
+              if (!text(query, 256) || !Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份或检索词无效')
+              const metadata = historyPage ? [] : records.map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason }))
+              const matches = metadata.filter(item => historyMatches(item, query))
+              const page = historyPage || { historyHead: records[0]?.id || '', historyRecordTotal: records.length, historyTotal: matches.length,
+                history: matches.slice(offset, offset + 20) }
               if (args.historyHead !== undefined && args.historyHead !== page.historyHead) fail('修订记录有更新，请重新读取列表；当前草稿保留。', 'history_conflict')
-              return { version: 1, documentId, revision, target, offset, ...page }
+              return { version: 1, documentId, revision, target, offset, query, ...page }
             }
             if (args.action === 'record') {
               const record = records.find(record => record.id === args.recordId)
@@ -7150,7 +7153,7 @@ function createHostPlugin(graphContractOnly) {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, handle }
+        return { blank, slot, example, validate, transition, gaps, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 
