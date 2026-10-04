@@ -2898,6 +2898,129 @@ assert(owner.control('确认保存个人靶图').props.checked)
 assert(!JSON.stringify([...owner.navigation]).includes('"left"'), 'Pair selection is not a persisted navigation or approval')
 owner.unmount()
 
+const hideComparedExamples = () => {
+  owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest']))
+  owner.change('按记录阶段查看例子', 'material')
+  owner.change('按对照来源查看例子', 'observation')
+  owner.change('搜索例子文字', '不存在的完整文字，不推断条件')
+}
+const assertClearExampleFilters = () => {
+  for (const label of ['按输出取值查看例子', '按记录阶段查看例子', '按对照来源查看例子']) assert.equal(owner.control(label).props.value, 'all')
+  assert.equal(owner.control('搜索例子文字').props.value, '')
+}
+const pairAndHide = () => {
+  owner.click('放入左侧对照 ' + navigationIds[19]); owner.click('放入右侧对照 ' + navigationIds[39]); hideComparedExamples()
+}
+for (const side of ['左', '右']) {
+  await setupNavigator()
+  owner.change('映射规律表述', '通常而非必然，清除筛选不改变个人表述')
+  owner.change('确认保存个人靶图', undefined, true)
+  owner.click('放入左侧对照 ' + navigationIds[19]); owner.click('放入右侧对照 ' + navigationIds[39])
+  owner.change('仅显示两个例子的不同字段', undefined, true)
+  owner.control('下一个筛选例子 ' + navigationIds[1]).props.onClick(); owner.render()
+  hideComparedExamples()
+  const id = side === '左' ? navigationIds[19] : navigationIds[39]
+  const before = [JSON.stringify([...storage]), JSON.stringify(records), owner.requests.length, writes]
+  assert(owner.control('返回' + side + '侧例子').props.disabled, 'Ordinary return cannot secretly reset filters')
+  const recover = owner.control('清除筛选并返回' + side + '侧例子')
+  assert(!recover.props.disabled && recover.props.title.includes(id), 'Recovery exposes exact destination')
+  recover.props.onClick(); owner.render()
+  assertClearExampleFilters()
+  assert.equal(owner.focused, 'data-target-example-heading:' + id)
+  assert.equal(owner.control('定位例子').props.value, id)
+  assert(detailsOf(id).props.open && detailsOf(navigationIds[2]).props.open, 'Open destination without erasing other expansion choices')
+  assert.equal(owner.control('左侧例子').props.value, navigationIds[19]); assert.equal(owner.control('右侧例子').props.value, navigationIds[39])
+  assert(owner.control('仅显示两个例子的不同字段').props.checked && owner.control('确认保存个人靶图').props.checked)
+  const after = [JSON.stringify([...storage]), JSON.stringify(records), owner.requests.length, writes]
+  after.forEach((value, index) => assert.equal(value, before[index], 'Explicit recovery is navigation only'))
+  assert(!all(owner.tree, node => node.props['aria-label'] === '清除筛选并返回' + side + '侧例子').length)
+  const nav = JSON.stringify([...owner.navigation]), count = owner.scrolled.length
+  recover.props.onClick(); owner.render()
+  assert.equal(JSON.stringify([...owner.navigation]), nav); assert.equal(owner.scrolled.length, count, 'A repeated stale recovery does not refocus')
+  owner.unmount()
+}
+for (const boundary of ['pair', 'filter', 'filter-return', 'stage', 'feedback', 'text', 'edit', 'target', 'document', 'revision', 'hidden', 'hidden-return', 'unmount', 'pending', 'pending-cancel', 'archive', 'archive-return', 'reload', 'comparison-return']) {
+  await setupNavigator()
+  owner.click('放入左侧对照 ' + navigationIds[19]); owner.click('放入右侧对照 ' + navigationIds[39]); hideComparedExamples()
+  const recover = owner.control('清除筛选并返回左侧例子').props.onClick
+  if (boundary === 'pair') owner.change('左侧例子', navigationIds[3])
+  if (boundary === 'filter') owner.change('按输出取值查看例子', 'all')
+  if (boundary === 'filter-return') { owner.change('按输出取值查看例子', 'all'); owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest'])) }
+  if (boundary === 'stage') owner.change('按记录阶段查看例子', 'all')
+  if (boundary === 'feedback') owner.change('按对照来源查看例子', 'all')
+  if (boundary === 'text') owner.change('搜索例子文字', '原状态')
+  if (boundary === 'edit') owner.change('映射规律表述', '新的条件，旧操作不可擦除筛选')
+  if (boundary === 'target') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'foreign'; owner.render() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render() }
+  if (boundary === 'hidden') { owner.props.active = false; owner.render() }
+  if (boundary === 'hidden-return') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render(); await owner.load() }
+  if (boundary === 'unmount') owner.unmount()
+  if (['pending', 'pending-cancel', 'archive', 'archive-return', 'reload', 'comparison-return'].includes(boundary)) owner.click('查看靶图修订 navigator-record')
+  if (boundary === 'pending-cancel') owner.click('取消读取历史靶图')
+  if (['archive', 'archive-return', 'comparison-return'].includes(boundary)) await owner.load()
+  if (boundary === 'archive-return') owner.click('返回未保存草稿')
+  if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
+  if (boundary === 'reload') {
+    await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
+    owner.click('重读靶图'); await owner.load()
+  }
+  const before = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  recover(); owner.render()
+  const after = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  after.forEach((value, index) => assert.equal(value, before[index], boundary + ' rejects stale filter recovery field ' + index))
+  owner.unmount(); doc.revision = 1
+}
+
+await setupNavigator()
+pairAndHide()
+owner.click('清除筛选并返回左侧例子')
+const recoveredNavigation = owner.navigation, recoveredDraft = JSON.stringify([...storage])
+owner.unmount(); owner = mount({ navigation: recoveredNavigation, slotNavigation: true }); await owner.load()
+assertClearExampleFilters(); assert(detailsOf(navigationIds[19]).props.open)
+assert.equal(owner.control('左侧例子').props.value, '', 'Reload restores navigation, never an old comparison or save approval')
+assert.equal(JSON.stringify([...storage]), recoveredDraft)
+owner.unmount()
+
+await setupNavigator()
+owner.change('映射规律表述', '个人草稿和原来的筛选不能被历史恢复命令改写')
+owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest']))
+owner.change('搜索例子文字', '原状态')
+const recoveryArchiveDraft = JSON.stringify([...storage]), recoveryArchiveNav = JSON.stringify([...owner.navigation])
+owner.click('查看靶图修订 navigator-record')
+const recoveryRead = owner.pending().at(-1)
+recoveryRead.reject(new Error('503 filter recovery')); recoveryRead.settled = true; await owner.settle()
+assert.equal(JSON.stringify([...storage]), recoveryArchiveDraft)
+owner.click('重试读取历史靶图'); await owner.load()
+pairAndHide(); owner.click('清除筛选并返回右侧例子')
+assertClearExampleFilters(); assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[39])
+assert(owner.control('例子 40 完整情境').props.disabled)
+assert.equal(JSON.stringify([...owner.navigation]), recoveryArchiveNav, 'Archive filter reset cannot erase draft navigation')
+owner.click('返回未保存草稿')
+assert.equal(owner.control('按输出取值查看例子').props.value, JSON.stringify(['after', 'rest']))
+assert.equal(owner.control('搜索例子文字').props.value, '原状态')
+assert.equal(JSON.stringify([...storage]), recoveryArchiveDraft)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+pairAndHide(); owner.click('清除筛选并返回左侧例子')
+assertClearExampleFilters(); assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[19])
+assert(owner.control('保存个人靶图').props.disabled, 'Old-version recovery is strictly browsing')
+assert.equal(JSON.stringify([...storage]), recoveryArchiveDraft)
+owner.unmount(); doc.revision = 1
+
+for (const anomaly of ['missing', 'duplicate', 'hidden']) {
+  await setupNavigator(); pairAndHide()
+  if (anomaly === 'missing') owner.removedAnchor = navigationIds[19]
+  if (anomaly === 'duplicate') owner.duplicateAnchors = true
+  if (anomaly === 'hidden') owner.domHidden = true
+  const previousFocus = owner.focused, previousDraft = JSON.stringify([...storage])
+  owner.click('清除筛选并返回左侧例子')
+  assertClearExampleFilters()
+  assert.equal(owner.focused, previousFocus, anomaly + ' never redirects to a different identity')
+  assert.equal(owner.control('定位例子').props.value, '', anomaly + ' does not claim successful location')
+  assert.equal(JSON.stringify([...storage]), previousDraft)
+  owner.unmount()
+}
+
 for (const boundary of ['pair', 'filter', 'filter-return', 'stage', 'feedback', 'text', 'edit', 'target', 'document', 'revision', 'hidden', 'hidden-return', 'unmount', 'pending', 'pending-cancel', 'archive', 'archive-return', 'reload', 'comparison-return']) {
   await setupNavigator()
   owner.click('放入左侧对照 ' + navigationIds[19]); owner.click('放入右侧对照 ' + navigationIds[39])
@@ -3104,4 +3227,7 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   exampleLocatorExactIdentity: true, exampleLocatorFilteredSequence: true, exampleLocatorCompleteInputs: true,
   exampleLocatorStaleCallbacks: true, exampleLocatorHistoryAndVersion: true, exampleLocatorNoWrites: true, exampleLocatorMissingDom: true,
   exampleDirectPairExactIdentity: true, exampleDirectPairCompleteBindings: true, exampleDirectPairReturn: true,
-  exampleDirectPairFilterFence: true, exampleDirectPairStaleCallbacks: true, exampleDirectPairHistoryAndVersion: true, exampleDirectPairNoWrites: true }))
+  exampleDirectPairFilterFence: true, exampleDirectPairStaleCallbacks: true, exampleDirectPairHistoryAndVersion: true, exampleDirectPairNoWrites: true,
+  exampleFilterRecoveryExplicit: true, exampleFilterRecoveryExactFocus: true, exampleFilterRecoveryPairAndExpansion: true,
+  exampleFilterRecoveryStaleCallbacks: true, exampleFilterRecoveryHistoryAndVersion: true, exampleFilterRecoveryReload: true,
+  exampleFilterRecoveryNoWrites: true, exampleFilterRecoveryMissingDom: true }))
