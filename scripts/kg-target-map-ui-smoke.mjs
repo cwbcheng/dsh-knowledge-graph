@@ -49,7 +49,7 @@ const mount = (options = {}) => {
     owner.domNodes = new Map(); owner.focused = null; owner.scrolled = []; owner.exampleDetails = new Map()
     owner.panel = { nodes: [], ownerDocument: { body: {}, activeElement: null },
       querySelectorAll(selector) {
-        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]'].includes(selector))
+        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]', '[data-target-gap-field]'].includes(selector))
         const attribute = selector.slice(1, -1), nodes = this.nodes.filter(node => node.attribute === attribute && node.value !== owner.removedAnchor)
         return owner.duplicateAnchors ? [...nodes, ...nodes] : nodes
       },
@@ -86,7 +86,7 @@ const mount = (options = {}) => {
         assert(owner.tree.props.ref, 'Slot navigation needs a panel-scoped DOM root')
         owner.tree.props.ref.current = owner.panel
         owner.slotSelectionHeight = all(owner.tree, item => item.props['data-target-slot'] && item.props['data-selected']).length ? 32 : 0
-        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side']
+        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side', 'data-target-gap-field']
         owner.panel.nodes = all(owner.tree, item => attributes.some(attribute => item.props[attribute])).map(item => {
           const attribute = attributes.find(attribute => item.props[attribute]), value = item.props[attribute]
           const key = attribute + ':' + value
@@ -107,8 +107,9 @@ const mount = (options = {}) => {
               owner.inner.scrollTop = ['data-target-record-link', 'data-target-example-slot'].includes(attribute) ? 900 + owner.flowShift - (owner.inner.clientHeight - 32) / 2 : 0
             }
           }
-          if (attribute === 'data-target-example-slot' || attribute === 'data-target-record-link' || attribute === 'data-target-example-heading') {
-            const exampleId = attribute === 'data-target-example-slot' ? JSON.parse(value)[0] : value
+          const gapPath = attribute === 'data-target-gap-field' ? JSON.parse(value) : null
+          if (attribute === 'data-target-example-slot' || attribute === 'data-target-record-link' || attribute === 'data-target-example-heading' || gapPath?.[0] === 'examples' && gapPath.length > 1) {
+            const exampleId = gapPath ? gapPath[1] : attribute === 'data-target-example-slot' ? JSON.parse(value)[0] : value
             if (!owner.exampleDetails.has(exampleId)) owner.exampleDetails.set(exampleId, { tagName: 'DETAILS', open: false, parentElement: owner.panel })
             node.parentElement = owner.exampleDetails.get(exampleId)
           } else if (attribute === 'data-target-example-pair-side') {
@@ -3183,6 +3184,120 @@ for (const anomaly of ['removed', 'duplicate', 'hidden']) {
 }
 }
 
+{
+const id = 'gap-"39', blankMap = motionTargetMap()
+blankMap.slots.push({ ...blankMap.slots[2], id: '__proto__', unit: 'km/h', scope: '另一对象，次日' })
+blankMap.outcomes.push({ id: 'same-label', slotId: '__proto__', label: blankMap.outcomes[0].label, detail: '' })
+blankMap.examples = Array.from({ length: 39 }, (_, index) => ({ ...structuredClone(blankMap.examples[0]), id: 'material-' + index,
+  outputs: [...structuredClone(blankMap.examples[0].outputs), { slotId: '__proto__', outcomeId: 'same-label', detail: '' }] }))
+blankMap.examples.push(tools.example(blankMap, id))
+blankMap.mapping = ''; blankMap.slots[0].name = ''; blankMap.slots[1].meaning = ''
+const setupGaps = async () => {
+  storage.clear(); doc.revision = 1
+  records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion', id: 'gaps-record',
+    parentId: '', reason: '', confirm: true, map: blankMap }, []).saved]
+  assert(records[0]); owner = mount({ focusRequest: focus, slotNavigation: true }); await owner.load()
+}
+const action = path => '定位待整理要素 ' + JSON.stringify(path)
+const gapFocus = path => 'data-target-gap-field:' + JSON.stringify(path)
+const contents = () => [JSON.stringify([...storage]), JSON.stringify(records), owner.requests.length, writes]
+const checkUnchanged = before => contents().forEach((value, index) => assert.equal(value, before[index], 'Gap navigation cannot write field ' + index))
+await setupGaps()
+owner.change('确认保存个人靶图', undefined, true)
+owner.change('搜索例子文字', 'unmatched filter')
+for (const path of [['slots', 'force', 'name'], ['slots', 'before', 'meaning'], ['mapping']]) {
+  const before = contents(); owner.click(action(path))
+  assert.equal(owner.focused, gapFocus(path)); assert.equal(owner.control('搜索例子文字').props.value, 'unmatched filter')
+  assert(owner.control('确认保存个人靶图').props.checked); checkUnchanged(before)
+}
+const firstPath = ['examples', id, 'context'], firstAction = owner.control(action(firstPath))
+assert.equal(text(firstAction), '清除筛选并定位'); assert(firstAction.props.title.includes('清除输出'))
+const beforeRecovery = contents(); owner.click(action(firstPath))
+assert.equal(owner.focused, gapFocus(firstPath)); assert.equal(owner.control('定位例子').props.value, id)
+assert.equal(owner.control('搜索例子文字').props.value, '')
+assert(all(owner.tree, node => node.props['data-target-case-id'] === id)[0].props.open)
+assert.equal(text(owner.control(action(firstPath))), '定位'); checkUnchanged(beforeRecovery)
+assert(owner.control('确认保存个人靶图').props.checked)
+const steps = [
+  ['例子 40 完整情境', '通常而非必然', ['inputs', 'force']],
+  ['例子 40 输入 force', '0 N', ['inputs', 'before']],
+  ['例子 40 输入 before', '未知单位与对象，不是零', ['process']],
+  ['例子 40 推测过程', '循环不能证明；来源甲乙冲突', ['outputs', 'after']],
+  ['例子 40 对应输出 after', 'rest', ['outputs', '__proto__']],
+]
+for (const [label, value, path] of steps) {
+  owner.change(label, value); const before = contents()
+  owner.click(action(['examples', id, ...path]))
+  assert.equal(owner.focused, gapFocus(['examples', id, ...path])); checkUnchanged(before)
+}
+owner.change('例子 40 输出细节 __proto__', '尚不能确定，不执行公式')
+assert(!text(owner.control('靶图待整理要素')).includes('例子要素未完整：' + id))
+assert.equal(owner.control('例子 40 输入 before').props.value, '未知单位与对象，不是零')
+assert.equal(owner.control('例子 40 推测过程').props.value, '循环不能证明；来源甲乙冲突')
+owner.unmount()
+
+for (const boundary of ['filter', 'filter-return', 'edit', 'delete', 'expansion', 'target', 'document', 'revision', 'hidden', 'hidden-return', 'pending', 'pending-cancel', 'archive', 'archive-return', 'comparison-return', 'reload', 'unmount']) {
+  await setupGaps(); const old = owner.control(action(firstPath)).props.onClick
+  if (boundary === 'filter') owner.change('搜索例子文字', 'new')
+  if (boundary === 'filter-return') { owner.change('搜索例子文字', 'new'); owner.change('搜索例子文字', '') }
+  if (boundary === 'edit') owner.change('例子 40 完整情境', '不再是原缺口')
+  if (boundary === 'delete') owner.click('删除例子 40')
+  if (boundary === 'expansion') owner.change('定位例子', 'material-2')
+  if (boundary === 'target') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'foreign'; owner.render() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render() }
+  if (boundary === 'hidden') { owner.props.active = false; owner.render() }
+  if (boundary === 'hidden-return') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render(); await owner.load() }
+  if (boundary === 'unmount') owner.unmount()
+  if (['pending', 'pending-cancel', 'archive', 'archive-return', 'comparison-return', 'reload'].includes(boundary)) owner.click('查看靶图修订 gaps-record')
+  if (boundary === 'pending-cancel') owner.click('取消读取历史靶图')
+  if (['archive', 'archive-return', 'comparison-return'].includes(boundary)) await owner.load()
+  if (boundary === 'archive-return') owner.click('返回未保存草稿')
+  if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
+  if (boundary === 'reload') { await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } }); owner.click('重读靶图'); await owner.load() }
+  const before = [...contents(), text(owner.tree), JSON.stringify([...owner.navigation]), owner.focused]
+  old(); owner.render()
+  const after = [...contents(), text(owner.tree), JSON.stringify([...owner.navigation]), owner.focused]
+  after.forEach((value, index) => assert.equal(value, before[index], boundary + ' fences stale gap navigation ' + index))
+  owner.unmount(); doc.revision = 1
+}
+
+await setupGaps(); owner.change('适用条件', 'PRIVATE GAP DRAFT'); owner.change('搜索例子文字', 'draft filter')
+const draftBytes = JSON.stringify([...storage]), navBytes = JSON.stringify([...owner.navigation])
+owner.click('查看靶图修订 gaps-record')
+const failed = owner.pending().at(-1); failed.reject(new Error('503 gap read')); failed.settled = true; await owner.settle()
+assert.equal(JSON.stringify([...storage]), draftBytes)
+owner.click('重试读取历史靶图'); await owner.load()
+owner.change('搜索例子文字', 'archive filter'); owner.click(action(firstPath))
+assert.equal(owner.focused, gapFocus(firstPath)); assert(owner.control('例子 40 完整情境').props.disabled)
+assert.equal(JSON.stringify([...owner.navigation]), navBytes, 'Historical gap navigation cannot replace draft filters')
+owner.click('返回未保存草稿'); assert.equal(owner.control('搜索例子文字').props.value, 'draft filter')
+assert.equal(JSON.stringify([...storage]), draftBytes)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load(); owner.click(action(firstPath))
+assert.equal(owner.focused, gapFocus(firstPath)); assert(owner.control('保存个人靶图').props.disabled)
+assert.equal(JSON.stringify([...storage]), draftBytes)
+const nav = owner.navigation; owner.unmount(); doc.revision = 1
+owner = mount({ focusRequest: focus, navigation: nav, slotNavigation: true }); await owner.load()
+assert(!owner.focused?.startsWith('data-target-gap-field:'), 'Gap commands are not cached or replayed on reload')
+owner.unmount()
+for (const anomaly of ['missing', 'duplicate', 'hidden']) {
+  await setupGaps()
+  if (anomaly === 'missing') owner.removedAnchor = JSON.stringify(firstPath)
+  if (anomaly === 'duplicate') owner.duplicateAnchors = true
+  if (anomaly === 'hidden') owner.domHidden = true
+  const before = contents(), priorFocus = owner.focused; owner.click(action(firstPath))
+  assert.equal(owner.focused, priorFocus, anomaly + ' cannot select a substitute')
+  assert.equal(owner.control('定位例子').props.value, ''); checkUnchanged(before); owner.unmount()
+}
+storage.clear(); records = []; doc.revision = 1
+owner = mount({ focusRequest: { ...focus, targetId: 'externality' }, slotNavigation: true }); await owner.load()
+owner.click(action(['mapping'])); assert.equal(owner.focused, gapFocus(['mapping']))
+owner.click(action(['examples'])); assert.equal(owner.focused, gapFocus(['examples']))
+assert.equal(owner.requests.filter(request => request.args.action === 'save').length, 0)
+assert(!all(owner.tree, node => String(node.props['data-target-gap-field']).includes('meaning')).length)
+owner.unmount()
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -3230,4 +3345,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   exampleDirectPairFilterFence: true, exampleDirectPairStaleCallbacks: true, exampleDirectPairHistoryAndVersion: true, exampleDirectPairNoWrites: true,
   exampleFilterRecoveryExplicit: true, exampleFilterRecoveryExactFocus: true, exampleFilterRecoveryPairAndExpansion: true,
   exampleFilterRecoveryStaleCallbacks: true, exampleFilterRecoveryHistoryAndVersion: true, exampleFilterRecoveryReload: true,
-  exampleFilterRecoveryNoWrites: true, exampleFilterRecoveryMissingDom: true }))
+  exampleFilterRecoveryNoWrites: true, exampleFilterRecoveryMissingDom: true,
+  gapExactFieldNavigation: true, gapSequentialMissingInputs: true, gapExplicitFilterRecovery: true,
+  gapStaleCallbacks: true, gapHistoryAndVersion: true, gapReadRetryAndReload: true, gapNoWrites: true, gapMissingDom: true }))

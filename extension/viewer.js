@@ -2082,16 +2082,22 @@
             for (const binding of [...prior.inputs, ...prior.outputs]) if (!same(identityOfSlot(next.slots.find(value => value.id === binding.slotId)), identityOfSlot(old.slots.find(value => value.id === binding.slotId)))) fail('已用于预测的槽位身份、单位或对象范围不能改写；内涵表述仍可修订')
           }
         }
-        function gaps(map) {
+        function gaps(map, { targets = false } = {}) {
           const result = []
+          const add = (message, path, field) => result.push({ message, path, field })
           for (const item of map.slots) {
-            if (!item.name.trim()) result.push('槽位名称未填写：' + item.id)
-            if (map.mode === 'connection' && !item.meaning.trim()) result.push('判别表述待整理：' + (item.name || item.id))
+            if (!item.name.trim()) add('槽位名称未填写：' + item.id, ['slots', item.id, 'name'], '概念名')
+            if (map.mode === 'connection' && !item.meaning.trim()) add('判别表述待整理：' + (item.name || item.id), ['slots', item.id, 'meaning'], '我的内涵表述')
           }
-          if (!map.mapping.trim()) result.push(map.mode === 'discrimination' ? '判别规律待整理' : '映射规律待整理')
-          if (!map.examples.length) result.push('尚无具体推测')
-          for (const item of map.examples) if (!item.context.trim() || !item.process.trim() || item.inputs.some(input => !input.value.trim()) || item.outputs.some(out => !out.outcomeId && !out.detail.trim())) result.push('例子要素未完整：' + item.id)
-          return result
+          if (!map.mapping.trim()) add(map.mode === 'discrimination' ? '判别规律待整理' : '映射规律待整理', ['mapping'], '规律表述')
+          if (!map.examples.length) add('尚无具体推测', ['examples'], '具体情境与推测')
+          for (const item of map.examples) {
+            const input = item.inputs.find(value => !value.value.trim()), output = item.outputs.find(value => !value.outcomeId && !value.detail.trim())
+            const missing = !item.context.trim() ? ['context'] : input ? ['inputs', input.slotId] : !item.process.trim() ? ['process'] : output ? ['outputs', output.slotId] : null
+            if (missing) add('例子要素未完整：' + item.id, ['examples', item.id, ...missing],
+              ({ context: '完整情境', process: '推测过程', inputs: '具体输入', outputs: '预测或材料输出' })[missing[0]] + (missing[1] ? ' · ' + missing[1] : ''))
+          }
+          return targets ? result : result.map(item => item.message)
         }
         function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null) {
           try {
@@ -2706,6 +2712,7 @@
         const matchesExampleFeedback = item => exampleFeedback === 'all' || feedbackKind(item) === exampleFeedback
         const matchesExample = item => matchesExampleOutput(item) && matchesExampleStage(item) && matchesExampleText(item) && matchesExampleFeedback(item)
         const visibleExamples = map?.examples.filter(matchesExample) || [], shownExamples = visibleExamples.length
+        const gapItems = map ? TARGET_MAP_TOOLS.gaps(map, { targets: true }) : []
         const exampleFilterKey = JSON.stringify([exampleFilter, exampleStage, exampleQuery, exampleFeedback])
         const exampleBrowseReady = active && !!map && !loading && !recordLoading && !comparingArchive && detailReady.current === detailScope
         const previousBrowse = exampleBrowseContext.current
@@ -2787,6 +2794,21 @@
             setExampleFocus({ scope: exampleScope, map, filterKey: exampleFilterKey, locatorEpoch, exampleId: id })
           }
         }
+        const locateGap = (gap, clearFilters) => {
+          const context = exampleBrowseContext.current, key = JSON.stringify(gap.path)
+          if (!alive.current || !context.ready || recordRequest.current || context.scope !== exampleScope || context.map !== map ||
+              context.locatorEpoch !== locatorEpoch || context.expansionKey !== expansionKey || !gapItems.includes(gap)) return
+          const id = gap.path[0] === 'examples' && gap.path.length > 1 ? gap.path[1] : ''
+          if (id && map.examples.filter(item => item.id === id).length !== 1) return
+          const hidden = !!id && !visibleExamples.some(item => item.id === id)
+          if (hidden !== clearFilters) return
+          const expansion = id ? [...exampleExpansion.filter(([value]) => value !== id), [id, true]] : exampleExpansion
+          if (selectExampleFilter(clearFilters ? 'all' : exampleFilter, false, '', clearFilters ? 'all' : exampleStage,
+            clearFilters ? '' : exampleQuery, clearFilters ? 'all' : exampleFeedback, expansion)) {
+            setExampleFocus({ scope: exampleScope, map, filterKey: clearFilters ? JSON.stringify(['all', 'all', '', 'all']) : exampleFilterKey,
+              gap: { key, id, readGeneration: sequence.current } })
+          }
+        }
         const exampleIsOpen = item => exampleExpansion.find(([id]) => id === item.id)?.[1] ??
           (!archive && !stale && !conflict && detailReady.current === detailScope && !existing.has(item.id))
         const toggleExampleExpansion = (id, event) => {
@@ -2804,7 +2826,15 @@
           setExampleFocus(null)
           const context = exampleBrowseContext.current
           if (alive.current && context.ready && !recordRequest.current && context.scope === exampleFocus.scope && context.map === exampleFocus.map) {
-            if (exampleFocus.pairSide) {
+            if (exampleFocus.gap) {
+              const intent = exampleFocus.gap
+              if (context.readGeneration === intent.readGeneration && context.filterKey === exampleFocus.filterKey &&
+                  gapItems.some(item => JSON.stringify(item.path) === intent.key) &&
+                  (!intent.id || visibleExamples.filter(item => item.id === intent.id).length === 1) &&
+                  focusMapElement('data-target-gap-field', intent.key, 'start') && intent.id) {
+                setExampleLocator({ locatorEpoch, id: intent.id })
+              }
+            } else if (exampleFocus.pairSide) {
               if (context.locatorEpoch === exampleFocus.locatorEpoch && pair?.[exampleFocus.pairSide] === exampleFocus.pairId) {
                 focusMapElement('data-target-example-pair-side', exampleFocus.pairSide, 'start')
               }
@@ -2949,7 +2979,8 @@
         }, [slotNavigation])
         const linkedIndex = linkedExampleIndex(slotNavigation), selection = linkedIndex >= 0 && !slotNavigation.returning ? slotNavigation : null
         const returnLabel = selection ? '返回例子 ' + (linkedIndex + 1) + ' 的具体' + (selection.role === 'input' ? '输入' : '输出') : ''
-        const field = (label, value, change, disabled = frozen, large = false, visibleLabel = label, maxLength) => h('label', null, visibleLabel,
+        const field = (label, value, change, disabled = frozen, large = false, visibleLabel = label, maxLength, gapPath) => h('label',
+          gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1 } : null, visibleLabel,
           h(large ? 'textarea' : 'input', { 'aria-label': label, value, disabled, maxLength, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => change(event.target.value) }))
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
         const slotFields = role => map.slots.filter(item => item.role === role).map(item => h('div', { key: item.id, className: 'kg-target-slot',
@@ -2957,8 +2988,8 @@
           role: 'group', 'aria-label': '上层' + (role === 'input' ? '输入' : '输出') + '槽位 ' + item.id },
           selection?.slotId === item.id && selection.role === role ? button('↓', returnToExample, false,
             { className: 'kg-secondary kg-target-icon', title: returnLabel, 'aria-label': returnLabel }) : null,
-          field('槽位 ' + item.id + ' 名称', item.name, value => edit(map => { map.slots.find(slot => slot.id === item.id).name = value }), frozen || locked.size > 0, false, '概念名'),
-          map.mode === 'connection' ? field('槽位 ' + item.id + ' 内涵表述', item.meaning, value => edit(map => { map.slots.find(slot => slot.id === item.id).meaning = value }), frozen, true, '我的内涵表述') : null,
+          field('槽位 ' + item.id + ' 名称', item.name, value => edit(map => { map.slots.find(slot => slot.id === item.id).name = value }), frozen || locked.size > 0, false, '概念名', undefined, ['slots', item.id, 'name']),
+          map.mode === 'connection' ? field('槽位 ' + item.id + ' 内涵表述', item.meaning, value => edit(map => { map.slots.find(slot => slot.id === item.id).meaning = value }), frozen, true, '我的内涵表述', undefined, ['slots', item.id, 'meaning']) : null,
           h('details', null, h('summary', null, '单位与对象、时间状态'),
             field('槽位 ' + item.id + ' 单位', item.unit, value => edit(map => { map.slots.find(slot => slot.id === item.id).unit = value }), frozen || locked.size > 0, false, '单位'),
             field('槽位 ' + item.id + ' 对象与时间', item.scope, value => edit(map => { map.slots.find(slot => slot.id === item.id).scope = value }), frozen || locked.size > 0, false, '对象与时间状态')),
@@ -3048,7 +3079,7 @@
                 h('div', { className: 'kg-target-upper' },
                   h('section', null, h('h4', null, '输入概念与内涵'), slotFields('input'), button('+', () => addSlot('input'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'input').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加必要输入', 'aria-label': '增加必要输入' })),
-                  h('section', null, h('h4', null, '输入 → 规律 → 输出'), field(map.mode === 'connection' ? '映射规律表述' : '判别规律表述', map.mapping, value => edit(map => { map.mapping = value }), frozen, true),
+                  h('section', null, h('h4', null, '输入 → 规律 → 输出'), field(map.mode === 'connection' ? '映射规律表述' : '判别规律表述', map.mapping, value => edit(map => { map.mapping = value }), frozen, true, undefined, undefined, ['mapping']),
                     field('适用条件', map.conditions, value => edit(map => { map.conditions = value }), frozen, true), field('边界与不确定处', map.boundary, value => edit(map => { map.boundary = value }), frozen, true)),
                   h('section', null, h('h4', null, '输出概念与内涵'), slotFields('output'), button('+', () => addSlot('output'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'output').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加输出槽位', 'aria-label': '增加输出槽位' }))),
@@ -3070,7 +3101,8 @@
                       h('details', null, h('summary', null, '取值说明'), field('输出取值 ' + out.id + ' 说明', out.detail,
                         value => edit(map => { map.outcomes.find(item => item.id === out.id).detail = value }), frozen || used, true, '取值的完整说明')))
                   })), button('增加输出取值', () => edit(map => { map.outcomes.push({ id: crypto.randomUUID(), slotId: map.slots.find(slot => slot.role === 'output').id, label: '未命名取值', detail: '' }) }), frozen || map.outcomes.length >= 80)),
-                h('section', { 'aria-label': '靶图具体推测' }, h('h4', { 'data-target-example-list': 'heading', tabIndex: -1 }, '下层 · 具体情境与推测 (' + map.examples.length + ')'),
+                h('section', { 'aria-label': '靶图具体推测' }, h('h4', { 'data-target-example-list': 'heading', tabIndex: -1 },
+                  h('span', { 'data-target-gap-field': JSON.stringify(['examples']), tabIndex: -1 }, '下层 · 具体情境与推测 (' + map.examples.length + ')')),
                   h('details', { key: exampleScope, 'aria-label': '两个例子字段对照' }, h('summary', null, '对照两个例子'),
                     h('p', { className: 'kg-model-meta' }, (archive ? '历史快照 ' + archive.id : '未保存草稿 · 基线 ' + (draft.parentId || '尚未保存')) +
                       ' · 知识图第 ' + (archive?.baseRevision || draft.baseRevision) + ' 版'),
@@ -3145,7 +3177,7 @@
                       exampleQuery && matchesExample(item) ? h('p', { className: 'kg-model-meta' }, '文字命中：' + targetMapExampleTextHits(item, exampleQuery).join('、')) : null,
                       h('p', { className: 'kg-model-meta' }, exampleStages.find(([value]) => value === exampleState(item))[1],
                         item.stage === 'reviewed' ? ' · ' + TARGET_MAP_EXAMPLE_FEEDBACK.find(([value]) => value === item.feedback.kind)[1] : ''),
-                      field('例子 ' + (index + 1) + ' 完整情境', item.context, value => changeExample(item.id, example => { example.context = value }), frozen || lockedCase, true),
+                      field('例子 ' + (index + 1) + ' 完整情境', item.context, value => changeExample(item.id, example => { example.context = value }), frozen || lockedCase, true, undefined, undefined, ['examples', item.id, 'context']),
                       h('label', null, '情境接触记录', h('select', { 'aria-label': '例子 ' + (index + 1) + ' 接触记录', value: item.exposure, disabled: frozen || lockedCase,
                         onChange: event => changeExample(item.id, example => { example.exposure = event.target.value }) },
                         h('option', { value: 'unsure' }, '不确定是否见过'), h('option', { value: 'known' }, '已经见过'), h('option', { value: 'self_reported_new' }, '自报未见 · 非独立证明'))),
@@ -3153,9 +3185,10 @@
                         h('section', null, h('h4', null, '具体输入'), item.inputs.map(value => h('div', { key: value.slotId },
                           button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => jumpToSlot(value.slotId, item.id, 'input'), loading || !active,
                             { title: '对应上层槽位', 'aria-label': '对应输入槽位 ' + value.slotId, 'data-target-example-slot': JSON.stringify([item.id, 'input', value.slotId]) }),
-                          field('例子 ' + (index + 1) + ' 输入 ' + value.slotId, value.value, input => changeExample(item.id, example => { example.inputs.find(item => item.slotId === value.slotId).value = input }), frozen || lockedCase, true, '具体输入')))),
-                        h('section', null, h('h4', null, '具体推测过程'), field('例子 ' + (index + 1) + ' 推测过程', item.process, value => changeExample(item.id, example => { example.process = value }), frozen || lockedCase, true)),
-                        h('section', null, h('h4', null, '预测或材料输出'), item.outputs.map(value => h('div', { key: value.slotId },
+                          field('例子 ' + (index + 1) + ' 输入 ' + value.slotId, value.value, input => changeExample(item.id, example => { example.inputs.find(item => item.slotId === value.slotId).value = input }), frozen || lockedCase, true, '具体输入', undefined, ['examples', item.id, 'inputs', value.slotId])))),
+                        h('section', null, h('h4', null, '具体推测过程'), field('例子 ' + (index + 1) + ' 推测过程', item.process, value => changeExample(item.id, example => { example.process = value }), frozen || lockedCase, true, undefined, undefined, ['examples', item.id, 'process'])),
+                        h('section', null, h('h4', null, '预测或材料输出'), item.outputs.map(value => h('div', { key: value.slotId,
+                          'data-target-gap-field': JSON.stringify(['examples', item.id, 'outputs', value.slotId]), tabIndex: -1 },
                           button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => jumpToSlot(value.slotId, item.id, 'output'), loading || !active,
                             { title: '对应上层槽位', 'aria-label': '对应输出槽位 ' + value.slotId, 'data-target-example-slot': JSON.stringify([item.id, 'output', value.slotId]) }),
                           h('select', { 'aria-label': '例子 ' + (index + 1) + ' 对应输出 ' + value.slotId, value: value.outcomeId, disabled: frozen || lockedCase,
@@ -3185,7 +3218,14 @@
                       button('×', () => edit(map => { map.examples = map.examples.filter(value => value.id !== item.id) }), frozen || lockedCase,
                         { className: 'kg-secondary kg-target-icon', title: '删除例子', 'aria-label': '删除例子 ' + (index + 1) }))
                   }), button('增加具体推测', () => { selectExampleFilter('all', false, '', 'all', '', 'all'); edit(map => { map.examples.push(TARGET_MAP_TOOLS.example(map, crypto.randomUUID())) }) }, frozen || map.examples.length >= 40)),
-                h('details', null, h('summary', null, '待整理要素 (' + TARGET_MAP_TOOLS.gaps(map).length + ')'), h('ul', null, TARGET_MAP_TOOLS.gaps(map).map((value, index) => h('li', { key: index }, value)))),
+                h('details', { 'aria-label': '靶图待整理要素' }, h('summary', null, '待整理要素 (' + gapItems.length + ')'),
+                  h('ul', null, gapItems.map(gap => {
+                    const hidden = gap.path[0] === 'examples' && gap.path.length > 1 && !visibleExamples.some(item => item.id === gap.path[1])
+                    return h('li', { key: JSON.stringify(gap.path) }, h('p', null, gap.message),
+                      h('div', { className: 'kg-target-toolbar' }, h('small', null, '待填：' + gap.field),
+                        button(hidden ? '清除筛选并定位' : '定位', () => locateGap(gap, hidden), !exampleBrowseContext.current.ready,
+                          { 'aria-label': '定位待整理要素 ' + JSON.stringify(gap.path), title: (hidden ? '清除输出、阶段、来源与文字筛选，' : '') + gap.field })))
+                  }))),
                 !archive ? h('div', null, field('本次修订理由', draft.reason, value => install({ ...draft, reason: value })),
                   conflict ? h('div', { role: 'alert' }, '个人靶图记录与草稿基线不同，当前草稿未覆盖。', detail.current ? button('查看最新修订', () => openRecord(detail.current.id, JSON.stringify(['latest', detail.current.id])), saving || loading,
                     { 'data-target-record-link': JSON.stringify(['latest', detail.current.id]) }) : null,

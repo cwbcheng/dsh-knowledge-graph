@@ -77,16 +77,22 @@ export function createTargetMapTools() {
       for (const binding of [...prior.inputs, ...prior.outputs]) if (!same(identityOfSlot(next.slots.find(value => value.id === binding.slotId)), identityOfSlot(old.slots.find(value => value.id === binding.slotId)))) fail('已用于预测的槽位身份、单位或对象范围不能改写；内涵表述仍可修订')
     }
   }
-  function gaps(map) {
+  function gaps(map, { targets = false } = {}) {
     const result = []
+    const add = (message, path, field) => result.push({ message, path, field })
     for (const item of map.slots) {
-      if (!item.name.trim()) result.push('槽位名称未填写：' + item.id)
-      if (map.mode === 'connection' && !item.meaning.trim()) result.push('判别表述待整理：' + (item.name || item.id))
+      if (!item.name.trim()) add('槽位名称未填写：' + item.id, ['slots', item.id, 'name'], '概念名')
+      if (map.mode === 'connection' && !item.meaning.trim()) add('判别表述待整理：' + (item.name || item.id), ['slots', item.id, 'meaning'], '我的内涵表述')
     }
-    if (!map.mapping.trim()) result.push(map.mode === 'discrimination' ? '判别规律待整理' : '映射规律待整理')
-    if (!map.examples.length) result.push('尚无具体推测')
-    for (const item of map.examples) if (!item.context.trim() || !item.process.trim() || item.inputs.some(input => !input.value.trim()) || item.outputs.some(out => !out.outcomeId && !out.detail.trim())) result.push('例子要素未完整：' + item.id)
-    return result
+    if (!map.mapping.trim()) add(map.mode === 'discrimination' ? '判别规律待整理' : '映射规律待整理', ['mapping'], '规律表述')
+    if (!map.examples.length) add('尚无具体推测', ['examples'], '具体情境与推测')
+    for (const item of map.examples) {
+      const input = item.inputs.find(value => !value.value.trim()), output = item.outputs.find(value => !value.outcomeId && !value.detail.trim())
+      const missing = !item.context.trim() ? ['context'] : input ? ['inputs', input.slotId] : !item.process.trim() ? ['process'] : output ? ['outputs', output.slotId] : null
+      if (missing) add('例子要素未完整：' + item.id, ['examples', item.id, ...missing],
+        ({ context: '完整情境', process: '推测过程', inputs: '具体输入', outputs: '预测或材料输出' })[missing[0]] + (missing[1] ? ' · ' + missing[1] : ''))
+    }
+    return targets ? result : result.map(item => item.message)
   }
   function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null) {
     try {

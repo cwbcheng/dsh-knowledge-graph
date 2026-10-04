@@ -35,6 +35,32 @@ for (const mutate of [
 const pending = structuredClone(map); pending.title = ''; pending.outcomes[0].label = ''; pending.examples.push(tools.example(pending, 'pending', 'prediction'))
 assert.doesNotThrow(() => tools.validate(pending, { draft: true }), 'Incomplete editable drafts must survive navigation')
 assert.throws(() => tools.validate(pending))
+const gapMap = tools.blank({ type: 'connection_model', text: '仅定位填写缺口' })
+gapMap.slots.push(tools.slot('same-name-2', 'input', '速度'))
+gapMap.examples.push(tools.example(gapMap, ' __proto__" ', 'prediction'))
+const gapBytes = JSON.stringify(gapMap)
+const gapTargets = () => tools.gaps(gapMap, { targets: true })
+assert.deepEqual(gapTargets().map(item => item.message), tools.gaps(gapMap), 'Structured destinations preserve the existing diagnostic messages')
+assert.deepEqual(gapTargets()[0].path, ['slots', 'input-1', 'name'])
+const lastGap = () => gapTargets().at(-1)
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'context'])
+assert.equal(JSON.stringify(gapMap), gapBytes, 'Gap navigation does not complete the model')
+gapMap.examples[0].context = '通常而非必然，条件仍未核对'
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'inputs', 'input-1'])
+gapMap.examples[0].inputs[0].value = '0'
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'inputs', 'same-name-2'])
+gapMap.examples[0].inputs[1].value = ' \n '
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'inputs', 'same-name-2'])
+gapMap.examples[0].inputs[1].value = '未知单位与对象，不自动判断相容'
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'process'])
+gapMap.examples[0].process = '循环不是证明；来源冲突保持未决'
+assert.deepEqual(lastGap().path, ['examples', ' __proto__" ', 'outputs', 'output-1'])
+gapMap.examples[0].outputs[0].detail = '无法确定'
+assert(!gapTargets().some(item => item.path[0] === 'examples'), 'Presence is not correctness; unknown text remains literal')
+gapMap.examples = []
+assert.deepEqual(lastGap().path, ['examples'])
+const conceptGaps = tools.gaps(tools.blank({ type: 'concept', text: '概念' }), { targets: true })
+assert(!conceptGaps.some(item => item.path.at(-1) === 'meaning'), 'Do not invent hidden connection fields for discrimination maps')
 const request = { action: 'save', id: 'one', targetId: 'motion', map, parentId: '', reason: '', confirm: true }
 const first = read(request).saved; assert(first)
 const historyRecords = Array.from({ length: 47 }, (_, index) => ({ ...structuredClone(first), id: 'history-' + String(index).padStart(2, '0'), createdAt: index + 1,
