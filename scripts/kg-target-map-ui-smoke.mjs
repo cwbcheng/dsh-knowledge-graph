@@ -3316,6 +3316,7 @@ const save = id => {
 }
 save('slot-basis'); map.slots[1].meaning = '后来修订的内涵'; save('slot-later')
 owner = mount({ focusRequest: focus }); await owner.load()
+assert.equal(all(owner.tree, node => node.props['data-target-example-model-context']).length, 2, 'Each concrete process needs its visible model rules and conditions in place')
 const contextFor = (slotId, role, index = 0) => {
   const found = all(owner.tree, node => node.props['data-target-example-context'] === JSON.stringify([map.examples[index].id, role, slotId]))
   assert.equal(found.length, 1, 'Exactly one in-place context for each example slot identity'); return found[0]
@@ -3377,6 +3378,89 @@ owner = mount({ focusRequest: { ...focus, targetId: 'externality' } }); await ow
 const conceptContexts = all(owner.tree, node => node.props['data-target-example-context'])
 assert.equal(conceptContexts.length, 2); assert(conceptContexts.every(node => !text(node).includes('我的内涵表述')))
 assert(conceptContexts.every(node => text(node).includes('未填写') && !text(node).includes('预测时的原内涵')))
+owner.unmount(); storage.clear(); records = []
+}
+
+{
+doc.revision = 1; storage.clear(); records = []
+const map = motionTargetMap(), basis = '预测时的规律；必须同时有合外力与原速度', later = '后来修订的规律；方向未知，不自动补齐'
+const conditions = '同一物体、同一参考系；N 与 m/s 分别记录\n原状态与后续状态不同；通常成立，不删除限定语'
+const boundary = '<img src=x onerror=alert(1)>\n来源甲乙冲突；循环不证明成立；不执行 a -> b -> a'
+map.mapping = basis; map.conditions = conditions; map.boundary = boundary; map.examples[0].stage = 'prediction'
+const save = id => {
+  const response = tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+    id, parentId: records.at(-1)?.id || '', reason: '例子中的规律验收', confirm: true, map }, records)
+  assert(response.saved, JSON.stringify(response.error)); records.push(response.saved)
+}
+save('model-basis'); map.mapping = later; save('model-later')
+owner = mount({ focusRequest: focus }); await owner.load()
+const contextFor = (index = 0) => {
+  const found = all(owner.tree, node => node.props['data-target-example-model-context'] === map.examples[index].id)
+  assert.equal(found.length, 1, 'Each example identity owns one model context'); return found[0]
+}
+const checkContext = (expected, absent = [], index = 0) => {
+  const node = contextFor(index)
+  assert.equal(node.type, 'details'); assert.equal(node.props.open, undefined)
+  assert.equal(node.props.onToggle, undefined, 'Native disclosure has no write or fetch handler')
+  assert.equal(node.props['aria-label'], '例子 ' + (index + 1) + ' 的本版规律与条件')
+  assert(!all(node, item => ['input', 'textarea', 'select', 'img', 'script'].includes(item.type)).length)
+  for (const value of expected) assert(text(node).includes(value), value)
+  for (const value of absent) assert(!text(node).includes(value), 'Cannot borrow: ' + value)
+  for (const span of all(node, item => item.type === 'span')) {
+    assert.equal(span.props.style.whiteSpace, 'pre-wrap'); assert.equal(span.props.style.overflowWrap, 'anywhere')
+  }
+}
+const before = [JSON.stringify([...storage]), JSON.stringify(records), writes, owner.requests.length]
+for (const index of [0, 1]) checkContext([later, conditions, boundary, '映射规律表述', '适用条件', '边界与不确定处', '未保存草稿', '知识图第 1 版', '不自动视为原预测依据'], [basis], index)
+assert.deepEqual([JSON.stringify([...storage]), JSON.stringify(records), writes, owner.requests.length], before)
+const long = 'x'.repeat(7900) + '\n方向未知；两项必要输入，不由同名代入'
+owner.change('映射规律表述', long); owner.change('适用条件', ' \n '); owner.change('边界与不确定处', '')
+owner.change('搜索例子文字', 'not a match')
+checkContext([long], [later, basis, conditions, boundary])
+assert.equal(all(contextFor(), node => node.type === 'span' && text(node) === '未填写').length, 2, 'Missing conditions and boundary do not mean unconditional validity')
+owner.change('搜索例子文字', '')
+const draftBytes = JSON.stringify([...storage]), recordsBytes = JSON.stringify(records), writeCount = writes
+owner.click('查看靶图修订 model-basis')
+const failed = owner.pending().at(-1); failed.reject(new Error('503 model context')); failed.settled = true; await owner.settle()
+checkContext([long, '未保存草稿'], [basis])
+assert.equal(JSON.stringify([...storage]), draftBytes)
+owner.click('重试读取历史靶图'); await owner.load()
+checkContext([basis, conditions, boundary, '历史修订 model-basis', '知识图第 1 版'], [long, later, '未保存草稿'])
+assert(owner.control('映射规律表述').props.disabled)
+owner.click('返回未保存草稿'); owner.click('查看预测时的上层表述'); await owner.load()
+checkContext([basis, '历史修订 model-basis', '不自动视为原预测依据'], [long, later])
+owner.click('返回未保存草稿'); checkContext([long, '未保存草稿'], [basis, later])
+assert.equal(JSON.stringify([...storage]), draftBytes)
+owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+checkContext([long, '未保存草稿'], [basis, later]); assert.equal(JSON.stringify([...storage]), draftBytes)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+checkContext([long, '旧版只读草稿', '知识图第 1 版'], ['知识图第 2 版']); assert(owner.control('映射规律表述').props.disabled)
+owner.click('开启当前版本靶图')
+assert.equal(all(owner.tree, node => node.props['data-target-example-model-context']).length, 0)
+for (const [key, value] of JSON.parse(draftBytes)) assert.equal(storage.get(key), value, 'Opening revision 2 must preserve every old draft byte')
+assert.equal(storage.size, JSON.parse(draftBytes).length + 1)
+const fresh = JSON.parse(storage.get('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 2])))
+assert.equal(fresh.baseRevision, 2); assert.equal(fresh.map.mapping, ''); assert.deepEqual(fresh.map.examples, [])
+const versionBytes = JSON.stringify([...storage])
+owner.change('本地草稿版本', '1'); checkContext([long, '旧版只读草稿'])
+assert.equal(JSON.stringify([...storage]), versionBytes); assert.equal(JSON.stringify(records), recordsBytes); assert.equal(writes, writeCount)
+owner.unmount(); doc.revision = 1; storage.clear(); records = []
+const capacityMap = motionTargetMap(); capacityMap.mapping = long
+capacityMap.examples = Array.from({ length: 40 }, (_, index) => tools.example(capacityMap, index ? 'case-' + index : '__proto__'))
+records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+  id: 'model-capacity', parentId: '', reason: '', confirm: true, map: capacityMap }, []).saved]
+assert(records[0]); owner = mount({ focusRequest: focus }); await owner.load()
+const contexts = all(owner.tree, node => node.props['data-target-example-model-context'])
+assert.equal(contexts.length, 40); assert.equal(new Set(contexts.map(node => node.props['data-target-example-model-context'])).size, 40)
+assert(contexts.every(node => node.props.open === undefined && text(node).includes(long)))
+owner.unmount(); storage.clear(); records = []
+owner = mount({ focusRequest: { ...focus, targetId: 'externality' } }); await owner.load(); owner.click('增加具体推测')
+owner.change('判别规律表述', '具有免费让第三方受益的属性，归为正外部性；否则归为非正外部性')
+const concept = all(owner.tree, node => node.props['data-target-example-model-context'])
+assert.equal(concept.length, 1); assert(text(concept[0]).includes('判别规律表述'))
+assert(text(concept[0]).includes('否则归为非正外部性')); assert(!text(concept[0]).includes('映射规律表述'))
+assert.equal(all(concept[0], node => node.type === 'span' && text(node) === '未填写').length, 2)
+assert(!text(concept[0]).includes(later)); assert.equal(owner.requests.filter(request => request.args.action === 'save').length, 0)
 owner.unmount(); storage.clear(); records = []
 }
 
@@ -3739,6 +3823,8 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   gapStaleCallbacks: true, gapHistoryAndVersion: true, gapReadRetryAndReload: true, gapNoWrites: true, gapMissingDom: true,
   inlineSlotExactIdentity: true, inlineSlotLiteralAndUnknown: true, inlineSlotRevisionProvenance: true,
   inlineSlotPredictionBasisBoundary: true, inlineSlotDraftAndRetry: true, inlineSlotNoWrites: true,
+  inlineModelRulesAndConditions: true, inlineModelLiteralAndUnknown: true, inlineModelPredictionBasisBoundary: true,
+  inlineModelDraftRetryAndReload: true, inlineModelHistoryAndVersion: true, inlineModelNoWrites: true,
   draftEditAdmission: true, draftFieldLimitsAndUnicode: true, draftAggregateCapacity: true, rejectedEditNoSideEffects: true,
   draftCapacityReload: true, draftCapacityHistoryAndRetry: true, draftCapacityVersionFence: true,
   removalPreviewNoWrites: true, removalExactCascade: true, removalCancelAndDoubleClick: true, removalContextFences: true,
