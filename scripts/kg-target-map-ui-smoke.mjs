@@ -4047,6 +4047,15 @@ for (const invalid of [
 owner.unmount()
 
 seed(true); owner = mount({ focusRequest: focus }); await owner.load()
+const reorderKeys = value => Array.isArray(value) ? value.map(reorderKeys) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorderKeys(item)])) : value
+value = envelope(); value.draft.map = structuredClone(records[0].map)
+const savedPredictionBytes = JSON.stringify(records)
+assert.notEqual(JSON.stringify(reorderKeys(value).draft.map), JSON.stringify(records[0].map))
+await choose(file(reorderKeys(value))); assert.equal(preview().length, 1, 'An unchanged prediction backup can be formatted with another object key order')
+owner.change('确认替换当前草稿', undefined, true); owner.click('载入备份草稿')
+assert.deepEqual(JSON.parse(storage.get(key)).map, records[0].map)
+assert.equal(JSON.stringify(records), savedPredictionBytes); assert.equal(writes, writeCount)
 for (const mutate of [
   v => { v.draft.map.examples[0].process += '事后改写' }, v => { v.draft.map.examples.shift() },
   v => { v.draft.map.slots[1].unit = 'km/h' }, v => { v.draft.map.slots[1].scope = '另一时刻' },
@@ -4170,4 +4179,4 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftExportCompleteSnapshot: true, draftExportNoAuthorityOrWrites: true, draftExportFailureAndRetry: true,
   draftExportMemoryOnlyAndOldVersion: true, draftExportContextFences: true, draftExportIncompleteAndReadFailure: true, draftFalsyCachePreserved: true,
   draftImportReviewedReplacement: true, draftImportExactIdentity: true, draftImportPredictionProtection: true,
-  draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true }))
+  draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true, draftImportObjectOrder: true }))

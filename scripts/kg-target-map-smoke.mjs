@@ -8,6 +8,8 @@ import { createTargetMapTools } from '../src/kg-target-map.mjs'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import { targetMapFixture, motionTargetMap } from './kg-target-map-fixture-data.mjs'
 const tools = createTargetMapTools(), fixture = targetMapFixture(), base = { documentId: fixture.documentId, expectedRevision: 1 }
+const reorderKeys = value => Array.isArray(value) ? value.map(reorderKeys) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorderKeys(item)])) : value
 const map = motionTargetMap(), original = JSON.stringify(fixture)
 const read = (args, records = []) => tools.handle(fixture, { ...base, ...args }, records, 100)
 assert.equal(read({ action: 'catalog' }).items.length, 20)
@@ -94,6 +96,34 @@ reviewed.examples.at(-1).stage = 'reviewed'; reviewed.examples.at(-1).feedback =
 reviewed.mapping += ' 条件并不总是能从眼前现象直接看出。'; reviewed.slots[0].meaning += ' 需要合并各外力。'
 const third = read({ ...request, id: 'three', parentId: 'two', reason: '对照后修订上层', map: reviewed }, [second, first]).saved
 assert(third); assert.equal(third.bases.__proto__.recordId, 'two'); assert.notEqual(third.map.mapping, second.map.mapping)
+const immutableBytes = JSON.stringify([first, second, third])
+for (const previous of [second, third]) {
+  const reordered = reorderKeys(previous.map)
+  assert.notEqual(JSON.stringify(reordered), JSON.stringify(previous.map))
+  assert.deepEqual(reordered, previous.map)
+  assert.doesNotThrow(() => tools.transition(reordered, previous, [third, second, first]), 'JSON object key order is not a prediction edit')
+  assert(read({ ...request, id: 'reordered-' + previous.id, parentId: previous.id, reason: '仅字段顺序不同', map: reordered }, [previous, first]).saved)
+}
+for (const previous of [first, second, third]) assert.equal(read({ ...request, id: previous.id, parentId: previous.parentId,
+  reason: previous.reason, map: reorderKeys(previous.map) }, [third, second, first]).unchanged, true, 'Equivalent retries must not append or conflict')
+for (const mutate of [
+  value => { value.examples.at(-1).context += ' ' }, value => { value.examples.at(-1).process += '必然' },
+  value => { value.examples.at(-1).inputs.reverse() }, value => { value.examples.at(-1).inputs[0].slotId = value.examples.at(-1).inputs[1].slotId },
+  value => { value.examples.at(-1).inputs[0].value = '0' }, value => { value.examples.at(-1).outputs[0].outcomeId = 'uniform' },
+  value => { value.examples.at(-1).feedback.kind = 'ai' }, value => { value.examples.at(-1).feedback.source += '冲突来源' },
+  value => { value.slots[1].scope = '同一名称，不同对象与时刻' }, value => { value.slots[0].unit = 'kN' },
+  value => { value.outcomes[1].detail = '未知方向；循环不构成证明' },
+]) {
+  const invalid = reorderKeys(third.map); mutate(invalid)
+  assert.throws(() => tools.transition(invalid, third, [third, second, first]), mutate.toString())
+  assert(read({ ...request, id: 'three', parentId: 'two', reason: third.reason, map: invalid }, [third, second, first]).error)
+}
+for (const mutate of [value => { value.examples.reverse() }, value => { value.slots.reverse() }, value => { value.outcomes.reverse() },
+  value => { value.conditions += ' ' }, value => { value.boundary = '无条件' }, value => { value.title += 'x' }]) {
+  const invalid = reorderKeys(third.map); mutate(invalid)
+  assert.equal(read({ ...request, id: 'three', parentId: 'two', reason: third.reason, map: invalid }, [third, second, first]).error.code, 'attempt_conflict', 'Retry equality retains arrays and literal text')
+}
+assert.equal(JSON.stringify([first, second, third]), immutableBytes, 'Comparisons never rewrite saved snapshots')
 for (const mutate of [
   value => { value.examples.at(-1).process = '事后改写预测' }, value => { value.examples.pop() },
   value => { value.slots[0].unit = 'kN' }, value => { value.slots[1].scope = '另一个物体' },
@@ -107,6 +137,8 @@ const round = read(roundRequest, [third, second, first]).saved
 assert(round, 'Frozen predictions need an explicit new round, not deletion or perpetual structural lock')
 assert.equal(round.startsRound, true); assert.deepEqual(round.bases, {}); assert.equal(round.parentId, 'three')
 assert.deepEqual(round.map, roundMap); assert.equal(read(roundRequest, [round, third, second, first]).unchanged, true)
+assert(read({ ...roundRequest, map: reorderKeys(roundMap) }, [third, second, first]).saved, 'An explicit new round accepts equal upper fields in another key order')
+assert.equal(read({ ...roundRequest, map: reorderKeys(roundMap) }, [round, third, second, first]).unchanged, true)
 assert.equal(read({ ...roundRequest, startRound: false }, [round, third]).error.code, 'attempt_conflict')
 for (const mutate of [
   value => { value.startRound = 'true' }, value => { value.confirm = false }, value => { value.reason = ' ' },
@@ -147,6 +179,8 @@ for (const file of ['src/index.host.js', 'src/index.client.js', 'lib/index.js', 
   assert(start >= 0 && end > start, file)
   const generated = new Function(source.slice(start, end) + '; return TARGET_MAP_TOOLS')()
   assert.deepEqual(generated.handle(fixture, { ...base, ...request }, [], 100), tools.handle(fixture, { ...base, ...request }, [], 100), file)
+  assert.doesNotThrow(() => generated.transition(reorderKeys(third.map), third, [third, second, first]), file)
+  assert.equal(generated.handle(fixture, { ...base, ...request, map: reorderKeys(map) }, [first], 100).unchanged, true, file)
 }
 const directory = mkdtempSync(join(tmpdir(), 'kg-target-map-')), path = join(directory, 'isolated.sqlite'), previous = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = path
@@ -170,11 +204,23 @@ try {
   assert.equal((await call({ action: 'read', targetId: 'motion' })).current, null)
   const saved = await call(request); assert(saved.saved && !saved.appendRecord); assert.equal(saved.saved.origin, 'personal_target_map_not_mastery')
   assert.equal((await call(request)).unchanged, true)
+  const firstRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  assert.equal((await call({ ...request, map: reorderKeys(map) })).unchanged, true, 'HTTP retry compares objects, not serialized key order')
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), firstRows)
   const concurrent = await call({ ...request, id: 'competing' }); assert.equal(concurrent.error.code, 'attempt_conflict')
   assert.equal((await call({ ...request, id: 'foreign-record', documentId: 'other' })).error.code, 'not_found')
   assert.equal((await call({ ...request, targetId: 'speed-before' })).error.code, 'invalid_input')
-  const savedPrediction = await call({ ...request, id: 'two', parentId: 'one', reason: '记录预测', map: predicting }); assert(savedPrediction.saved)
+  const savedPrediction = await call({ ...request, id: 'two', parentId: 'one', reason: '记录预测', map: reorderKeys(predicting) }); assert(savedPrediction.saved)
+  assert.equal((await call({ ...request, id: 'two', parentId: 'one', reason: '记录预测', map: predicting })).unchanged, true)
   assert((await call({ ...request, id: 'three', parentId: 'two', reason: '修订', map: reviewed })).saved)
+  const reviewedRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  assert.equal((await call({ ...request, id: 'three', parentId: 'two', reason: '修订', map: reorderKeys(reviewed) })).unchanged, true)
+  for (const mutate of [value => { value.examples.at(-1).process += '必然' }, value => { value.examples.at(-1).inputs.reverse() }, value => { value.slots[1].unit = 'km/h' }]) {
+    const invalid = reorderKeys(reviewed); mutate(invalid)
+    assert((await call({ ...request, id: 'three', parentId: 'two', reason: '修订', map: invalid })).error)
+    assert((await call({ ...request, id: 'rejected-order-edit', parentId: 'three', reason: '不能伪装成字段调序', map: invalid })).error)
+  }
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), reviewedRows)
   assert.deepEqual(store.getCanonicalDocument(fixture.documentId), before)
   assert.equal(store.listLearningAttempts(fixture.documentId, 'motion').length, 0, 'Target maps are not prediction or mastery statistics')
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 3)
@@ -299,4 +345,5 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   identityAndScope: true, predictionBeforeFeedback: true, frozenPredictionBasis: true, appendOnlyCas: true, actualHttpSqlite: true,
   sourceAndGenerated: true, historyPages: 3, historyNoWrites: true, historyAppendFence: true, historyIndependentWriterSnapshot: true,
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
-  graphUnchanged: true, noMasteryPromotion: true }))
+  graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
+  reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true }))

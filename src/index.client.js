@@ -3185,7 +3185,14 @@ export default function clientPlugin() {
         const object = value => value && typeof value === 'object' && !Array.isArray(value)
         const exact = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key)) && keys.every(key => Object.hasOwn(value, key))
         const types = ['connection_model', 'discrimination_model', 'concept']
-        const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+        // JSON object member order is not content; array order and literal field values still are.
+        const same = (a, b) => {
+          if (a === b) return true
+          if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => same(value, b[index]))
+          if (!object(a) || !object(b)) return false
+          const keys = Object.keys(a)
+          return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && same(a[key], b[key]))
+        }
         const slot = (id, role, name = '') => ({ id, role, name, meaning: '', unit: '', scope: '' })
         function blank(target) {
           const mode = target.type === 'connection_model' ? 'connection' : 'discrimination'
