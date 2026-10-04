@@ -3377,6 +3377,129 @@ assert(conceptContexts.every(node => text(node).includes('未填写') && !text(n
 owner.unmount(); storage.clear(); records = []
 }
 
+// An edit must remain readable by the same draft contract after a full reload.
+{
+doc.revision = 1; storage.clear(); records = []
+const draftKey = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 1])
+const map = motionTargetMap()
+storage.set(draftKey, JSON.stringify({ documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map }))
+owner = mount({ focusRequest: focus }); await owner.load()
+const before = storage.get(draftKey), requests = owner.requests.length, writeCount = writes
+owner.change('例子 1 完整情境', 'x'.repeat(8001))
+assert.equal(owner.control('例子 1 完整情境').props.value, map.examples[0].context, 'Oversized edits must not replace the last recoverable draft')
+assert.equal(storage.get(draftKey), before)
+assert(text(owner.tree).includes('本次修改未应用'))
+assert(owner.control('例子 1 完整情境').props['aria-invalid'])
+assert.equal(owner.requests.length, requests); assert.equal(writes, writeCount)
+owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+assert.equal(owner.control('例子 1 完整情境').props.value, map.examples[0].context)
+assert.equal(storage.get(draftKey), before)
+assert(!text(owner.tree).includes('格式不兼容'))
+owner.unmount(); storage.clear(); records = []
+
+const fields = [['靶图标题', 4000], ['映射规律表述', 8000], ['适用条件', 8000], ['边界与不确定处', 8000], ['本次修订理由', 2000],
+  ['槽位 before 名称', 4000], ['槽位 before 内涵表述', 4000], ['槽位 before 单位', 4000], ['槽位 before 对象与时间', 4000],
+  ['输出取值 uniform 名称', 4000], ['输出取值 uniform 说明', 4000], ['例子 1 完整情境', 8000], ['例子 1 推测过程', 8000],
+  ['例子 1 输入 before', 4000], ['例子 1 输出细节 after', 4000]]
+for (const [label, limit] of fields) {
+  storage.clear()
+  storage.set(draftKey, JSON.stringify({ documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map }))
+  owner = mount({ focusRequest: focus }); await owner.load()
+  const accepted = '速'.repeat(limit - 2) + '\uD83D\uDE80'
+  owner.change(label, accepted)
+  assert.equal(owner.control(label).props.value, accepted, label + ': exact UTF-16 contract boundary must be accepted')
+  const bytes = storage.get(draftKey), requests = owner.requests.length
+  owner.change('确认保存个人靶图', undefined, true)
+  owner.change(label, accepted + 'x')
+  assert.equal(storage.get(draftKey), bytes, label + ': reject rather than truncate or poison the cache')
+  assert.equal(owner.control(label).props.value, accepted)
+  assert(owner.control(label).props['aria-invalid'])
+  const described = all(owner.tree, item => item.props.id === owner.control(label).props['aria-describedby'])
+  assert.equal(described.length, 1); assert.equal(described[0].props.role, 'alert')
+  assert(text(described[0]).includes('本次修改未应用'))
+  assert(owner.control('确认保存个人靶图').props.checked, 'Rejected input did not change the confirmed draft')
+  assert.equal(owner.requests.length, requests)
+  const literal = '未知方向；同名非同义；也许 0 m/s，另一对象下一时刻；循环不是证据；来源相互冲突 <script>x</script>'
+  owner.change(label, literal)
+  assert.equal(owner.control(label).props.value, literal)
+  assert(!owner.control(label).props['aria-invalid']); assert(!text(owner.tree).includes('本次修改未应用'))
+  assert(!owner.control('确认保存个人靶图').props.checked)
+  tools.validate(JSON.parse(storage.get(draftKey)).map, { draft: true })
+  owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+  assert.equal(owner.control(label).props.value, literal)
+  owner.unmount()
+}
+
+// The aggregate JSON limit is independent of each field's own limit and includes escaping.
+storage.clear()
+const full = motionTargetMap()
+full.examples = Array.from({ length: 39 }, (_, i) => tools.example(full, 'full-' + i))
+full.examples[0].inputs[0].value = '\\"'.repeat(2000)
+for (const example of full.examples) {
+  const remaining = 240000 - JSON.stringify(full).length
+  example.context = 'x'.repeat(Math.min(8000, remaining))
+}
+assert.equal(JSON.stringify(full).length, 240000); tools.validate(full, { draft: true })
+storage.set(draftKey, JSON.stringify({ documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map: full }))
+owner = mount({ focusRequest: focus }); await owner.load()
+owner.change('搜索例子文字', 'x')
+const fullBytes = storage.get(draftKey), fullRequests = owner.requests.length
+owner.change('靶图标题', full.title + 'x')
+assert.equal(storage.get(draftKey), fullBytes)
+assert(text(owner.tree).includes('单张容量'))
+owner.click('增加具体推测')
+assert.equal(storage.get(draftKey), fullBytes)
+assert.equal(owner.control('搜索例子文字').props.value, 'x', 'A rejected structural edit cannot clear filters')
+assert.equal(owner.requests.length, fullRequests)
+owner.change('例子 1 完整情境', 'y'.repeat(8000))
+assert.equal(JSON.stringify(JSON.parse(storage.get(draftKey)).map).length, 240000)
+assert.equal(owner.control('搜索例子文字').props.value, '', 'Accepted edit still reveals the active field when its query no longer matches')
+owner.change('例子 1 完整情境', '0，仍需必要输入和条件')
+owner.click('增加具体推测')
+assert.equal(JSON.parse(storage.get(draftKey)).map.examples.length, 40)
+owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+assert.equal(owner.control('例子 1 完整情境').props.value, '0，仍需必要输入和条件')
+assert.equal(JSON.parse(storage.get(draftKey)).map.examples.length, 40)
+owner.unmount(); storage.clear()
+
+const predicted = motionTargetMap(); predicted.examples[0].stage = 'prediction'
+records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+  id: 'capacity-prediction', parentId: '', reason: '', confirm: true, map: predicted }, []).saved]
+assert(records[0]); const recordsBytes = JSON.stringify(records)
+owner = mount({ focusRequest: focus }); await owner.load()
+owner.change('新一轮理由', '新'.repeat(2000))
+const reasonBytes = storage.get(draftKey)
+owner.change('新一轮理由', '新'.repeat(2001))
+assert.equal(storage.get(draftKey), reasonBytes); assert(owner.control('新一轮理由').props['aria-invalid'])
+owner.change('本次修订理由', 'x'.repeat(500001))
+assert.equal(storage.get(draftKey), reasonBytes); assert(owner.control('本次修订理由').props['aria-invalid'])
+owner.click('填写对照结果')
+for (const [label, limit] of [['例子 1 对照结果', 8000], ['例子 1 结果来源说明', 4000]]) {
+  owner.change(label, 'x'.repeat(limit))
+  const bytes = storage.get(draftKey)
+  owner.change(label, 'x'.repeat(limit + 1))
+  assert.equal(storage.get(draftKey), bytes); assert(owner.control(label).props['aria-invalid'])
+}
+const longDraft = storage.get(draftKey)
+owner.click('查看预测时的上层表述'); await owner.load()
+assert(!text(owner.tree).includes('本次修改未应用'), 'Draft error cannot be attributed to a read-only snapshot')
+owner.click('返回未保存草稿'); assert.equal(storage.get(draftKey), longDraft)
+owner.click('打开靶图 externality'); await owner.load()
+owner.click('打开靶图 motion')
+const retryRead = owner.pending().find(request => request.args.action === 'read')
+retryRead.reject(new Error('capacity fixture 503')); retryRead.settled = true; await owner.settle()
+assert.equal(storage.get(draftKey), longDraft)
+owner.click('重读靶图'); await owner.load()
+assert.equal(storage.get(draftKey), longDraft)
+assert.equal(owner.control('例子 1 对照结果').props.value.length, 8000)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+assert(owner.control('例子 1 对照结果').props.disabled)
+assert(!text(owner.tree).includes('本次修改未应用'))
+assert.equal(storage.get(draftKey), longDraft)
+assert.equal(JSON.stringify(records), recordsBytes); assert.equal(writes, writeCount)
+owner.unmount(); doc.revision = 1; storage.clear(); records = []
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -3428,4 +3551,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   gapExactFieldNavigation: true, gapSequentialMissingInputs: true, gapExplicitFilterRecovery: true,
   gapStaleCallbacks: true, gapHistoryAndVersion: true, gapReadRetryAndReload: true, gapNoWrites: true, gapMissingDom: true,
   inlineSlotExactIdentity: true, inlineSlotLiteralAndUnknown: true, inlineSlotRevisionProvenance: true,
-  inlineSlotPredictionBasisBoundary: true, inlineSlotDraftAndRetry: true, inlineSlotNoWrites: true }))
+  inlineSlotPredictionBasisBoundary: true, inlineSlotDraftAndRetry: true, inlineSlotNoWrites: true,
+  draftEditAdmission: true, draftFieldLimitsAndUnicode: true, draftAggregateCapacity: true, rejectedEditNoSideEffects: true,
+  draftCapacityReload: true, draftCapacityHistoryAndRetry: true, draftCapacityVersionFence: true }))
