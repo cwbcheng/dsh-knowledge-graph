@@ -845,6 +845,60 @@ assert(text(owner.control('靶图目标列表')).includes('已保存个人记录
 assert.equal(writes, catalogueWrites + 1); owner.unmount()
 
 doc.revision = 1; storage.clear(); records = []
+const personalTitleMap = motionTargetMap()
+personalTitleMap.title = '<img src=x onerror=alert(1)>\n我的惯性模型 A_B% ' + '单位对象时间与限定语'.repeat(80)
+records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, targetId: 'motion', expectedRevision: 1,
+  id: 'personal-title-original', parentId: '', reason: '', confirm: true, map: personalTitleMap }, records).saved)
+const personalTitleRecords = JSON.stringify(records), personalTitleWrites = writes
+owner = mount({ directory: true, focusRequest: focus, onStateChange }); await owner.load()
+assert.equal(owner.control('靶图标题').type, 'textarea', 'A valid multiline personal title must remain fully readable and editable without browser input sanitization')
+assert.equal(owner.control('靶图标题').props.value, personalTitleMap.title)
+owner.change('靶图标题', '窗口中的新标题尚未保存'); owner.change('本次修订理由', '改名不影响原图身份')
+owner.change('确认保存个人靶图', undefined, true)
+const titleDraftKey = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 1]), titleDraft = storage.get(titleDraftKey)
+const submitTitleQuery = async query => {
+  owner.change('搜索靶图目标', query)
+  all(owner.tree, item => item.type === 'form')[0].props.onSubmit({ preventDefault() {} }); owner.render(); await owner.load()
+}
+await submitTitleQuery('a_b%')
+assert.deepEqual(owner.directory.rows.map(row => row.dataset.targetCatalogueRow), ['motion'])
+let titleDetails = all(owner.tree, item => item.props['data-target-catalogue-record'] === 'personal-title-original')[0]
+assert(titleDetails?.props.open); assert(text(titleDetails).includes(personalTitleMap.title))
+assert.equal(all(titleDetails, item => item.type === 'img' || item.props.dangerouslySetInnerHTML).length, 0)
+assert(text(titleDetails).includes('最近保存标题 · 知识图第 1 版'))
+assert.equal(storage.get(titleDraftKey), titleDraft); assert(owner.control('确认保存个人靶图').props.checked)
+await submitTitleQuery('窗口中的新标题')
+assert.equal(owner.directory.rows.length, 0, 'Unsaved titles are not advertised as saved records')
+assert.equal(owner.control('靶图标题').props.value, '窗口中的新标题尚未保存')
+owner.click('保存个人靶图'); await owner.resolve(owner.pending().find(item => item.args.action === 'save')); await owner.load()
+assert.equal(writes, personalTitleWrites + 1)
+assert.deepEqual(owner.directory.rows.map(row => row.dataset.targetCatalogueRow), ['motion'], 'Confirmed save updates title search membership')
+const latestTitleId = records.at(-1).id
+assert(text(all(owner.tree, item => item.props['data-target-catalogue-record'] === latestTitleId)[0]).includes('窗口中的新标题尚未保存'))
+assert.equal(JSON.stringify(records.slice(0, 1)), personalTitleRecords)
+await submitTitleQuery('a_b%'); assert.equal(owner.directory.rows.length, 0)
+await submitTitleQuery('motion')
+assert.equal(all(owner.tree, item => item.props['data-target-catalogue-record'] === latestTitleId)[0].props.open, false)
+for (const mutate of [
+  value => { value.latestRecord = null }, value => { delete value.latestRecord }, value => { value.latestRecord.id = '' },
+  value => { value.latestRecord.title = {} }, value => { value.latestRecord.title = ' ' }, value => { value.latestRecord.title = 'x'.repeat(4001) },
+  value => { value.latestRecord.createdAt = -1 }, value => { value.latestRecord.createdAt = '1' },
+  value => { value.latestRecord.baseRevision = 2 }, value => { value.latestRecord.baseRevision = 0 }, value => { value.currentRecordCount = 0 },
+]) {
+  owner.click('刷新靶图目录')
+  const request = owner.pending().find(item => item.args.action === 'catalog'), response = tools.handle(doc, request.args, records)
+  mutate(response.items[0]); await owner.resolve(request, response)
+  assert(text(owner.tree).includes('靶图目录响应身份不一致')); assert.equal(owner.directory.rows.length, 0)
+  assert.equal(owner.control('靶图标题').props.value, '窗口中的新标题尚未保存')
+  owner.click('重试读取靶图目录'); await owner.load()
+}
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+await submitTitleQuery('窗口中的新标题')
+assert(text(all(owner.tree, item => item.props['data-target-catalogue-record'] === latestTitleId)[0]).includes('知识图第 1 版'))
+assert.equal(writes, personalTitleWrites + 1)
+owner.unmount()
+
+doc.revision = 1; storage.clear(); records = []
 const slotMap = motionTargetMap()
 records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion', id: 'slot-original',
   parentId: '', reason: '', confirm: true, map: slotMap }, records).saved)
@@ -4251,4 +4305,5 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftImportReviewedReplacement: true, draftImportExactIdentity: true, draftImportPredictionProtection: true,
   draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true, draftImportObjectOrder: true,
   savedCatalogueFilterAndCounts: true, savedCatalogueDraftPreserved: true, savedCatalogueNavigationAndLegacy: true,
-  savedCatalogueResponseFence: true, savedCatalogueReadOnly: true }))
+  savedCatalogueResponseFence: true, savedCatalogueReadOnly: true, personalTitleDiscovery: true,
+  personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true }))

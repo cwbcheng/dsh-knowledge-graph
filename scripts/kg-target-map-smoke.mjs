@@ -21,7 +21,7 @@ const catalogueRecords = [
   { documentId: base.documentId, target: { id: 'speed-before' }, baseRevision: 2 },
   { documentId: 'another-document', target: { id: 'speed-after' }, baseRevision: 1 },
   { documentId: base.documentId, target: { id: 'removed-target' }, baseRevision: 1 },
-]
+].map((record, index) => ({ ...record, id: 'catalogue-' + index, createdAt: index + 1, map: { title: '个人目录标题 ' + index } }))
 const personalCatalogue = read({ action: 'catalog', records: 'saved' }, catalogueRecords)
 assert.equal(personalCatalogue.total, 1, 'Find previously saved targets without remembering their names, before pagination')
 assert.equal(personalCatalogue.records, 'saved')
@@ -32,6 +32,28 @@ assert.equal(read({ action: 'catalog', records: 'saved', offset: 20 }, catalogue
 assert.equal(read({ action: 'catalog', records: 'saved' }).total, 0, 'Unsaved drafts are not saved records')
 for (const records of [null, true, 'mastered', {}, ['saved']]) assert.equal(read({ action: 'catalog', records }).error?.code, 'invalid_input')
 assert.equal(read({ action: 'catalog', expectedRevision: 2, records: 'saved' }, catalogueRecords).error.code, 'revision_conflict')
+const titleSearch = read({ action: 'catalog', query: '个人目录标题 1' }, catalogueRecords)
+assert.equal(titleSearch.total, 1, 'Find a saved target by the latest personal title, not only the source node name')
+assert.deepEqual(titleSearch.items[0].latestRecord, { id: 'catalogue-1', title: '个人目录标题 1', baseRevision: 2, createdAt: 2 })
+assert.equal(read({ action: 'catalog', query: '个人目录标题 0' }, catalogueRecords).total, 0, 'An obsolete personal title must not pretend to be the latest title')
+assert.equal(read({ action: 'catalog', query: '个人目录标题 2' }, catalogueRecords).total, 0, 'Other document titles remain outside the query')
+assert.equal(read({ action: 'catalog', query: '个人目录标题 3' }, catalogueRecords).total, 0, 'Removed targets stay outside the current graph catalogue')
+assert.deepEqual(read({ action: 'catalog', query: '个人目录标题 1' }, catalogueRecords.slice().reverse()), titleSearch, 'Latest means record order, not array order')
+const literalTitle = '<img src=x onerror=alert(1)>\n速度 A_B% 单位 m/s 可能适用', titleRecords = [
+  { ...catalogueRecords[0], map: { title: literalTitle } },
+  { ...catalogueRecords[0], id: 'same-personal-title', target: { id: 'speed-after' }, map: { title: literalTitle } },
+]
+const titleBytes = JSON.stringify(titleRecords)
+for (const query of ['a_b%', '<img', '可能适用']) {
+  const result = read({ action: 'catalog', query, mode: 'discrimination', records: 'saved' }, titleRecords)
+  assert.deepEqual(result.items.map(item => item.id), ['speed-before', 'speed-after'])
+  assert(result.items.every(item => item.latestRecord.title === literalTitle))
+  result.items[0].latestRecord.title = 'Changed response only'
+}
+assert.equal(read({ action: 'catalog', query: 'A%B' }, titleRecords).total, 0, 'Search characters are literal, not SQL wildcards')
+assert.equal(read({ action: 'catalog', query: literalTitle, mode: 'connection' }, titleRecords).total, 0)
+assert.equal(JSON.stringify(titleRecords), titleBytes, 'Catalogue metadata is detached from private records')
+assert.equal(read({ action: 'catalog' }).items[0].latestRecord, null)
 assert(read({ action: 'read', targetId: 'unknown' }).template.slots.every(slot => slot.name === ''), 'Unknown roles must not become a guessed direction')
 assert.equal(read({ action: 'read', targetId: 'externality' }).template.mode, 'discrimination')
 assert.equal(read({ action: 'read', targetId: 'judge' }).template.outcomes.length, 2)
@@ -359,7 +381,7 @@ try {
   const catalogArgs = { action: 'catalog', documentId: catalogDocumentId, expectedRevision: 1, records: 'saved' }
   assert.equal((await call(catalogArgs)).total, 0, 'Another document with the same motion ID has no personal target records')
   const saveCatalog = (targetId, expectedRevision = 1) => call({ ...request, documentId: catalogDocumentId, targetId, expectedRevision,
-    id: 'catalogue-' + targetId, map: tools.blank(catalogGraph.nodes.find(node => node.id === targetId)) })
+    id: 'catalogue-' + targetId, map: { ...tools.blank(catalogGraph.nodes.find(node => node.id === targetId)), title: '个人标题 ' + targetId } })
   assert((await saveCatalog('target-800')).saved)
   assert((await saveCatalog('target-844')).saved)
   catalogGraph.nodes.pop()
@@ -379,6 +401,14 @@ try {
   assert.equal((await call({ ...catalogArgs, query: '同名' })).total, 1)
   assert.equal((await call({ ...catalogArgs, mode: 'connection' })).total, 0)
   assert.equal((await call({ ...catalogArgs, records: 'all', query: '同名' })).total, 2)
+  const titlePage = await call({ ...catalogArgs, query: '个人标题' })
+  assert.equal(titlePage.total, 43)
+  assert.deepEqual(titlePage.items.map(item => item.id), pages.slice(0, 20).map(item => item.id))
+  assert(titlePage.items.every(item => Object.keys(item.latestRecord).sort().join() === 'baseRevision,createdAt,id,title'))
+  const oldTitle = await call({ ...catalogArgs, query: '个人标题 target-800' })
+  assert.equal(oldTitle.total, 1); assert.equal(oldTitle.items[0].latestRecord.baseRevision, 1)
+  assert.equal(oldTitle.items[0].latestRecord.id, 'catalogue-target-800')
+  assert.equal((await call({ ...catalogArgs, query: '个人标题 target-844' })).total, 0)
   assert.equal((await call({ ...catalogArgs, expectedRevision: 1 })).error.code, 'revision_conflict')
   assert.deepEqual(store.getCanonicalDocument(catalogDocumentId), catalogBefore)
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), catalogRows, 'Catalogues never write records or promote mastery')
@@ -388,7 +418,7 @@ try {
     DatabaseSync.prototype.prepare = function(sql, ...args) {
       assert(!sql.includes('SELECT task_json, response_json FROM learning_attempts'), 'Catalogue reads aggregate metadata, not full private snapshots')
       const statement = originalPrepare.call(this, sql, ...args)
-      if (sql.startsWith('SELECT model_id AS targetId')) {
+      if (sql.startsWith('SELECT counts.*')) {
         const originalAll = statement.all
         statement.all = function(...keys) {
           const value = originalAll.apply(this, keys)
@@ -403,11 +433,26 @@ try {
     }
     const snapshot = await call(catalogArgs)
     assert(catalogInterleaved); assert.equal(snapshot.revision, 2); assert.equal(snapshot.items[1].currentRecordCount, 1)
+    assert.equal(snapshot.items[1].latestRecord.baseRevision, 2)
   } finally { DatabaseSync.prototype.prepare = originalPrepare; catalogWriter.close() }
   assert.equal((await call(catalogArgs)).error.code, 'revision_conflict')
   const revisedCatalog = await call({ ...catalogArgs, expectedRevision: 3 })
   assert.equal(revisedCatalog.total, 43); assert(revisedCatalog.items.every(item => item.currentRecordCount === 0))
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), catalogRows)
+  const renamedTitle = '新的个人标题 A_B%\n未知方向、多输入、单位、对象时间、限定语、循环与冲突来源仍待核对'
+  assert((await call({ ...request, documentId: catalogDocumentId, targetId: 'target-800', expectedRevision: 3,
+    id: 'catalogue-renamed', parentId: '', map: { ...tools.blank(catalogGraph.nodes[800]), title: renamedTitle } })).saved)
+  const renamedRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  const latestQuery = { ...catalogArgs, expectedRevision: 3, query: 'a_b%' }
+  const renamed = await call(latestQuery)
+  assert.equal(renamed.total, 1); assert.equal(renamed.items[0].recordCount, 2)
+  assert.equal(renamed.items[0].currentRecordCount, 1); assert.equal(renamed.items[0].latestRecord.title, renamedTitle)
+  assert.equal(renamed.items[0].latestRecord.id, 'catalogue-renamed')
+  assert.equal((await call({ ...latestQuery, query: '个人标题 target-800' })).total, 0)
+  assert.equal((await call({ ...latestQuery, documentId: fixture.documentId, expectedRevision: 2 })).total, 0)
+  const oldNamedRecord = await call({ ...latestQuery, action: 'record', targetId: 'target-800', recordId: 'catalogue-target-800' })
+  assert.equal(oldNamedRecord.record.map.title, '个人标题 target-800'); assert.equal(oldNamedRecord.stale, true)
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), renamedRows)
   assert.deepEqual(store.getCanonicalDocument(fixture.documentId), beforeRoundGraph)
 } finally {
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
@@ -421,4 +466,5 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,
-  savedCataloguePages: 3, savedCatalogueSnapshot: true, savedCatalogueReadOnly: true }))
+  savedCataloguePages: 3, savedCatalogueSnapshot: true, savedCatalogueReadOnly: true,
+  latestPersonalTitleSearch: true, latestTitleIdentityAndVersion: true, latestTitleMetadataOnly: true, latestTitleReadOnly: true }))

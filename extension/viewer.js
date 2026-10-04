@@ -2121,13 +2121,17 @@
                 if (record.documentId !== documentId) continue
                 const count = counts.get(record.target.id) || { recordCount: 0, currentRecordCount: 0 }
                 count.recordCount++; if (record.baseRevision === revision) count.currentRecordCount++
+                if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && record.id.localeCompare(count.latestRecord.id) > 0) {
+                  count.latestRecord = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt }
+                }
                 counts.set(record.target.id, count)
               }
               const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
                 (records === 'all' || counts.get(node.id)?.recordCount > 0) &&
-                (!query || (node.text + ' ' + node.id).toLowerCase().includes(query.toLowerCase())))
+                (!query || [node.text + ' ' + node.id, counts.get(node.id)?.latestRecord?.title || ''].some(value => value.toLowerCase().includes(query.toLowerCase()))))
               return { version: 1, documentId, revision, records, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
-                recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0 })) }
+                recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0,
+                latestRecord: counts.get(node.id)?.latestRecord ? clone(counts.get(node.id).latestRecord) : null })) }
             }
             if (!identity(args.targetId)) fail('靶图目标身份无效')
             const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))
@@ -2510,7 +2514,12 @@
                 new Set(result.items.map(item => item?.id)).size !== result.items.length || result.items.some(item => !item || typeof item.id !== 'string' ||
                   !item.id.trim() || item.id.length > 4096 || typeof item.text !== 'string' || !['concept', 'connection_model', 'discrimination_model'].includes(item.type) ||
                   !Number.isSafeInteger(item.recordCount) || item.recordCount < (recordFilter === 'saved' ? 1 : 0) || !Number.isSafeInteger(item.currentRecordCount) ||
-                  item.currentRecordCount < 0 || item.currentRecordCount > item.recordCount)) throw new Error('靶图目录响应身份不一致')
+                  item.currentRecordCount < 0 || item.currentRecordCount > item.recordCount ||
+                  (item.recordCount === 0 ? item.latestRecord !== null : !item.latestRecord || typeof item.latestRecord.id !== 'string' ||
+                    !item.latestRecord.id.trim() || item.latestRecord.id.length > 120 || typeof item.latestRecord.title !== 'string' ||
+                    !item.latestRecord.title.trim() || item.latestRecord.title.length > 4000 || !Number.isSafeInteger(item.latestRecord.baseRevision) ||
+                    item.latestRecord.baseRevision < 1 || item.latestRecord.baseRevision > revision || !Number.isSafeInteger(item.latestRecord.createdAt) ||
+                    item.latestRecord.createdAt < 0 || item.latestRecord.baseRevision === revision && item.currentRecordCount === 0))) throw new Error('靶图目录响应身份不一致')
             catalogScope.current = directoryScope; setCatalog(result)
           }).catch(value => { if (!abort.signal.aborted) { setCatalogError(value); if (value.code === 'revision_conflict') setError(value) } })
           return () => abort.abort()
@@ -3241,7 +3250,7 @@
           h('div', { className: 'kg-target-layout' },
             h('aside', { className: 'kg-target-catalogue', 'aria-label': '靶图目标目录' },
               h('form', { onSubmit: event => { event.preventDefault(); setSearch(query); setOffset(0) } },
-                h('input', { type: 'search', 'aria-label': '搜索靶图目标', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
+                h('input', { type: 'search', 'aria-label': '搜索靶图目标', placeholder: '目标或最近保存标题', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
                 h('select', { 'aria-label': '靶图类型', value: mode, onChange: event => { setMode(event.target.value); setOffset(0) } },
                   h('option', { value: 'all' }, '全部目标'), h('option', { value: 'connection' }, '联结靶图'), h('option', { value: 'discrimination' }, '概念靶图')),
                 h('select', { 'aria-label': '靶图个人记录', value: recordFilter, onChange: event => { setRecordFilter(event.target.value); setOffset(0) } },
@@ -3254,7 +3263,11 @@
               h('ul', { ref: directoryRef, className: 'kg-target-directory', 'aria-label': '靶图目标列表', tabIndex: 0, onScroll: rememberDirectory },
                 (catalog?.items || []).map(item => h('li', { key: item.id, 'data-target-catalogue-row': item.id }, button(item.text, () => { if (targetId !== item.id) { setDetail(null); setArchive(null); setTargetId(item.id) } }, saving,
                 { 'aria-pressed': targetId === item.id, 'aria-label': '打开靶图 ' + item.id }), h('small', null, item.id + ' · ' + (item.type === 'connection_model' ? '联结' : '判别')),
-                h('small', { style: { display: 'block' } }, item.recordCount ? '已保存个人记录 ' + item.recordCount + ' · 当前版 ' + item.currentRecordCount + ' · 其他版 ' + (item.recordCount - item.currentRecordCount) : '尚无已保存个人记录')))),
+                h('small', { style: { display: 'block' } }, item.recordCount ? '已保存个人记录 ' + item.recordCount + ' · 当前版 ' + item.currentRecordCount + ' · 其他版 ' + (item.recordCount - item.currentRecordCount) : '尚无已保存个人记录'),
+                item.latestRecord ? h('details', { key: item.latestRecord.id, 'data-target-catalogue-record': item.latestRecord.id,
+                  open: !!search && item.latestRecord.title.toLowerCase().includes(search.toLowerCase()) },
+                  h('summary', null, '最近保存标题 · 知识图第 ' + item.latestRecord.baseRevision + ' 版'),
+                  h('p', { style: { whiteSpace: 'pre-wrap' } }, item.latestRecord.title)) : null))),
               h('div', { className: 'kg-target-toolbar' }, button('上一页', () => setOffset(Math.max(0, offset - 20)), saving || offset === 0), button('下一页', () => setOffset(offset + 20), saving || !catalog || offset + catalog.items.length >= catalog.total))),
             h('div', { 'aria-label': '个人靶图编辑区', 'aria-busy': loading || recordLoading },
               loading ? h('p', { role: 'status' }, '正在读取个人靶图…') : null,
@@ -3328,7 +3341,7 @@
                     h('div', { 'data-target-example-comparison': comparisonExample.id }, renderComparisonRows(comparisonExample.rows))) : null)) :
               map ? h(React.Fragment, null,
                 visibleEditError && !visibleEditError.field ? editAlert() : null,
-                field('靶图标题', map.title, value => edit(map => { map.title = value })),
+                field('靶图标题', map.title, value => edit(map => { map.title = value }), frozen, true),
                 h('p', { className: 'kg-model-meta' }, map.mode === 'connection' ? '联结靶图 · 输入到输出' : '概念靶图 · 万物到 A 或非 A'),
                 h('h4', { 'data-target-record-view': 'draft', tabIndex: -1 }, '上层 · 我的模型表述', undoControl('slots')),
                 h('div', { className: 'kg-target-upper' },
