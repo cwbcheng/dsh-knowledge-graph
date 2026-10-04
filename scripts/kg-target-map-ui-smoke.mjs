@@ -3298,6 +3298,85 @@ assert(!all(owner.tree, node => String(node.props['data-target-gap-field']).incl
 owner.unmount()
 }
 
+{
+doc.revision = 1; storage.clear(); records = []
+const map = motionTargetMap(), literal = '<img src=x onerror=alert(1)>\n通常成立；方向未知；来源甲乙冲突，不由循环证明'
+map.slots[0].unit = ' \n '; map.slots[0].scope = ''
+map.slots[1].meaning = '预测时的原内涵'
+map.slots.push({ id: '__proto__', role: 'output', name: '速度', meaning: literal, unit: 'km/h', scope: '另一对象，次日状态；不换算' })
+for (const item of map.examples) item.outputs.push({ slotId: '__proto__', outcomeId: '', detail: '未知，不代入同名输出' })
+map.examples[0].stage = 'prediction'
+const save = id => {
+  const response = tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+    id, parentId: records.at(-1)?.id || '', reason: '本版槽位浏览验收', confirm: true, map }, records)
+  assert(response.saved, JSON.stringify(response.error)); records.push(response.saved)
+}
+save('slot-basis'); map.slots[1].meaning = '后来修订的内涵'; save('slot-later')
+owner = mount({ focusRequest: focus }); await owner.load()
+const contextFor = (slotId, role, index = 0) => {
+  const found = all(owner.tree, node => node.props['data-target-example-context'] === JSON.stringify([map.examples[index].id, role, slotId]))
+  assert.equal(found.length, 1, 'Exactly one in-place context for each example slot identity'); return found[0]
+}
+const checkContext = (slotId, role, expected, absent = []) => {
+  const context = contextFor(slotId, role)
+  assert.equal(context.type, 'details'); assert.equal(context.props.open, undefined, 'Slot context is initially collapsed')
+  assert.equal(context.props.onToggle, undefined, 'Reading a slot does not update the draft or persist disclosure state')
+  for (const value of expected) assert(text(context).includes(value), slotId + ': ' + value)
+  for (const value of absent) assert(!text(context).includes(value), slotId + ' cannot borrow ' + value)
+  assert(!all(context, node => ['input', 'textarea', 'select', 'img', 'script'].includes(node.type)).length)
+  return context
+}
+const beforeRead = [JSON.stringify([...storage]), JSON.stringify(records), writes, owner.requests.length]
+checkContext('before', 'input', ['输入', '速度', 'm/s', '同一物体，原状态', '后来修订的内涵', '未保存草稿', '知识图第 1 版', '不自动视为原预测依据'], ['预测时的原内涵', '次日状态'])
+checkContext('after', 'output', ['输出', '速度', 'm/s', '同一物体，后续状态'], ['同一物体，原状态', 'km/h'])
+checkContext('__proto__', 'output', ['__proto__', 'km/h', '另一对象，次日状态；不换算', literal], ['同一物体，后续状态'])
+assert.equal(all(contextFor('force', 'input'), node => node.type === 'p' && text(node).includes('未填写')).length, 2, 'Blank units and scope stay unknown, not zero or dimensionless')
+assert.equal(all(owner.tree, node => node.props['data-target-example-context']).length, 8, 'Both necessary inputs and independent outputs remain visible per case')
+assert.deepEqual([JSON.stringify([...storage]), JSON.stringify(records), writes, owner.requests.length], beforeRead)
+owner.change('槽位 before 内涵表述', '未保存的内涵限定语'); owner.change('搜索例子文字', 'nothing matches')
+checkContext('before', 'input', ['未保存的内涵限定语'], ['后来修订的内涵', '预测时的原内涵'])
+owner.change('搜索例子文字', '')
+const draftBytes = JSON.stringify([...storage]), recordsBytes = JSON.stringify(records), writeCount = writes
+owner.click('查看靶图修订 slot-basis')
+const failed = owner.pending().at(-1); failed.reject(new Error('503 slot context')); failed.settled = true; await owner.settle()
+checkContext('before', 'input', ['未保存的内涵限定语', '未保存草稿'])
+owner.click('重试读取历史靶图'); await owner.load()
+checkContext('before', 'input', ['历史修订 slot-basis', '预测时的原内涵'], ['未保存的内涵限定语', '后来修订的内涵', '未保存草稿'])
+owner.click('返回未保存草稿')
+owner.click('查看预测时的上层表述'); await owner.load()
+checkContext('before', 'input', ['历史修订 slot-basis', '预测时的原内涵', '不自动视为原预测依据'], ['未保存的内涵限定语', '不是原预测依据'])
+owner.click('返回未保存草稿')
+checkContext('before', 'input', ['未保存的内涵限定语', '未保存草稿'])
+assert.equal(JSON.stringify([...storage]), draftBytes)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+checkContext('before', 'input', ['知识图第 1 版', '只读草稿', '未保存的内涵限定语'], ['知识图第 2 版'])
+assert(owner.control('映射规律表述').props.disabled)
+assert.equal(JSON.stringify([...storage]), draftBytes)
+owner.click('开启当前版本靶图')
+assert.equal(all(owner.tree, node => node.props['data-target-example-context']).length, 0, 'New revision cannot borrow old examples or slots')
+owner.change('本地草稿版本', '1')
+checkContext('before', 'input', ['只读草稿', '知识图第 1 版'])
+assert.equal(JSON.stringify(records), recordsBytes); assert.equal(writes, writeCount)
+owner.unmount(); doc.revision = 1; storage.clear(); records = []
+const capacityMap = motionTargetMap()
+for (const role of ['input', 'output']) while (capacityMap.slots.filter(slot => slot.role === role).length < 8) {
+  capacityMap.slots.push({ id: role + '-' + capacityMap.slots.length, role, name: '速度', unit: '', scope: '', meaning: '独立身份，不由同名推断' })
+}
+capacityMap.examples = Array.from({ length: 40 }, (_, index) => tools.example(capacityMap, 'capacity-' + index))
+records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+  id: 'slot-capacity', parentId: '', reason: '', confirm: true, map: capacityMap }, []).saved]
+assert(records[0]); owner = mount({ focusRequest: focus }); await owner.load()
+const contexts = all(owner.tree, node => node.props['data-target-example-context'])
+assert.equal(contexts.length, 640); assert.equal(new Set(contexts.map(node => node.props['data-target-example-context'])).size, 640)
+assert(contexts.every(node => node.props.open === undefined))
+owner.unmount(); storage.clear(); records = []
+owner = mount({ focusRequest: { ...focus, targetId: 'externality' } }); await owner.load(); owner.click('增加具体推测')
+const conceptContexts = all(owner.tree, node => node.props['data-target-example-context'])
+assert.equal(conceptContexts.length, 2); assert(conceptContexts.every(node => !text(node).includes('我的内涵表述')))
+assert(conceptContexts.every(node => text(node).includes('未填写') && !text(node).includes('预测时的原内涵')))
+owner.unmount(); storage.clear(); records = []
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -3347,4 +3426,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   exampleFilterRecoveryStaleCallbacks: true, exampleFilterRecoveryHistoryAndVersion: true, exampleFilterRecoveryReload: true,
   exampleFilterRecoveryNoWrites: true, exampleFilterRecoveryMissingDom: true,
   gapExactFieldNavigation: true, gapSequentialMissingInputs: true, gapExplicitFilterRecovery: true,
-  gapStaleCallbacks: true, gapHistoryAndVersion: true, gapReadRetryAndReload: true, gapNoWrites: true, gapMissingDom: true }))
+  gapStaleCallbacks: true, gapHistoryAndVersion: true, gapReadRetryAndReload: true, gapNoWrites: true, gapMissingDom: true,
+  inlineSlotExactIdentity: true, inlineSlotLiteralAndUnknown: true, inlineSlotRevisionProvenance: true,
+  inlineSlotPredictionBasisBoundary: true, inlineSlotDraftAndRetry: true, inlineSlotNoWrites: true }))

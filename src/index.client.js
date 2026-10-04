@@ -4157,6 +4157,19 @@ export default function clientPlugin() {
           gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1 } : null, visibleLabel,
           h(large ? 'textarea' : 'input', { 'aria-label': label, value, disabled, maxLength, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => change(event.target.value) }))
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
+        const exampleSlotContext = (exampleId, index, role, slotId) => {
+          const slot = map.slots.find(item => item.id === slotId && item.role === role)
+          const origin = archive ? '历史修订 ' + archive.id : stale ? '旧版只读草稿' : '未保存草稿'
+          const roleName = role === 'input' ? '输入' : '输出'
+          return h('details', { 'data-target-example-context': JSON.stringify([exampleId, role, slotId]),
+            'aria-label': '例子 ' + (index + 1) + ' ' + roleName + '槽位 ' + slotId + ' 的本版表述' },
+            h('summary', null, '本版槽位 · ' + slotId),
+            h('p', { className: 'kg-model-meta' }, origin + ' · 知识图第 ' + (archive ? archive.baseRevision : draft.baseRevision) + ' 版'),
+            h('p', { className: 'kg-model-meta' }, '本版表述，不自动视为原预测依据。'),
+            slot ? [['角色', roleName], ['概念名', slot.name], ['单位', slot.unit], ['对象与时间状态', slot.scope],
+              ...(map.mode === 'connection' ? [['我的内涵表述', slot.meaning]] : [])].map(([label, value]) =>
+                h('p', { key: label }, h('strong', null, label), h('br'), value.trim() ? value : '未填写')) : h('p', null, '未找到对应槽位'))
+        }
         const slotFields = role => map.slots.filter(item => item.role === role).map(item => h('div', { key: item.id, className: 'kg-target-slot',
           'data-selected': selection?.slotId === item.id && selection.role === role, 'data-target-slot': JSON.stringify([role, item.id]), tabIndex: -1,
           role: 'group', 'aria-label': '上层' + (role === 'input' ? '输入' : '输出') + '槽位 ' + item.id },
@@ -4359,12 +4372,14 @@ export default function clientPlugin() {
                         h('section', null, h('h4', null, '具体输入'), item.inputs.map(value => h('div', { key: value.slotId },
                           button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => jumpToSlot(value.slotId, item.id, 'input'), loading || !active,
                             { title: '对应上层槽位', 'aria-label': '对应输入槽位 ' + value.slotId, 'data-target-example-slot': JSON.stringify([item.id, 'input', value.slotId]) }),
+                          exampleSlotContext(item.id, index, 'input', value.slotId),
                           field('例子 ' + (index + 1) + ' 输入 ' + value.slotId, value.value, input => changeExample(item.id, example => { example.inputs.find(item => item.slotId === value.slotId).value = input }), frozen || lockedCase, true, '具体输入', undefined, ['examples', item.id, 'inputs', value.slotId])))),
                         h('section', null, h('h4', null, '具体推测过程'), field('例子 ' + (index + 1) + ' 推测过程', item.process, value => changeExample(item.id, example => { example.process = value }), frozen || lockedCase, true, undefined, undefined, ['examples', item.id, 'process'])),
                         h('section', null, h('h4', null, '预测或材料输出'), item.outputs.map(value => h('div', { key: value.slotId,
                           'data-target-gap-field': JSON.stringify(['examples', item.id, 'outputs', value.slotId]), tabIndex: -1 },
                           button(map.slots.find(slot => slot.id === value.slotId)?.name || value.slotId, () => jumpToSlot(value.slotId, item.id, 'output'), loading || !active,
                             { title: '对应上层槽位', 'aria-label': '对应输出槽位 ' + value.slotId, 'data-target-example-slot': JSON.stringify([item.id, 'output', value.slotId]) }),
+                          exampleSlotContext(item.id, index, 'output', value.slotId),
                           h('select', { 'aria-label': '例子 ' + (index + 1) + ' 对应输出 ' + value.slotId, value: value.outcomeId, disabled: frozen || lockedCase,
                             onChange: event => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).outcomeId = event.target.value }) },
                             h('option', { value: '' }, '未对应陪域取值'), map.outcomes.filter(out => out.slotId === value.slotId).map(out => h('option', { key: out.id, value: out.id }, out.label))),
