@@ -4305,6 +4305,107 @@ for (const boundary of ['cancel', 'edit', 'target-return', 'new-file', 'unmount'
 records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount)
 }
 
+{
+  storage.clear(); doc.revision = 1
+  const localKey = (id, rev = 1, documentId = doc.documentId) => 'dsh-kg-target-map:' + JSON.stringify([documentId, id, rev])
+  const localDraft = { documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map: motionTargetMap() }
+  localDraft.map.title = '只在本机的标题 <b>单位、对象时间待核对</b>'
+  storage.set(localKey('motion'), JSON.stringify(localDraft, null, 2))
+  const original = JSON.stringify([...storage]), count = writes
+  owner = mount(); await owner.load()
+  owner.click('刷新本地草稿列表')
+  assert(text(owner.tree).includes(localDraft.map.title), 'Local-only titles must be discoverable without first knowing their target')
+  assert.equal(JSON.stringify([...storage]), original)
+  owner.click('打开本地草稿 ' + JSON.stringify(['motion', 1])); await owner.load()
+  assert.equal(owner.control('靶图标题').props.value, localDraft.map.title)
+  assert.equal(writes, count); assert.equal(JSON.stringify([...storage]), original)
+  owner.unmount(); storage.clear()
+  const seedLocal = (id, rev = 1, title = '同名 Ä_%<b>\n草稿', documentId = doc.documentId) => {
+    const value = { ...structuredClone(localDraft), documentId, targetId: id, baseRevision: rev }
+    value.map.title = title; storage.set(localKey(id, rev, documentId), JSON.stringify(value, null, 2)); return value
+  }
+  const rows = () => all(owner.tree, node => node.props['data-target-local-draft'])
+  const open = (id, rev = 1) => owner.click('打开本地草稿 ' + JSON.stringify([id, rev]))
+  for (let i = 0; i < 43; i++) seedLocal('local-' + String(i).padStart(2, '0'))
+  seedLocal('motion'); seedLocal('motion', 1, '私有其他文档', 'foreign')
+  storage.set(localKey('broken'), '{')
+  const allBytes = JSON.stringify([...storage])
+  owner = mount(); await owner.load(); const callsBefore = owner.requests.length
+  owner.click('刷新本地草稿列表'); assert.equal(rows().length, 20); assert(text(owner.tree).includes('1 份本地草稿无法读取'))
+  assert(!text(owner.tree).includes('私有其他文档'))
+  owner.click('本地草稿下一页'); assert.equal(rows().length, 20)
+  owner.click('本地草稿下一页'); assert.equal(rows().length, 4); assert(owner.control('本地草稿下一页').props.disabled)
+  owner.change('搜索本地草稿', 'ä_%<b>\n'); assert.equal(rows().length, 20)
+  const obsolete = owner.control('打开本地草稿 ' + JSON.stringify(['local-00', 1])).props.onClick
+  owner.change('搜索本地草稿', 'motion'); obsolete(); owner.render()
+  assert.equal(rows().length, 1); assert.equal(owner.requests.length, callsBefore)
+  owner.change('搜索本地草稿', '无匹配'); assert(text(owner.tree).includes('没有匹配的本地草稿'))
+  assert.equal(owner.requests.length, callsBefore); assert.equal(JSON.stringify([...storage]), allBytes)
+  owner.change('搜索本地草稿', 'motion'); seedLocal('motion', 1, '另一个窗口修改')
+  open('motion'); assert(text(owner.tree).includes('本地草稿内容已变化')); assert.equal(owner.requests.length, callsBefore)
+  owner.click('刷新本地草稿列表'); open('motion')
+  const readingLocal = owner.pending().find(item => item.args.action === 'read')
+  const localReadArgs = structuredClone(readingLocal.args)
+  readingLocal.reject(new Error('local destination HTTP 503')); readingLocal.settled = true; await owner.settle()
+  assert(text(owner.tree).includes('local destination HTTP 503'))
+  owner.click('重读靶图'); assert.deepEqual(structuredClone(owner.pending().at(-1).args), localReadArgs); await owner.load()
+  assert.equal(owner.control('靶图标题').props.value, '另一个窗口修改'); assert(!owner.control('确认保存个人靶图').props.checked)
+  owner.unmount(); storage.clear()
+
+  doc.revision = 2
+  seedLocal('motion', 1, '旧图版本草稿'); seedLocal('motion', 2, '当前版本草稿'); seedLocal('motion', 3, '未来版本草稿')
+  const versionsBytes = JSON.stringify([...storage])
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+  assert(owner.control('打开本地草稿 ' + JSON.stringify(['motion', 3])).props.disabled)
+  open('motion', 1); await owner.load(); assert.equal(owner.control('靶图标题').props.value, '旧图版本草稿'); assert(owner.control('靶图标题').props.disabled)
+  owner.click('刷新本地草稿列表'); open('motion', 2); await owner.load(); assert.equal(owner.control('靶图标题').props.value, '当前版本草稿'); assert(!owner.control('靶图标题').props.disabled)
+  assert.equal(JSON.stringify([...storage]), versionsBytes); owner.unmount(); storage.clear(); doc.revision = 1
+
+  for (const corrupt of [null, false, {}, { ...localDraft, targetId: 'foreign' }, { ...localDraft, baseRevision: 2 },
+    { ...localDraft, reason: 'x'.repeat(2001) }, { ...localDraft, parentId: 'x'.repeat(121) }, { ...localDraft, roundReason: 3 },
+    { ...localDraft, map: { ...localDraft.map, slots: [] } }, 'x'.repeat(500001)]) {
+    const raw = JSON.stringify(corrupt); storage.set(localKey('motion'), raw)
+    owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+    assert.equal(rows().length, 0); assert(text(owner.tree).includes('1 份本地草稿无法读取')); assert.equal(storage.get(localKey('motion')), raw)
+    owner.unmount(); storage.clear()
+  }
+  seedLocal('motion'); storageReadFailures.add(localKey('motion'))
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表'); assert(text(owner.tree).includes('1 份本地草稿无法读取'))
+  storageReadFailures.clear(); owner.click('刷新本地草稿列表'); assert.equal(rows().length, 1)
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(localStorage, 'length')
+  Object.defineProperty(localStorage, 'length', { configurable: true, get() { throw new Error('storage listing unavailable') } })
+  owner.click('刷新本地草稿列表'); assert(text(owner.tree).includes('本地存储目录无法完整读取'))
+  Object.defineProperty(localStorage, 'length', lengthDescriptor)
+  owner.click('刷新本地草稿列表'); assert.equal(rows().length, 1); owner.unmount(); storage.clear()
+
+  seedLocal('removed-target'); owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+  const removedBytes = JSON.stringify([...storage]); open('removed-target'); await owner.load()
+  assert(text(owner.tree).includes('目标节点不存在或身份不唯一')); assert.equal(JSON.stringify([...storage]), removedBytes)
+  owner.unmount(); storage.clear()
+
+  seedLocal('motion'); owner = mount(); await owner.load(); owner.click('刷新本地草稿列表'); open('motion')
+  seedLocal('motion', 1, '读取期间出现的新草稿'); const racedBytes = JSON.stringify([...storage]); await owner.load()
+  assert(text(owner.tree).includes('本地草稿内容已变化')); assert.equal(JSON.stringify([...storage]), racedBytes)
+  owner.unmount(); storage.clear()
+
+  for (const boundary of ['hide', 'hide-return', 'revision', 'document', 'unmount']) {
+    seedLocal('motion'); owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+    const oldOpen = owner.control('打开本地草稿 ' + JSON.stringify(['motion', 1])).props.onClick
+    if (boundary.startsWith('hide')) { owner.props.active = false; owner.render(); if (boundary === 'hide-return') { owner.props.active = true; owner.render(); await owner.load() } }
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'document') { owner.props.documentId += ' '; owner.render() }
+    if (boundary === 'unmount') owner.unmount()
+    const size = owner.requests.length, bytes = JSON.stringify([...storage]); oldOpen(); owner.render()
+    assert.equal(owner.requests.length, size, boundary); assert.equal(JSON.stringify([...storage]), bytes, boundary)
+    owner.unmount(); storage.clear()
+  }
+  owner = mount({ focusRequest: focus }); await owner.load(); const persisted = JSON.stringify([...storage])
+  storageFailure = true; owner.change('靶图标题', '仅窗口尚未落盘'); owner.click('刷新本地草稿列表')
+  assert(text(owner.tree).includes('仅留在窗口')); open('motion'); await owner.load()
+  assert.equal(owner.control('靶图标题').props.value, '仅窗口尚未落盘'); assert.equal(JSON.stringify([...storage]), persisted)
+  storageFailure = false; owner.unmount(); storage.clear(); assert.equal(writes, count)
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -4375,4 +4476,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   savedCatalogueResponseFence: true, savedCatalogueReadOnly: true, personalTitleDiscovery: true,
   personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true,
   historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
-  historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true }))
+  historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true,
+  localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
+  localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true }))
