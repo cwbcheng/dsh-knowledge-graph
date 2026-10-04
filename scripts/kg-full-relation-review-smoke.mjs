@@ -5,11 +5,11 @@ import { createGraphContract } from '../src/index.host.js'
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function reviewHighRiskRelationsHost('
 assert.equal(source.split(marker).length, 2)
-const instrumented = source.replace(marker, `      harness.reviewTest = { reviewHighRiskRelationsHost, attach(task) { activeTask = task } }
+const instrumented = source.replace(marker, `      harness.reviewTest = { reviewHighRiskRelationsHost, relationRecoverySnapshotHost, attach(task) { activeTask = task } }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const contract = createGraphContract()
-let mode = 'supported', calls = [], task
+let mode = 'supported', calls = [], task, savedCheckpoint, full2500
 const harness = { handle() {} }
 globalThis.harness = harness
 plugin().apply({ get(name) { return name === 'kgExtractor' ? {
@@ -36,20 +36,76 @@ function fixture(count) {
   }
   return { nodes, edges, warnings: [] }
 }
-async function review(graph, units = paragraphs, protectedKeys = new Set()) {
+async function review(graph, units = paragraphs, protectedKeys = new Set(), checkpoint) {
   calls = []
-  task = { progress: {}, cancelled: false }
+  savedCheckpoint = { decisions: structuredClone(checkpoint?.decisions || {}), partitions: structuredClone(checkpoint?.partitions || {}) }
+  task = { kind: 'relation-retry', progress: {}, cancelled: false,
+    relationReviewCache: structuredClone(savedCheckpoint.decisions), relationReviewPartitions: structuredClone(savedCheckpoint.partitions),
+    async persistRelationReview(decisions) { savedCheckpoint = { ...savedCheckpoint, decisions: structuredClone(decisions) } },
+    async persistRelationReviewPartitions(partitions) { savedCheckpoint = { ...savedCheckpoint, partitions: structuredClone(partitions) } },
+  }
   harness.reviewTest.attach(task)
   return harness.reviewTest.reviewHighRiskRelationsHost(task, null, graph, units, protectedKeys)
 }
+
+// The real reviewer generates and authenticates every saved decision. This
+// checkpoint adapter only captures its persistence callbacks, then serializes
+// them for a fresh task; it never invents verdicts, hashes, or a higher cap.
+async function reviewWithBoundedReplay(graph, units = paragraphs, protectedKeys = new Set()) {
+  const paidCalls = [], phases = []
+  let checkpoint
+  for (;;) {
+    const before = structuredClone(graph)
+    const savedBefore = Object.keys(checkpoint?.decisions || {}).length
+    let result, stopCode = null
+    try { result = await review(graph, units, protectedKeys, checkpoint) }
+    catch (error) {
+      assert.equal(error.code, 'relation_request_budget_exhausted', error.message)
+      stopCode = error.code
+    }
+    const recovery = harness.reviewTest.relationRecoverySnapshotHost(task)
+    assert.equal(recovery.maxRequests, 128, 'Never enlarge the default mechanism cap to make the legacy fixture pass')
+    assert.equal(recovery.requests, calls.length)
+    assert.equal(recovery.reviewRequests, calls.length)
+    assert.equal(recovery.weaveRequests, 0)
+    assert.ok(recovery.requests <= 128)
+    paidCalls.push(...calls.map(batch => [...batch]))
+    const saved = JSON.parse(JSON.stringify(savedCheckpoint))
+    assert.deepEqual(saved.decisions, task.relationReviewCache, 'Only complete decisions persisted by the real reviewer can be replayed')
+    assert.deepEqual(saved.partitions, task.relationReviewPartitions)
+    phases.push({ requests: recovery.requests, paidCandidates: calls.flat().length, stopCode, ...task.progress.review })
+    if (!stopCode) return { result, paidCalls, phases }
+    assert.deepEqual(graph, before, 'Cap exhaustion cannot partially mutate candidates, nodes, or warnings')
+    assert.equal(calls.length, 128, 'Stop exactly at the actual-request cap, before another provider invocation')
+    assert.ok(Object.keys(saved.decisions).length > savedBefore, 'Recovery must make durable paid-decision progress')
+    checkpoint = saved
+  }
+}
 for (const count of [64, 65, 129, 2500]) {
-  const graph = fixture(count)
-  const result = await review(graph)
+  const graph = fixture(count), before = structuredClone(graph)
+  const { result, paidCalls, phases } = await reviewWithBoundedReplay(graph)
+  assert.equal(result.eligible, count)
   assert.equal(result.reviewed, count)
   assert.equal(result.pending, 0)
+  assert.equal(result.accepted.length, count)
+  assert.equal(result.withheld.length, 0)
   assert.equal(graph.edges.length, count)
-  assert.equal(calls.length, Math.ceil(count / 16))
-  assert.equal(new Set(calls.flat()).size, count, 'each candidate must be visited exactly once')
+  assert.deepEqual(graph, before, 'A supported full traversal preserves the entire original graph')
+  assert.equal(paidCalls.length, Math.ceil(count / 16))
+  assert.equal(paidCalls.flat().length, count)
+  assert.equal(new Set(paidCalls.flat()).size, count, 'Every candidate must be paid exactly once across fresh tasks')
+  if (count === 2500) {
+    assert.deepEqual(phases.map(phase => phase.requests), [128, 29])
+    assert.equal(phases[0].stopCode, 'relation_request_budget_exhausted')
+    assert.equal(phases[0].reviewed, 2048)
+    assert.equal(phases[0].pending, 452)
+    assert.equal(phases[1].stopCode, null)
+    assert.equal(phases[1].paidCandidates, 452)
+    assert.equal(result.reused, 2048, 'Fresh task authenticates and replays every paid decision without re-requesting it')
+    assert.equal(Object.keys(savedCheckpoint.decisions).length, 2500)
+    full2500 = { candidates: count, initialActualRequests: phases[0].requests, freshActualRequests: phases[1].requests,
+      authenticatedDecisionReplays: result.reused, uniquePaidCandidates: new Set(paidCalls.flat()).size, stopCode: phases[0].stopCode }
+  } else assert.equal(phases.length, 1)
   assert.ok(!contract.validateGraphInvariants(graph, paragraphs[0], { includeQuality: false }).blockingIssues.some(issue => issue.code === 'counter_example_without_target'))
 }
 mode = 'reject-tail'
@@ -99,12 +155,14 @@ if (process.argv[2]) {
     const units = contract.splitParagraphs(row.source_text)
     const originalEdges = graph.edges.length
     mode = 'supported'
-    const result = await review(graph, units)
+    const { result, paidCalls, phases } = await reviewWithBoundedReplay(graph, units)
     assert.equal(result.reviewed, result.eligible, JSON.stringify(result.errors))
     assert.equal(result.pending, 0)
     assert.equal(graph.edges.length, originalEdges)
     assert.ok(!contract.validateGraphInvariants(graph, row.source_text, { includeQuality: false }).blockingIssues.some(issue => issue.code === 'counter_example_without_target'))
-    console.log(JSON.stringify({ readOnlyCheckpointReplay: true, nodes: graph.nodes.length, edges: graph.edges.length, reviewed: result.reviewed, batches: calls.length, pending: result.pending, syntheticReviewer: true }))
+    console.log(JSON.stringify({ readOnlyCheckpointReplay: true, nodes: graph.nodes.length, edges: graph.edges.length, reviewed: result.reviewed,
+      batches: paidCalls.length, tasks: phases.length, pending: result.pending, syntheticReviewer: true }))
   } finally { db.close() }
 }
-console.log(JSON.stringify({ fullTraversal: true, boundedRequests: true, tailRejectionStillBlocks: true, malformedTailPending: true, cancellation: true }))
+console.log(JSON.stringify({ fullTraversal: true, boundedRequests: true, mechanismCap: 128, full2500,
+  authenticatedPaidDecisionReplay: true, tailRejectionStillBlocks: true, malformedTailPending: true, cancellation: true, syntheticReviewer: true }))

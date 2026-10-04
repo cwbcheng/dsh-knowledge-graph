@@ -2358,6 +2358,7 @@
         const [archiveComparison, setArchiveComparison] = useState(null)
         const [archiveReference, setArchiveReference] = useState(null)
         const [exampleFilters, setExampleFilters] = useState({}), [exampleFocus, setExampleFocus] = useState(null)
+        const [exampleLocator, setExampleLocator] = useState(null)
         const [examplePosition, setExamplePosition] = useState(initial.examplePosition), exampleRestore = useRef(initial.examplePosition)
         const [examplePair, setExamplePair] = useState(null)
         const exampleBrowseContext = useRef(null)
@@ -2704,9 +2705,17 @@
         const matchesExampleText = item => !exampleQuery || targetMapExampleTextHits(item, exampleQuery).length > 0
         const matchesExampleFeedback = item => exampleFeedback === 'all' || feedbackKind(item) === exampleFeedback
         const matchesExample = item => matchesExampleOutput(item) && matchesExampleStage(item) && matchesExampleText(item) && matchesExampleFeedback(item)
-        const shownExamples = map?.examples.filter(matchesExample).length || 0
+        const visibleExamples = map?.examples.filter(matchesExample) || [], shownExamples = visibleExamples.length
+        const exampleFilterKey = JSON.stringify([exampleFilter, exampleStage, exampleQuery, exampleFeedback])
+        const exampleBrowseReady = active && !!map && !loading && !recordLoading && !comparingArchive && detailReady.current === detailScope
+        const previousBrowse = exampleBrowseContext.current
+        // Returning to a cached map must not revive events from an earlier visit.
+        const locatorEpoch = previousBrowse?.scope === exampleScope && previousBrowse.map === map && previousBrowse.filterKey === exampleFilterKey &&
+          previousBrowse.ready === exampleBrowseReady && previousBrowse.readGeneration === sequence.current ? previousBrowse.locatorEpoch : {}
+        const locatedExampleId = exampleLocator?.locatorEpoch === locatorEpoch && visibleExamples.some(item => item.id === exampleLocator.id) ? exampleLocator.id : ''
         exampleBrowseContext.current = { scope: exampleScope, map, filter: exampleFilter, stage: exampleStage, query: exampleQuery, feedback: exampleFeedback, expansionKey, editable: !frozen,
-          ready: active && !!map && !loading && !recordLoading && !comparingArchive && detailReady.current === detailScope }
+          filterKey: exampleFilterKey, locatorEpoch, readGeneration: sequence.current, ready: exampleBrowseReady }
+        useEffect(() => { setExampleLocator(null) }, [locatorEpoch])
         useEffect(() => {
           setExampleFilters({}); setExampleFocus(null)
           if (!exampleRestore.current) setExamplePosition(null)
@@ -2747,6 +2756,15 @@
           if (!archive) setExamplePosition({ scope: historyScope, baseRevision: draft.baseRevision, parentId: draft.parentId, value, stage, query, feedback, expansion })
           setSlotNavigation(null)
           if (jump) setExampleFocus({ scope: exampleScope, map })
+          return true
+        }
+        const locateExample = id => {
+          if (exampleBrowseContext.current.locatorEpoch !== locatorEpoch || typeof id !== 'string' || !id.trim() || id.length > 120 ||
+              visibleExamples.filter(item => item.id === id).length !== 1) return
+          const expansion = [...exampleExpansion.filter(([value]) => value !== id), [id, true]]
+          if (selectExampleFilter(exampleFilter, false, filterState?.revealedId || '', exampleStage, exampleQuery, exampleFeedback, expansion)) {
+            setExampleFocus({ scope: exampleScope, map, filterKey: exampleFilterKey, locatorEpoch, exampleId: id })
+          }
         }
         const exampleIsOpen = item => exampleExpansion.find(([id]) => id === item.id)?.[1] ??
           (!archive && !stale && !conflict && detailReady.current === detailScope && !existing.has(item.id))
@@ -2764,8 +2782,13 @@
           if (!exampleFocus) return
           setExampleFocus(null)
           const context = exampleBrowseContext.current
-          if (alive.current && context.ready && context.scope === exampleFocus.scope && context.map === exampleFocus.map) {
-            if (exampleFocus.feedbackId) focusMapElement('data-target-example-feedback', exampleFocus.feedbackId, 'nearest')
+          if (alive.current && context.ready && !recordRequest.current && context.scope === exampleFocus.scope && context.map === exampleFocus.map) {
+            if (exampleFocus.exampleId) {
+              if (context.locatorEpoch === exampleFocus.locatorEpoch && context.filterKey === exampleFocus.filterKey && visibleExamples.some(item => item.id === exampleFocus.exampleId) &&
+                  focusMapElement('data-target-example-heading', exampleFocus.exampleId, 'start')) {
+                setExampleLocator({ locatorEpoch, id: exampleFocus.exampleId })
+              }
+            } else if (exampleFocus.feedbackId) focusMapElement('data-target-example-feedback', exampleFocus.feedbackId, 'nearest')
             else focusMapElement('data-target-example-list', 'heading', 'start')
           }
         }, [exampleFocus])
@@ -3049,6 +3072,10 @@
                     h('input', { type: 'search', 'aria-label': '搜索例子文字', value: exampleQuery, maxLength: 256, disabled: !exampleBrowseContext.current.ready,
                       onChange: event => selectExampleFilter(exampleFilter, false, '', exampleStage, event.target.value) })),
                   h('p', { role: 'status', className: 'kg-model-meta' }, '显示 ' + shownExamples + ' / ' + map.examples.length + ' 个例子 · 按记录中的输出对应、阶段与对照来源，不代表验证通过'),
+                  h('label', { className: 'kg-target-example-filter' }, '定位例子', h('select', { 'aria-label': '定位例子', value: locatedExampleId,
+                    disabled: !exampleBrowseContext.current.ready || !shownExamples, onChange: event => locateExample(event.target.value) },
+                    h('option', { value: '' }, shownExamples ? '选择当前筛选中的例子' : '当前没有可定位的例子'),
+                    visibleExamples.map(item => h('option', { key: item.id, value: item.id }, (map.examples.indexOf(item) + 1) + '. ' + item.id + ' · ' + (item.context.slice(0, 60) || '情境未填'))))),
                   exampleQuery ? h('p', { className: 'kg-model-meta' }, '例子字段文字命中 · 不判断条件适用性') : null,
                   selectedOutcome ? h('p', { className: 'kg-model-meta' }, '输出槽位 ' + selectedOutcome.slotId + ' · 取值 ' + selectedOutcome.id + ' · ' + selectedOutcome.label) : null,
                   (exampleFilter !== 'all' || exampleStage !== 'all' || exampleQuery || exampleFeedback !== 'all') && !shownExamples ? h('p', { role: 'status' }, exampleStage !== 'all' || exampleQuery || exampleFeedback !== 'all'
@@ -3056,13 +3083,20 @@
                     : selectedOutcome ? '此取值暂无对应例子记录；不表示该取值不可能。' : '当前没有含未对应取值输出的例子。') : null,
                   map.examples.map((item, index) => {
                     const lockedCase = locked.has(item.id), original = detail?.current?.map.examples.find(value => value.id === item.id)
+                    const visibleIndex = visibleExamples.indexOf(item)
                     const basisReference = targetMapPredictionBasis(basisOwner, item)
                     const openBasis = compare => openRecord(basisReference.recordId, JSON.stringify([compare === 'archive' ? 'basis-history-compare' : compare ? 'basis-compare' : 'basis', item.id]),
                       { example: item, reference: basisReference, ownerId: basisOwner.id, sourceMap: basisOwner.map, archive, draft, compare })
                     const names = item.outputs.map(value => map.outcomes.find(out => out.id === value.outcomeId)?.label || value.detail || '输出未填').join('、')
                     return h('details', { className: 'kg-target-case', key: JSON.stringify([exampleScope, item.id]), 'data-target-case-id': item.id, hidden: !matchesExample(item),
                       open: exampleIsOpen(item), onToggle: event => toggleExampleExpansion(item.id, event) },
-                      h('summary', null, (index + 1) + '. ' + (item.context.slice(0, 90) || '情境未填') + ' → ' + names.slice(0, 90)),
+                      h('summary', { 'data-target-example-heading': item.id }, (index + 1) + '. ' + (item.context.slice(0, 90) || '情境未填') + ' → ' + names.slice(0, 90)),
+                      h('div', { className: 'kg-target-toolbar', role: 'group', 'aria-label': '浏览筛选例子 ' + item.id },
+                        button('↑', () => { if (visibleIndex > 0) locateExample(visibleExamples[visibleIndex - 1].id) }, !exampleBrowseContext.current.ready || visibleIndex <= 0,
+                          { className: 'kg-secondary kg-target-icon', title: '上一个筛选例子', 'aria-label': '上一个筛选例子 ' + item.id }),
+                        h('small', null, visibleIndex >= 0 ? '筛选结果 ' + (visibleIndex + 1) + ' / ' + shownExamples : '不在当前筛选内'),
+                        button('↓', () => { if (visibleIndex >= 0 && visibleIndex + 1 < shownExamples) locateExample(visibleExamples[visibleIndex + 1].id) }, !exampleBrowseContext.current.ready || visibleIndex < 0 || visibleIndex + 1 >= shownExamples,
+                          { className: 'kg-secondary kg-target-icon', title: '下一个筛选例子', 'aria-label': '下一个筛选例子 ' + item.id })),
                       exampleQuery && matchesExample(item) ? h('p', { className: 'kg-model-meta' }, '文字命中：' + targetMapExampleTextHits(item, exampleQuery).join('、')) : null,
                       h('p', { className: 'kg-model-meta' }, exampleStages.find(([value]) => value === exampleState(item))[1],
                         item.stage === 'reviewed' ? ' · ' + TARGET_MAP_EXAMPLE_FEEDBACK.find(([value]) => value === item.feedback.kind)[1] : ''),

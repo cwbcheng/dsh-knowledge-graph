@@ -89,13 +89,21 @@ try {
   assert.equal(seed(mixed, paragraphs), 4, 'existing pairs cannot be reseeded')
   assert.equal(seed(mixed, paragraphs), 0)
   const persistent = bindings.find(host => host.kind === 'persistent')
-  persistent.setStore({ getDocument() { throw Error('fixture storage read failure') } })
-  for (const endpoint of ['relation-retry', 'append-extract']) {
+  const storageReads = []
+  const failingRead = method => documentId => {
+    storageReads.push({ method, documentId })
+    throw Error('fixture storage read failure: ' + method)
+  }
+  persistent.setStore({ getDocument: failingRead('getDocument'), getCanonicalDocument: failingRead('getCanonicalDocument') })
+  for (const [endpoint, method] of [['relation-retry', 'getCanonicalDocument'], ['append-extract', 'getDocument']]) {
+    const readCount = storageReads.length
     const result = await persistent.post(endpoint, { documentId: 'existing-document', expectedRevision: 1,
       text: 'new text', existing: { nodes: [{ id: 'stale-browser-node', text: 'stale' }], edges: [] } })
     assert.equal(result.status, 500, 'storage failures must not become missing documents or client fallback')
     assert.equal(result.response.error.code, 'internal')
-    assert.match(result.response.error.message, /storage read failure/)
+    assert.equal(result.response.error.message, 'fixture storage read failure: ' + method)
+    assert.deepEqual(storageReads.slice(readCount), [{ method, documentId: 'existing-document' }],
+      'each route must reach its canonical storage read and must not retry a weaker reader after failure')
     assert.equal(persistent.tasks.size, 0, 'storage failures cannot start a task against a stale browser graph')
   }
   console.log(JSON.stringify({ statusContractParity: true, checkpointOptIn: true, trajectoryProgressFields: true,

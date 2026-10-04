@@ -54,6 +54,7 @@ export function apply(ctx) {
       kind: task && (task.kind === 'append' || task.kind === 'trajectory-append' || (task.kind === 'resume' && task.checkpoint && (task.checkpoint.taskKind === 'append' || task.checkpoint.taskKind === 'trajectory-append'))) ? 'append' : 'extract',
       ...(task && Number.isInteger(task.baseRevision) ? { expectedRevision: task.baseRevision } : {}),
       ...(task?.finalizing ? { completedRun: { runId: task.id, checkpoint: task.checkpoint, title: task.title, sourceText: task.text } } : {}),
+      ...(task?.relationRetryCommit ? { completedRelationRetry: task.relationRetryCommit } : {}),
     })
   }
   const persistCheckpoint = async (checkpoint, task, status) => {
@@ -69,6 +70,12 @@ export function apply(ctx) {
     if (task) task.checkpointPersisted = true
     return saved
   }
+  const loadRelationRetryCheckpoint = async (documentId, expectedRevision) =>
+    (await getSqliteStore()).loadRelationRetryCheckpoint(documentId, expectedRevision)
+  const persistRelationRetryCheckpoint = async (checkpoint, task) =>
+    (await getSqliteStore()).saveRelationRetryCheckpoint(checkpoint, {
+      expectedRevision: task.baseRevision, expectedVersion: task.relationRetryCheckpointVersion,
+    })
   const persistVerificationBatch = async (task, batchIndex, result) => {
     const store = await getSqliteStore()
     if (task.pauseRequested || task.cancelled) throw taskOperationErrorHost('cancelled', '任务已停止', 'verification')
@@ -1049,7 +1056,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               return writeJson(res, 200, { ...started, ...(started.taskId ? { resumed: true } : {}) })
             }
             if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/task-active') {
-              return writeJson(res, 200, activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }))
+              return writeJson(res, 200, { ...activeTaskStatusHost({ taskId: url.searchParams.get('taskId') }), relationRecoveryPolicy: relationRecoveryPolicyHost() })
             }
             if (req.method === 'GET' && pathname === '/api/dsh-knowledge-graph/engine-identity') {
               return writeJson(res, 200, { hostBuildSha256 })
@@ -1344,19 +1351,23 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const a = payload && typeof payload === 'object' ? payload : {}
               const relationBudget = relationBatchBudgetHost(a, a.continuous === true)
               if (relationBudget.error) return writeJson(res, 200, relationBudget)
+              const recovery = relationRecoveryOptionsHost(a)
+              if (recovery.error) return writeJson(res, 200, recovery)
+              if (a.retryTruncatedLeaf !== undefined && typeof a.retryTruncatedLeaf !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'retryTruncatedLeaf 必须为布尔值' } })
               if (a.continuous != null && typeof a.continuous !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'continuous 必须为布尔值' } })
               if (a.reviewPendingOnly != null && typeof a.reviewPendingOnly !== 'boolean') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'reviewPendingOnly 必须为布尔值' } })
               const documentId = canonicalDocumentInputHost(a.documentId)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少要补全关系的 documentId' } })
               const store = await getSqliteStore()
-              const canonical = store.getDocument(documentId)
+              const canonicalSnapshot = store.getCanonicalDocument(documentId)
+              const canonical = canonicalSnapshot?.graph
               if (!canonical || !Array.isArray(canonical.nodes) || !canonical.sourceText) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该知识图的 canonical graph 或原文' } })
               if (canonical.nodes.length < 2) return writeJson(res, 200, { error: { code: 'invalid_input', message: '至少需要两个节点才能检索关系' } })
               if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
               const expectedRevision = a.expectedRevision
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
               if (busy) return writeJson(res, 200, busyTaskResponseHost())
-              rememberCanonicalGraphHost(canonical, canonical.sourceText, canonical.revision, store.getDocumentSourceUnits(documentId))
+              rememberCanonicalGraphHost(canonical, canonicalSnapshot.sourceText, canonical.revision, canonicalSnapshot.sourceUnits)
               const continuity = continueOntologyHost(canonical, a.ontology)
               if (continuity.error) return writeJson(res, 200, { error: continuity.error })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
@@ -1366,6 +1377,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 status: 'running', kind: 'relation-retry',
                 concurrency: [1, 2, 4].includes(a.concurrency) ? a.concurrency : 2,
                 continuous: a.continuous === true, reviewPendingOnly: a.reviewPendingOnly === true,
+                relationRequestBudget: recovery.maxRequests, relationSplitDepth: recovery.maxDepth,
+                retryTruncatedLeaf: a.retryTruncatedLeaf === true,
                 relationBatchBudget: relationBudget.maxBatches,
                 title: canonical.source && canonical.source.title ? canonical.source.title : '',
                 text: canonical.sourceText, documentId,

@@ -147,6 +147,11 @@ try {
   assert.equal(legacy.result.completion.completedBatches, 0)
   assert.equal(legacy.result.completion.replayedBatches, 1)
   const legacyV1 = structuredClone(first.task.relationWeave.batches[0].journal)
+  // Genuine v1 checkpoints predate output partitions and recovery accounting.
+  // Keep their completed-group cache, but never transplant a v2 partition proof.
+  delete legacyV1.partitions
+  delete legacyV1.recoveryStats
+  assert(!Object.hasOwn(legacyV1, 'partitions') && !Object.hasOwn(legacyV1, 'recoveryStats'))
   const legacyGroups = replayApi.prepareRelationWeaveContextsHost(replayApi.buildRelationWeaveGroupsHost(f.graph.nodes,
     replayApi.graphConnectivityHost(f.graph.nodes, f.graph.edges), f.paragraphs, null, f.text).groups, f.paragraphs, {})
   legacyV1.version = 1
@@ -370,6 +375,9 @@ try {
         noWeaverReviewApi.graphConnectivityHost(checkpoint.graph.nodes, checkpoint.graph.edges), unavailableSample.paragraphs, null, unavailableSample.text).groups,
       unavailableSample.paragraphs, unavailableOriginal.ontology)
       checkpoint.relationWeave.version = 1
+      delete checkpoint.relationWeave.partitions
+      delete checkpoint.relationWeave.recoveryStats
+      assert(!Object.hasOwn(checkpoint.relationWeave, 'partitions') && !Object.hasOwn(checkpoint.relationWeave, 'recoveryStats'))
       checkpoint.relationWeave.binding = noWeaverReviewApi.sha256HexHost(JSON.stringify({ policy: 'relation-weave-v1',
         ontology: unavailableOriginal.ontology || 'proposition-v1', sourceText: unavailableSample.text,
         base: noWeaverReviewApi.invariantRepairSnapshotHost(checkpoint.graph, unavailableOriginal.ontology || 'proposition-v1'),

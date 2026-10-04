@@ -23,7 +23,7 @@ const graph = {
   edges: [{ fromNodeId: 'a', toNodeId: 'b', relation: 'exemplifies', role: 'input', mode: 'contrast', evidence: [{ paragraph: 0, quote: text }] }],
 }
 const hash = value => createHash('sha256').update(value).digest('hex')
-async function weave(base, journal) {
+async function weave(base, journal, sourceText = text) {
   let saved = journal
   const task = { title: '', kind: 'relation-retry', ontology: 'learning-view-v1', progress: {}, cancelled: false,
     relationWeave: journal, async persistRelationWeave(next) { saved = structuredClone(next) },
@@ -32,7 +32,7 @@ async function weave(base, journal) {
   const acc = { nodes: new Map(base.nodes.map(node => [node.id, structuredClone(node)])), edges: structuredClone(base.edges),
     edgeKeys: new Set(base.edges.map(edge => edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation)), warnings: [],
   }
-  const result = await api.weaveRelationsHost(task, null, acc, [text], { documentId: 'semantic-cache' }, text)
+  const result = await api.weaveRelationsHost(task, null, acc, [sourceText], { documentId: 'semantic-cache' }, sourceText)
   return { result, saved }
 }
 try {
@@ -67,13 +67,30 @@ try {
     { id: 'a', type: 'positive_example', paragraph: 0, text: 'A worked example', stage: 'data' },
     { id: 'b', type: 'intension_description', paragraph: 0, text: 'a general condition', relKind: 'basic' },
   ].map(item => JSON.stringify(item)).join('\n')
-  const legacy = { ...structuredClone(first.saved), version: 1, binding: hash(JSON.stringify({
+  // A historical v1 journal had neither v2 output partitions nor recoveryStats.
+  // Copy only its actual codec fields; do not attach a v2 root proof to a v1 binding.
+  const legacy = { version: 1, binding: hash(JSON.stringify({
     policy: 'relation-weave-v1', ontology: 'learning-view-v1', sourceText: text, base,
     groups: [{ ids: ['a', 'b'], targets: ['a', 'b'], context }],
-  })) }
+  })), totalGroups: first.saved.totalGroups, results: structuredClone(first.saved.results),
+    coverage: structuredClone(first.saved.coverage) }
+  assert(!Object.hasOwn(legacy, 'partitions') && !Object.hasOwn(legacy, 'recoveryStats'))
   assert.equal((await weave(graph, legacy)).result.coverage.remainingTargets, 0)
   assert.equal(calls, 1, 'compatible legacy journals must not regenerate saved groups')
-  console.log(JSON.stringify({ ok: true, semanticCacheBinding: true, unchangedResultsReused: true, noCallsOnMismatch: true, legacyJournalCompatible: true }))
+  for (const journal of [first.saved, legacy]) {
+    const staleSource = structuredClone(journal)
+    await assert.rejects(weave(graph, staleSource, text + ' An additional source statement changes this search context.'),
+      error => error.code === 'checkpoint_invalid', 'Neither legacy nor current results can survive a changed actual source')
+    assert.deepEqual(staleSource, journal, 'Source mismatch must not rewrite cached work')
+    const tampered = structuredClone(journal)
+    tampered.results[0].norm.warnings.push('synthetic cache tamper without a matching norm hash')
+    const before = structuredClone(tampered)
+    await assert.rejects(weave(graph, tampered), error => error.code === 'checkpoint_invalid')
+    assert.deepEqual(tampered, before, 'Refusal must leave the caller checkpoint untouched')
+    assert.equal(calls, 1, 'Source or payload tampering must be rejected before any further provider call')
+  }
+  console.log(JSON.stringify({ ok: true, semanticCacheBinding: true, unchangedResultsReused: true, noCallsOnMismatch: true,
+    legacyJournalCompatible: true, authenticV1WithoutPartitions: true, sourceAndPayloadTamperRejected: true }))
 } finally {
   globalThis.harness = previousHarness
 }

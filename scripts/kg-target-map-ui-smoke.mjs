@@ -49,7 +49,7 @@ const mount = (options = {}) => {
     owner.domNodes = new Map(); owner.focused = null; owner.scrolled = []; owner.exampleDetails = new Map()
     owner.panel = { nodes: [], ownerDocument: { body: {}, activeElement: null },
       querySelectorAll(selector) {
-        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]'].includes(selector))
+        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]'].includes(selector))
         const attribute = selector.slice(1, -1), nodes = this.nodes.filter(node => node.attribute === attribute && node.value !== owner.removedAnchor)
         return owner.duplicateAnchors ? [...nodes, ...nodes] : nodes
       },
@@ -86,7 +86,7 @@ const mount = (options = {}) => {
         assert(owner.tree.props.ref, 'Slot navigation needs a panel-scoped DOM root')
         owner.tree.props.ref.current = owner.panel
         owner.slotSelectionHeight = all(owner.tree, item => item.props['data-target-slot'] && item.props['data-selected']).length ? 32 : 0
-        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback']
+        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading']
         owner.panel.nodes = all(owner.tree, item => attributes.some(attribute => item.props[attribute])).map(item => {
           const attribute = attributes.find(attribute => item.props[attribute]), value = item.props[attribute]
           const key = attribute + ':' + value
@@ -107,7 +107,7 @@ const mount = (options = {}) => {
               owner.inner.scrollTop = ['data-target-record-link', 'data-target-example-slot'].includes(attribute) ? 900 + owner.flowShift - (owner.inner.clientHeight - 32) / 2 : 0
             }
           }
-          if (attribute === 'data-target-example-slot' || attribute === 'data-target-record-link') {
+          if (attribute === 'data-target-example-slot' || attribute === 'data-target-record-link' || attribute === 'data-target-example-heading') {
             const exampleId = attribute === 'data-target-example-slot' ? JSON.parse(value)[0] : value
             if (!owner.exampleDetails.has(exampleId)) owner.exampleDetails.set(exampleId, { tagName: 'DETAILS', open: false, parentElement: owner.panel })
             node.parentElement = owner.exampleDetails.get(exampleId)
@@ -2827,6 +2827,130 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
 
 }
 
+{
+const navigationMap = motionTargetMap()
+navigationMap.examples = Array.from({ length: 40 }, (_, index) => {
+  const item = structuredClone(navigationMap.examples[index % 2])
+  item.id = index === 0 ? '__proto__' : 'nav-"' + index
+  item.context = index % 2 ? '同名情境：另一对象，下一时刻' : '同名情境：本对象，原状态，可能成立'
+  item.inputs[1].value = index + ' m/s，不能省略另一个必要输入'
+  item.outputs[0].outcomeId = index % 5 === 0 ? 'rest' : 'uniform'
+  item.stage = index % 3 === 0 ? 'reviewed' : index % 3 === 1 ? 'prediction' : 'material'
+  if (item.stage === 'reviewed') item.feedback = { kind: ['personal', 'source', 'observation', 'ai'][(index / 3) % 4], text: '存在冲突，尚未独立核对', source: '来源 ' + index }
+  return item
+})
+const navigationIds = navigationMap.examples.map(item => item.id)
+const setupNavigator = async () => {
+  storage.clear(); doc.revision = 1
+  records = [{ id: 'navigator-record', documentId: doc.documentId, baseRevision: 1, target: { id: 'motion', type: 'connection_model', text: '资料中的模型' },
+    parentId: '', reason: '隔离导航夹具', origin: 'personal_target_map_not_mastery', map: structuredClone(navigationMap), createdAt: 1, bases: {} }]
+  owner = mount({ focusRequest: focus, slotNavigation: true }); await owner.load()
+}
+const locatorOptions = () => all(owner.control('定位例子'), node => node.type === 'option').map(item => item.props.value)
+const detailsOf = id => all(owner.tree, node => node.props['data-target-case-id'] === id)[0]
+await setupNavigator()
+assert.deepEqual(locatorOptions(), ['', ...navigationIds])
+assert.equal(owner.control('定位例子').props.value, '', 'Loading does not claim an example has been selected')
+assert(owner.control('上一个筛选例子 ' + navigationIds[0]).props.disabled)
+assert(owner.control('下一个筛选例子 ' + navigationIds[39]).props.disabled)
+owner.change('映射规律表述', '未保存：可能成立，不代表因果或掌握')
+owner.change('确认保存个人靶图', undefined, true)
+const beforeLocal = JSON.stringify([...storage]), beforeRecords = JSON.stringify(records), beforeWrites = writes, beforeRequests = owner.requests.length
+owner.change('定位例子', navigationIds[19])
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[19])
+assert.equal(owner.control('定位例子').props.value, navigationIds[19])
+assert.equal(detailsOf(navigationIds[19]).props.open, true)
+assert.equal(detailsOf(navigationIds[18]).props.open, false, 'Same-name examples keep separate expansion')
+assert.equal(owner.control('例子 20 输入 force').props.value, navigationMap.examples[19].inputs[0].value)
+assert.equal(owner.control('例子 20 输入 before').props.value, navigationMap.examples[19].inputs[1].value)
+owner.click('下一个筛选例子 ' + navigationIds[19]); assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[20])
+owner.click('上一个筛选例子 ' + navigationIds[20]); assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[19])
+owner.change('搜索例子文字', '原状态')
+owner.change('按记录阶段查看例子', 'reviewed_saved')
+owner.change('按对照来源查看例子', 'personal')
+owner.change('按输出取值查看例子', JSON.stringify(['after', 'uniform']))
+assert.deepEqual(locatorOptions(), ['', navigationIds[12], navigationIds[24], navigationIds[36]], 'Navigate the exact four-way intersection, not all examples')
+assert.equal(owner.control('定位例子').props.value, '')
+owner.change('定位例子', navigationIds[24]); owner.click('下一个筛选例子 ' + navigationIds[24])
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[36])
+assert(owner.control('下一个筛选例子 ' + navigationIds[36]).props.disabled)
+owner.control('下一个筛选例子 ' + navigationIds[36]).props.onClick(); owner.render()
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[36], 'The last example never wraps to the first')
+for (const invalid of [navigationIds[1], '同名情境', 'missing', '', null, 1, {}, 'a'.repeat(121)]) {
+  owner.change('定位例子', invalid); assert.equal(owner.control('定位例子').props.value, navigationIds[36])
+}
+assert.equal(JSON.stringify([...storage]), beforeLocal); assert.equal(JSON.stringify(records), beforeRecords)
+assert.equal(writes, beforeWrites); assert.equal(owner.requests.length, beforeRequests)
+assert(owner.control('确认保存个人靶图').props.checked, 'Pure navigation does not alter approval')
+owner.change('搜索例子文字', 'no matching example')
+assert(owner.control('定位例子').props.disabled); assert.deepEqual(locatorOptions(), [''])
+owner.unmount()
+
+for (const boundary of ['filter', 'filter-return', 'stage', 'feedback', 'text', 'edit', 'target', 'document', 'revision', 'hidden', 'hidden-return', 'unmount', 'pending', 'pending-cancel', 'archive', 'archive-return', 'reload']) {
+  await setupNavigator()
+  const choose = owner.control('定位例子').props.onChange, next = owner.control('下一个筛选例子 ' + navigationIds[1]).props.onClick
+  if (boundary === 'filter') owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest']))
+  if (boundary === 'filter-return') { owner.change('搜索例子文字', '原状态'); owner.change('搜索例子文字', '') }
+  if (boundary === 'stage') owner.change('按记录阶段查看例子', 'material')
+  if (boundary === 'feedback') owner.change('按对照来源查看例子', 'none')
+  if (boundary === 'text') owner.change('搜索例子文字', '原状态')
+  if (boundary === 'edit') owner.change('映射规律表述', '修改后的限定语')
+  if (boundary === 'target') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'foreign'; owner.render() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render() }
+  if (boundary === 'hidden') { owner.props.active = false; owner.render() }
+  if (boundary === 'hidden-return') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render(); await owner.load() }
+  if (boundary === 'unmount') owner.unmount()
+  if (['pending', 'pending-cancel', 'archive', 'archive-return', 'reload'].includes(boundary)) owner.click('查看靶图修订 navigator-record')
+  if (boundary === 'pending-cancel') owner.click('取消读取历史靶图')
+  if (['archive', 'archive-return'].includes(boundary)) await owner.load()
+  if (boundary === 'archive-return') owner.click('返回未保存草稿')
+  if (boundary === 'reload') {
+    await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
+    owner.click('重读靶图'); await owner.load()
+  }
+  const snapshot = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  choose({ target: { value: navigationIds[2] } }); next(); owner.render()
+  const after = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  after.forEach((value, index) => assert(value === snapshot[index], boundary + ' rejects stale navigation, field ' + index))
+  owner.unmount(); doc.revision = 1
+}
+await setupNavigator()
+owner.change('映射规律表述', '历史浏览不能覆盖这段草稿')
+const retained = JSON.stringify([...storage])
+owner.click('查看靶图修订 navigator-record')
+const failedNavigationRead = owner.pending().at(-1)
+failedNavigationRead.reject(new Error('503 navigator history')); failedNavigationRead.settled = true; await owner.settle()
+assert.equal(JSON.stringify([...storage]), retained)
+owner.click('重试读取历史靶图'); await owner.load()
+owner.change('定位例子', navigationIds[0]); owner.click('下一个筛选例子 ' + navigationIds[0])
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[1])
+assert(owner.control('映射规律表述').props.disabled)
+const archivedChoose = owner.control('定位例子').props.onChange
+owner.click('对照上层表述'); owner.click('快照内容')
+assert.equal(owner.control('定位例子').props.value, '', 'Returning from field comparison does not claim an earlier navigation is still selected')
+const comparisonReturnFocus = owner.focused, comparisonReturnNav = JSON.stringify([...owner.navigation])
+archivedChoose({ target: { value: navigationIds[2] } }); owner.render()
+assert.equal(owner.focused, comparisonReturnFocus); assert.equal(JSON.stringify([...owner.navigation]), comparisonReturnNav)
+assert.equal(owner.control('定位例子').props.value, '')
+owner.change('定位例子', navigationIds[2]); assert.equal(owner.control('定位例子').props.value, navigationIds[2])
+owner.click('返回未保存草稿'); assert.equal(owner.control('映射规律表述').props.value, '历史浏览不能覆盖这段草稿')
+assert.equal(JSON.stringify([...storage]), retained); assert.equal(owner.control('定位例子').props.value, '')
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+owner.change('定位例子', navigationIds[2])
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[2]); assert(owner.control('保存个人靶图').props.disabled)
+owner.unmount(); doc.revision = 1
+for (const anomaly of ['removed', 'duplicate', 'hidden']) {
+  await setupNavigator()
+  if (anomaly === 'removed') owner.removedAnchor = navigationIds[2]
+  if (anomaly === 'duplicate') owner.duplicateAnchors = true
+  if (anomaly === 'hidden') owner.domHidden = true
+  owner.render(); owner.change('定位例子', navigationIds[2])
+  assert.equal(owner.focused, null, anomaly + ' cannot focus a replacement or hidden example')
+  owner.unmount()
+}
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -2867,4 +2991,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   exampleFeedbackSourceBrowse: true, feedbackFilterStageBoundary: true, feedbackFilterIntersection: true,
   feedbackFilterEditContinuity: true, feedbackFilterPageRestore: true, feedbackFilterStaleCallbacks: true, feedbackFilterNoWrites: true,
   exampleExpansionControlled: true, exampleExpansionExactIdentity: true, exampleExpansionHistoryIsolation: true,
-  exampleExpansionRefreshAndRetry: true, exampleExpansionDraftPreserved: true, exampleExpansionStaleEvents: true, exampleExpansionNoWrites: true }))
+  exampleExpansionRefreshAndRetry: true, exampleExpansionDraftPreserved: true, exampleExpansionStaleEvents: true, exampleExpansionNoWrites: true,
+  exampleLocatorExactIdentity: true, exampleLocatorFilteredSequence: true, exampleLocatorCompleteInputs: true,
+  exampleLocatorStaleCallbacks: true, exampleLocatorHistoryAndVersion: true, exampleLocatorNoWrites: true, exampleLocatorMissingDom: true }))

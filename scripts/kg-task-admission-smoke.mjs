@@ -18,9 +18,16 @@ const documentId = graph.source.documentId
 const events = [1, 2].map(seq => ({ seq, type: 'user/message', data: { content: [{ type: 'text', text: 'Message ' + seq }] } }))
 graph.traceEvents = events.slice(0, 1)
 graph.traceText = graph.sourceText
+const canonicalReads = []
 const store = {
   getDocumentRevision: () => 1,
   getDocument: () => structuredClone(graph),
+  getCanonicalDocument: id => {
+    assert.equal(id, documentId)
+    canonicalReads.push(id)
+    return { documentId: id, revision: graph.revision, graph: structuredClone(graph), sourceText: graph.sourceText,
+      sourceUnits: [{ paragraph: 0, text: 'Alpha.' }, { paragraph: 1, text: 'Beta.' }] }
+  },
   getDocumentSourceUnits: id => {
     assert.equal(id, documentId, 'task admission must read the selected canonical document, not client-provided source units')
     return [{ paragraph: 0, text: 'Alpha.' }, { paragraph: 1, text: 'Beta.' }]
@@ -183,10 +190,16 @@ for (const kind of ['dynamic', 'persistent']) {
     const host = await bind(kind)
     let runs = 0
     host.setRunner(async task => { runs++; task.status = 'succeeded' })
+    if (kind === 'persistent') host.setStore({ ...store,
+      getDocument() { assert.fail('relation admission must use the canonical snapshot, not a separate graph read') },
+      getDocumentSourceUnits() { assert.fail('relation admission must use the canonical snapshot, not a separate source read') },
+    })
     try {
       for (const concurrency of [1, 2, 4, undefined, 3]) {
+        const beforeReads = canonicalReads.length
         const result = await host.post('relation-retry', { documentId, expectedRevision: 1, concurrency })
         assert(result.response.taskId, 'relation admission failed: ' + JSON.stringify(result.response))
+        assert.deepEqual(canonicalReads.slice(beforeReads), kind === 'persistent' ? [documentId] : [])
         const task = host.tasks.get(result.response.taskId)
         assert.equal(task.concurrency, [1, 2, 4].includes(concurrency) ? concurrency : 2)
         assert.equal(task.ontology, graph.ontology)

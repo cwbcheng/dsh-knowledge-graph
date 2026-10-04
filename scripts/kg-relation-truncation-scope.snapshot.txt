@@ -1,0 +1,3 @@
+本叶输出域（仅限制输出；完整上下文和全部节点/证据不删减）：
+<OUTPUT_SCOPE_JSON>
+只返回 fromNodeId 属于 fromNodeIds、toNodeId 属于 toNodeIds 且 relation 属于 relations 的关系；三项必须同时满足。其余候选只作上下文，不得输出。本叶与同根其他叶的输出域互斥；必须保留跨主目标、跨段落和远章的有向关系。允许 edges:[]，禁止返回部分 JSON。

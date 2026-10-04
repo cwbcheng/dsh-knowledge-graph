@@ -22,6 +22,30 @@ assert.ok(start >= 0 && end > start, 'Source UI helper boundaries must exist')
 assert.ok(source.includes('const GENERATION_STRUCTURE_TOOLS = ('), 'Client must embed its source structure factory')
 const ui = new Function('h', 'GENERATION_STRUCTURE_TOOLS', source.slice(start, end) + '\nreturn { relationBatchBudgetValue, RelationBatchBudgetInput, RelationCompletionStatus, RelationCompletionControls, generationStructureQualityState, StructureQualityStatus, GraphContentScopeControls, contentScopeForNode, contentScopeCanvasProps };')(h, tools)
 
+const discoveryStart = source.indexOf('      function RelationDiscoveryStatus(')
+const discoveryEnd = source.indexOf('      function relationNetChange(', discoveryStart)
+assert.ok(discoveryStart >= 0 && discoveryEnd > discoveryStart)
+const discoveryUI = new Function('h', source.slice(discoveryStart, discoveryEnd) + '\nreturn RelationDiscoveryStatus;')(h)
+const savedCoverage = { totalTargets: 683, searchedTargets: 612, remainingTargets: 71, pass: 1,
+  savedGroups: 0, totalGroups: 4, savedTargets: 0, durable: true }
+const recoveryTree = discoveryUI({ coverage: savedCoverage,
+  recovery: { requests: 3, maxRequests: 128, splits: 1, completedLeaves: 1, reusedLeaves: 1 } })
+assert.match(text(recoveryTree), /关系检索 612\/683/)
+assert.match(text(recoveryTree), /本次关系请求 3\/128/)
+assert.match(text(recoveryTree), /截断拆组 1/)
+assert.match(text(recoveryTree), /本次新完成检索子任务 1/)
+assert.match(text(recoveryTree), /复用候选子任务 1/)
+assert.match(text(recoveryTree), /不是 token 或费用预算.*发现候选须经独立审校/)
+assert.equal(walk(recoveryTree, item => item.props['aria-label'] === '关系候选检索进度')[0].props.value, 612,
+  'A saved leaf or request count must not increase primary-target coverage')
+assert.equal(walk(recoveryTree, item => item.props['aria-label'] === '关系截断恢复状态').length, 1)
+assert.doesNotMatch(text(discoveryUI({ coverage: savedCoverage })), /本次关系请求|截断拆组/,
+  'Missing legacy recovery metadata is unknown, not fabricated zero requests')
+assert.match(text(discoveryUI({ coverage: { ...savedCoverage, durable: false } })), /检索检查点暂存/)
+assert.doesNotMatch(text(discoveryUI({ coverage: { ...savedCoverage, durable: false } })), /检索检查点已落盘/)
+assert.match(source, /coverage: progress\.discovery, recovery: progress\.relationRecovery/)
+assert.match(source, /coverage: discoveryMeta, recovery: generationMeta\?\.relationRecovery/)
+
 const graph = {
   graphOntology: { id: 'custom', nodeTypes: [{ id: 'discrimination_model', label: '判别模型' }], relationTypes: [{ id: 'grounded_rule', label: '有据规则' }] },
   source: { documentId: 'keyless-ui', revision: 7, title: 'keyless fixture', sections: [{ id: 'm', title: '正文' }, { id: 'c', title: '版本说明' }] },

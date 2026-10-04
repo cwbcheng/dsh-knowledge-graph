@@ -401,8 +401,20 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 - 模型失败、审校不可用/未完成或知识图版本冲突会停止任务并提示原因。已经提交的结果保留，不会覆盖其他操作的修改；**未通过独立审校的发现候选不进入 canonical 图**，不能仅发一条 warning 就保留为正式关系。
 - 首次建图的关系组若返回非法/未完成结果，会保留 v3 关系检查点并以 `relation_weave_failed` 停止任务，不能跳过缺失组进入后处理或发布正式图。恢复时只重试未完成的发现组，不重新支付已缓存成功组的发现请求；缓存候选仍须接受独立语义审校。合法 `edges: []` 与真正孤立的有效事实不因此失败。
 - 审校遇到明确的传输中断或临时服务错误时，等待 3 秒后重试原批次一次（限流等待 30 秒），等待期间可取消。仍失败则保存待审候选并显示实际原因；继续时先审这些候选，再检索剩余节点。认证失败不自动重试，语义驳回也不会通过反复重试变成接纳。
+- **输出截断不原样重试，也不接纳半截 JSON。** 关系发现遇到 `output_truncated` 时，将该组的有向端点／关系类型输出域确定性二分；子请求保留原组的完整节点、上下文和证据，结果必须属于该子域并继续通过证据与独立语义审校。只在原组所有子任务完整完成后增加该组的主目标覆盖；合法空结果也可完成子任务，部分成功不伪报整组完成。独立关系审校遇到截断则有限拆分候选批次，不能跳过审校入库。
+- 每次显式任务由 Host 发起的关系发现与独立关系审校合计最多 **128 次请求**，拆分深度最多 **20**；实际调用前共享扣减，真实 LLM 路径的内部停滞重试也逐次计入，认证缓存回放不扣额度。额度耗尽只停止新请求，已预约的并发请求可在完整验收与版本检查后保存候选缓存，再以额度耗尽结束本次任务；用户取消、持久化失败或版本冲突仍中止请求，不接受晚到结果。达到机制上限或最小子任务仍截断时明确停止，并保留可恢复记录。这是请求安全上限，不是 token 或费用预算，也不约束正文抽取等其他模型调用或外部适配器自行发起的隐藏请求；不会自动增加模型输出上限或更改模型设置。
+- 常驻 SQLite Host 另外保存当前版本的关系补全子任务与审校恢复记录，绑定正文、本体、基础图和 revision。后续手动继续时只请求缺失子任务；已有正式关系和覆盖游标不回滚。正式批次提交与对应恢复记录清除在同一事务中校验，取消、检查点保存失败或版本冲突不会覆盖用户的新修改。存在未消费的发现检查点时，普通补全先恢复原发现，再统一审校旧待审候选与新候选；显式 `reviewPendingOnly: true` 则拒绝跨过该检查点，不会静默扩大付费请求范围或清掉已付费缓存。动态 Host 未提供可信存储适配器时明确标为进程内暂存，不能宣称跨进程恢复。旧 v1/v2 组检查点和 v3 批检查点仍先验证绑定、完整性与证据再回放，不因降低全局分组常量而失效。
+- 已认证的最小域或深度上限截断在下次默认继续时不会重新付费发送同一载荷。若提高本次 `relationSplitDepth` 后可继续拆分，直接沿已知截断生成子域，不重付父请求；仍不可拆分时需要主动选择另一 `model`，或在 `relation-retry` 明确传入布尔值 `retryTruncatedLeaf: true` 承认可能重付该叶。该参数不绕过请求／深度上限、证据检查或独立审校，也不是自动续跑许可。
 
-两种 Host 入口的 `extract`、`append-extract` 与 `relation-retry` 接受数值参数 `relationBatchBudget`（整数 1–20，非法值在模型调用前拒绝）。省略时，初始抽取/追加 API 默认 1 批；`relation-retry` 的 `continuous: true` 默认 3 批，其余默认 1 批。UI 显式传入所选整数，取消连续模式时传入 1。`relation-retry` 仍须传入 `documentId` 和当前 `expectedRevision`，省略 `continuous` 时保留单批默认行为。
+两种 Host 入口的 `extract`、`append-extract` 与 `relation-retry` 接受数值参数 `relationBatchBudget`（整数 1–20，非法值在模型调用前拒绝）。省略时，初始抽取/追加 API 默认 1 批；`relation-retry` 的 `continuous: true` 默认 3 批，其余默认 1 批。UI 显式传入所选整数，取消连续模式时传入 1。`relation-retry` 仍须传入 `documentId` 和当前 `expectedRevision`，省略 `continuous` 时保留单批默认行为。API 可用 `relationRequestBudget`（整数 1–128）和 `relationSplitDepth`（整数 0–20）调低本次关系请求或拆分上限，不能突破 Host 的硬上限；省略时分别使用 128 和 20。这两个新安全参数显式填写时必须为数值整数，`null`、字符串、分数和越界值均在创建任务／调用模型前拒绝。仅 `relation-retry` 的 `retryTruncatedLeaf` 接受可选布尔值（默认 `false`）；`true` 是针对已知截断叶的有意识新尝试，不是清除全部成功缓存。
+
+无密钥截断回归见 [kg-relation-truncation-smoke.mjs](<scripts/kg-relation-truncation-smoke.mjs>)：使用 mock 模型、临时 SQLite 和生产 HTTP 入口，不连接实际图或真实模型。旧 v1/v2/v3 检查点回放由 [kg-relation-budget-smoke.mjs](<scripts/kg-relation-budget-smoke.mjs>)共同验证。
+
+```bash
+npm run test:kg-relation-truncation
+# 仅执行源 Host，不要求先构建 lib：
+node scripts/kg-relation-truncation-smoke.mjs --dynamic-only
+```
 
 ### 结构质量诊断与只读内容层
 
