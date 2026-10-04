@@ -2355,6 +2355,7 @@
         const [confirmed, setConfirmed] = useState(false), [compared, setCompared] = useState(false), [reload, setReload] = useState(0)
         const [roundConfirmed, setRoundConfirmed] = useState(false)
         const [cacheWarnings, setCacheWarnings] = useState(() => new Map()), [failedDraftRead, setFailedDraftRead] = useState(null)
+        const [exportNotice, setExportNotice] = useState(null), exportContext = useRef(null)
         const [editError, setEditError] = useState(null), [editErrorId] = useState(() => 'kg-target-edit-' + Date.now() + '-' + Math.random().toString(36).slice(2))
         const [removal, setRemoval] = useState(null), removalCurrent = useRef(null), removalContext = useRef(null), [removalFocus, setRemovalFocus] = useState(null)
         const [removalUndo, setRemovalUndo] = useState(null), undoCurrent = useRef(null), undoContext = useRef(null)
@@ -2442,9 +2443,12 @@
         const readDraft = (id, rev) => {
           const identity = { documentId, targetId: id, baseRevision: rev }, storageKey = key(identity)
           let value = cache.current.get(storageKey)
-          if (!value) { try { const raw = localStorage.getItem(storageKey) || 'null'; if (raw.length > 500000) throw new Error('size'); value = JSON.parse(raw) }
-            catch { damaged.current.add(storageKey); setFailedDraftRead(identity); warnCache(identity, '本地草稿无法读取，原存储内容未清除；当前编辑暂留窗口。') } }
-          if (!value) return null
+          if (!value) { try {
+            const raw = localStorage.getItem(storageKey)
+            if (raw === null) return null
+            if (raw.length > 500000) throw new Error('size')
+            value = JSON.parse(raw)
+          } catch { damaged.current.add(storageKey); setFailedDraftRead(identity); warnCache(identity, '本地草稿无法读取，原存储内容未清除；当前编辑暂留窗口。'); return null } }
           try {
             if (value.documentId !== documentId || value.targetId !== id || value.baseRevision !== rev || typeof value.parentId !== 'string' || typeof value.reason !== 'string' ||
                 value.roundReason !== undefined && (typeof value.roundReason !== 'string' || value.roundReason.length > 2000)) throw new Error('scope')
@@ -2690,6 +2694,23 @@
           setHistoryPosition(value => value?.scope === historyScope ? { ...value, open } : { scope: historyScope, offset: historyOffset, head: historyHead, open })
         }
         const ownsDraft = draft?.documentId === documentId && draft.targetId === targetId
+        const canExportDraft = active && ownsDraft && !archive && !saving && !loading && !recordLoading
+        const exportScope = [documentId, revision, targetId, draft, archive, active, saving, loading, recordLoading, reload, sequence.current]
+        // React may render without committing a new handler; invalidate by changed context, not function identity.
+        if (!exportContext.current || exportScope.some((value, index) => value !== exportContext.current.scope[index])) exportContext.current = { scope: exportScope }
+        const exportToken = exportContext.current
+        const exportDraft = () => {
+          if (!alive.current || !canExportDraft || exportContext.current !== exportToken || writeBusy.current || recordRequest.current) return
+          try {
+            // Export the complete window draft, including hidden examples, never a filtered or historical projection.
+            const value = { format: 'dsh.target-map-draft', version: 1, status: 'unsubmitted_draft_not_verified', exportedAt: new Date().toISOString(),
+              draft: { documentId, targetId, baseRevision: draft.baseRevision, parentId: draft.parentId, reason: draft.reason,
+                roundReason: draft.roundReason || '', map: TARGET_MAP_TOOLS.validate(draft.map, { draft: true }) } }
+            if (typeof Blob === 'undefined' || !downloadBrowserBlob(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }),
+              'target-map-draft-r' + draft.baseRevision + '.json')) throw new Error('当前浏览器无法下载文件')
+            setExportNotice({ draft, message: '已请求下载 JSON；未写入个人记录，本地存储状态不变。' })
+          } catch { setExportNotice({ draft, error: true, message: '导出失败；草稿仍保留在此窗口，未写入个人记录。' }) }
+        }
         const map = archive?.map || (ownsDraft ? draft.map : null)
         const stale = ownsDraft && draft.baseRevision !== revision
         const frozen = saving || busy || stale || !!archive || loading || recordLoading || !detail || error?.code === 'revision_conflict'
@@ -3165,6 +3186,9 @@
                 button('取消读取历史靶图', () => cancelRecordRead(recordToken), false)) : null,
               recordError ? h('div', { role: 'alert', 'data-target-record-view': 'error', tabIndex: -1 }, '历史靶图读取失败：' + (recordError.message || String(recordError)),
                 button('重试读取历史靶图', () => openRecord(retryRecord?.id, retryRecord?.origin, retryRecord?.basis), saving || loading || !active || recordError.code === 'revision_conflict')) : null,
+              ownsDraft && !archive ? h('div', { className: 'kg-target-toolbar' },
+                button('导出草稿 JSON', exportDraft, !canExportDraft),
+                active && exportNotice?.draft === draft ? h('span', { role: exportNotice.error ? 'alert' : 'status' }, exportNotice.message) : null) : null,
               detail ? h('details', null, h('summary', null, '资料中的目标 · ' + detail.target.id), h('p', null, detail.target.text),
                 button('定位目标原文', () => onLocate?.({ nodeId: detail.target.id, text: detail.target.text }), saving || !onLocate)) : null,
               ownsDraft && draftVersions().length > 1 ? h('label', null, '本地草稿版本', h('select', { 'aria-label': '本地草稿版本', value: draft.baseRevision,

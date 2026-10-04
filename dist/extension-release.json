@@ -1,6 +1,6 @@
 {
   "version": "1.0.1",
-  "crxSha256": "ec002bfd14cd659743a1841334ea30bd54cb96f71de63f3ac42a0b0a523bb232",
+  "crxSha256": "ec73650da159df2afef5f1d2b40b874f42ecbdcc2c684b123328cb713fbd706b",
   "files": {
     "background.js": "cb13c267a930f33e83a96e0c2d3f662a1f669f7615e1d0b85437653da42f790e",
     "content.js": "a74a4c5b0bc63287806d402c024455097a500a95397b68e78de2a66aa211429d",
@@ -19,6 +19,6 @@
     "vendor/react-dom.production.min.js": "35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d",
     "vendor/react.production.min.js": "d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd",
     "viewer.css": "5862200ee10779b18690df56905cb600eb5d94bbaa9839f33081763e3407e78a",
-    "viewer.js": "cecfc93a100e4d55652d8818660da823483140c5701871d0f01b09b8a18add2f"
+    "viewer.js": "38e8fdf37a1876d41af82497430a08ab6ff9efa2e1d140b7c1e2fe0ee2d8acc5"
   }
 }
