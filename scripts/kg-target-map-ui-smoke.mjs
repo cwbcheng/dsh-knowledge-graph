@@ -49,7 +49,7 @@ const mount = (options = {}) => {
     owner.domNodes = new Map(); owner.focused = null; owner.scrolled = []; owner.exampleDetails = new Map()
     owner.panel = { nodes: [], ownerDocument: { body: {}, activeElement: null },
       querySelectorAll(selector) {
-        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]'].includes(selector))
+        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]'].includes(selector))
         const attribute = selector.slice(1, -1), nodes = this.nodes.filter(node => node.attribute === attribute && node.value !== owner.removedAnchor)
         return owner.duplicateAnchors ? [...nodes, ...nodes] : nodes
       },
@@ -86,7 +86,7 @@ const mount = (options = {}) => {
         assert(owner.tree.props.ref, 'Slot navigation needs a panel-scoped DOM root')
         owner.tree.props.ref.current = owner.panel
         owner.slotSelectionHeight = all(owner.tree, item => item.props['data-target-slot'] && item.props['data-selected']).length ? 32 : 0
-        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading']
+        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side']
         owner.panel.nodes = all(owner.tree, item => attributes.some(attribute => item.props[attribute])).map(item => {
           const attribute = attributes.find(attribute => item.props[attribute]), value = item.props[attribute]
           const key = attribute + ':' + value
@@ -111,6 +111,9 @@ const mount = (options = {}) => {
             const exampleId = attribute === 'data-target-example-slot' ? JSON.parse(value)[0] : value
             if (!owner.exampleDetails.has(exampleId)) owner.exampleDetails.set(exampleId, { tagName: 'DETAILS', open: false, parentElement: owner.panel })
             node.parentElement = owner.exampleDetails.get(exampleId)
+          } else if (attribute === 'data-target-example-pair-side') {
+            owner.pairDetails ||= { tagName: 'DETAILS', open: false, parentElement: owner.panel }
+            node.parentElement = owner.pairDetails
           } else node.parentElement = owner.panel
           return node
         })
@@ -2829,6 +2832,9 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
 
 {
 const navigationMap = motionTargetMap()
+navigationMap.slots.push({ ...navigationMap.slots[2], id: 'later', unit: 'km/h', scope: '另一对象，次日' })
+navigationMap.outcomes.push({ id: 'all', slotId: 'later', label: navigationMap.outcomes[0].label, detail: '同名异身份，单位和时间不同' })
+for (const item of navigationMap.examples) item.outputs.push({ slotId: 'later', outcomeId: 'all', detail: '不由原状态自动推断' })
 navigationMap.examples = Array.from({ length: 40 }, (_, index) => {
   const item = structuredClone(navigationMap.examples[index % 2])
   item.id = index === 0 ? '__proto__' : 'nav-"' + index
@@ -2848,6 +2854,109 @@ const setupNavigator = async () => {
 }
 const locatorOptions = () => all(owner.control('定位例子'), node => node.type === 'option').map(item => item.props.value)
 const detailsOf = id => all(owner.tree, node => node.props['data-target-case-id'] === id)[0]
+await setupNavigator()
+owner.change('映射规律表述', '直接对照不改未保存的限定语')
+owner.change('确认保存个人靶图', undefined, true)
+const pairEntryStorage = JSON.stringify([...storage]), pairEntryRecords = JSON.stringify(records), pairEntryRequests = owner.requests.length, pairEntryWrites = writes
+for (const side of ['左', '右']) {
+  const options = all(owner.control(side + '侧例子'), node => node.type === 'option').slice(1)
+  assert.equal(options.length, 40)
+  options.forEach((option, index) => assert(text(option).includes(navigationIds[index]), 'Pair options expose exact identities, not just equal context'))
+}
+owner.click('放入左侧对照 ' + navigationIds[19])
+assert.equal(owner.control('左侧例子').props.value, navigationIds[19])
+assert.equal(owner.focused, 'data-target-example-pair-side:left'); assert(owner.pairDetails.open)
+assert(owner.control('放入右侧对照 ' + navigationIds[19]).props.disabled)
+owner.control('放入右侧对照 ' + navigationIds[19]).props.onClick(); owner.render()
+assert.equal(owner.control('右侧例子').props.value, '', 'Disabled direct commands also reject self-pairs')
+owner.click('返回左侧例子')
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[19]); assert(detailsOf(navigationIds[19]).props.open)
+owner.click('放入右侧对照 ' + navigationIds[39])
+assert.equal(owner.control('右侧例子').props.value, navigationIds[39]); assert.equal(owner.focused, 'data-target-example-pair-side:right')
+const directRows = () => all(owner.control('两个例子字段对照'), node => node.props['data-target-compare-key'])
+for (const path of [['inputs', 'force', 'value'], ['inputs', 'before', 'value'], ['outputs', 'after', 'slot', 'unit'], ['outputs', 'later', 'slot', 'scope'], ['process']]) {
+  assert(directRows().some(row => row.props['data-target-compare-key'] === JSON.stringify(path)), 'Direct comparison retains every bound input and output')
+}
+assert(!all(owner.control('两个例子字段对照'), node => node.props.dangerouslySetInnerHTML).length)
+const oldReturn = owner.control('返回右侧例子').props.onClick
+owner.change('右侧例子', navigationIds[3]); const changedFocus = owner.focused
+oldReturn(); owner.render(); assert.equal(owner.focused, changedFocus, 'A return from a previous pair cannot navigate to the old side')
+owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest']))
+assert.equal(owner.control('左侧例子').props.value, navigationIds[19], 'Filtering keeps the deliberately selected pair')
+assert(owner.control('返回左侧例子').props.disabled)
+assert(owner.control('返回左侧例子').props.title.includes('当前筛选'))
+owner.control('返回左侧例子').props.onClick(); owner.render(); assert.equal(owner.focused, changedFocus, 'Return never silently clears a filter')
+owner.click('放入右侧对照 ' + navigationIds[0]); owner.click('返回右侧例子')
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[0])
+assert.equal(owner.control('按输出取值查看例子').props.value, JSON.stringify(['after', 'rest']))
+for (const invalid of [null, undefined, 0, {}, [], 'missing', 'a'.repeat(121)]) {
+  owner.change('右侧例子', invalid); assert.equal(owner.control('右侧例子').props.value, navigationIds[0])
+}
+assert.equal(JSON.stringify([...storage]), pairEntryStorage); assert.equal(JSON.stringify(records), pairEntryRecords)
+assert.equal(owner.requests.length, pairEntryRequests); assert.equal(writes, pairEntryWrites)
+assert(owner.control('确认保存个人靶图').props.checked)
+assert(!JSON.stringify([...owner.navigation]).includes('"left"'), 'Pair selection is not a persisted navigation or approval')
+owner.unmount()
+
+for (const boundary of ['pair', 'filter', 'filter-return', 'stage', 'feedback', 'text', 'edit', 'target', 'document', 'revision', 'hidden', 'hidden-return', 'unmount', 'pending', 'pending-cancel', 'archive', 'archive-return', 'reload', 'comparison-return']) {
+  await setupNavigator()
+  owner.click('放入左侧对照 ' + navigationIds[19]); owner.click('放入右侧对照 ' + navigationIds[39])
+  const choose = owner.control('放入左侧对照 ' + navigationIds[2]).props.onClick, back = owner.control('返回右侧例子').props.onClick,
+    menu = owner.control('左侧例子').props.onChange
+  if (boundary === 'pair') owner.change('右侧例子', navigationIds[3])
+  if (boundary === 'filter') owner.change('按输出取值查看例子', JSON.stringify(['after', 'rest']))
+  if (boundary === 'filter-return') { owner.change('搜索例子文字', '原状态'); owner.change('搜索例子文字', '') }
+  if (boundary === 'stage') owner.change('按记录阶段查看例子', 'material')
+  if (boundary === 'feedback') owner.change('按对照来源查看例子', 'none')
+  if (boundary === 'text') owner.change('搜索例子文字', '原状态')
+  if (boundary === 'edit') owner.change('映射规律表述', '修改后的限定语')
+  if (boundary === 'target') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'foreign'; owner.render() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render() }
+  if (boundary === 'hidden') { owner.props.active = false; owner.render() }
+  if (boundary === 'hidden-return') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render(); await owner.load() }
+  if (boundary === 'unmount') owner.unmount()
+  if (['pending', 'pending-cancel', 'archive', 'archive-return', 'reload', 'comparison-return'].includes(boundary)) owner.click('查看靶图修订 navigator-record')
+  if (boundary === 'pending-cancel') owner.click('取消读取历史靶图')
+  if (['archive', 'archive-return', 'comparison-return'].includes(boundary)) await owner.load()
+  if (boundary === 'archive-return') owner.click('返回未保存草稿')
+  if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
+  if (boundary === 'reload') {
+    await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
+    owner.click('重读靶图'); await owner.load()
+  }
+  const snapshot = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  choose(); back(); menu({ target: { value: navigationIds[2] } }); owner.render()
+  const after = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
+  after.forEach((value, index) => assert.equal(value, snapshot[index], boundary + ' rejects stale pair command field ' + index))
+  owner.unmount(); doc.revision = 1
+}
+await setupNavigator()
+owner.change('映射规律表述', '历史直接对照不能覆盖草稿')
+const pairRetained = JSON.stringify([...storage])
+owner.click('查看靶图修订 navigator-record')
+const pairEntryFailedRead = owner.pending().at(-1)
+pairEntryFailedRead.reject(new Error('503 direct pair history')); pairEntryFailedRead.settled = true; await owner.settle()
+assert.equal(JSON.stringify([...storage]), pairRetained)
+owner.click('重试读取历史靶图'); await owner.load()
+owner.click('放入左侧对照 ' + navigationIds[2]); owner.click('放入右侧对照 ' + navigationIds[39]); owner.click('返回右侧例子')
+assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[39]); assert(owner.control('例子 40 完整情境').props.disabled)
+owner.click('返回未保存草稿'); assert.equal(owner.control('映射规律表述').props.value, '历史直接对照不能覆盖草稿')
+assert.equal(owner.control('左侧例子').props.value, ''); assert.equal(JSON.stringify([...storage]), pairRetained)
+doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
+owner.click('放入左侧对照 ' + navigationIds[2]); owner.click('放入右侧对照 ' + navigationIds[39]); owner.click('返回左侧例子')
+assert(owner.control('保存个人靶图').props.disabled); assert.equal(owner.focused, 'data-target-example-heading:' + navigationIds[2])
+owner.unmount(); doc.revision = 1
+for (const anomaly of ['removed', 'duplicate', 'hidden']) {
+  await setupNavigator()
+  if (anomaly === 'removed') owner.removedAnchor = 'left'
+  if (anomaly === 'duplicate') owner.duplicateAnchors = true
+  if (anomaly === 'hidden') owner.domHidden = true
+  owner.render(); owner.click('放入左侧对照 ' + navigationIds[2])
+  assert.equal(owner.focused, null, anomaly + ' cannot focus an unrelated or hidden pair side')
+  assert.equal(owner.control('左侧例子').props.value, navigationIds[2], 'Missing DOM does not corrupt the explicit pair choice')
+  owner.unmount()
+}
 await setupNavigator()
 assert.deepEqual(locatorOptions(), ['', ...navigationIds])
 assert.equal(owner.control('定位例子').props.value, '', 'Loading does not claim an example has been selected')
@@ -2993,4 +3102,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   exampleExpansionControlled: true, exampleExpansionExactIdentity: true, exampleExpansionHistoryIsolation: true,
   exampleExpansionRefreshAndRetry: true, exampleExpansionDraftPreserved: true, exampleExpansionStaleEvents: true, exampleExpansionNoWrites: true,
   exampleLocatorExactIdentity: true, exampleLocatorFilteredSequence: true, exampleLocatorCompleteInputs: true,
-  exampleLocatorStaleCallbacks: true, exampleLocatorHistoryAndVersion: true, exampleLocatorNoWrites: true, exampleLocatorMissingDom: true }))
+  exampleLocatorStaleCallbacks: true, exampleLocatorHistoryAndVersion: true, exampleLocatorNoWrites: true, exampleLocatorMissingDom: true,
+  exampleDirectPairExactIdentity: true, exampleDirectPairCompleteBindings: true, exampleDirectPairReturn: true,
+  exampleDirectPairFilterFence: true, exampleDirectPairStaleCallbacks: true, exampleDirectPairHistoryAndVersion: true, exampleDirectPairNoWrites: true }))
