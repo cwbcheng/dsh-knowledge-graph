@@ -49,7 +49,7 @@ const mount = (options = {}) => {
     owner.domNodes = new Map(); owner.focused = null; owner.scrolled = []; owner.exampleDetails = new Map()
     owner.panel = { nodes: [], ownerDocument: { body: {}, activeElement: null },
       querySelectorAll(selector) {
-        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]', '[data-target-gap-field]'].includes(selector))
+        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]', '[data-target-gap-field]', '[data-target-removal]', '[data-target-remove-button]', '[data-target-outcome-list]'].includes(selector))
         const attribute = selector.slice(1, -1), nodes = this.nodes.filter(node => node.attribute === attribute && node.value !== owner.removedAnchor)
         return owner.duplicateAnchors ? [...nodes, ...nodes] : nodes
       },
@@ -86,7 +86,7 @@ const mount = (options = {}) => {
         assert(owner.tree.props.ref, 'Slot navigation needs a panel-scoped DOM root')
         owner.tree.props.ref.current = owner.panel
         owner.slotSelectionHeight = all(owner.tree, item => item.props['data-target-slot'] && item.props['data-selected']).length ? 32 : 0
-        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side', 'data-target-gap-field']
+        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side', 'data-target-gap-field', 'data-target-removal', 'data-target-remove-button', 'data-target-outcome-list']
         owner.panel.nodes = all(owner.tree, item => attributes.some(attribute => item.props[attribute])).map(item => {
           const attribute = attributes.find(attribute => item.props[attribute]), value = item.props[attribute]
           const key = attribute + ':' + value
@@ -173,7 +173,10 @@ owner.unmount()
 owner = mount({ focusRequest: focus }); await owner.load()
 assert.equal(owner.control('映射规律表述').props.value, '未保存的条件限定语')
 assert(owner.control('例子 1 先记录预测').props.checked)
+const beforeRemovalPreview = JSON.stringify([...storage])
 owner.click('删除例子 1')
+assert.equal(JSON.stringify([...storage]), beforeRemovalPreview, 'Opening removal must not destroy the only locally saved draft')
+owner.click('确认删除例子 1')
 owner.change('确认保存个人靶图', undefined, true)
 const submit = owner.control('保存个人靶图').props.onClick
 submit(); submit(); owner.render()
@@ -829,7 +832,7 @@ owner.domHidden = true; owner.click('对应输入槽位 before')
 assert.equal(owner.scrolled.length, 0, 'A hidden ancestor cannot receive programmatic focus')
 owner.domHidden = false; owner.click('对应输入槽位 before')
 const deletedReturn = owner.control('返回例子 1 的具体输入').props.onClick, deletedJump = owner.control('对应输入槽位 before').props.onClick
-owner.click('删除例子 1'); const afterDelete = owner.scrolled.length
+owner.click('删除例子 1'); owner.click('确认删除例子 1'); const afterDelete = owner.scrolled.length
 deletedReturn(); deletedJump(); owner.render()
 assert.equal(owner.scrolled.length, afterDelete, 'Deleted example identity cannot be replaced by another example sharing the slot')
 assert(!all(owner.tree, item => item.props['data-selected']).length)
@@ -3241,7 +3244,7 @@ for (const boundary of ['filter', 'filter-return', 'edit', 'delete', 'expansion'
   if (boundary === 'filter') owner.change('搜索例子文字', 'new')
   if (boundary === 'filter-return') { owner.change('搜索例子文字', 'new'); owner.change('搜索例子文字', '') }
   if (boundary === 'edit') owner.change('例子 40 完整情境', '不再是原缺口')
-  if (boundary === 'delete') owner.click('删除例子 40')
+  if (boundary === 'delete') { owner.click('删除例子 40'); owner.click('确认删除例子 40') }
   if (boundary === 'expansion') owner.change('定位例子', 'material-2')
   if (boundary === 'target') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
   if (boundary === 'document') { owner.props.documentId = 'foreign'; owner.render() }
@@ -3500,6 +3503,109 @@ assert.equal(JSON.stringify(records), recordsBytes); assert.equal(writes, writeC
 owner.unmount(); doc.revision = 1; storage.clear(); records = []
 }
 
+// Destructive draft edits need an explicit, identity-bound impact review.
+{
+const key = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 1])
+const material = motionTargetMap(), secondOutput = 'after"<>[2]'
+material.slots.push({ ...material.slots[2], id: secondOutput, unit: 'km/h', scope: '另一对象，下一时刻，未知方向' })
+material.outcomes.push({ id: 'same-label', slotId: secondOutput, label: material.outcomes[0].label, detail: '同名不是同身份；来源冲突' })
+material.examples = Array.from({ length: 40 }, (_, index) => {
+  const item = tools.example(material, 'case"<>-' + index)
+  item.context = index ? '同名情境' : 'visible only <img src=x onerror=alert(1)>；通常成立，循环不是证据'
+  item.inputs[0].value = '0 N'; item.inputs[1].value = '需另一个必要输入，0 m/s 不等于另一对象的静止'
+  item.outputs[0].outcomeId = 'uniform'; item.outputs[0].detail = '也许适用；来源甲乙冲突'
+  item.outputs[1].outcomeId = 'same-label'; item.outputs[1].detail = '另一对象和时间，保留限定语'
+  item.process = '必须同时核对所有输入、单位与条件'; return item
+})
+tools.validate(material, { draft: true })
+const seed = () => { storage.clear(); records = []; doc.revision = 1; storage.set(key, JSON.stringify({ documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map: material })) }
+const scenarios = [
+  ['slots', 'before', '删除槽位 before', '40 项输入记录', value => {
+    assert.equal(value.slots.length, 3); assert(!value.slots.some(item => item.id === 'before'))
+    assert(value.examples.every(item => item.inputs.length === 1 && item.inputs[0].value === '0 N'))
+    assert.deepEqual(value.outcomes, material.outcomes)
+    assert.deepEqual(value.examples.map(item => item.outputs), material.examples.map(item => item.outputs))
+  }],
+  ['slots', 'after', '删除槽位 after', '40 项输出记录，以及 3 个输出取值', value => {
+    assert.equal(value.slots.length, 3); assert.equal(value.outcomes.length, 1)
+    assert(value.examples.every(item => item.outputs.length === 1 && item.outputs[0].slotId === secondOutput && item.outputs[0].outcomeId === 'same-label'))
+    assert.deepEqual(value.examples.map(item => item.inputs), material.examples.map(item => item.inputs))
+  }],
+  ['outcomes', 'uniform', '删除输出取值 uniform', '40 个例子对此取值的对应', value => {
+    assert.deepEqual(value.slots, material.slots)
+    assert(value.examples.every(item => item.outputs[0].outcomeId === '' && item.outputs[0].detail === material.examples[0].outputs[0].detail && item.outputs[1].outcomeId === 'same-label'))
+    assert.deepEqual(value.examples.map(item => item.inputs), material.examples.map(item => item.inputs))
+  }],
+  ['examples', material.examples[0].id, '删除例子 1', '2 项输入、2 项输出', value => {
+    assert.deepEqual(value.examples, material.examples.slice(1)); assert.deepEqual(value.slots, material.slots); assert.deepEqual(value.outcomes, material.outcomes)
+  }],
+]
+const writeCount = writes
+for (const [kind, id, label, impact, verify] of scenarios) {
+  seed(); owner = mount({ focusRequest: focus, slotNavigation: true }); await owner.load()
+  owner.change('搜索例子文字', 'visible only'); owner.change('确认保存个人靶图', undefined, true)
+  const before = storage.get(key), requests = owner.requests.length
+  owner.click(label)
+  const preview = owner.control('待确认' + label)
+  assert(text(preview).includes(impact)); assert(text(preview).includes('包含筛选外记录'))
+  assert(text(preview).includes(id)); assert.equal(storage.get(key), before)
+  assert(owner.control('确认保存个人靶图').props.checked)
+  assert.equal(owner.focused, 'data-target-removal:' + JSON.stringify([kind, id]))
+  const abandoned = owner.control('确认' + label).props.onClick
+  owner.click('取消' + label)
+  assert.equal(storage.get(key), before); assert(owner.control('确认保存个人靶图').props.checked)
+  assert.equal(owner.focused, 'data-target-remove-button:' + JSON.stringify([kind, id]))
+  owner.click(label); abandoned(); owner.render()
+  assert.equal(storage.get(key), before, 'A canceled confirmation cannot approve a later identical request')
+  const confirm = owner.control('确认' + label).props.onClick
+  confirm(); confirm(); owner.render()
+  const next = JSON.parse(storage.get(key)).map; verify(next); tools.validate(next, { draft: true })
+  assert.equal(next.mapping, material.mapping); assert.equal(next.conditions, material.conditions); assert.equal(next.boundary, material.boundary)
+  assert(!owner.control('确认保存个人靶图').props.checked); assert.equal(owner.requests.length, requests)
+  assert(!all(owner.tree, item => item.props['data-target-removal']).length)
+  assert.equal(owner.focused, kind === 'slots' ? 'data-target-record-view:draft' : kind === 'examples' ? 'data-target-example-list:heading' : 'data-target-outcome-list:heading')
+  owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load(); verify(JSON.parse(storage.get(key)).map); owner.unmount()
+}
+for (const boundary of ['edit', 'reason', 'filter', 'filter-return', 'busy', 'busy-return', 'hide', 'hide-return', 'target', 'target-return', 'revision', 'document', 'history', 'history-cancel', 'history-return', 'read-error', 'unmount']) {
+  seed()
+  if (boundary.startsWith('history')) records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+    id: 'removal-history', parentId: '', reason: '', confirm: true, map: motionTargetMap() }, []).saved]
+  owner = mount({ focusRequest: focus }); await owner.load()
+  const request = owner.control('删除例子 1').props.onClick
+  request(); owner.render(); const confirm = owner.control('确认删除例子 1').props.onClick
+  if (boundary === 'edit') owner.change('映射规律表述', '也许适用，但来源冲突')
+  if (boundary === 'reason') owner.change('本次修订理由', '另一个草稿身份')
+  if (boundary.startsWith('filter')) { owner.change('搜索例子文字', '不存在'); if (boundary === 'filter-return') owner.change('搜索例子文字', '') }
+  if (boundary.startsWith('busy')) { owner.props.busy = true; owner.render(); if (boundary === 'busy-return') { owner.props.busy = false; owner.render() } }
+  if (boundary.startsWith('hide')) { owner.props.active = false; owner.render(); if (boundary === 'hide-return') { owner.props.active = true; owner.render(); await owner.load() } }
+  if (boundary.startsWith('target')) { owner.click('打开靶图 externality'); await owner.load(); if (boundary === 'target-return') { owner.click('打开靶图 motion'); await owner.load() } }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load() }
+  if (boundary === 'document') { owner.props.documentId = 'another-document'; owner.render() }
+  if (boundary.startsWith('history')) {
+    owner.click('查看靶图修订 removal-history')
+    if (boundary === 'history-cancel') owner.click('取消读取历史靶图')
+    else { await owner.load(); if (boundary === 'history-return') owner.click('返回未保存草稿') }
+  }
+  if (boundary === 'read-error') {
+    owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion')
+    const read = owner.pending().find(item => item.args.action === 'read'); read.reject(new Error('removal fixture 503')); read.settled = true; await owner.settle()
+  }
+  if (boundary === 'unmount') owner.unmount()
+  const bytes = JSON.stringify([...storage]), requests = owner.requests.length
+  confirm(); request(); owner.render(); assert.equal(JSON.stringify([...storage]), bytes, boundary); assert(!all(owner.tree, item => item.props['data-target-removal']).length, boundary)
+  assert.equal(owner.requests.length, requests); owner.unmount()
+}
+doc.revision = 1; seed()
+const protectedMap = motionTargetMap(); protectedMap.examples[0].stage = 'prediction'
+records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion', id: 'removal-protected', parentId: '', reason: '', confirm: true, map: protectedMap }, []).saved]
+storage.clear(); owner = mount({ focusRequest: focus }); await owner.load()
+assert(owner.control('删除例子 1').props.disabled); assert(owner.control('删除槽位 before').props.disabled); assert(owner.control('删除输出取值 uniform').props.disabled)
+assert(owner.control('删除槽位 after').props.disabled, 'Last required output cannot be removed')
+owner.control('删除例子 1').props.onClick(); owner.render()
+assert(!all(owner.tree, item => item.props['data-target-removal']).length)
+assert.equal(writes, writeCount); owner.unmount(); storage.clear(); records = []; doc.revision = 1
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -3553,4 +3659,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   inlineSlotExactIdentity: true, inlineSlotLiteralAndUnknown: true, inlineSlotRevisionProvenance: true,
   inlineSlotPredictionBasisBoundary: true, inlineSlotDraftAndRetry: true, inlineSlotNoWrites: true,
   draftEditAdmission: true, draftFieldLimitsAndUnicode: true, draftAggregateCapacity: true, rejectedEditNoSideEffects: true,
-  draftCapacityReload: true, draftCapacityHistoryAndRetry: true, draftCapacityVersionFence: true }))
+  draftCapacityReload: true, draftCapacityHistoryAndRetry: true, draftCapacityVersionFence: true,
+  removalPreviewNoWrites: true, removalExactCascade: true, removalCancelAndDoubleClick: true, removalContextFences: true,
+  removalFocusAndReload: true, removalSavedPredictionProtection: true }))

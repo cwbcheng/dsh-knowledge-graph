@@ -2356,6 +2356,7 @@
         const [roundConfirmed, setRoundConfirmed] = useState(false)
         const [cacheWarning, setCacheWarning] = useState('')
         const [editError, setEditError] = useState(null), [editErrorId] = useState(() => 'kg-target-edit-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+        const [removal, setRemoval] = useState(null), removalCurrent = useRef(null), removalContext = useRef(null), [removalFocus, setRemovalFocus] = useState(null)
         const [navigationWarning, setNavigationWarning] = useState(initial.storageWarning)
         const pageNavigation = useRef({ blocked: new Set(initial.storageBlocked ? [initial.storageKey] : []), values: new Map() })
         const [historyPage, setHistoryPage] = useState(null), [historyLoading, setHistoryLoading] = useState(false), [historyError, setHistoryError] = useState(null)
@@ -2733,6 +2734,10 @@
         const locatedExampleId = exampleLocator?.locatorEpoch === locatorEpoch && visibleExamples.some(item => item.id === exampleLocator.id) ? exampleLocator.id : ''
         exampleBrowseContext.current = { scope: exampleScope, map, filter: exampleFilter, stage: exampleStage, query: exampleQuery, feedback: exampleFeedback, expansionKey, editable: !frozen,
           filterKey: exampleFilterKey, locatorEpoch, readGeneration: sequence.current, ready: exampleBrowseReady }
+        const removalEpoch = removalContext.current?.locator === locatorEpoch && removalContext.current.editable === !frozen
+          ? removalContext.current : { locator: locatorEpoch, editable: !frozen }
+        removalContext.current = removalEpoch
+        useEffect(() => { setRemoval(null); setRemovalFocus(null) }, [removalEpoch])
         useEffect(() => { setExampleLocator(null) }, [locatorEpoch])
         useEffect(() => {
           setExampleFilters({}); setExampleFocus(null)
@@ -3001,6 +3006,69 @@
               } }), invalid ? editAlert() : null)
         }
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
+        const removalReady = (kind, id) => {
+          const context = exampleBrowseContext.current
+          if (!alive.current || !context.ready || !context.editable || frozen || recordRequest.current || writeBusy.current ||
+              context.locatorEpoch !== locatorEpoch || removalContext.current !== removalEpoch || current.current.draft !== draft || context.map !== map || draft?.map !== map) return false
+          if (kind === 'slots') {
+            const slot = map.slots.find(item => item.id === id)
+            return !!slot && !locked.size && map.slots.filter(item => item.role === slot.role).length > 1
+          }
+          if (kind === 'outcomes') return map.outcomes.some(item => item.id === id) && !(detail?.current?.map.examples || []).some(item =>
+            item.stage !== 'material' && item.outputs.some(value => value.outcomeId === id))
+          return kind === 'examples' && !locked.has(id) && visibleExamples.some(item => item.id === id)
+        }
+        const visibleRemoval = removal?.draft === draft && removal.epoch === removalEpoch && removalReady(removal.kind, removal.id) ? removal : null
+        removalCurrent.current = visibleRemoval
+        useEffect(() => {
+          if (visibleRemoval) focusMapElement('data-target-removal', JSON.stringify([visibleRemoval.kind, visibleRemoval.id]), 'nearest')
+        }, [visibleRemoval])
+        useEffect(() => {
+          if (!removalFocus || current.current.draft !== removalFocus.draft || !exampleBrowseContext.current.ready || frozen) return
+          focusMapElement(removalFocus.attribute, removalFocus.value, 'nearest')
+          setRemovalFocus(null)
+        }, [removalFocus, map])
+        const confirmRemoval = intent => {
+          if (!intent || removalCurrent.current !== intent || !removalReady(intent.kind, intent.id)) return
+          removalCurrent.current = null; setRemoval(null)
+          const next = edit(value => {
+            value[intent.kind] = value[intent.kind].filter(item => item.id !== intent.id)
+            if (intent.kind === 'slots') {
+              value.outcomes = value.outcomes.filter(item => item.slotId !== intent.id)
+              for (const example of value.examples) {
+                example.inputs = example.inputs.filter(item => item.slotId !== intent.id)
+                example.outputs = example.outputs.filter(item => item.slotId !== intent.id)
+              }
+            } else if (intent.kind === 'outcomes') {
+              for (const example of value.examples) for (const output of example.outputs) if (output.outcomeId === intent.id) output.outcomeId = ''
+            }
+          })
+          if (next) {
+            setNotice('已从当前草稿' + intent.label + '；尚未保存。')
+            setRemovalFocus({ draft: next, attribute: intent.kind === 'examples' ? 'data-target-example-list' : intent.kind === 'outcomes' ? 'data-target-outcome-list' : 'data-target-record-view',
+              value: intent.kind === 'slots' ? 'draft' : 'heading' })
+          }
+        }
+        const removalControl = (kind, item, label) => {
+          const key = JSON.stringify([kind, item.id]), selected = visibleRemoval?.kind === kind && visibleRemoval.id === item.id
+          const bindings = kind === 'slots' ? map.examples.reduce((count, example) => count + [...example.inputs, ...example.outputs].filter(value => value.slotId === item.id).length, 0) :
+            kind === 'outcomes' ? map.examples.filter(example => matchesOutcome(example, item)).length : 0
+          return h(React.Fragment, null,
+            button('×', () => { if (removalReady(kind, item.id)) setRemoval({ kind, id: item.id, label, draft, epoch: removalEpoch }) }, !removalReady(kind, item.id),
+              { className: 'kg-secondary kg-target-icon', title: label, 'aria-label': label, 'aria-expanded': !!selected, 'data-target-remove-button': key }),
+            selected ? h('div', { role: 'group', 'aria-label': '待确认' + label, 'data-target-removal': key, tabIndex: -1, style: { gridColumn: '1 / -1', minWidth: 0 } },
+              h('p', null, '待删除：', kind === 'examples' ? item.context || '情境未填' : item.name || item.label || '名称未填'),
+              h('p', { className: 'kg-model-meta' }, '完整身份：' + item.id),
+              h('p', null, kind === 'slots' ? '同时移除全部例子中的 ' + bindings + ' 项' + (item.role === 'input' ? '输入' : '输出') + '记录，以及 ' + map.outcomes.filter(value => value.slotId === item.id).length + ' 个输出取值。其他槽位与例子保留。' :
+                kind === 'outcomes' ? '同时清除 ' + bindings + ' 个例子对此取值的对应；例子及输出细节保留。' :
+                  '同时移除此例子的 ' + item.inputs.length + ' 项输入、' + item.outputs.length + ' 项输出、推测过程、接触声明及对照内容。上层模型与其他例子保留。'),
+              h('p', { className: 'kg-model-meta' }, '影响范围：当前草稿，包含筛选外记录；不删除已保存修订或正式图谱。'),
+              h('div', { className: 'kg-target-toolbar' }, button('取消', () => {
+                if (removalCurrent.current !== visibleRemoval) return
+                removalCurrent.current = null; setRemoval(null); focusMapElement('data-target-remove-button', key, 'nearest')
+              }, false, { 'aria-label': '取消' + label }),
+              button('确认删除', () => confirmRemoval(visibleRemoval), false, { 'aria-label': '确认' + label }))) : null)
+        }
         const exampleSlotContext = (exampleId, index, role, slotId) => {
           const slot = map.slots.find(item => item.id === slotId && item.role === role)
           const origin = archive ? '历史修订 ' + archive.id : stale ? '旧版只读草稿' : '未保存草稿'
@@ -3024,9 +3092,7 @@
           h('details', null, h('summary', null, '单位与对象、时间状态'),
             field('槽位 ' + item.id + ' 单位', item.unit, value => edit(map => { map.slots.find(slot => slot.id === item.id).unit = value }), frozen || locked.size > 0, false, '单位'),
             field('槽位 ' + item.id + ' 对象与时间', item.scope, value => edit(map => { map.slots.find(slot => slot.id === item.id).scope = value }), frozen || locked.size > 0, false, '对象与时间状态')),
-          button('×', () => edit(map => { map.slots = map.slots.filter(slot => slot.id !== item.id); map.outcomes = map.outcomes.filter(out => out.slotId !== item.id);
-            for (const example of map.examples) { example.inputs = example.inputs.filter(value => value.slotId !== item.id); example.outputs = example.outputs.filter(value => value.slotId !== item.id) } }),
-          frozen || locked.size > 0 || map.slots.filter(slot => slot.role === role).length === 1, { className: 'kg-secondary kg-target-icon', title: '删除槽位', 'aria-label': '删除槽位 ' + item.id })))
+          removalControl('slots', item, '删除槽位 ' + item.id)))
         const addSlot = role => edit(map => {
           const id = role + '-' + crypto.randomUUID(); map.slots.push(TARGET_MAP_TOOLS.slot(id, role))
           for (const item of map.examples) (role === 'input' ? item.inputs : item.outputs).push(role === 'input' ? { slotId: id, value: '' } : { slotId: id, outcomeId: '', detail: '' })
@@ -3115,7 +3181,7 @@
                     field('适用条件', map.conditions, value => edit(map => { map.conditions = value }), frozen, true), field('边界与不确定处', map.boundary, value => edit(map => { map.boundary = value }), frozen, true)),
                   h('section', null, h('h4', null, '输出概念与内涵'), slotFields('output'), button('+', () => addSlot('output'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'output').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加输出槽位', 'aria-label': '增加输出槽位' }))),
-                h('section', { 'aria-label': '输出陪域' }, h('h4', null, '可能的输出范围 · 陪域'),
+                h('section', { 'aria-label': '输出陪域' }, h('h4', { 'data-target-outcome-list': 'heading', tabIndex: -1 }, '可能的输出范围 · 陪域'),
                   h('ul', { className: 'kg-target-outcomes' }, map.outcomes.map(out => {
                     const linked = map.examples.filter(item => matchesOutcome(item, out)).length
                     const used = (detail?.current?.map.examples || []).some(item => item.stage !== 'material' && item.outputs.some(value => value.outcomeId === out.id))
@@ -3125,8 +3191,7 @@
                     }) },
                       map.slots.filter(slot => slot.role === 'output').map(slot => h('option', { key: slot.id, value: slot.id }, slot.name || slot.id))),
                       field('输出取值 ' + out.id + ' 名称', out.label, value => edit(map => { map.outcomes.find(item => item.id === out.id).label = value }), frozen || used, false, ''),
-                      button('×', () => edit(map => { map.outcomes = map.outcomes.filter(item => item.id !== out.id); for (const example of map.examples) for (const value of example.outputs) if (value.outcomeId === out.id) value.outcomeId = '' }), frozen || used,
-                        { className: 'kg-secondary kg-target-icon', title: '删除输出取值', 'aria-label': '删除输出取值 ' + out.id }),
+                      removalControl('outcomes', out, '删除输出取值 ' + out.id),
                       h('small', null, linked ? '当前有 ' + linked + ' 个例子指向此取值' : '尚无例子指向 · 仍属于记录的输出范围', ' ',
                         button('↓', () => selectExampleFilter(outcomeChoice(out), true, '', 'all', '', 'all'), !exampleBrowseContext.current.ready,
                           { className: 'kg-secondary kg-target-icon', title: '查看对应例子', 'aria-label': '查看对应例子 ' + out.id })),
@@ -3249,8 +3314,7 @@
                         archive ? button('对照预测依据与此快照', () => openBasis('archive'), saving || loading || recordLoading || !ownsDraft || basisReference.recordId === archive.id,
                           { 'data-target-record-link': JSON.stringify(['basis-history-compare', item.id]) }) : null) :
                         item.stage !== 'material' && (archive || lockedCase) ? h('p', { role: 'status' }, '此例子的已保存预测依据不可用，不能用当前上层表述替代；请核对对应历史修订。') : null,
-                      button('×', () => edit(map => { map.examples = map.examples.filter(value => value.id !== item.id) }), frozen || lockedCase,
-                        { className: 'kg-secondary kg-target-icon', title: '删除例子', 'aria-label': '删除例子 ' + (index + 1) }))
+                      removalControl('examples', item, '删除例子 ' + (index + 1)))
                   }), button('增加具体推测', () => { if (edit(map => { map.examples.push(TARGET_MAP_TOOLS.example(map, crypto.randomUUID())) })) selectExampleFilter('all', false, '', 'all', '', 'all') }, frozen || map.examples.length >= 40)),
                 h('details', { 'aria-label': '靶图待整理要素' }, h('summary', null, '待整理要素 (' + gapItems.length + ')'),
                   h('ul', null, gapItems.map(gap => {
