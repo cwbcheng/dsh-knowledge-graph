@@ -2106,7 +2106,7 @@
           }
           return targets ? result : result.map(item => item.message)
         }
-        function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null) {
+        function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null, catalogCounts = null) {
           try {
             if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
                 !['catalog', 'read', 'save', 'record', 'history'].includes(args.action)) fail('靶图请求身份或操作无效')
@@ -2114,11 +2114,20 @@
             if (saved.revision !== args.expectedRevision) return { error: { code: 'revision_conflict', message: '知识图已更新；旧靶图和草稿保留，请重新载入', currentRevision: saved.revision } }
             const nodes = saved.graph?.nodes || [], documentId = args.documentId, revision = saved.revision
             if (args.action === 'catalog') {
-              const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0
-              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0, records = args.records === undefined ? 'all' : args.records
+              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const counts = catalogCounts || new Map()
+              if (!catalogCounts) for (const record of allRecords) {
+                if (record.documentId !== documentId) continue
+                const count = counts.get(record.target.id) || { recordCount: 0, currentRecordCount: 0 }
+                count.recordCount++; if (record.baseRevision === revision) count.currentRecordCount++
+                counts.set(record.target.id, count)
+              }
               const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
+                (records === 'all' || counts.get(node.id)?.recordCount > 0) &&
                 (!query || (node.text + ' ' + node.id).toLowerCase().includes(query.toLowerCase())))
-              return { version: 1, documentId, revision, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type })) }
+              return { version: 1, documentId, revision, records, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
+                recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0 })) }
             }
             if (!identity(args.targetId)) fail('靶图目标身份无效')
             const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))
@@ -2204,10 +2213,12 @@
         const query = value => typeof value === 'string' && value.length <= 256 ? value : ''
         const validSearch = typeof saved.search === 'string' && saved.search.length <= 256
         const validMode = ['all', 'connection', 'discrimination'].includes(saved.mode)
-        const search = query(saved.search), mode = validMode ? saved.mode : 'all'
-        const offset = validSearch && validMode && Number.isSafeInteger(saved.offset) && saved.offset >= 0 && saved.offset % 20 === 0 ? saved.offset : 0
-        const position = saved.directoryPosition, scope = JSON.stringify([documentId, revision, search, mode, offset])
-        const directoryPosition = position?.scope === scope && typeof position.nodeId === 'string' && position.nodeId.trim() && position.nodeId.length <= 4096
+        const validRecords = saved.records === undefined || ['all', 'saved'].includes(saved.records)
+        const search = query(saved.search), mode = validMode ? saved.mode : 'all', records = validRecords ? saved.records || 'all' : 'all'
+        const offset = validSearch && validMode && validRecords && Number.isSafeInteger(saved.offset) && saved.offset >= 0 && saved.offset % 20 === 0 ? saved.offset : 0
+        const position = saved.directoryPosition, scope = JSON.stringify([documentId, revision, search, mode, offset, records])
+        const positionMatches = position?.scope === scope || saved.records === undefined && position?.scope === JSON.stringify([documentId, revision, search, mode, offset])
+        const directoryPosition = positionMatches && typeof position.nodeId === 'string' && position.nodeId.trim() && position.nodeId.length <= 4096
           && Number.isFinite(position.fraction) && position.fraction >= 0 && position.fraction <= 1
           ? { scope, nodeId: position.nodeId, fraction: position.fraction } : null
         const targetId = typeof saved.targetId === 'string' && saved.targetId.length <= 4096 && saved.targetId.trim() ? saved.targetId : ''
@@ -2216,7 +2227,7 @@
           && typeof history.head === 'string' && history.head.length <= 120 && (!history.head || history.head.trim()) && (history.head || history.offset === 0)
           && typeof history.open === 'boolean' ? { scope: historyScope, offset: history.offset, head: history.head, open: history.open } : null
         // Cache navigation intent only; re-read responses and never restore a save approval.
-        return { documentId, revision, query: query(saved.query), search, mode, offset, directoryPosition, targetId, historyPosition,
+        return { documentId, revision, query: query(saved.query), search, mode, records, offset, directoryPosition, targetId, historyPosition,
           examplePosition: targetMapExampleBrowseState(saved.examplePosition, documentId, revision, targetId),
           focusRequest: saved.focusRequest || null }
       }
@@ -2355,6 +2366,7 @@
         call = (args, signal) => host.call('target-map', args, { signal }) }) {
         const [initial] = useState(() => targetMapPageNavigation(restoreState, documentId, revision))
         const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search), [mode, setMode] = useState(initial.mode), [offset, setOffset] = useState(initial.offset)
+        const [recordFilter, setRecordFilter] = useState(initial.records)
         const [catalog, setCatalog] = useState(null), [targetId, setTargetId] = useState(initial.targetId), [detail, setDetail] = useState(null)
         const [catalogError, setCatalogError] = useState(null), [catalogReload, setCatalogReload] = useState(0)
         const [draft, setDraft] = useState(null), [archive, setArchive] = useState(null), [slotNavigation, setSlotNavigation] = useState(null)
@@ -2391,11 +2403,11 @@
         const lastFocus = useRef(initial.focusRequest), publish = useRef(onStateChange)
         const directoryRef = useRef(null), directoryPosition = useRef(initial.directoryPosition), catalogScope = useRef(''), directoryContext = useRef(null)
         const panelRef = useRef(null), slotContext = useRef(null)
-        const directoryScope = JSON.stringify([documentId, revision, search, mode, offset])
+        const directoryScope = JSON.stringify([documentId, revision, search, mode, offset, recordFilter])
         publish.current = onStateChange
         api.current = call; current.current = { documentId, revision, targetId, draft, active, archive, archiveReference, archiveComparison, confirmed, roundConfirmed }
         const publishBrowseState = () => {
-          const state = targetMapBrowseState({ documentId, revision, query, search, mode, offset, targetId,
+          const state = targetMapBrowseState({ documentId, revision, query, search, mode, records: recordFilter, offset, targetId,
             focusRequest: lastFocus.current, directoryPosition: directoryPosition.current, historyPosition, examplePosition }, documentId, revision)
           directoryPosition.current = state.directoryPosition; publish.current?.(state)
           if (!alive.current || !active || !current.current.active || current.current.documentId !== documentId || current.current.revision !== revision ||
@@ -2486,21 +2498,23 @@
         }, [focusRequest, documentId, revision, active])
         useEffect(() => {
           publishBrowseState()
-        }, [documentId, revision, query, search, mode, offset, targetId, focusRequest, active, historyPosition, examplePosition])
+        }, [documentId, revision, query, search, mode, recordFilter, offset, targetId, focusRequest, active, historyPosition, examplePosition])
         useEffect(() => {
           if (!active) return
           const abort = new AbortController(); catalogScope.current = ''; setCatalog(null); setCatalogError(null)
-          api.current({ action: 'catalog', documentId, expectedRevision: revision, query: search, mode, offset }, abort.signal).then(result => {
+          api.current({ action: 'catalog', documentId, expectedRevision: revision, query: search, mode, records: recordFilter, offset }, abort.signal).then(result => {
             if (abort.signal.aborted) return
             if (result?.error) throw result.error
-            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.offset !== offset ||
+            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.offset !== offset || result.records !== recordFilter ||
                 !Number.isSafeInteger(result.total) || result.total < 0 || !Array.isArray(result.items) || result.items.length !== Math.min(20, Math.max(0, result.total - offset)) ||
                 new Set(result.items.map(item => item?.id)).size !== result.items.length || result.items.some(item => !item || typeof item.id !== 'string' ||
-                  !item.id.trim() || item.id.length > 4096 || typeof item.text !== 'string' || !['concept', 'connection_model', 'discrimination_model'].includes(item.type))) throw new Error('靶图目录响应身份不一致')
+                  !item.id.trim() || item.id.length > 4096 || typeof item.text !== 'string' || !['concept', 'connection_model', 'discrimination_model'].includes(item.type) ||
+                  !Number.isSafeInteger(item.recordCount) || item.recordCount < (recordFilter === 'saved' ? 1 : 0) || !Number.isSafeInteger(item.currentRecordCount) ||
+                  item.currentRecordCount < 0 || item.currentRecordCount > item.recordCount)) throw new Error('靶图目录响应身份不一致')
             catalogScope.current = directoryScope; setCatalog(result)
           }).catch(value => { if (!abort.signal.aborted) { setCatalogError(value); if (value.code === 'revision_conflict') setError(value) } })
           return () => abort.abort()
-        }, [active, documentId, revision, search, mode, offset, reload, catalogReload])
+        }, [active, documentId, revision, search, mode, recordFilter, offset, reload, catalogReload])
         useEffect(() => {
           const element = directoryRef.current
           if (!element || !active || !catalog || catalogError || catalogScope.current !== directoryScope) return
@@ -2595,6 +2609,7 @@
             clearHistory()
             setHistoryPosition(value => ({ scope: historyScope, offset: 0, head: result.saved.id, open: value?.scope === historyScope && value.open === true }))
             install({ ...submitted, parentId: result.saved.id, reason: '', roundReason: startRound ? '' : submitted.roundReason || '' })
+            setCatalogReload(value => value + 1)
             setNotice(startRound ? '新一轮已开启；旧例组与预测依据保留在历史记录中。' : '个人靶图已保存；正式知识图未改动。')
           } catch (value) { if (sameContext(context)) setError(value) }
           finally { writeBusy.current = false; if (alive.current) setSaving(false) }
@@ -3229,13 +3244,17 @@
                 h('input', { type: 'search', 'aria-label': '搜索靶图目标', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
                 h('select', { 'aria-label': '靶图类型', value: mode, onChange: event => { setMode(event.target.value); setOffset(0) } },
                   h('option', { value: 'all' }, '全部目标'), h('option', { value: 'connection' }, '联结靶图'), h('option', { value: 'discrimination' }, '概念靶图')),
+                h('select', { 'aria-label': '靶图个人记录', value: recordFilter, onChange: event => { setRecordFilter(event.target.value); setOffset(0) } },
+                  h('option', { value: 'all' }, '不限个人记录'), h('option', { value: 'saved' }, '有已保存个人记录')),
                 h('button', { type: 'submit', className: 'kg-secondary' }, '查找')),
+              button('刷新靶图目录', () => setCatalogReload(value => value + 1), saving),
               catalogError ? h('div', { role: 'alert' }, catalogError.message || String(catalogError),
                 button('重试读取靶图目录', () => setCatalogReload(value => value + 1), saving || catalogError.code === 'revision_conflict')) :
                 catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, '全图目标 ' + catalog.total + ' 个 · 当前 ' + catalog.items.length + ' 个') : h('p', { role: 'status' }, '正在读取目标…'),
               h('ul', { ref: directoryRef, className: 'kg-target-directory', 'aria-label': '靶图目标列表', tabIndex: 0, onScroll: rememberDirectory },
                 (catalog?.items || []).map(item => h('li', { key: item.id, 'data-target-catalogue-row': item.id }, button(item.text, () => { if (targetId !== item.id) { setDetail(null); setArchive(null); setTargetId(item.id) } }, saving,
-                { 'aria-pressed': targetId === item.id, 'aria-label': '打开靶图 ' + item.id }), h('small', null, item.id + ' · ' + (item.type === 'connection_model' ? '联结' : '判别'))))),
+                { 'aria-pressed': targetId === item.id, 'aria-label': '打开靶图 ' + item.id }), h('small', null, item.id + ' · ' + (item.type === 'connection_model' ? '联结' : '判别')),
+                h('small', { style: { display: 'block' } }, item.recordCount ? '已保存个人记录 ' + item.recordCount + ' · 当前版 ' + item.currentRecordCount + ' · 其他版 ' + (item.recordCount - item.currentRecordCount) : '尚无已保存个人记录')))),
               h('div', { className: 'kg-target-toolbar' }, button('上一页', () => setOffset(Math.max(0, offset - 20)), saving || offset === 0), button('下一页', () => setOffset(offset + 20), saving || !catalog || offset + catalog.items.length >= catalog.total))),
             h('div', { 'aria-label': '个人靶图编辑区', 'aria-busy': loading || recordLoading },
               loading ? h('p', { role: 'status' }, '正在读取个人靶图…') : null,

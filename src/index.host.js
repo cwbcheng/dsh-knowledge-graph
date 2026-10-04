@@ -7075,7 +7075,7 @@ function createHostPlugin(graphContractOnly) {
           }
           return targets ? result : result.map(item => item.message)
         }
-        function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null) {
+        function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null, catalogCounts = null) {
           try {
             if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
                 !['catalog', 'read', 'save', 'record', 'history'].includes(args.action)) fail('靶图请求身份或操作无效')
@@ -7083,11 +7083,20 @@ function createHostPlugin(graphContractOnly) {
             if (saved.revision !== args.expectedRevision) return { error: { code: 'revision_conflict', message: '知识图已更新；旧靶图和草稿保留，请重新载入', currentRevision: saved.revision } }
             const nodes = saved.graph?.nodes || [], documentId = args.documentId, revision = saved.revision
             if (args.action === 'catalog') {
-              const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0
-              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0, records = args.records === undefined ? 'all' : args.records
+              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const counts = catalogCounts || new Map()
+              if (!catalogCounts) for (const record of allRecords) {
+                if (record.documentId !== documentId) continue
+                const count = counts.get(record.target.id) || { recordCount: 0, currentRecordCount: 0 }
+                count.recordCount++; if (record.baseRevision === revision) count.currentRecordCount++
+                counts.set(record.target.id, count)
+              }
               const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
+                (records === 'all' || counts.get(node.id)?.recordCount > 0) &&
                 (!query || (node.text + ' ' + node.id).toLowerCase().includes(query.toLowerCase())))
-              return { version: 1, documentId, revision, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type })) }
+              return { version: 1, documentId, revision, records, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
+                recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0 })) }
             }
             if (!identity(args.targetId)) fail('靶图目标身份无效')
             const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))

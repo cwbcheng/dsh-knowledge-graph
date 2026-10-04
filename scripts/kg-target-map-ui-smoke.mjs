@@ -425,12 +425,14 @@ toggleHistory(owner, true); owner.click('较早的修订记录'); await owner.lo
 owner.change('映射规律表述', '另存一版后从新记录开始')
 owner.change('本次修订理由', '保存后重置修订页码')
 owner.change('确认保存个人靶图', undefined, true); owner.click('保存个人靶图'); await owner.load()
+assert.deepEqual(owner.pending().map(item => item.args.action), ['catalog']); await owner.load()
 assert.equal(historyBrowseState.historyPosition.offset, 0); assert.equal(historyBrowseState.historyPosition.head, records.at(-1).id)
 assert.equal(historyBrowseState.historyPosition.open, true); assert(!owner.pending().length)
 assert(text(owner.tree).includes('最近 20 / 50 版'))
 owner.click('较早的修订记录'); await owner.load()
 owner.change('新一轮理由', '新轮次从新记录开始'); owner.change('确认开启新一轮', undefined, true)
 owner.click('开启新一轮'); await owner.load()
+assert.deepEqual(owner.pending().map(item => item.args.action), ['catalog']); await owner.load()
 assert.equal(historyBrowseState.historyPosition.offset, 0); assert.equal(historyBrowseState.historyPosition.head, records.at(-1).id)
 assert.equal(historyBrowseState.historyPosition.open, true); assert(!owner.pending().length)
 assert(text(owner.tree).includes('最近 20 / 51 版'))
@@ -466,6 +468,7 @@ assert(text(owner.tree).includes('round response lost')); assert.equal(owner.con
 owner.click('开启新一轮')
 const roundRetry = owner.pending().find(item => item.args.action === 'save')
 assert.equal(roundRetry.args.id, roundPending[0].args.id); await owner.resolve(roundRetry)
+assert.deepEqual(owner.pending().map(item => item.args.action), ['catalog']); await owner.load()
 assert(text(owner.tree).includes('新一轮已开启'))
 assert(!owner.control('槽位 before 单位').props.disabled); assert(!owner.control('增加必要输入').props.disabled)
 assert(!all(owner.tree, item => item.props['aria-label'] === '例子 1 完整情境').length)
@@ -571,7 +574,7 @@ owner.unmount()
 const navigationKey = (documentId = doc.documentId, revision = 1) => 'dsh-kg-target-navigation:' + JSON.stringify([documentId, revision])
 const refreshValue = refreshNavigation.get(navigationKey()), refreshState = JSON.parse(refreshValue)
 assert.deepEqual(Object.keys(refreshState).sort(), ['state', 'version'])
-assert.deepEqual(Object.keys(refreshState.state).sort(), ['directoryPosition', 'documentId', 'examplePosition', 'historyPosition', 'mode', 'offset', 'query', 'revision', 'search', 'targetId'])
+assert.deepEqual(Object.keys(refreshState.state).sort(), ['directoryPosition', 'documentId', 'examplePosition', 'historyPosition', 'mode', 'offset', 'query', 'records', 'revision', 'search', 'targetId'])
 for (const options of [{ documentId: 'other-document' }, { revision: 2 }, { navigation: new Map() }]) {
   owner = mount({ navigation: new Map(refreshNavigation), ...options })
   assert(!owner.requests.some(item => item.args.action === 'read'), 'A different document, graph version or browser tab must not inherit navigation')
@@ -735,6 +738,8 @@ for (const mutate of [
   value => { value.documentId = 'foreign' }, value => { value.revision++ }, value => { value.offset++ },
   value => { value.total = -1 }, value => { value.items.pop() }, value => { value.items[1] = value.items[0] },
   value => { value.items[0].id = null }, value => { value.items[0].text = {} }, value => { value.items[0].type = 'image' },
+  value => { value.records = 'saved' }, value => { value.items[0].recordCount = -1 }, value => { value.items[0].currentRecordCount = 1 },
+  value => { value.items[0].recordCount = '0' }, value => { delete value.items[0].currentRecordCount },
 ]) {
   const pending = owner.pending().find(item => item.args.action === 'catalog'), response = tools.handle(doc, pending.args, records)
   mutate(response); await owner.resolve(pending, response)
@@ -773,6 +778,71 @@ doc.revision = 2; await owner.resolve(changedVersion)
 assert.equal(owner.directory.scrollTop, 0, 'Revision change must not restore an old reading point')
 owner.unmount()
 assert.equal(observers.size, 0); assert.equal(writes, positionWrites)
+
+doc.revision = 1; storage.clear(); records = []
+const catalogueWrites = writes
+for (const [index, target] of doc.graph.nodes.filter(node => node.id.startsWith('extra-') || node.id === 'speed-before').entries()) {
+  const map = tools.blank(target)
+  map.mapping = '未知方向与冲突来源，字段齐全不代表正确'
+  records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: target.id,
+    id: 'catalogue-record-' + index, parentId: '', reason: '', confirm: true, map }, records).saved)
+}
+const catalogueBytes = JSON.stringify(records)
+owner = mount({ directory: true, focusRequest: focus, onStateChange }); await owner.load()
+owner.change('映射规律表述', '尚未保存的靶图不进入个人记录筛选')
+owner.change('靶图个人记录', 'saved')
+const emptySavedRequest = owner.pending().find(item => item.args.action === 'catalog')
+const emptySavedResponse = tools.handle(doc, emptySavedRequest.args, records)
+emptySavedResponse.items[0].recordCount = 0; emptySavedResponse.items[0].currentRecordCount = 0
+await owner.resolve(emptySavedRequest, emptySavedResponse)
+assert(text(owner.tree).includes('靶图目录响应身份不一致'), 'Saved-only responses cannot silently include targets with no records')
+owner.click('重试读取靶图目录'); await owner.load()
+assert.equal(owner.directory.rows.length, 20)
+assert(!owner.directory.rows.some(row => row.dataset.targetCatalogueRow === 'motion' || row.dataset.targetCatalogueRow === 'speed-after'))
+assert(text(owner.control('靶图目标列表')).includes('已保存个人记录 1 · 当前版 1 · 其他版 0'))
+owner.click('下一页'); await owner.load()
+assert.equal(owner.directory.rows.length, 3)
+const savedRecordNavigation = browseState
+owner.unmount()
+owner = mount({ directory: true, restoreState: savedRecordNavigation, onStateChange }); await owner.load()
+assert.equal(owner.control('靶图个人记录').props.value, 'saved')
+assert(owner.requests.some(item => item.args.action === 'catalog' && item.args.records === 'saved' && item.args.offset === 20))
+assert.equal(owner.control('映射规律表述').props.value, '尚未保存的靶图不进入个人记录筛选')
+const readsBeforeRefresh = owner.requests.filter(item => item.args.action === 'read').length
+owner.click('刷新靶图目录'); await owner.load()
+assert.equal(owner.requests.filter(item => item.args.action === 'read').length, readsBeforeRefresh)
+owner.change('靶图个人记录', 'all')
+const lateAllRecords = owner.pending().find(item => item.args.action === 'catalog')
+owner.change('靶图个人记录', 'saved'); await owner.load()
+assert(lateAllRecords.signal.aborted)
+assert.equal(owner.directory.rows.length, 20, 'Changing record filters resets the page before loading')
+assert.equal(owner.control('映射规律表述').props.value, '尚未保存的靶图不进入个人记录筛选')
+owner.change('靶图类型', 'discrimination'); await owner.load()
+assert.deepEqual(owner.directory.rows.map(row => row.dataset.targetCatalogueRow), ['speed-before'])
+owner.props.revision = 2; doc.revision = 2; owner.render(); await owner.load()
+assert(text(owner.control('靶图目标列表')).includes('已保存个人记录 1 · 当前版 0 · 其他版 1'))
+assert.equal(JSON.stringify(records), catalogueBytes); assert.equal(writes, catalogueWrites)
+owner.unmount()
+doc.revision = 1
+owner = mount({ restoreState: { ...savedRecordNavigation, records: 'verified' } }); await owner.load()
+assert.equal(owner.control('靶图个人记录').props.value, 'all')
+assert(owner.requests.some(item => item.args.action === 'catalog' && item.args.offset === 0)); owner.unmount()
+const legacyPosition = { ...savedPosition, directoryPosition: { ...savedPosition.directoryPosition,
+  scope: JSON.stringify([doc.documentId, 1, savedPosition.search, savedPosition.mode, savedPosition.offset]) } }
+delete legacyPosition.records
+owner = mount({ directory: true, restoreState: legacyPosition }); await owner.load()
+assert.equal(owner.directory.scrollTop, 47 + 89 + 63 * 0.4, 'Legacy unfiltered navigation can migrate without claiming a saved-record filter')
+owner.unmount()
+owner = mount({ directory: true, focusRequest: focus }); await owner.load()
+owner.change('靶图个人记录', 'saved'); await owner.load()
+assert(!owner.directory.rows.some(row => row.dataset.targetCatalogueRow === 'motion'))
+owner.change('确认保存个人靶图', undefined, true); owner.click('保存个人靶图')
+await owner.resolve(owner.pending().find(item => item.args.action === 'save'))
+assert(owner.pending().some(item => item.args.action === 'catalog'), 'A confirmed save must refresh saved-only membership and counts, not leave the just-saved target invisible')
+await owner.load()
+assert(owner.directory.rows.some(row => row.dataset.targetCatalogueRow === 'motion'))
+assert(text(owner.control('靶图目标列表')).includes('已保存个人记录 1 · 当前版 1 · 其他版 0'))
+assert.equal(writes, catalogueWrites + 1); owner.unmount()
 
 doc.revision = 1; storage.clear(); records = []
 const slotMap = motionTargetMap()
@@ -4179,4 +4249,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftExportCompleteSnapshot: true, draftExportNoAuthorityOrWrites: true, draftExportFailureAndRetry: true,
   draftExportMemoryOnlyAndOldVersion: true, draftExportContextFences: true, draftExportIncompleteAndReadFailure: true, draftFalsyCachePreserved: true,
   draftImportReviewedReplacement: true, draftImportExactIdentity: true, draftImportPredictionProtection: true,
-  draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true, draftImportObjectOrder: true }))
+  draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true, draftImportObjectOrder: true,
+  savedCatalogueFilterAndCounts: true, savedCatalogueDraftPreserved: true, savedCatalogueNavigationAndLegacy: true,
+  savedCatalogueResponseFence: true, savedCatalogueReadOnly: true }))
