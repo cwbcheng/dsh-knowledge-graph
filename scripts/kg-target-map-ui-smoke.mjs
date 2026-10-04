@@ -4406,6 +4406,130 @@ records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount
   storageFailure = false; owner.unmount(); storage.clear(); assert.equal(writes, count)
 }
 
+// A local draft must remain recoverable even when its target cannot be opened.
+{
+  const savedGlobals = { Blob: context.Blob, document: context.document, URL: context.URL }
+  const downloads = [], blobs = new Map(), anchors = new Set(), writeCount = writes
+  let downloadFailure = false, urlSequence = 0
+  context.Blob = Blob
+  context.URL = { createObjectURL(blob) { if (downloadFailure) throw new Error('download unavailable'); const id = 'blob:local-' + ++urlSequence; blobs.set(id, blob); return id }, revokeObjectURL: id => blobs.delete(id) }
+  context.document = { body: { appendChild: anchor => anchors.add(anchor) }, createElement(tag) {
+    assert.equal(tag, 'a'); return { style: {}, click() { downloads.push({ filename: this.download, blob: blobs.get(this.href) }) }, remove() { anchors.delete(this) } }
+  } }
+  const key = (id, rev = 1, documentId = doc.documentId) => 'dsh-kg-target-map:' + JSON.stringify([documentId, id, rev])
+  const name = (id, rev = 1) => '备份本地草稿 ' + JSON.stringify([id, rev])
+  const seed = (id = 'removed-target', rev = 1, documentId = doc.documentId) => {
+    const map = motionTargetMap()
+    map.title = '../ 同名 <b>备份</b>\n不是路径'; map.mapping = '方向未知；通常；单位、必要输入、对象时间；循环不是证明；冲突来源'
+    map.examples = Array.from({ length: 40 }, (_, i) => ({ ...structuredClone(map.examples[i % 2]), id: 'exact-' + i,
+      stage: i % 3 === 0 ? 'reviewed' : i % 3 === 1 ? 'prediction' : 'material',
+      ...(i % 3 === 0 ? { feedback: { kind: ['personal', 'source', 'observation', 'ai'][i % 4], text: '结果未知', source: '冲突来源\n未独立验证' } } : {}) }))
+    const value = { documentId, targetId: id, baseRevision: rev, parentId: 'original-parent', reason: '原理由', roundReason: '未批准的新一轮', map }
+    tools.validate(map, { draft: true }); storage.set(key(id, rev, documentId), JSON.stringify(value, null, 2)); return value
+  }
+  const backup = async expected => {
+    const before = JSON.stringify([...storage]), requests = owner.requests.length, count = downloads.length
+    const approvals = JSON.stringify(all(owner.tree, node => node.type === 'input' && node.props.type === 'checkbox').map(node => [node.props['aria-label'], node.props.checked]))
+    owner.click(name(expected.targetId, expected.baseRevision))
+    assert.equal(downloads.length, count + 1)
+    const file = downloads.at(-1), result = JSON.parse(await file.blob.text())
+    assert.equal(file.filename, 'target-map-draft-r' + expected.baseRevision + '.json'); assert.equal(file.blob.type, 'application/json;charset=utf-8')
+    assert.deepEqual(Object.keys(result).sort(), ['draft', 'exportedAt', 'format', 'status', 'version'])
+    assert.equal(result.format, 'dsh.target-map-draft'); assert.equal(result.version, 1); assert.equal(result.status, 'unsubmitted_draft_not_verified')
+    assert.equal(new Date(result.exportedAt).toISOString(), result.exportedAt)
+    assert.deepEqual(result.draft, { ...expected, roundReason: expected.roundReason || '' })
+    assert.equal(anchors.size, 0); assert.equal(blobs.size, 0)
+    assert.equal(JSON.stringify([...storage]), before); assert.equal(owner.requests.length, requests); assert.equal(writes, writeCount)
+    assert.equal(JSON.stringify(all(owner.tree, node => node.type === 'input' && node.props.type === 'checkbox').map(node => [node.props['aria-label'], node.props.checked])), approvals)
+    assert(text(owner.tree).includes('已请求下载 JSON；未核对服务器'))
+  }
+  storage.clear(); records = []; doc.revision = 1
+  const orphan = seed(), otherIdentity = seed('removed-target ')
+  seed('removed-target', 1, 'foreign')
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+  await backup(orphan); await backup(otherIdentity)
+  assert(!all(owner.tree, node => node.props['aria-label'] === '导出草稿 JSON').length, 'Backup does not install an unverified target into the editor')
+  owner.click('打开本地草稿 ' + JSON.stringify(['removed-target', 1])); await owner.load()
+  assert(text(owner.tree).includes('目标节点不存在或身份不唯一')); await backup(orphan)
+  owner.unmount(); storage.clear()
+
+  const offline = seed('motion')
+  owner = mount(); const catalog = owner.pending()[0]
+  catalog.reject(new Error('catalog offline')); catalog.settled = true; await owner.settle()
+  owner.click('刷新本地草稿列表'); await backup(offline)
+  owner.click('打开本地草稿 ' + JSON.stringify(['motion', 1]))
+  const failed = owner.pending().find(item => item.args.action === 'read')
+  failed.reject(new Error('target offline')); failed.settled = true; await owner.settle()
+  await backup(offline); owner.unmount(); storage.clear()
+
+  doc.revision = 2
+  const old = seed('motion', 1), future = seed('motion', 3)
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+  assert(owner.control('打开本地草稿 ' + JSON.stringify(['motion', 3])).props.disabled)
+  await backup(old); await backup(future); owner.unmount(); storage.clear(); doc.revision = 1
+
+  for (const failure of ['changed', 'missing', 'read', 'malformed', 'size', 'blob', 'url', 'document', 'download']) {
+    const original = seed()
+    owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+    const globals = { Blob: context.Blob, URL: context.URL, document: context.document }
+    if (failure === 'changed') storage.set(key('removed-target'), JSON.stringify({ ...original, reason: 'later' }))
+    if (failure === 'missing') storage.delete(key('removed-target'))
+    if (failure === 'read') storageReadFailures.add(key('removed-target'))
+    if (failure === 'malformed') storage.set(key('removed-target'), '{')
+    if (failure === 'size') storage.set(key('removed-target'), 'x'.repeat(500001))
+    if (failure === 'blob') context.Blob = undefined
+    if (failure === 'url') context.URL = undefined
+    if (failure === 'document') context.document = undefined
+    if (failure === 'download') downloadFailure = true
+    const before = JSON.stringify([...storage]), requests = owner.requests.length, count = downloads.length
+    owner.click(name('removed-target'))
+    assert(text(owner.tree).includes('备份失败'), failure); assert.equal(downloads.length, count, failure)
+    assert.equal(JSON.stringify([...storage]), before); assert.equal(owner.requests.length, requests)
+    Object.assign(context, globals); downloadFailure = false; storageReadFailures.clear()
+    storage.set(key('removed-target'), JSON.stringify(original, null, 2))
+    owner.click('刷新本地草稿列表'); await backup(original)
+    owner.unmount(); storage.clear()
+  }
+
+  owner = mount({ focusRequest: focus }); await owner.load()
+  owner.change('映射规律表述', '保留编辑区和批准')
+  owner.change('确认保存个人靶图', undefined, true)
+  const editorBytes = storage.get(key('motion')), unrelated = seed()
+  owner.click('刷新本地草稿列表'); await backup(unrelated)
+  assert.equal(owner.control('映射规律表述').props.value, '保留编辑区和批准'); assert.equal(storage.get(key('motion')), editorBytes)
+  storageFailure = true; owner.change('靶图标题', '仅窗口的新标题'); owner.click('刷新本地草稿列表')
+  assert(text(owner.tree).includes('仅留在窗口'))
+  const inMemory = JSON.parse(editorBytes); inMemory.map.title = '仅窗口的新标题'
+  await backup(inMemory); assert.equal(storage.get(key('motion')), editorBytes)
+  assert(text(owner.tree).includes('本地草稿存储不可用'))
+  storageFailure = false; owner.unmount(); storage.clear()
+
+  for (const boundary of ['query', 'page', 'refresh', 'hide', 'hide-return', 'revision', 'document', 'read', 'save-sync', 'unmount']) {
+    const value = seed()
+    for (let i = 0; i < 21; i++) seed('zz-' + i)
+    owner = mount({ focusRequest: focus }); await owner.load(); owner.click('刷新本地草稿列表')
+    const oldBackup = owner.control(name(value.targetId)).props.onClick
+    owner.render(); oldBackup(); owner.render()
+    assert(text(owner.tree).includes('已请求下载 JSON'), 'A same-context render must not break an installed handler')
+    const stale = owner.control(name(value.targetId)).props.onClick
+    if (boundary === 'query') owner.change('搜索本地草稿', 'none')
+    if (boundary === 'page') owner.click('本地草稿下一页')
+    if (boundary === 'refresh') owner.click('刷新本地草稿列表')
+    if (boundary.startsWith('hide')) { owner.props.active = false; owner.render(); if (boundary === 'hide-return') { owner.props.active = true; owner.render(); await owner.load() } }
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'document') { owner.props.documentId += ' '; owner.render() }
+    if (boundary === 'read') owner.click('打开靶图 externality')
+    if (boundary === 'save-sync') { owner.change('确认保存个人靶图', undefined, true); owner.control('保存个人靶图').props.onClick() }
+    if (boundary === 'unmount') owner.unmount()
+    const before = JSON.stringify([...storage]), requests = owner.requests.length, count = downloads.length
+    stale(); owner.render(); assert.equal(downloads.length, count, boundary)
+    assert.equal(JSON.stringify([...storage]), before, boundary); assert.equal(owner.requests.length, requests, boundary)
+    owner.unmount(); storage.clear()
+  }
+  Object.assign(context, savedGlobals); records = []; storage.clear(); doc.revision = 1
+  assert.equal(writes, writeCount)
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -4478,4 +4602,7 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
   historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
-  localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true }))
+  localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
+  localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,
+  localDraftBackupFailuresAndRetry: true, localDraftBackupMemoryOnly: true, localDraftBackupContextFences: true,
+  localDraftBackupNoWritesOrApproval: true }))
