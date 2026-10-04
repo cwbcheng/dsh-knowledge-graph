@@ -3988,6 +3988,123 @@ Object.assign(context, savedGlobals)
 assert.equal(writes, writeCount)
 }
 
+// Restoring a backup is a reviewed local replacement, never a server save or an identity migration.
+{
+const writeCount = writes, key = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 1])
+const seed = (prediction = false) => {
+  storage.clear(); storageFailure = false; doc.revision = 1
+  const map = motionTargetMap()
+  if (prediction) map.examples[0].stage = 'prediction'
+  records = [tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId: 'motion',
+    id: 'import-parent', parentId: '', reason: '', confirm: true, map }, []).saved]
+  assert(records[0]); return records[0]
+}
+const envelope = () => ({ format: 'dsh.target-map-draft', version: 1, status: 'unsubmitted_draft_not_verified', exportedAt: '2026-10-05T00:00:00.000Z',
+  draft: { documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: 'import-parent', reason: '从备份恢复的理由', roundReason: '未批准的新一轮理由', map: motionTargetMap() } })
+const file = value => ({ name: '<script>backup</script>.json', size: JSON.stringify(value).length, text: async () => JSON.stringify(value) })
+const choose = async value => {
+  const target = { files: [value], value: 'selected.json' }
+  const pending = owner.control('选择草稿备份 JSON').props.onChange({ target }); owner.render()
+  await pending; await owner.settle(); assert.equal(target.value, '')
+}
+const unchanged = () => JSON.stringify({ storage: [...storage], requests: owner.requests.length, confirmed: owner.control('确认保存个人靶图').props.checked })
+const preview = () => all(owner.tree, item => item.props['aria-label'] === '草稿备份预览')
+seed(); owner = mount({ focusRequest: focus }); await owner.load()
+owner.change('映射规律表述', '不能因选文件丢失的本地草稿'); owner.change('确认保存个人靶图', undefined, true)
+let before = unchanged(), value = envelope()
+value.draft.map.title = '同名 ../ 文件不是路径'
+value.draft.map.mapping = '<script>literal</script>\n方向未知；通常；两个必要输入；N / m/s；前后状态；循环；冲突来源'
+value.draft.map.examples = Array.from({ length: 40 }, (_, i) => ({ ...structuredClone(value.draft.map.examples[i % 2]), id: 'backup-' + i }))
+await choose(file(value)); assert.equal(unchanged(), before); assert.equal(preview().length, 1)
+assert(text(preview()).includes('backup-39')); assert(!all(preview(), item => item.type === 'script').length)
+assert(owner.control('载入备份草稿').props.disabled); owner.control('载入备份草稿').props.onClick(); owner.render(); assert.equal(unchanged(), before)
+owner.click('取消导入备份'); assert.equal(unchanged(), before); assert.equal(preview().length, 0)
+await choose(file(value)); owner.change('确认替换当前草稿', undefined, true)
+const accepted = owner.control('载入备份草稿').props.onClick
+owner.render(); accepted(); accepted(); owner.render()
+assert.deepEqual(JSON.parse(storage.get(key)), value.draft); assert(!owner.control('确认保存个人靶图').props.checked)
+assert.equal(owner.requests.length, JSON.parse(before).requests); assert.equal(writes, writeCount); assert.equal(preview().length, 0)
+owner.unmount(); owner = mount({ focusRequest: focus }); await owner.load()
+assert.deepEqual(JSON.parse(storage.get(key)), value.draft); assert.equal(owner.control('映射规律表述').props.value, value.draft.map.mapping)
+
+const bad = [null, [], {}, ...[
+  v => { v.format = 'other' }, v => { v.version = 2 }, v => { v.status = 'verified' }, v => { v.exportedAt = 'yesterday' },
+  v => { v.confirm = true }, v => { v.draft.confirm = true }, v => { v.draft.documentId += ' ' }, v => { v.draft.targetId = 'externality' },
+  v => { v.draft.baseRevision = 0 }, v => { v.draft.baseRevision = 2 }, v => { v.draft.baseRevision = '1' }, v => { v.draft.parentId = 'other-head' },
+  v => { v.draft.map.mode = 'discrimination' }, v => { v.draft.reason = 'x'.repeat(2001) }, v => { v.draft.roundReason = false },
+  v => { v.draft.map.slots[1].id = v.draft.map.slots[0].id }, v => { v.draft.map.examples[0].inputs.pop() },
+  v => { v.draft.map.examples[0].stage = 'reviewed' }, v => { v.draft.map.boundary = 'x'.repeat(8001) },
+].map(mutate => { const v = envelope(); mutate(v); return v })]
+for (const invalid of bad) {
+  before = unchanged(); await choose(file(invalid))
+  assert(text(owner.tree).includes('备份未导入')); assert.equal(preview().length, 0); assert.equal(unchanged(), before)
+}
+for (const invalid of [
+  { name: 'large.json', size: 2097153, text: () => { throw new Error('Must reject size before reading') } },
+  { name: 'read.json', size: 1, text: async () => { throw new Error('File read failure') } },
+  { name: 'bad.json', size: 1, text: async () => '{bad' },
+]) { before = unchanged(); await choose(invalid); assert(text(owner.tree).includes('备份未导入')); assert.equal(unchanged(), before) }
+owner.unmount()
+
+seed(true); owner = mount({ focusRequest: focus }); await owner.load()
+for (const mutate of [
+  v => { v.draft.map.examples[0].process += '事后改写' }, v => { v.draft.map.examples.shift() },
+  v => { v.draft.map.slots[1].unit = 'km/h' }, v => { v.draft.map.slots[1].scope = '另一时刻' },
+  v => { v.draft.map.outcomes[0].label += '新含义' },
+]) {
+  value = envelope(); value.draft.map = structuredClone(records[0].map); mutate(value)
+  before = unchanged(); await choose(file(value)); assert(text(owner.tree).includes('备份未导入')); assert.equal(unchanged(), before)
+}
+owner.unmount()
+
+for (const damage of ['{damaged', 'quota']) {
+  seed(); if (damage !== 'quota') storage.set(key, damage)
+  owner = mount({ focusRequest: focus }); await owner.load()
+  const raw = storage.get(key); storageFailure = damage === 'quota'
+  value = envelope(); value.draft.map.examples.push(tools.example(value.draft.map, 'unfinished', 'prediction'))
+  await choose(file(value)); owner.change('确认替换当前草稿', undefined, true); owner.click('载入备份草稿')
+  assert.equal(storage.get(key), raw); assert(text(owner.tree).includes('本地草稿')); assert.equal(owner.control('例子 3 完整情境').props.value, '')
+  assert.equal(owner.control('本次修订理由').props.value, value.draft.reason)
+  assert(!owner.control('确认保存个人靶图').props.checked); owner.unmount(); storageFailure = false
+}
+
+for (const boundary of ['edit', 'target', 'target-return', 'hide', 'hide-return', 'busy', 'revision', 'document', 'history', 'history-return', 'read', 'save-sync', 'unmount', 'cancel']) {
+  seed(); owner = mount({ focusRequest: focus }); await owner.load(); value = envelope()
+  await choose(file(value)); owner.change('确认替换当前草稿', undefined, true)
+  const apply = owner.control('载入备份草稿').props.onClick
+  if (boundary === 'edit') owner.change('映射规律表述', 'new')
+  if (boundary.startsWith('target')) { owner.click('打开靶图 externality'); await owner.load(); if (boundary === 'target-return') { owner.click('打开靶图 motion'); await owner.load() } }
+  if (boundary.startsWith('hide')) { owner.props.active = false; owner.render(); if (boundary === 'hide-return') { owner.props.active = true; owner.render(); await owner.load() } }
+  if (boundary === 'busy') { owner.props.busy = true; owner.render() }
+  if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load(); assert(owner.control('选择草稿备份 JSON').props.disabled) }
+  if (boundary === 'document') { owner.props.documentId += ' '; owner.render() }
+  if (boundary.startsWith('history')) { owner.click('查看靶图修订 import-parent'); await owner.load(); if (boundary === 'history-return') owner.click('返回未保存草稿') }
+  if (boundary === 'read') { owner.props.active = false; owner.render(); owner.props.active = true; owner.render() }
+  if (boundary === 'save-sync') { owner.change('确认保存个人靶图', undefined, true); owner.control('保存个人靶图').props.onClick() }
+  if (boundary === 'unmount') owner.unmount()
+  if (boundary === 'cancel') owner.click('取消导入备份')
+  const bytes = JSON.stringify([...storage]), requests = owner.requests.length
+  apply(); owner.render(); assert.equal(JSON.stringify([...storage]), bytes, boundary); assert.equal(owner.requests.length, requests, boundary)
+  owner.unmount()
+}
+
+for (const boundary of ['cancel', 'edit', 'target-return', 'new-file', 'unmount']) {
+  seed(); owner = mount({ focusRequest: focus }); await owner.load()
+  let finish; const pending = owner.control('选择草稿备份 JSON').props.onChange({ target: { value: 'a.json', files: [{ name: 'slow.json', size: 1, text: () => new Promise(resolve => { finish = resolve }) }] } })
+  owner.render(); assert(text(owner.tree).includes('正在读取备份'))
+  if (boundary === 'cancel') owner.click('取消导入备份')
+  if (boundary === 'edit') owner.change('映射规律表述', 'later edit')
+  if (boundary === 'target-return') { owner.click('打开靶图 externality'); await owner.load(); owner.click('打开靶图 motion'); await owner.load() }
+  if (boundary === 'new-file') { value = envelope(); value.draft.map.title = 'new file wins'; await choose(file(value)) }
+  if (boundary === 'unmount') owner.unmount()
+  const bytes = JSON.stringify([...storage]); finish(JSON.stringify(envelope())); await pending; await owner.settle()
+  assert.equal(JSON.stringify([...storage]), bytes)
+  if (boundary === 'new-file') assert(text(preview()).includes('new file wins')); else assert.equal(preview().length, 0)
+  owner.unmount()
+}
+records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount)
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -4051,4 +4168,6 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   draftWarningIdentity: true, draftWarningMemoryRoundTrip: true, draftWarningHistoryAndVersion: true,
   draftWarningReadFailures: true, draftWarningQuotaRecovery: true, draftWarningRawBytesAndNoWrites: true,
   draftExportCompleteSnapshot: true, draftExportNoAuthorityOrWrites: true, draftExportFailureAndRetry: true,
-  draftExportMemoryOnlyAndOldVersion: true, draftExportContextFences: true, draftExportIncompleteAndReadFailure: true, draftFalsyCachePreserved: true }))
+  draftExportMemoryOnlyAndOldVersion: true, draftExportContextFences: true, draftExportIncompleteAndReadFailure: true, draftFalsyCachePreserved: true,
+  draftImportReviewedReplacement: true, draftImportExactIdentity: true, draftImportPredictionProtection: true,
+  draftImportAsyncFences: true, draftImportNoAuthorityOrWrites: true, draftImportCacheFailures: true }))
