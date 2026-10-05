@@ -467,6 +467,42 @@ let historyBrowseState
     return { record, match: tools.historyContentMatch(record.map, needle.toLowerCase(), { target: true }), bytes: JSON.stringify([...storage]) }
   }
   const hit = () => owner.click('查看修订命中字段 hit-record')
+  for (const revision of [1, 2]) {
+    const { record, bytes } = await setup(paths[0], { allFields: true, revision })
+    const disclosures = () => all(owner.tree, node => node.props['data-target-field-text'])
+    assert.equal(disclosures().length, 0, 'Editable and old-version drafts keep their existing controls')
+    hit(); assert.equal(disclosures().length, 0, 'Pending reads cannot disclose a previous record')
+    await owner.load()
+    const fields = all(owner.tree, node => node.type === 'label' && node.props['data-target-gap-field'])
+    assert(disclosures().length > 0, 'Saved text needs a readable and selectable alternative to clipped disabled controls')
+    assert(fields.some(node => node.props['data-target-gap-field'] === JSON.stringify(['title'])))
+    const contents = fields.map(node => ({ node, control: all(node, item => ['input', 'textarea'].includes(item.type))[0] })).filter(item => item.control)
+    assert.equal(disclosures().length, contents.filter(item => item.control.props.value !== '').length)
+    for (const { node, control } of contents) {
+      const path = JSON.parse(node.props['data-target-gap-field'])
+      const matched = disclosures().filter(item => item.props['data-target-field-text'] === JSON.stringify(path))
+      assert.equal(matched.length, control.props.value === '' ? 0 : 1, 'Full text uses exact field IDs: ' + JSON.stringify(path))
+      assert(control.props.disabled)
+      if (!matched.length) continue
+      const disclosure = matched[0], full = all(disclosure, item => item.type === 'pre')[0]
+      assert.equal(disclosure.type, 'details'); assert.equal(disclosure.props.open, undefined)
+      assert.deepEqual(JSON.parse(disclosure.props.key), [doc.documentId, 'motion', revision, record.id, 1, path])
+      assert.equal(full.props.tabIndex, 0); assert.equal(full.props.role, 'region')
+      assert.equal(text(full), control.props.value, 'Entire original value, not a search excerpt or draft')
+      assert(!all(disclosure, item => item.props.dangerouslySetInnerHTML || item.type === 'b').length)
+      assert(!all(node, item => item.type === 'details').length, 'Disclosure is not interactive content inside a label')
+      assert.equal(disclosure.props.onToggle, undefined, 'Native disclosure cannot edit, approve or persist a record')
+    }
+    const requests = owner.requests.length
+    owner.click('对照上层表述'); assert.equal(disclosures().length, 0)
+    owner.click('快照内容'); assert(disclosures().length > 0); assert.equal(owner.requests.length, requests)
+    hit(); assert.equal(disclosures().length, 0)
+    const pending = owner.pending().at(-1); pending.reject(new Error('full text read offline')); pending.settled = true; await owner.settle()
+    assert.equal(disclosures().length, 0, 'Failed read does not expose the last opened snapshot')
+    owner.click('重试读取历史靶图'); await owner.load(); assert(disclosures().length > 0)
+    owner.click('返回未保存草稿'); assert.equal(disclosures().length, 0)
+    assert.equal(JSON.stringify([...storage]), bytes); assert.equal(writes, count); owner.unmount()
+  }
   {
     const { record, bytes } = await setup(paths[0], { allFields: true })
     hit(); await owner.load()
@@ -4840,6 +4876,8 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   historyHitOldVersions: true, historyHitStaleActionsAndFocus: true, historyHitNoWrites: true,
   historyAllFieldNavigation: true, historyFieldFilterRecovery: true, historyFieldComparisonExit: true,
   historyFieldStaleCallbacks: true, historyFieldIdentityAndDomRecovery: true, historyFieldTraversalNoReadsOrWrites: true,
+  historyFullTextExactFields: true, historyFullTextLiteralAndReadonly: true, historyFullTextReadFailureFence: true,
+  historyFullTextVersionIdentity: true, historyFullTextDraftPreserved: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,

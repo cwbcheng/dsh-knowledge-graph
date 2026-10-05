@@ -3310,7 +3310,12 @@
               'aria-describedby': invalid ? editErrorId : undefined, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => {
                 if (change(event.target.value) === false) setEditError(error => error?.draft === draft ? { ...error, field: label } : error)
               } }), invalid ? editAlert() : null)
-          return hit ? h('div', { style: { minWidth: 0 } }, control, historyHitControls(true)) : control
+          const fullText = active && archive && !loading && !recordLoading && !recordError && gapPath && value !== '' ? h('details', {
+            key: JSON.stringify([documentId, targetId, revision, archive.id, archive.baseRevision, gapPath]),
+            className: 'kg-target-field-text', 'data-target-field-text': JSON.stringify(gapPath)
+          }, h('summary', { 'aria-label': label + '完整文字' }, '完整文字'),
+          h('pre', { role: 'region', 'aria-label': label + '完整文字', tabIndex: 0 }, value)) : null
+          return hit || fullText ? h('div', { style: { minWidth: 0 } }, control, fullText, hit ? historyHitControls(true) : null) : control
         }
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
         const removalReady = (kind, id) => {
@@ -3562,7 +3567,7 @@
                     h('div', { 'data-target-example-comparison': comparisonExample.id }, renderComparisonRows(comparisonExample.rows))) : null)) :
               map ? h(React.Fragment, null,
                 visibleEditError && !visibleEditError.field ? editAlert() : null,
-                field('靶图标题', map.title, value => edit(map => { map.title = value }), frozen, true),
+                field('靶图标题', map.title, value => edit(map => { map.title = value }), frozen, true, undefined, undefined, ['title']),
                 h('p', { className: 'kg-model-meta' }, map.mode === 'connection' ? '联结靶图 · 输入到输出' : '概念靶图 · 万物到 A 或非 A'),
                 h('h4', { 'data-target-record-view': 'draft', tabIndex: -1 }, '上层 · 我的模型表述', undoControl('slots')),
                 h('div', { className: 'kg-target-upper' },
