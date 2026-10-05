@@ -7075,7 +7075,44 @@ function createHostPlugin(graphContractOnly) {
           }
           return targets ? result : result.map(item => item.message)
         }
-        const historyMatches = (item, query) => [item.id, item.title, item.reason].some(value => value.toLowerCase().includes(query.toLowerCase()))
+        const historyContentFields = { mapping: '规律表述', conditions: '适用条件', boundary: '边界与疑问', slotName: '槽位名称', slotMeaning: '内涵表述',
+          slotUnit: '单位', slotScope: '对象与时间范围', outcomeLabel: '输出取值', outcomeDetail: '输出说明', context: '完整情境', process: '推测过程',
+          input: '具体输入', output: '具体输出', feedback: '对照结果', feedbackSource: '对照来源' }
+        function* historyContentValues(map) {
+          for (const field of ['mapping', 'conditions', 'boundary']) yield [field, map[field]]
+          for (const item of map.slots || []) for (const [field, key] of [['slotName', 'name'], ['slotMeaning', 'meaning'], ['slotUnit', 'unit'], ['slotScope', 'scope']]) yield [field, item[key]]
+          for (const item of map.outcomes || []) { yield ['outcomeLabel', item.label]; yield ['outcomeDetail', item.detail] }
+          for (const item of map.examples || []) {
+            yield ['context', item.context]; yield ['process', item.process]
+            for (const input of item.inputs || []) yield ['input', input.value]
+            for (const output of item.outputs || []) yield ['output', output.detail]
+            yield ['feedback', item.feedback?.text]; yield ['feedbackSource', item.feedback?.source]
+          }
+        }
+        function historyContentMatch(map, query) {
+          if (!query) return null
+          const needle = query.toLowerCase()
+          for (const [field, value] of historyContentValues(map)) {
+            if (typeof value !== 'string') continue
+            const index = value.toLowerCase().indexOf(needle)
+            if (index < 0) continue
+            // Case folding can expand characters. Convert folded offsets before taking an original-text excerpt.
+            let folded = 0, start = 0, end = 0
+            for (const char of value) {
+              if (folded <= index) start = end
+              end += char.length; folded += char.toLowerCase().length
+              if (folded >= index + needle.length) break
+            }
+            let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
+            if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
+            if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
+            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : '') }
+          }
+          return null
+        }
+        const historyMatches = (item, query, searchIn = 'metadata') => searchIn === 'content'
+          ? !query || exact(item.match, ['field', 'excerpt']) && Object.hasOwn(historyContentFields, item.match.field) && text(item.match.excerpt, 640) && item.match.excerpt.toLowerCase().includes(query.toLowerCase())
+          : [item.id, item.title, item.reason].some(value => value.toLowerCase().includes(query.toLowerCase()))
         function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null, catalogCounts = null) {
           try {
             if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
@@ -7110,14 +7147,15 @@ function createHostPlugin(graphContractOnly) {
             const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
             const current = records.find(record => record.baseRevision === revision) || null
             if (args.action === 'history') {
-              const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query
-              if (!text(query, 256) || !Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份或检索词无效')
-              const metadata = historyPage ? [] : records.map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason }))
-              const matches = metadata.filter(item => historyMatches(item, query))
+              const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query, searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn
+              if (!text(query, 256) || !['metadata', 'content'].includes(searchIn) || !Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份或检索词无效')
+              const metadata = historyPage ? [] : records.map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason,
+                ...(searchIn === 'content' && query ? { match: historyContentMatch(record.map, query) } : {}) }))
+              const matches = metadata.filter(item => historyMatches(item, query, searchIn))
               const page = historyPage || { historyHead: records[0]?.id || '', historyRecordTotal: records.length, historyTotal: matches.length,
                 history: matches.slice(offset, offset + 20) }
               if (args.historyHead !== undefined && args.historyHead !== page.historyHead) fail('修订记录有更新，请重新读取列表；当前草稿保留。', 'history_conflict')
-              return { version: 1, documentId, revision, target, offset, query, ...page }
+              return { version: 1, documentId, revision, target, offset, query, searchIn, ...page }
             }
             if (args.action === 'record') {
               const record = records.find(record => record.id === args.recordId)
@@ -7153,7 +7191,7 @@ function createHostPlugin(graphContractOnly) {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 

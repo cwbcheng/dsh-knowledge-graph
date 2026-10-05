@@ -384,6 +384,64 @@ assert.equal(writes, writesBeforePaging)
 owner.unmount(); records = recordsBeforeSearch; storage.clear()
 }
 
+{
+const previousRecords = records
+records = structuredClone(records)
+records.forEach((record, index) => { record.map.boundary = index < 43 ? '长前文'.repeat(300) + '未知方向 Ä_%<b>\n必要输入、单位、对象时间与冲突来源未核对' : '其他边界' })
+storage.clear()
+let browse
+owner = mount({ focusRequest: focus, onStateChange: value => { browse = value } }); await owner.load()
+owner.control('个人靶图修订记录').props.onToggle({ currentTarget: { open: true } }); owner.render()
+owner.change('映射规律表述', '正文检索不改未保存草稿')
+const bytes = JSON.stringify([...storage]), rows = () => all(owner.tree, item => item.props['data-target-history-row'])
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录'); await owner.load()
+assert.equal(rows().length, 0, 'Default metadata scope must not silently search body text')
+const staleScopeHandler = owner.control('检索修订记录').props.onClick, beforeScopeChange = owner.requests.length
+owner.change('修订检索范围', 'content'); staleScopeHandler(); owner.render()
+assert.equal(owner.requests.length, beforeScopeChange, 'Changing scope does not issue a request or revive old scope handlers')
+owner.click('检索修订记录'); await owner.load()
+assert.equal(rows().length, 20); assert(text(owner.tree).includes('正文检索：ä_%<b> · 命中 43'))
+assert(rows().every(row => text(row).includes('命中边界与疑问：') && text(row).includes('Ä_%<b>\n')))
+assert(!all(owner.tree, item => item.type === 'b').length)
+owner.click('较早的修订记录'); await owner.load()
+assert.equal(browse.historyPosition.searchIn, 'content'); assert.equal(browse.historyPosition.offset, 20)
+const nav = owner.navigation
+owner.unmount(); owner = mount({ navigation: nav }); await owner.load(); await owner.load()
+assert.equal(owner.control('修订检索范围').props.value, 'content'); assert(text(owner.tree).includes('第 21-40 / 43'))
+owner.click('查看靶图修订 history-10'); await owner.load()
+assert(owner.control('靶图标题').props.disabled); owner.click('返回未保存草稿')
+assert.equal(JSON.stringify([...storage]), bytes)
+owner.change('修订检索范围', 'metadata')
+owner.click('较早的修订记录'); await owner.load()
+assert.equal(owner.requests.at(-1).args.searchIn, 'content', 'Paging follows the submitted scope, not an unsubmitted selector change')
+assert.equal(rows().length, 3)
+owner.change('修订检索范围', 'content'); owner.click('检索修订记录')
+const failure = owner.pending().at(-1)
+failure.reject(new Error('body search unavailable')); failure.settled = true; await owner.settle()
+assert.equal(rows().length, 0); owner.click('重试读取修订记录')
+assert.deepEqual(owner.pending().at(-1).args, failure.args); await owner.load()
+for (const corrupt of [result => { result.searchIn = 'metadata' }, result => { delete result.searchIn }, result => { result.searchIn = null },
+  result => { delete result.history[0].match }, result => { result.history[0].match.field = '__proto__' },
+  result => { result.history[0].match.excerpt = 'wrong text' }, result => { result.history[0].match.excerpt += 'x'.repeat(641) },
+  result => { result.history[0].match.map = {} }]) {
+  owner.click('重新读取修订记录')
+  const pending = owner.pending().at(-1), response = tools.handle(doc, pending.args, records)
+  corrupt(response); await owner.resolve(pending, response)
+  assert(text(owner.tree).includes('修订记录响应身份或分页范围不一致')); assert.equal(rows().length, 0)
+}
+owner.click('重试读取修订记录'); await owner.load()
+owner.click('清除修订检索'); await owner.load()
+assert.equal(rows().length, 20); assert.equal(owner.control('修订检索范围').props.value, 'content')
+assert(!all(owner.tree, item => item.props['data-target-history-match']).length)
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录')
+const stale = owner.pending().at(-1)
+owner.click('打开靶图 externality'); await owner.load(); assert(stale.signal.aborted)
+assert.equal(owner.control('修订检索范围').props.value, 'metadata')
+assert.equal(JSON.stringify([...storage].filter(([key]) => key.includes('motion'))), bytes)
+assert.equal(writes, writesBeforePaging)
+owner.unmount(); records = previousRecords; storage.clear()
+}
+
 let historyBrowseState
 const publishHistoryBrowse = state => { historyBrowseState = state }
 const toggleHistory = (owner, open) => {
@@ -441,6 +499,7 @@ for (const invalid of [
   { scope: 'foreign' }, { offset: -20 }, { offset: 1 }, { offset: 20.5 }, { offset: Number.MAX_SAFE_INTEGER + 1 },
   { head: null }, { head: ' ' }, { head: 'x'.repeat(121) }, { head: '' }, { open: 'true' },
   { query: null }, { query: 1 }, { query: 'x'.repeat(257) },
+  { searchIn: null }, { searchIn: 'all' }, { searchIn: 1 },
 ]) {
   owner = mount({ restoreState: { ...sameHistoryContext, historyPosition: { ...sameHistoryContext.historyPosition, ...invalid } }, onStateChange: publishHistoryBrowse })
   await owner.load()
@@ -456,7 +515,7 @@ for (const contextChange of [{ documentId: 'another-document' }, { revision: 2 }
 }
 owner = mount({ restoreState: { ...sameHistoryContext, historyPosition: { ...sameHistoryContext.historyPosition, records, confirmed: true } }, onStateChange: publishHistoryBrowse })
 await owner.load()
-assert.deepEqual(Object.keys(historyBrowseState.historyPosition).sort(), ['head', 'offset', 'open', 'query', 'scope'])
+assert.deepEqual(Object.keys(historyBrowseState.historyPosition).sort(), ['head', 'offset', 'open', 'query', 'scope', 'searchIn'])
 const unmountedResume = owner.pending().find(item => item.args.action === 'history')
 const oldToggle = owner.control('个人靶图修订记录').props.onToggle
 owner.unmount(); assert(unmountedResume.signal.aborted)
@@ -4601,6 +4660,7 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true,
   historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
   historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true,
+  historyContentSearchAndExcerpts: true, historyContentScopeAndNavigation: true, historyContentResponseFenceAndDrafts: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,

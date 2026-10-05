@@ -140,6 +140,51 @@ assert.equal(read({ ...historyArgs, query: '无匹配', historyHead: 'history-45
 const foreignRecords = [{ ...structuredClone(searchedRecords[0]), id: 'other-document', documentId: 'another-document' },
   { ...structuredClone(searchedRecords[0]), id: 'other-target', target: { ...first.target, id: 'speed-before' } }]
 assert.deepEqual(read({ ...historyArgs, query: 'ä_%<b>\n' }, [...searchedRecords, ...foreignRecords]), titlePages[0], 'History search never crosses target or document identity')
+const contentRecords = structuredClone(searchedRecords)
+contentRecords.forEach((record, index) => { record.map.boundary = index < 43 ? '必要输入未知 Ä_%<b>\n不同单位、对象时间；仅部分情况成立，循环不是证明，来源冲突' : '无匹配边界' })
+const contentPage = (query, offset = 0) => read({ ...historyArgs, searchIn: 'content', query, offset, historyHead: 'history-46' }, contentRecords)
+const contentPages = [0, 20, 40].map(offset => contentPage('ä_%<b>\n', offset))
+assert.equal(contentPages[0].searchIn, 'content'); assert.equal(contentPages[0].historyTotal, 43)
+assert.deepEqual(contentPages.flatMap(page => page.history.map(item => item.id)), contentRecords.slice(0, 43).map(item => item.id).reverse())
+assert(contentPages.flatMap(page => page.history).every(item => item.match.field === 'boundary' && item.match.excerpt.includes('Ä_%<b>\n') && !('map' in item)))
+assert.equal(contentPage('旧标题').historyTotal, 0, 'Body scope is separate from titles, reasons and record IDs')
+assert.equal(contentPage('history-02').historyTotal, 0)
+assert.equal(contentPage('Ä_%<b> ' ).historyTotal, 0, 'No wildcard, whitespace, operator or qualifier normalization')
+assert.equal(contentPage('').historyTotal, 47); assert(contentPage('').history.every(item => !('match' in item)))
+for (const searchIn of [null, 'all', {}, 1]) assert.equal(read({ ...historyArgs, searchIn }, contentRecords).error.code, 'invalid_input')
+assert.equal(read({ ...historyArgs, searchIn: 'content', query: '无匹配', historyHead: 'history-45' }, contentRecords).error.code, 'history_conflict')
+assert.equal(read({ ...historyArgs, searchIn: 'content', query: 'Ä_%<b>\n', expectedRevision: 2 }, contentRecords).error.code, 'revision_conflict')
+assert.deepEqual(read({ ...historyArgs, searchIn: 'content', query: 'ä_%<b>\n' }, [...contentRecords,
+  ...foreignRecords.map(record => ({ ...record, map: contentRecords[0].map }))]), contentPages[0])
+const fieldPaths = {
+  mapping: ['mapping'], conditions: ['conditions'], boundary: ['boundary'],
+  slotName: ['slots', 0, 'name'], slotMeaning: ['slots', 0, 'meaning'], slotUnit: ['slots', 0, 'unit'], slotScope: ['slots', 0, 'scope'],
+  outcomeLabel: ['outcomes', 0, 'label'], outcomeDetail: ['outcomes', 0, 'detail'], context: ['examples', 0, 'context'], process: ['examples', 0, 'process'],
+  input: ['examples', 0, 'inputs', 0, 'value'], output: ['examples', 0, 'outputs', 0, 'detail'],
+  feedback: ['examples', 0, 'feedback', 'text'], feedbackSource: ['examples', 0, 'feedback', 'source'],
+}
+for (const [field, path] of Object.entries(fieldPaths)) {
+  const snapshot = structuredClone(map), needle = '正文专用匹配 Ä_%<b>\n'
+  const parent = path.slice(0, -1).reduce((value, key) => value[key], snapshot)
+  parent[path.at(-1)] = 'İ'.repeat(1000) + '前文' + needle + '后文'.repeat(1000)
+  const match = tools.historyContentMatch(snapshot, needle.toLowerCase())
+  assert.equal(match.field, field); assert(match.excerpt.includes(needle)); assert(match.excerpt.length <= 640)
+  assert(!match.excerpt.includes('İ'.repeat(100)), 'Excerpt stays near a late match even when Unicode lowercasing expands preceding text')
+}
+for (const query of ['"version"', 'self_reported_new', 'outcomeId', '__not_a_field__']) assert.equal(tools.historyContentMatch(map, query), null, 'Search field values, not JSON structure or enum tags')
+const identifierOnly = tools.blank({ type: 'concept', text: '标题' }); identifierOnly.slots[0].id = 'identifier_only'; identifierOnly.mapping = 'a+b ≠ a-b'
+assert.equal(tools.historyContentMatch(identifierOnly, 'identifier_only'), null)
+assert.equal(tools.historyContentMatch(identifierOnly, 'a b'), null)
+assert.equal(tools.historyContentMatch(identifierOnly, 'a-b').field, 'mapping')
+for (const padding of ['a', 'ab']) {
+  identifierOnly.mapping = '\u{1f600}'.repeat(100) + padding + 'NEEDLE' + padding + '\u{1f600}'.repeat(100)
+  const excerpt = tools.historyContentMatch(identifierOnly, 'needle').excerpt
+  assert(excerpt.isWellFormed(), 'Excerpt boundaries must not split a supplementary Unicode character')
+  assert(excerpt.includes('NEEDLE')); assert(excerpt.length <= 640)
+}
+identifierOnly.mapping = 'a'.repeat(1000) + 'i\u0307'.repeat(256) + 'b'.repeat(1000)
+const expandedQuery = tools.historyContentMatch(identifierOnly, '\u0130'.repeat(256))
+assert(expandedQuery.excerpt.length <= 640 && tools.historyMatches({ match: expandedQuery }, '\u0130'.repeat(256), 'content'), 'Maximum-length expanding query must fit the response contract')
 assert.equal(read(request, [first]).unchanged, true)
 assert.equal(read({ ...request, id: 'lost' }, [first]).error.code, 'attempt_conflict')
 assert(read({ ...request, targetId: 'externality' }).error)
@@ -327,18 +372,32 @@ try {
   assert.equal((await historySearch('one')).history[0].baseRevision, 1)
   assert.equal((await historySearch('不存在的修订')).historyTotal, 0)
   for (const query of [null, 3, {}, 'x'.repeat(257)]) assert.equal((await historySearch(query)).error.code, 'invalid_input')
+  const storedRecords = rowsBeforeHistory.filter(row => row.task_kind === 'target_map').map(row => ({ ...JSON.parse(row.task_json), map: JSON.parse(row.response_json) }))
+  const graphSnapshot = { documentId: fixture.documentId, revision: 2, graph: store.getDocument(fixture.documentId) }
+  const contentSearch = (query, offset = 0) => ({ ...base, action: 'history', targetId: 'motion', expectedRevision: 2, query, offset, searchIn: 'content', historyHead: historyBefore.historyHead })
+  for (const query of ['修订', map.examples[0].context, 'N', '不存在的正文', 'outcomeId', 'a+b', 'Ä_%<b>\n', '']) for (const offset of [0, 20, 40]) {
+    const args = contentSearch(query, offset), response = await call(args)
+    assert.deepEqual(response, tools.handle(graphSnapshot, args, storedRecords), 'SQLite and dynamic Host body search must agree across scopes, versions and pages')
+    assert(response.history.every(item => !('map' in item) && !('response_json' in item)))
+  }
+  assert.equal((await call(contentSearch('修订'))).historyTotal, 21)
+  assert.equal((await call(contentSearch('修订', 20))).history.length, 1)
+  assert((await call(contentSearch(map.examples[0].context))).history.some(item => item.baseRevision === 1), 'Historical example text remains discoverable after graph version change')
+  for (const searchIn of [null, 'all', 2, {}]) assert.equal((await call({ ...contentSearch('修订'), searchIn })).error.code, 'invalid_input')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 1, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'revision_conflict')
   assert.equal((await call({ action: 'history', targetId: 'externality', expectedRevision: 2, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'history_conflict')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: -1 })).error.code, 'invalid_input')
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), rowsBeforeHistory, 'History requests never create or rewrite records')
   assert((await call({ ...request, expectedRevision: 2, id: 'history-concurrent', parentId: head, reason: '另一个窗口的新修订', map })).saved)
   assert.equal((await historySearch('ä_%<b>\n')).error.code, 'history_conflict', 'Even an unmatched append invalidates the search read fence')
+  assert.equal((await call(contentSearch('修订', 20))).error.code, 'history_conflict')
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 20, historyHead: historyBefore.historyHead })).error.code, 'history_conflict', 'Concurrent append must not silently shift a page')
   const refreshedHistory = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0 })
   assert.equal(refreshedHistory.historyTotal, 26); assert.equal(refreshedHistory.historyHead, 'history-concurrent')
   store.db.exec('PRAGMA journal_mode = WAL')
   const writer = await openSqliteStore(path), originalPrepare = DatabaseSync.prototype.prepare
   let interleaved = false
+  let writerId = 'history-independent-writer', writerParent = 'history-concurrent'
   try {
     DatabaseSync.prototype.prepare = function(sql, ...args) {
       const statement = originalPrepare.call(this, sql, ...args)
@@ -348,7 +407,7 @@ try {
           const value = originalGet.apply(this, keys)
           if (!interleaved) {
             interleaved = true
-            assert(writer.targetMap({ ...base, ...request, expectedRevision: 2, id: 'history-independent-writer', parentId: 'history-concurrent', reason: '在历史读取期间提交', map }).saved)
+            assert(writer.targetMap({ ...base, ...request, expectedRevision: 2, id: writerId, parentId: writerParent, reason: '在历史读取期间提交', map }).saved)
           }
           return value
         }
@@ -358,9 +417,13 @@ try {
     const snapshot = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0, query: 'ä_%<b>\n' })
     assert(interleaved); assert.equal(snapshot.historyHead, 'history-concurrent'); assert.equal(snapshot.historyTotal, 22); assert.equal(snapshot.historyRecordTotal, 26)
     assert(!snapshot.history.some(item => item.id === 'history-independent-writer'), 'Head, count and page share one read snapshot')
+    interleaved = false; writerParent = writerId; writerId = 'history-content-writer'
+    const bodySnapshot = await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0, query: '修订', searchIn: 'content' })
+    assert(interleaved); assert.equal(bodySnapshot.historyHead, writerParent); assert.equal(bodySnapshot.historyTotal, 21); assert.equal(bodySnapshot.historyRecordTotal, 27)
+    assert(!bodySnapshot.history.some(item => item.id === writerId), 'Body matches, excerpts and total share the same read snapshot as the head')
   } finally { DatabaseSync.prototype.prepare = originalPrepare; writer.close() }
   assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 20, historyHead: refreshedHistory.historyHead })).error.code, 'history_conflict')
-  assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0 })).historyTotal, 27)
+  assert.equal((await call({ action: 'history', targetId: 'motion', expectedRevision: 2, offset: 0 })).historyTotal, 28)
   assert.deepEqual(store.getDocumentSourceUnits(fixture.documentId), beforeUnits)
   const concept = await call({ action: 'read', targetId: 'externality', expectedRevision: 2 })
   concept.template.mapping = '个人判别依据，尚未独立核验'
@@ -498,6 +561,7 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   identityAndScope: true, predictionBeforeFeedback: true, frozenPredictionBasis: true, appendOnlyCas: true, actualHttpSqlite: true,
   sourceAndGenerated: true, historyPages: 3, historyNoWrites: true, historyAppendFence: true, historyIndependentWriterSnapshot: true,
   historyMetadataSearch: true, historySearchLiteralUnicode: true, historySearchAllVersions: true, historySearchUnmatchedAppendFence: true,
+  historyContentFieldsAndExcerpts: true, historyContentLiteralAndIdentity: true, historyContentHttpPagingAndSnapshot: true,
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,

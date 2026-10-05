@@ -3280,7 +3280,44 @@ export default function clientPlugin() {
           }
           return targets ? result : result.map(item => item.message)
         }
-        const historyMatches = (item, query) => [item.id, item.title, item.reason].some(value => value.toLowerCase().includes(query.toLowerCase()))
+        const historyContentFields = { mapping: '规律表述', conditions: '适用条件', boundary: '边界与疑问', slotName: '槽位名称', slotMeaning: '内涵表述',
+          slotUnit: '单位', slotScope: '对象与时间范围', outcomeLabel: '输出取值', outcomeDetail: '输出说明', context: '完整情境', process: '推测过程',
+          input: '具体输入', output: '具体输出', feedback: '对照结果', feedbackSource: '对照来源' }
+        function* historyContentValues(map) {
+          for (const field of ['mapping', 'conditions', 'boundary']) yield [field, map[field]]
+          for (const item of map.slots || []) for (const [field, key] of [['slotName', 'name'], ['slotMeaning', 'meaning'], ['slotUnit', 'unit'], ['slotScope', 'scope']]) yield [field, item[key]]
+          for (const item of map.outcomes || []) { yield ['outcomeLabel', item.label]; yield ['outcomeDetail', item.detail] }
+          for (const item of map.examples || []) {
+            yield ['context', item.context]; yield ['process', item.process]
+            for (const input of item.inputs || []) yield ['input', input.value]
+            for (const output of item.outputs || []) yield ['output', output.detail]
+            yield ['feedback', item.feedback?.text]; yield ['feedbackSource', item.feedback?.source]
+          }
+        }
+        function historyContentMatch(map, query) {
+          if (!query) return null
+          const needle = query.toLowerCase()
+          for (const [field, value] of historyContentValues(map)) {
+            if (typeof value !== 'string') continue
+            const index = value.toLowerCase().indexOf(needle)
+            if (index < 0) continue
+            // Case folding can expand characters. Convert folded offsets before taking an original-text excerpt.
+            let folded = 0, start = 0, end = 0
+            for (const char of value) {
+              if (folded <= index) start = end
+              end += char.length; folded += char.toLowerCase().length
+              if (folded >= index + needle.length) break
+            }
+            let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
+            if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
+            if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
+            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : '') }
+          }
+          return null
+        }
+        const historyMatches = (item, query, searchIn = 'metadata') => searchIn === 'content'
+          ? !query || exact(item.match, ['field', 'excerpt']) && Object.hasOwn(historyContentFields, item.match.field) && text(item.match.excerpt, 640) && item.match.excerpt.toLowerCase().includes(query.toLowerCase())
+          : [item.id, item.title, item.reason].some(value => value.toLowerCase().includes(query.toLowerCase()))
         function handle(saved, args, allRecords = [], now = Date.now(), totalRecords = allRecords.length, knownContexts = [], historyPage = null, catalogCounts = null) {
           try {
             if (!object(args) || !identity(args.documentId) || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 1 ||
@@ -3315,14 +3352,15 @@ export default function clientPlugin() {
             const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
             const current = records.find(record => record.baseRevision === revision) || null
             if (args.action === 'history') {
-              const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query
-              if (!text(query, 256) || !Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份或检索词无效')
-              const metadata = historyPage ? [] : records.map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason }))
-              const matches = metadata.filter(item => historyMatches(item, query))
+              const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query, searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn
+              if (!text(query, 256) || !['metadata', 'content'].includes(searchIn) || !Number.isSafeInteger(offset) || offset < 0 || args.historyHead !== undefined && (!text(args.historyHead, 120) || args.historyHead && !identity(args.historyHead))) fail('修订记录分页身份或检索词无效')
+              const metadata = historyPage ? [] : records.map(record => ({ id: record.id, baseRevision: record.baseRevision, title: record.map.title, createdAt: record.createdAt, reason: record.reason,
+                ...(searchIn === 'content' && query ? { match: historyContentMatch(record.map, query) } : {}) }))
+              const matches = metadata.filter(item => historyMatches(item, query, searchIn))
               const page = historyPage || { historyHead: records[0]?.id || '', historyRecordTotal: records.length, historyTotal: matches.length,
                 history: matches.slice(offset, offset + 20) }
               if (args.historyHead !== undefined && args.historyHead !== page.historyHead) fail('修订记录有更新，请重新读取列表；当前草稿保留。', 'history_conflict')
-              return { version: 1, documentId, revision, target, offset, query, ...page }
+              return { version: 1, documentId, revision, target, offset, query, searchIn, ...page }
             }
             if (args.action === 'record') {
               const record = records.find(record => record.id === args.recordId)
@@ -3358,7 +3396,7 @@ export default function clientPlugin() {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 
@@ -3407,7 +3445,8 @@ export default function clientPlugin() {
         const historyPosition = targetId && history?.scope === historyScope && Number.isSafeInteger(history.offset) && history.offset >= 0 && history.offset % 20 === 0
           && typeof history.head === 'string' && history.head.length <= 120 && (!history.head || history.head.trim()) && (history.head || history.offset === 0)
           && (history.query === undefined || typeof history.query === 'string' && history.query.length <= 256)
-          && typeof history.open === 'boolean' ? { scope: historyScope, offset: history.offset, head: history.head, open: history.open, query: query(history.query) } : null
+          && (history.searchIn === undefined || ['metadata', 'content'].includes(history.searchIn))
+          && typeof history.open === 'boolean' ? { scope: historyScope, offset: history.offset, head: history.head, open: history.open, query: query(history.query), searchIn: history.searchIn || 'metadata' } : null
         // Cache navigation intent only; re-read responses and never restore a save approval.
         return { documentId, revision, query: query(saved.query), search, mode, records, offset, directoryPosition, targetId, historyPosition,
           examplePosition: targetMapExampleBrowseState(saved.examplePosition, documentId, revision, targetId),
@@ -3583,8 +3622,10 @@ export default function clientPlugin() {
         const historyRequest = useRef(null), historyRetry = useRef(null), detailReady = useRef(null)
         const historyScope = JSON.stringify([documentId, revision, targetId]), detailScope = JSON.stringify([historyScope, reload])
         const historySearch = historyPosition?.scope === historyScope ? historyPosition.query || '' : ''
+        const historySearchIn = historyPosition?.scope === historyScope ? historyPosition.searchIn || 'metadata' : 'metadata'
         const historyQuery = historyInput?.scope === historyScope ? historyInput.value : historySearch
-        const historyEventScope = [historyScope, active, loading, saving, reload, detail, historyPage, historyPosition, historyQuery]
+        const historyQueryIn = historyInput?.scope === historyScope ? historyInput.searchIn : historySearchIn
+        const historyEventScope = [historyScope, active, loading, saving, reload, detail, historyPage, historyPosition, historyQuery, historyQueryIn]
         if (!historyContext.current || historyEventScope.some((value, index) => value !== historyContext.current.scope[index])) historyContext.current = { scope: historyEventScope }
         const historyToken = historyContext.current
         const localDraftScope = JSON.stringify([documentId, revision])
@@ -3956,26 +3997,26 @@ export default function clientPlugin() {
             : { scope: recordScope, destination: 'origin', origin: recordOrigin.current })
           if (!archive) recordOrigin.current = null
         }
-        const loadHistory = async (offset, head, query = historySearch) => {
+        const loadHistory = async (offset, head, query = historySearch, searchIn = historySearchIn) => {
           if (!alive.current || historyContext.current !== historyToken || !detail || saving || loading || !active || !current.current.active || !sameContext({ documentId, targetId, revision }) || detailReady.current !== detailScope) return
           const context = { documentId, targetId, revision }, abort = new AbortController()
-          historyRequest.current?.abort(); historyRequest.current = abort; historyRetry.current = { offset, head, query }
+          historyRequest.current?.abort(); historyRequest.current = abort; historyRetry.current = { offset, head, query, searchIn }
           setHistoryLoading(true); setHistoryError(null); setConfirmed(false)
           try {
-            const result = await api.current({ action: 'history', documentId, targetId, expectedRevision: revision, offset, query, ...(head === undefined ? {} : { historyHead: head }) }, abort.signal)
+            const result = await api.current({ action: 'history', documentId, targetId, expectedRevision: revision, offset, query, searchIn, ...(head === undefined ? {} : { historyHead: head }) }, abort.signal)
             if (abort.signal.aborted || historyRequest.current !== abort || !sameContext(context)) return
             if (result?.error) throw result.error
-            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.target?.id !== targetId || result.offset !== offset || result.query !== query ||
+            if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.target?.id !== targetId || result.offset !== offset || result.query !== query || (result.searchIn === undefined ? 'metadata' : result.searchIn) !== searchIn ||
                 typeof result.historyHead !== 'string' || result.historyHead.length > 120 || head !== undefined && result.historyHead !== head ||
                 !Number.isSafeInteger(result.historyTotal) || result.historyTotal < 0 || !Array.isArray(result.history) ||
                 !Number.isSafeInteger(result.historyRecordTotal) || result.historyRecordTotal < result.historyTotal || !query && result.historyTotal !== result.historyRecordTotal ||
                 result.history.length !== Math.min(20, Math.max(0, result.historyTotal - offset)) || new Set(result.history.map(item => item.id)).size !== result.history.length ||
                 result.history.some(item => typeof item.id !== 'string' || !item.id.trim() || item.id.length > 120 || !Number.isSafeInteger(item.baseRevision) || item.baseRevision < 1 || item.baseRevision > revision ||
                   !Number.isSafeInteger(item.createdAt) || item.createdAt < 0 || typeof item.title !== 'string' || !item.title.trim() || item.title.length > 4000 ||
-                  typeof item.reason !== 'string' || item.reason.length > 2000 || !TARGET_MAP_TOOLS.historyMatches(item, query)) ||
+                  typeof item.reason !== 'string' || item.reason.length > 2000 || !TARGET_MAP_TOOLS.historyMatches(item, query, searchIn)) ||
                 (result.historyRecordTotal === 0) !== (result.historyHead === '') || !query && offset === 0 && result.history.length && result.history[0].id !== result.historyHead) throw new Error('修订记录响应身份或分页范围不一致')
             setHistoryPage(result)
-            setHistoryPosition(value => ({ scope: historyScope, offset, head: result.historyHead, query, open: value?.scope === historyScope && value.open === true }))
+            setHistoryPosition(value => ({ scope: historyScope, offset, head: result.historyHead, query, searchIn, open: value?.scope === historyScope && value.open === true }))
           } catch (value) {
             if (!abort.signal.aborted && historyRequest.current === abort && sameContext(context)) { setHistoryError(value); if (value.code === 'revision_conflict') setError(value) }
           } finally { if (!abort.signal.aborted && historyRequest.current === abort && sameContext(context)) setHistoryLoading(false) }
@@ -3992,7 +4033,7 @@ export default function clientPlugin() {
         const toggleHistory = event => {
           if (!sameContext({ documentId, targetId, revision }) || !current.current.active) return
           const open = event.currentTarget.open
-          setHistoryPosition(value => value?.scope === historyScope ? { ...value, open } : { scope: historyScope, offset: historyOffset, head: historyHead, query: historySearch, open })
+          setHistoryPosition(value => value?.scope === historyScope ? { ...value, open } : { scope: historyScope, offset: historyOffset, head: historyHead, query: historySearch, searchIn: historySearchIn, open })
         }
         const ownsDraft = draft?.documentId === documentId && draft.targetId === targetId
         const canExportDraft = active && ownsDraft && !archive && !saving && !loading && !recordLoading
@@ -4799,23 +4840,29 @@ export default function clientPlugin() {
                     button('开启新一轮', () => save(true), frozen || !roundConfirmed || !cleanForRound() || !draft.roundReason?.trim())) : null) : null) : !loading ? h('p', null, '选择一个概念或模型') : null,
               detail ? h('details', { key: historyScope, 'aria-label': '个人靶图修订记录', open: historyIntent?.open || false, onToggle: toggleHistory },
                 h('summary', null, '个人修订记录 · ' + (historyNeedsRead ? '第 ' + (historyOffset / 20 + 1) + ' 页待读取' : (historyOffset ? '第 ' + (historyOffset + 1) + '-' + (historyOffset + historyItems.length) : '最近 ' + historyItems.length) + ' / ' + historyTotal + ' 版')),
-                h('div', { className: 'kg-target-toolbar' },
-                  h('label', null, '修订标题、理由或记录 ID', h('input', { type: 'search', 'aria-label': '搜索个人修订记录', maxLength: 256, value: historyQuery, disabled: saving || loading || historyLoading,
-                    onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && event.target.value.length <= 256) setHistoryInput({ scope: historyScope, value: event.target.value }) },
-                    onKeyDown: event => { if (event.key === 'Enter' && !event.isComposing && !event.nativeEvent?.isComposing) { event.preventDefault(); loadHistory(0, historyHead, historyQuery) } } })),
-                  button('检索修订记录', () => loadHistory(0, historyHead, historyQuery), saving || loading || historyLoading || error?.code === 'revision_conflict'),
-                  button('清除修订检索', () => { if (historyContext.current !== historyToken) return; setHistoryInput({ scope: historyScope, value: '' }); loadHistory(0, historyHead, '') },
+                h('div', { className: 'kg-target-toolbar', style: { alignItems: 'end' } },
+                  h('label', { style: { display: 'grid', gap: 4, flex: '1 1 180px', margin: 0 } }, '检索范围', h('select', { 'aria-label': '修订检索范围', value: historyQueryIn, disabled: saving || loading || historyLoading,
+                    onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && ['metadata', 'content'].includes(event.target.value)) setHistoryInput({ scope: historyScope, value: historyQuery, searchIn: event.target.value }) } },
+                    h('option', { value: 'metadata' }, '标题、理由与记录 ID'), h('option', { value: 'content' }, '靶图正文'))),
+                  h('label', { style: { display: 'grid', gap: 4, flex: '2 1 220px', margin: 0 } }, '检索词', h('input', { type: 'search', 'aria-label': '搜索个人修订记录', maxLength: 256, value: historyQuery, disabled: saving || loading || historyLoading,
+                    onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && event.target.value.length <= 256) setHistoryInput({ scope: historyScope, value: event.target.value, searchIn: historyQueryIn }) },
+                    onKeyDown: event => { if (event.key === 'Enter' && !event.isComposing && !event.nativeEvent?.isComposing) { event.preventDefault(); loadHistory(0, historyHead, historyQuery, historyQueryIn) } } })),
+                  button('检索修订记录', () => loadHistory(0, historyHead, historyQuery, historyQueryIn), saving || loading || historyLoading || error?.code === 'revision_conflict'),
+                  button('清除修订检索', () => { if (historyContext.current !== historyToken) return; setHistoryInput({ scope: historyScope, value: '', searchIn: historyQueryIn }); loadHistory(0, historyHead, '', historyQueryIn) },
                     saving || loading || historyLoading || !historyQuery && !historySearch || error?.code === 'revision_conflict')),
                 historySearch && !historyNeedsRead && !historyError ? h('p', { role: 'status', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
-                  '检索：' + historySearch + ' · 命中 ' + historyTotal + ' / 全部 ' + (visibleHistory?.historyRecordTotal ?? detail.historyTotal) + ' 版') : null,
+                  (historySearchIn === 'content' ? '正文检索：' : '检索：') + historySearch + ' · 命中 ' + historyTotal + ' / 全部 ' + (visibleHistory?.historyRecordTotal ?? detail.historyTotal) + ' 版') : null,
                 historyLoading ? h('p', { role: 'status' }, '正在读取修订记录…') : null,
                 historyError ? h('div', { role: 'alert' }, historyError.message || String(historyError),
-                  historyError.code !== 'history_conflict' && historyError.code !== 'revision_conflict' ? button('重试读取修订记录', () => loadHistory(historyRetry.current.offset, historyRetry.current.head, historyRetry.current.query), saving || loading || historyLoading) : null) :
+                  historyError.code !== 'history_conflict' && historyError.code !== 'revision_conflict' ? button('重试读取修订记录', () => loadHistory(historyRetry.current.offset, historyRetry.current.head, historyRetry.current.query, historyRetry.current.searchIn), saving || loading || historyLoading) : null) :
                   historyItems.map(item => h('div', { key: item.id, 'data-target-history-row': item.id, style: { borderBottom: '1px solid #d8dfe3', padding: '10px 0', overflowWrap: 'anywhere' } },
                     h('strong', { style: { display: 'block', whiteSpace: 'pre-wrap' } }, item.title),
                     button('知识图第 ' + item.baseRevision + ' 版 · ' + new Date(item.createdAt).toLocaleString(), () => openRecord(item.id, JSON.stringify(['history', item.id])), saving || loading || historyLoading,
                     { 'aria-label': '查看靶图修订 ' + item.id, 'data-target-record-link': JSON.stringify(['history', item.id]) }),
-                    h('p', { style: { whiteSpace: 'pre-wrap' } }, item.reason || '未填写修订理由'), h('small', null, '记录 ID：' + item.id))),
+                    h('p', { style: { whiteSpace: 'pre-wrap' } }, item.reason || '未填写修订理由'),
+                    historySearchIn === 'content' && historySearch && item.match ? h('p', { 'data-target-history-match': item.match.field, style: { whiteSpace: 'pre-wrap' } },
+                      '命中' + TARGET_MAP_TOOLS.historyContentFields[item.match.field] + '：' + item.match.excerpt) : null,
+                    h('small', null, '记录 ID：' + item.id))),
                 !historyLoading && !historyError && !historyNeedsRead && !historyItems.length ? h('p', { role: 'status' }, historySearch ? '没有匹配的修订记录' : '暂无已保存修订') : null,
                 h('div', { className: 'kg-target-toolbar' },
                   button('←', () => loadHistory(Math.max(0, historyOffset - 20), historyHead), saving || loading || historyLoading || historyNeedsRead || !!historyError || historyOffset === 0,
