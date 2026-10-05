@@ -170,6 +170,11 @@ for (const [field, path] of Object.entries(fieldPaths)) {
   const match = tools.historyContentMatch(snapshot, needle.toLowerCase())
   assert.equal(match.field, field); assert(match.excerpt.includes(needle)); assert(match.excerpt.length <= 640)
   assert(!match.excerpt.includes('İ'.repeat(100)), 'Excerpt stays near a late match even when Unicode lowercasing expands preceding text')
+  const target = tools.historyContentMatch(snapshot, needle.toLowerCase(), { target: true })
+  const identityPath = path.map((key, index) => typeof key === 'number' ? path.slice(0, index + 1).reduce((value, part) => value[part], snapshot)[index > 2 ? 'slotId' : 'id'] : key)
+  if (field === 'input') identityPath.pop()
+  assert.deepEqual(target, { ...match, path: identityPath }, 'Field navigation uses exact identities, not displayed order or equal names')
+  assert.deepEqual(Object.keys(match).sort(), ['excerpt', 'field'], 'Navigation metadata is not added to history HTTP summaries')
 }
 for (const query of ['"version"', 'self_reported_new', 'outcomeId', '__not_a_field__']) assert.equal(tools.historyContentMatch(map, query), null, 'Search field values, not JSON structure or enum tags')
 const identifierOnly = tools.blank({ type: 'concept', text: '标题' }); identifierOnly.slots[0].id = 'identifier_only'; identifierOnly.mapping = 'a+b ≠ a-b'

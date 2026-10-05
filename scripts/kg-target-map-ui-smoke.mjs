@@ -443,6 +443,105 @@ owner.unmount(); records = previousRecords; storage.clear()
 }
 
 let historyBrowseState
+{
+  const previous = records, count = writes, needle = '字段命中 Ä_%<b>\n'
+  const paths = [['mapping'], ['conditions'], ['boundary'], ['slots', 1, 'name'], ['slots', 1, 'meaning'], ['slots', 1, 'unit'], ['slots', 1, 'scope'],
+    ['outcomes', 1, 'label'], ['outcomes', 1, 'detail'], ['examples', 1, 'context'], ['examples', 1, 'process'], ['examples', 1, 'inputs', 1, 'value'],
+    ['examples', 1, 'outputs', 0, 'detail'], ['examples', 1, 'feedback', 'text'], ['examples', 1, 'feedback', 'source']]
+  const setup = async (path = paths[11], options = {}) => {
+    storage.clear(); doc.revision = options.revision || 1
+    const record = structuredClone(previous[0]); record.id = 'hit-record'; record.baseRevision = 1; record.map = motionTargetMap()
+    record.map.slots[1].id = '__proto__'; record.map.examples.forEach(item => { item.inputs[1].slotId = '__proto__' })
+    record.map.examples[1].id = 'same["id"] '; record.map.examples[1].stage = 'reviewed'
+    record.map.examples[1].feedback = { kind: 'ai', text: '冲突来源未核对；不是独立验证', source: 'AI 建议' }
+    if (options.discrimination) record.map.mode = 'discrimination'
+    const parent = path.slice(0, -1).reduce((value, key) => value[key], record.map)
+    parent[path.at(-1)] = '前文'.repeat(100) + needle + '单位、对象时间、多个必要输入；限定语与循环、未知方向均保留'
+    tools.validate(record.map); records = [record]
+    owner = mount({ recordNavigation: true, focusRequest: { ...focus, revision: doc.revision }, revision: doc.revision }); await owner.load()
+    if (doc.revision === 1) owner.change(options.discrimination ? '判别规律表述' : '映射规律表述', '本地草稿：保留未知和冲突')
+    owner.change('搜索例子文字', '草稿筛选不应被清除')
+    owner.change('修订检索范围', 'content'); owner.change('搜索个人修订记录', needle.toLowerCase()); owner.click('检索修订记录'); await owner.load()
+    return { record, match: tools.historyContentMatch(record.map, needle.toLowerCase(), { target: true }), bytes: JSON.stringify([...storage]) }
+  }
+  const hit = () => owner.click('查看修订命中字段 hit-record')
+  for (const path of paths) {
+    const { record, match, bytes } = await setup(path)
+    hit(); assert.equal(owner.focused, 'data-target-record-view:loading'); await owner.load()
+    assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(match.path), JSON.stringify(path))
+    const marked = all(owner.tree, node => node.props['data-target-history-hit'])
+    assert.equal(marked.length, 1); assert(text(marked[0]).includes(needle)); assert(!all(marked, node => node.type === 'b').length)
+    assert(all(marked[0], node => ['input', 'textarea'].includes(node.type)).every(node => node.props.disabled))
+    if (match.path[0] === 'examples') {
+      const example = all(owner.tree, node => node.props['data-target-case-id'] === record.map.examples[1].id)[0]
+      assert.equal(example.props.hidden, false); assert.equal(example.props.open, true)
+      owner.change('搜索例子文字', '隐藏所有历史例子')
+      hit(); await owner.load(); assert.equal(owner.control('搜索例子文字').props.value, '', 'Explicit hit opens the example despite prior archive filters')
+    }
+    owner.click('返回未保存草稿')
+    assert.equal(owner.focused, 'data-target-record-link:' + JSON.stringify(['history-hit', record.id]))
+    assert.equal(owner.control('搜索例子文字').props.value, '草稿筛选不应被清除')
+    assert.equal(JSON.stringify([...storage]), bytes); assert.equal(writes, count)
+    assert(!owner.control('确认保存个人靶图').props.checked); owner.unmount()
+  }
+  await setup(paths[4], { discrimination: true }); hit(); await owner.load()
+  assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(['slots', '__proto__', 'meaning']), 'Historical fields are reachable even if that mode does not edit them')
+  owner.unmount()
+  const old = await setup(paths[11], { revision: 2 }); hit(); await owner.load()
+  assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(old.match.path)); assert(text(owner.tree).includes('知识图第 1 版'))
+  assert(owner.control('靶图标题').props.disabled); owner.unmount()
+  for (const failure of ['transport', 'no-match', 'wrong-field', 'different-excerpt', 'wrong-version']) {
+    const { match, bytes } = await setup(paths[11], { revision: 2 })
+    hit(); const pending = owner.pending().at(-1), response = tools.handle(doc, pending.args, records)
+    if (failure === 'transport') { pending.reject(new Error('hit read offline')); pending.settled = true; await owner.settle() }
+    else {
+      if (failure === 'no-match') response.record.map.examples[1].inputs[1].value = '不再匹配'
+      if (failure === 'wrong-field') response.record.map.mapping = needle
+      if (failure === 'different-excerpt') response.record.map.examples[1].inputs[1].value += '另一个上下文'
+      if (failure === 'wrong-version') response.record.baseRevision = 2
+      await owner.resolve(pending, response)
+    }
+    assert.equal(owner.focused, 'data-target-record-view:error'); assert(!all(owner.tree, node => node.props['data-target-history-hit']).length)
+    assert.equal(JSON.stringify([...storage]), bytes)
+    owner.click('重试读取历史靶图'); await owner.load()
+    assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(match.path), 'Retry keeps the original submitted query and hit')
+    owner.unmount()
+  }
+  for (const unavailable of ['missing', 'duplicate']) {
+    const { match } = await setup()
+    hit()
+    if (unavailable === 'missing') owner.removedAnchor = JSON.stringify(match.path)
+    else owner.duplicateAnchors = true
+    await owner.load(); assert(text(owner.tree).includes('未找到唯一可见的命中字段'))
+    assert.notEqual(owner.focused, 'data-target-gap-field:' + JSON.stringify(match.path)); owner.unmount()
+  }
+  for (const boundary of ['query', 'scope', 'refresh', 'target', 'revision', 'hide', 'unmount']) {
+    await setup(); const stale = owner.control('查看修订命中字段 hit-record').props.onClick
+    if (boundary === 'query') owner.change('搜索个人修订记录', '另外的查询')
+    if (boundary === 'scope') owner.change('修订检索范围', 'metadata')
+    if (boundary === 'refresh') owner.click('重新读取修订记录')
+    if (boundary === 'target') owner.click('打开靶图 externality')
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'hide') { owner.props.active = false; owner.render() }
+    if (boundary === 'unmount') owner.unmount()
+    const requests = owner.requests.length
+    stale(); owner.render(); assert.equal(owner.requests.length, requests, boundary); owner.unmount()
+  }
+  for (const boundary of ['cancel', 'target', 'revision', 'hide', 'unmount', 'focus']) {
+    const { match, bytes } = await setup(); hit(); const pending = owner.pending().at(-1)
+    if (boundary === 'cancel') owner.click('取消读取历史靶图')
+    if (boundary === 'target') owner.click('打开靶图 externality')
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'hide') { owner.props.active = false; owner.render() }
+    if (boundary === 'unmount') owner.unmount()
+    if (boundary === 'focus') { owner.panel.ownerDocument.activeElement = {}; owner.focused = 'external-input' }
+    await owner.resolve(pending)
+    assert.notEqual(owner.focused, 'data-target-gap-field:' + JSON.stringify(match.path), boundary)
+    if (boundary === 'focus') assert.equal(owner.focused, 'external-input', 'Late completion must not steal the reader\'s new focus')
+    assert.equal(JSON.stringify([...storage]), bytes); owner.unmount()
+  }
+  records = previous; storage.clear(); doc.revision = 1; assert.equal(writes, count)
+}
 const publishHistoryBrowse = state => { historyBrowseState = state }
 const toggleHistory = (owner, open) => {
   const details = owner.control('个人靶图修订记录')
@@ -4661,6 +4760,8 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
   historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true,
   historyContentSearchAndExcerpts: true, historyContentScopeAndNavigation: true, historyContentResponseFenceAndDrafts: true,
+  historyHitExactFields: true, historyHitRetryAndMatchFence: true, historyHitReadonlyAndDraftReturn: true,
+  historyHitOldVersions: true, historyHitStaleActionsAndFocus: true, historyHitNoWrites: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,

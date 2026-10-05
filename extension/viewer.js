@@ -2110,20 +2110,20 @@
           slotUnit: '单位', slotScope: '对象与时间范围', outcomeLabel: '输出取值', outcomeDetail: '输出说明', context: '完整情境', process: '推测过程',
           input: '具体输入', output: '具体输出', feedback: '对照结果', feedbackSource: '对照来源' }
         function* historyContentValues(map) {
-          for (const field of ['mapping', 'conditions', 'boundary']) yield [field, map[field]]
-          for (const item of map.slots || []) for (const [field, key] of [['slotName', 'name'], ['slotMeaning', 'meaning'], ['slotUnit', 'unit'], ['slotScope', 'scope']]) yield [field, item[key]]
-          for (const item of map.outcomes || []) { yield ['outcomeLabel', item.label]; yield ['outcomeDetail', item.detail] }
+          for (const field of ['mapping', 'conditions', 'boundary']) yield [field, map[field], [field]]
+          for (const item of map.slots || []) for (const [field, key] of [['slotName', 'name'], ['slotMeaning', 'meaning'], ['slotUnit', 'unit'], ['slotScope', 'scope']]) yield [field, item[key], ['slots', item.id, key]]
+          for (const item of map.outcomes || []) { yield ['outcomeLabel', item.label, ['outcomes', item.id, 'label']]; yield ['outcomeDetail', item.detail, ['outcomes', item.id, 'detail']] }
           for (const item of map.examples || []) {
-            yield ['context', item.context]; yield ['process', item.process]
-            for (const input of item.inputs || []) yield ['input', input.value]
-            for (const output of item.outputs || []) yield ['output', output.detail]
-            yield ['feedback', item.feedback?.text]; yield ['feedbackSource', item.feedback?.source]
+            yield ['context', item.context, ['examples', item.id, 'context']]; yield ['process', item.process, ['examples', item.id, 'process']]
+            for (const input of item.inputs || []) yield ['input', input.value, ['examples', item.id, 'inputs', input.slotId]]
+            for (const output of item.outputs || []) yield ['output', output.detail, ['examples', item.id, 'outputs', output.slotId, 'detail']]
+            yield ['feedback', item.feedback?.text, ['examples', item.id, 'feedback', 'text']]; yield ['feedbackSource', item.feedback?.source, ['examples', item.id, 'feedback', 'source']]
           }
         }
-        function historyContentMatch(map, query) {
+        function historyContentMatch(map, query, { target = false } = {}) {
           if (!query) return null
           const needle = query.toLowerCase()
-          for (const [field, value] of historyContentValues(map)) {
+          for (const [field, value, path] of historyContentValues(map)) {
             if (typeof value !== 'string') continue
             const index = value.toLowerCase().indexOf(needle)
             if (index < 0) continue
@@ -2137,7 +2137,7 @@
             let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
             if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
             if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
-            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : '') }
+            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : ''), ...(target ? { path } : {}) }
           }
           return null
         }
@@ -2436,6 +2436,7 @@
         const [historyInput, setHistoryInput] = useState(null), historyContext = useRef(null)
         const [recordLoading, setRecordLoading] = useState(false), [recordError, setRecordError] = useState(null)
         const [recordNavigation, setRecordNavigation] = useState(null)
+        const [archiveHit, setArchiveHit] = useState(null)
         const [archiveComparison, setArchiveComparison] = useState(null)
         const [archiveReference, setArchiveReference] = useState(null)
         const [exampleFilters, setExampleFilters] = useState({}), [exampleFocus, setExampleFocus] = useState(null)
@@ -2451,7 +2452,7 @@
         const historySearchIn = historyPosition?.scope === historyScope ? historyPosition.searchIn || 'metadata' : 'metadata'
         const historyQuery = historyInput?.scope === historyScope ? historyInput.value : historySearch
         const historyQueryIn = historyInput?.scope === historyScope ? historyInput.searchIn : historySearchIn
-        const historyEventScope = [historyScope, active, loading, saving, reload, detail, historyPage, historyPosition, historyQuery, historyQueryIn]
+        const historyEventScope = [historyScope, active, loading, saving, reload, detail, historyPage, historyPosition, historyQuery, historyQueryIn, historyLoading]
         if (!historyContext.current || historyEventScope.some((value, index) => value !== historyContext.current.scope[index])) historyContext.current = { scope: historyEventScope }
         const historyToken = historyContext.current
         const localDraftScope = JSON.stringify([documentId, revision])
@@ -2756,14 +2757,15 @@
           } catch (value) { if (sameContext(context)) setError(value) }
           finally { writeBusy.current = false; if (alive.current) setSaving(false) }
         }
-        const openRecord = async (id, origin, basis = null) => {
+        const openRecord = async (id, origin, basis = null, hit = null) => {
           const context = { documentId, targetId, revision }, draftVersion = draft?.baseRevision
           if (loading || saving || writeBusy.current || !active || !current.current.active || !sameContext(context) ||
               typeof id !== 'string' || !id.trim() || id.length > 120 || current.current.draft?.baseRevision !== draftVersion) return
           if (basis && (current.current.draft !== basis.draft || current.current.archive !== basis.archive || detailReady.current !== detailScope)) return
           if (basis?.compare === 'archive' && (!basis.archive || basis.archive.id === id)) return
           const abort = new AbortController()
-          recordRequest.current?.abort(); recordRequest.current = abort; recordRetry.current = { id, origin, basis }
+          recordRequest.current?.abort(); recordRequest.current = abort; recordRetry.current = { id, origin, basis, hit }
+          setArchiveHit(null)
           setArchiveComparison(null)
           recordView.current = null
           if (!archive && origin && (recordOrigin.current?.scope !== recordScope || recordOrigin.current.identity !== origin)) {
@@ -2782,6 +2784,10 @@
                 result.record.documentId !== documentId || result.record.target?.id !== targetId || result.record.origin !== 'personal_target_map_not_mastery' ||
                 !Number.isSafeInteger(result.record.baseRevision) || result.record.baseRevision < 1 || result.record.baseRevision > revision) throw new Error('历史靶图身份不一致')
             TARGET_MAP_TOOLS.validate(result.record.map)
+            const match = hit ? TARGET_MAP_TOOLS.historyContentMatch(result.record.map, hit.query, { target: true }) : null
+            if (hit && (result.record.baseRevision !== hit.baseRevision || !match || match.field !== hit.match.field || match.excerpt !== hit.match.excerpt)) {
+              throw new Error('历史快照与检索命中不一致；未定位到其他同名字段，请重新检索。')
+            }
             if (basis) {
               const original = result.record.map.examples.find(item => item.id === basis.example.id)
               const reference = targetMapPredictionBasis(result.record, basis.example)
@@ -2793,12 +2799,19 @@
               }
             }
             setArchive(result.record)
+            if (match) {
+              setArchiveHit({ record: result.record, ...match })
+              if (match.path[0] === 'examples') {
+                const scope = JSON.stringify([JSON.stringify([documentId, revision, targetId, ['record', result.record.id]]), reload])
+                setExampleFilters(value => ({ ...value, archive: { scope, value: 'all', stage: 'all', query: '', feedback: 'all', expansion: [[match.path[1], true]], revealedId: '' } }))
+              }
+            }
             if (basis?.compare === 'archive') setArchiveReference({ scope: detailScope, record: basis.archive })
             if (basis?.compare) setArchiveComparison({ kind: 'upper',
               scope: JSON.stringify([documentId, revision, targetId, ['record', result.record.id]]), record: result.record,
               draft: basis.draft, reference: basis.compare === 'archive' ? basis.archive : null, onlyChanges: true, exampleId: '',
               basis: { exampleId: basis.example.id, context: basis.example.context, ownerId: basis.ownerId } })
-            setRecordNavigation({ scope: recordScope, destination: 'archive', record: result.record })
+            setRecordNavigation({ scope: recordScope, destination: 'archive', record: result.record, match })
           } catch (value) {
             if (ownsRequest()) {
               setRecordError(value); setRecordNavigation({ scope: recordScope, destination: 'error', error: value })
@@ -3216,6 +3229,10 @@
           // Completion must not steal focus from a search/edit action made while the request was pending.
           if (intent.destination !== 'loading' && !intent.explicit && previous && document?.activeElement &&
               document.activeElement !== document.body && !previous.contains(document.activeElement)) return
+          if (intent.match) {
+            if (focusMapElement('data-target-gap-field', JSON.stringify(intent.match.path), 'center')) return
+            setArchiveHit(value => value?.record === intent.record ? { ...value, unavailable: true } : value)
+          }
           if (focusMapElement('data-target-record-view', intent.destination, intent.destination === 'loading' || intent.explicit || !previous ? 'start' : 'nearest')) {
             recordView.current = mapElement('data-target-record-view', intent.destination)
           }
@@ -3244,7 +3261,9 @@
         const editAlert = () => h('span', { role: 'alert', id: editErrorId, style: { display: 'block' } }, '本次修改未应用，原草稿已保留：' + visibleEditError.message + '。请缩短本次输入后重试。')
         const field = (label, value, change, disabled = frozen, large = false, visibleLabel = label, maxLength, gapPath) => {
           const invalid = visibleEditError?.field === label
-          return h('label', gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1 } : null, visibleLabel,
+          const hit = archive && !recordLoading && archiveHit?.record === archive && gapPath && JSON.stringify(gapPath) === JSON.stringify(archiveHit.path)
+          return h('label', gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1, 'data-target-history-hit': hit || undefined } : null, visibleLabel,
+            hit ? h('small', { role: 'status', style: { display: 'block', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, '本次正文命中：', archiveHit.excerpt) : null,
             h(large ? 'textarea' : 'input', { 'aria-label': label, value, disabled, maxLength, 'aria-invalid': invalid || undefined,
               'aria-describedby': invalid ? editErrorId : undefined, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => {
                 if (change(event.target.value) === false) setEditError(error => error?.draft === draft ? { ...error, field: label } : error)
@@ -3358,10 +3377,10 @@
           selection?.slotId === item.id && selection.role === role ? button('↓', returnToExample, false,
             { className: 'kg-secondary kg-target-icon', title: returnLabel, 'aria-label': returnLabel }) : null,
           field('槽位 ' + item.id + ' 名称', item.name, value => edit(map => { map.slots.find(slot => slot.id === item.id).name = value }), frozen || locked.size > 0, false, '概念名', undefined, ['slots', item.id, 'name']),
-          map.mode === 'connection' ? field('槽位 ' + item.id + ' 内涵表述', item.meaning, value => edit(map => { map.slots.find(slot => slot.id === item.id).meaning = value }), frozen, true, '我的内涵表述', undefined, ['slots', item.id, 'meaning']) : null,
+          map.mode === 'connection' || archive && item.meaning ? field('槽位 ' + item.id + ' 内涵表述', item.meaning, value => edit(map => { map.slots.find(slot => slot.id === item.id).meaning = value }), frozen, true, '我的内涵表述', undefined, ['slots', item.id, 'meaning']) : null,
           h('details', null, h('summary', null, '单位与对象、时间状态'),
-            field('槽位 ' + item.id + ' 单位', item.unit, value => edit(map => { map.slots.find(slot => slot.id === item.id).unit = value }), frozen || locked.size > 0, false, '单位'),
-            field('槽位 ' + item.id + ' 对象与时间', item.scope, value => edit(map => { map.slots.find(slot => slot.id === item.id).scope = value }), frozen || locked.size > 0, false, '对象与时间状态')),
+            field('槽位 ' + item.id + ' 单位', item.unit, value => edit(map => { map.slots.find(slot => slot.id === item.id).unit = value }), frozen || locked.size > 0, false, '单位', undefined, ['slots', item.id, 'unit']),
+            field('槽位 ' + item.id + ' 对象与时间', item.scope, value => edit(map => { map.slots.find(slot => slot.id === item.id).scope = value }), frozen || locked.size > 0, false, '对象与时间状态', undefined, ['slots', item.id, 'scope'])),
           removalControl('slots', item, '删除槽位 ' + item.id)))
         const addSlot = role => edit(map => {
           const id = role + '-' + crypto.randomUUID(); map.slots.push(TARGET_MAP_TOOLS.slot(id, role))
@@ -3430,7 +3449,7 @@
               recordLoading ? h('div', { role: 'status', 'aria-label': '历史靶图读取', 'data-target-record-view': 'loading', tabIndex: -1 }, '正在读取历史靶图…',
                 button('取消读取历史靶图', () => cancelRecordRead(recordToken), false)) : null,
               recordError ? h('div', { role: 'alert', 'data-target-record-view': 'error', tabIndex: -1 }, '历史靶图读取失败：' + (recordError.message || String(recordError)),
-                button('重试读取历史靶图', () => openRecord(retryRecord?.id, retryRecord?.origin, retryRecord?.basis), saving || loading || !active || recordError.code === 'revision_conflict')) : null,
+                button('重试读取历史靶图', () => openRecord(retryRecord?.id, retryRecord?.origin, retryRecord?.basis, retryRecord?.hit), saving || loading || !active || recordError.code === 'revision_conflict')) : null,
               ownsDraft && !archive ? h('div', { className: 'kg-target-toolbar' },
                 button('导出草稿 JSON', exportDraft, !canExportDraft),
                 active && exportNotice?.draft === draft ? h('span', { role: exportNotice.error ? 'alert' : 'status' }, exportNotice.message) : null) : null,
@@ -3457,6 +3476,7 @@
               stale ? h('div', { role: 'alert' }, '草稿属于知识图第 ' + draft.baseRevision + ' 版，不能保存到第 ' + revision + ' 版。',
                 detail ? button('开启当前版本靶图', () => install(readDraft(targetId, revision) || { documentId, targetId, baseRevision: revision, parentId: detail.current?.id || '', reason: '', map: copy(detail.current?.map || detail.template) }), saving) : null) : null,
               archive ? h('div', { className: 'kg-target-archive', role: 'status', 'data-target-record-view': 'archive', tabIndex: -1 }, '历史快照 · ' + (archive.startsRound ? '新一轮起点 · ' : '') + '知识图第 ' + archive.baseRevision + ' 版 · ' + archive.reason,
+                archiveHit?.record === archive && archiveHit.unavailable ? h('p', { role: 'alert' }, '未找到唯一可见的命中字段；快照仍为只读。') : null,
                 archive.startsRound && archive.parentId ? button('查看上一轮末版', () => openRecord(archive.parentId), saving || loading) : null,
                 button('返回未保存草稿', returnToDraft, saving),
                 h('div', { className: 'kg-target-toolbar' },
@@ -3504,7 +3524,7 @@
                   h('section', null, h('h4', null, '输入概念与内涵'), slotFields('input'), button('+', () => addSlot('input'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'input').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加必要输入', 'aria-label': '增加必要输入' })),
                   h('section', null, h('h4', null, '输入 → 规律 → 输出'), field(map.mode === 'connection' ? '映射规律表述' : '判别规律表述', map.mapping, value => edit(map => { map.mapping = value }), frozen, true, undefined, undefined, ['mapping']),
-                    field('适用条件', map.conditions, value => edit(map => { map.conditions = value }), frozen, true), field('边界与不确定处', map.boundary, value => edit(map => { map.boundary = value }), frozen, true)),
+                    field('适用条件', map.conditions, value => edit(map => { map.conditions = value }), frozen, true, undefined, undefined, ['conditions']), field('边界与不确定处', map.boundary, value => edit(map => { map.boundary = value }), frozen, true, undefined, undefined, ['boundary'])),
                   h('section', null, h('h4', null, '输出概念与内涵'), slotFields('output'), button('+', () => addSlot('output'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'output').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加输出槽位', 'aria-label': '增加输出槽位' }))),
                 h('section', { 'aria-label': '输出陪域' }, h('h4', { 'data-target-outcome-list': 'heading', tabIndex: -1 }, '可能的输出范围 · 陪域', undoControl('outcomes')),
@@ -3516,13 +3536,13 @@
                       for (const example of map.examples) for (const value of example.outputs) if (value.outcomeId === out.id) value.outcomeId = ''
                     }) },
                       map.slots.filter(slot => slot.role === 'output').map(slot => h('option', { key: slot.id, value: slot.id }, slot.name || slot.id))),
-                      field('输出取值 ' + out.id + ' 名称', out.label, value => edit(map => { map.outcomes.find(item => item.id === out.id).label = value }), frozen || used, false, ''),
+                      field('输出取值 ' + out.id + ' 名称', out.label, value => edit(map => { map.outcomes.find(item => item.id === out.id).label = value }), frozen || used, false, '', undefined, ['outcomes', out.id, 'label']),
                       removalControl('outcomes', out, '删除输出取值 ' + out.id),
                       h('small', null, linked ? '当前有 ' + linked + ' 个例子指向此取值' : '尚无例子指向 · 仍属于记录的输出范围', ' ',
                         button('↓', () => selectExampleFilter(outcomeChoice(out), true, '', 'all', '', 'all'), !exampleBrowseContext.current.ready,
                           { className: 'kg-secondary kg-target-icon', title: '查看对应例子', 'aria-label': '查看对应例子 ' + out.id })),
                       h('details', null, h('summary', null, '取值说明'), field('输出取值 ' + out.id + ' 说明', out.detail,
-                        value => edit(map => { map.outcomes.find(item => item.id === out.id).detail = value }), frozen || used, true, '取值的完整说明')))
+                        value => edit(map => { map.outcomes.find(item => item.id === out.id).detail = value }), frozen || used, true, '取值的完整说明', undefined, ['outcomes', out.id, 'detail'])))
                   })), button('增加输出取值', () => edit(map => { map.outcomes.push({ id: crypto.randomUUID(), slotId: map.slots.find(slot => slot.role === 'output').id, label: '未命名取值', detail: '' }) }), frozen || map.outcomes.length >= 80)),
                 h('section', { 'aria-label': '靶图具体推测' }, h('h4', { 'data-target-example-list': 'heading', tabIndex: -1 },
                   h('span', { 'data-target-gap-field': JSON.stringify(['examples']), tabIndex: -1 }, '下层 · 具体情境与推测 (' + map.examples.length + ')'), undoControl('examples')),
@@ -3620,7 +3640,7 @@
                           h('select', { 'aria-label': '例子 ' + (index + 1) + ' 对应输出 ' + value.slotId, value: value.outcomeId, disabled: frozen || lockedCase,
                             onChange: event => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).outcomeId = event.target.value }) },
                             h('option', { value: '' }, '未对应陪域取值'), map.outcomes.filter(out => out.slotId === value.slotId).map(out => h('option', { key: out.id, value: out.id }, out.label))),
-                          field('例子 ' + (index + 1) + ' 输出细节 ' + value.slotId, value.detail, input => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).detail = input }), frozen || lockedCase, true, '输出细节'))))),
+                          field('例子 ' + (index + 1) + ' 输出细节 ' + value.slotId, value.detail, input => changeExample(item.id, example => { example.outputs.find(item => item.slotId === value.slotId).detail = input }), frozen || lockedCase, true, '输出细节', undefined, ['examples', item.id, 'outputs', value.slotId, 'detail']))))),
                       filterState?.revealedId === item.id ? h('p', { role: 'status' }, '例子记录已改变，已调整筛选以保留当前编辑。') : null,
                       !existing.has(item.id) ? h('label', null, h('input', { type: 'checkbox', checked: item.stage === 'prediction', disabled: frozen,
                         'aria-label': '例子 ' + (index + 1) + ' 先记录预测', onChange: event => changeExample(item.id, example => { example.stage = event.target.checked ? 'prediction' : 'material' }) }), '先记录预测，保存后再对照') : null,
@@ -3631,8 +3651,8 @@
                             const kind = event.target.value
                             if (TARGET_MAP_EXAMPLE_FEEDBACK.slice(2).some(([value]) => value === kind)) changeExample(item.id, example => { example.feedback.kind = kind })
                           } }, TARGET_MAP_EXAMPLE_FEEDBACK.slice(2).map(([id, name]) => h('option', { key: id, value: id }, name))),
-                        field('例子 ' + (index + 1) + ' 对照结果', item.feedback.text, value => changeExample(item.id, example => { example.feedback.text = value }), frozen || original?.stage === 'reviewed', true),
-                        field('例子 ' + (index + 1) + ' 结果来源说明', item.feedback.source, value => changeExample(item.id, example => { example.feedback.source = value }), frozen || original?.stage === 'reviewed', true)) : null,
+                        field('例子 ' + (index + 1) + ' 对照结果', item.feedback.text, value => changeExample(item.id, example => { example.feedback.text = value }), frozen || original?.stage === 'reviewed', true, undefined, undefined, ['examples', item.id, 'feedback', 'text']),
+                        field('例子 ' + (index + 1) + ' 结果来源说明', item.feedback.source, value => changeExample(item.id, example => { example.feedback.source = value }), frozen || original?.stage === 'reviewed', true, undefined, undefined, ['examples', item.id, 'feedback', 'source'])) : null,
                       basisReference ? h('div', { className: 'kg-target-toolbar' },
                         button('查看预测时的上层表述', () => openBasis(false), saving || loading || recordLoading,
                           { 'data-target-record-link': JSON.stringify(['basis', item.id]) }),
@@ -3686,8 +3706,13 @@
                     button('知识图第 ' + item.baseRevision + ' 版 · ' + new Date(item.createdAt).toLocaleString(), () => openRecord(item.id, JSON.stringify(['history', item.id])), saving || loading || historyLoading,
                     { 'aria-label': '查看靶图修订 ' + item.id, 'data-target-record-link': JSON.stringify(['history', item.id]) }),
                     h('p', { style: { whiteSpace: 'pre-wrap' } }, item.reason || '未填写修订理由'),
-                    historySearchIn === 'content' && historySearch && item.match ? h('p', { 'data-target-history-match': item.match.field, style: { whiteSpace: 'pre-wrap' } },
-                      '命中' + TARGET_MAP_TOOLS.historyContentFields[item.match.field] + '：' + item.match.excerpt) : null,
+                    historySearchIn === 'content' && historySearch && item.match ? h('div', null,
+                      h('p', { 'data-target-history-match': item.match.field, style: { whiteSpace: 'pre-wrap' } }, '命中' + TARGET_MAP_TOOLS.historyContentFields[item.match.field] + '：' + item.match.excerpt),
+                      button('查看命中字段', () => {
+                        if (!alive.current || historyContext.current !== historyToken || historyLoading || recordRequest.current) return
+                        openRecord(item.id, JSON.stringify(['history-hit', item.id]), null, { query: historySearch, baseRevision: item.baseRevision, match: item.match })
+                      }, saving || loading || historyLoading || recordLoading,
+                      { 'aria-label': '查看修订命中字段 ' + item.id, 'data-target-record-link': JSON.stringify(['history-hit', item.id]) })) : null,
                     h('small', null, '记录 ID：' + item.id))),
                 !historyLoading && !historyError && !historyNeedsRead && !historyItems.length ? h('p', { role: 'status' }, historySearch ? '没有匹配的修订记录' : '暂无已保存修订') : null,
                 h('div', { className: 'kg-target-toolbar' },
