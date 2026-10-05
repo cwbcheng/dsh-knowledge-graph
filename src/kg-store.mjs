@@ -1611,7 +1611,7 @@ export class SqliteKnowledgeStore {
       const graph = this.getDocument(args.documentId)
       const targetId = typeof args.targetId === 'string' ? args.targetId : ''
       if (args.action === 'catalog') {
-        // Aggregate within the graph read transaction; directory pages never load answer snapshots.
+        // Default browsing reads only metadata; explicit body queries stream snapshots in the same read transaction.
         const rows = this.db.prepare(`SELECT counts.*, latest.attempt_id AS recordId, latest.base_revision AS baseRevision,
           latest.created_at AS createdAt, json_extract(latest.response_json, '$.title') AS title FROM (
             SELECT model_id AS targetId, COUNT(*) AS recordCount,
@@ -1623,7 +1623,23 @@ export class SqliteKnowledgeStore {
           )`).all(graph?.revision || 0, args.documentId, args.documentId)
         const counts = new Map(rows.map(row => [row.targetId, { recordCount: row.recordCount, currentRecordCount: row.currentRecordCount,
           latestRecord: { id: row.recordId, title: row.title, baseRevision: row.baseRevision, createdAt: row.createdAt } }]))
-        const result = targetMapTools.handle(graph ? { documentId: args.documentId, revision: graph.revision, graph } : null, args, [], Date.now(), 0, [], null, counts)
+        const saved = graph ? { documentId: args.documentId, revision: graph.revision, graph } : null
+        let result = targetMapTools.handle(saved, args, [], Date.now(), 0, [], null, counts)
+        if (!result.error && args.searchIn === 'content' && args.query) {
+          const targets = new Set(graph.nodes.filter(node => ['concept', 'connection_model', 'discrimination_model'].includes(node.type) &&
+            (!args.mode || args.mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === args.mode)).map(node => node.id))
+          const snapshots = this.db.prepare(`SELECT model_id AS targetId, attempt_id AS id, base_revision AS baseRevision, created_at AS createdAt, response_json
+            FROM learning_attempts WHERE document_id = ? AND task_kind = 'target_map' ORDER BY created_at DESC, attempt_id DESC`).iterate(args.documentId)
+          for (const row of snapshots) {
+            if (!targets.has(row.targetId)) continue
+            const map = parseJson(row.response_json, {}), match = targetMapTools.historyContentMatch(map, args.query)
+            if (!match) continue
+            const count = counts.get(row.targetId)
+            count.matchCount = (count.matchCount || 0) + 1
+            count.latestMatch ||= { id: row.id, title: map.title, baseRevision: row.baseRevision, createdAt: row.createdAt, match }
+          }
+          result = targetMapTools.handle(saved, args, [], Date.now(), 0, [], null, counts)
+        }
         this.db.exec('COMMIT')
         return result
       }

@@ -2166,7 +2166,8 @@
             const nodes = saved.graph?.nodes || [], documentId = args.documentId, revision = saved.revision
             if (args.action === 'catalog') {
               const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0, records = args.records === undefined ? 'all' : args.records
-              if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+              const searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn
+              if (!text(query, 256) || !['metadata', 'content'].includes(searchIn) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
               const counts = catalogCounts || new Map()
               if (!catalogCounts) for (const record of allRecords) {
                 if (record.documentId !== documentId) continue
@@ -2175,13 +2176,22 @@
                 if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && record.id.localeCompare(count.latestRecord.id) > 0) {
                   count.latestRecord = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt }
                 }
+                const match = searchIn === 'content' && query ? historyContentMatch(record.map, query) : null
+                if (match) {
+                  count.matchCount = (count.matchCount || 0) + 1
+                  if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && record.id.localeCompare(count.latestMatch.id) > 0) {
+                    count.latestMatch = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt, match }
+                  }
+                }
                 counts.set(record.target.id, count)
               }
               const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
                 (records === 'all' || counts.get(node.id)?.recordCount > 0) &&
-                (!query || [node.text + ' ' + node.id, counts.get(node.id)?.latestRecord?.title || ''].some(value => value.toLowerCase().includes(query.toLowerCase()))))
-              return { version: 1, documentId, revision, records, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
+                (searchIn === 'content' ? !!query && counts.get(node.id)?.matchCount > 0 :
+                  !query || [node.text + ' ' + node.id, counts.get(node.id)?.latestRecord?.title || ''].some(value => value.toLowerCase().includes(query.toLowerCase()))))
+              return { version: 1, documentId, revision, records, searchIn, query, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
                 recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0,
+                ...(searchIn === 'content' ? { matchCount: counts.get(node.id).matchCount, latestMatch: clone(counts.get(node.id).latestMatch) } : {}),
                 latestRecord: counts.get(node.id)?.latestRecord ? clone(counts.get(node.id).latestRecord) : null })) }
             }
             if (!identity(args.targetId)) fail('靶图目标身份无效')
@@ -2272,10 +2282,12 @@
         const validSearch = typeof saved.search === 'string' && saved.search.length <= 256
         const validMode = ['all', 'connection', 'discrimination'].includes(saved.mode)
         const validRecords = saved.records === undefined || ['all', 'saved'].includes(saved.records)
+        const validSearchIn = saved.searchIn === undefined || ['metadata', 'content'].includes(saved.searchIn)
+        const searchIn = validSearchIn ? saved.searchIn || 'metadata' : 'metadata'
         const search = query(saved.search), mode = validMode ? saved.mode : 'all', records = validRecords ? saved.records || 'all' : 'all'
-        const offset = validSearch && validMode && validRecords && Number.isSafeInteger(saved.offset) && saved.offset >= 0 && saved.offset % 20 === 0 ? saved.offset : 0
-        const position = saved.directoryPosition, scope = JSON.stringify([documentId, revision, search, mode, offset, records])
-        const positionMatches = position?.scope === scope || saved.records === undefined && position?.scope === JSON.stringify([documentId, revision, search, mode, offset])
+        const offset = validSearch && validMode && validRecords && validSearchIn && Number.isSafeInteger(saved.offset) && saved.offset >= 0 && saved.offset % 20 === 0 ? saved.offset : 0
+        const position = saved.directoryPosition, scope = JSON.stringify([documentId, revision, search, mode, offset, records, ...(searchIn === 'content' ? [searchIn] : [])])
+        const positionMatches = position?.scope === scope || searchIn === 'metadata' && saved.records === undefined && position?.scope === JSON.stringify([documentId, revision, search, mode, offset])
         const directoryPosition = positionMatches && typeof position.nodeId === 'string' && position.nodeId.trim() && position.nodeId.length <= 4096
           && Number.isFinite(position.fraction) && position.fraction >= 0 && position.fraction <= 1
           ? { scope, nodeId: position.nodeId, fraction: position.fraction } : null
@@ -2287,7 +2299,7 @@
           && (history.searchIn === undefined || ['metadata', 'content'].includes(history.searchIn))
           && typeof history.open === 'boolean' ? { scope: historyScope, offset: history.offset, head: history.head, open: history.open, query: query(history.query), searchIn: history.searchIn || 'metadata' } : null
         // Cache navigation intent only; re-read responses and never restore a save approval.
-        return { documentId, revision, query: query(saved.query), search, mode, records, offset, directoryPosition, targetId, historyPosition,
+        return { documentId, revision, query: query(saved.query), search, searchIn, mode, records, offset, directoryPosition, targetId, historyPosition,
           examplePosition: targetMapExampleBrowseState(saved.examplePosition, documentId, revision, targetId),
           focusRequest: saved.focusRequest || null }
       }
@@ -2427,6 +2439,7 @@
         const [initial] = useState(() => targetMapPageNavigation(restoreState, documentId, revision))
         const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search), [mode, setMode] = useState(initial.mode), [offset, setOffset] = useState(initial.offset)
         const [recordFilter, setRecordFilter] = useState(initial.records)
+        const [catalogSearchIn, setCatalogSearchIn] = useState(initial.searchIn)
         const [localDraftList, setLocalDraftList] = useState(null), [localDraftQuery, setLocalDraftQuery] = useState(''), [localDraftOffset, setLocalDraftOffset] = useState(0)
         const localDraftContext = useRef(null), localDraftDestination = useRef(null)
         const [catalog, setCatalog] = useState(null), [targetId, setTargetId] = useState(initial.targetId), [detail, setDetail] = useState(null)
@@ -2478,11 +2491,11 @@
         const lastFocus = useRef(initial.focusRequest), publish = useRef(onStateChange)
         const directoryRef = useRef(null), directoryPosition = useRef(initial.directoryPosition), catalogScope = useRef(''), directoryContext = useRef(null)
         const panelRef = useRef(null), slotContext = useRef(null)
-        const directoryScope = JSON.stringify([documentId, revision, search, mode, offset, recordFilter])
+        const directoryScope = JSON.stringify([documentId, revision, search, mode, offset, recordFilter, ...(catalogSearchIn === 'content' ? [catalogSearchIn] : [])])
         publish.current = onStateChange
         api.current = call; current.current = { documentId, revision, targetId, draft, active, archive, archiveReference, archiveComparison, confirmed, roundConfirmed }
         const publishBrowseState = () => {
-          const state = targetMapBrowseState({ documentId, revision, query, search, mode, records: recordFilter, offset, targetId,
+          const state = targetMapBrowseState({ documentId, revision, query, search, searchIn: catalogSearchIn, mode, records: recordFilter, offset, targetId,
             focusRequest: lastFocus.current, directoryPosition: directoryPosition.current, historyPosition, examplePosition }, documentId, revision)
           directoryPosition.current = state.directoryPosition; publish.current?.(state)
           if (!alive.current || !active || !current.current.active || current.current.documentId !== documentId || current.current.revision !== revision ||
@@ -2498,13 +2511,14 @@
           } catch { setNavigationWarning('本页导航位置未能保存，刷新后可能需要重新选择目标；草稿存储不受此提示影响。') }
         }
         const rememberDirectory = () => {
-          if (!alive.current || !active || !current.current.active || directoryContext.current?.remember !== rememberDirectory ||
+          if (!alive.current || !active || !current.current.active || directoryContext.current?.catalog !== catalog || directoryContext.current.scope !== directoryScope ||
               !catalog || catalogError || catalogScope.current !== directoryScope) return
           const anchor = readConnectionDirectoryAnchor(directoryRef.current, '[data-target-catalogue-row]', 'targetCatalogueRow')
           if (!anchor) return
-          directoryPosition.current = { scope: directoryScope, ...anchor }; publishBrowseState()
+          // The catalogue can stay unchanged while query text or the selected target changes.
+          directoryPosition.current = { scope: directoryScope, ...anchor }; directoryContext.current.publish()
         }
-        directoryContext.current = { scope: directoryScope, ready: active && !!catalog && !catalogError, remember: rememberDirectory }
+        directoryContext.current = { scope: directoryScope, catalog, ready: active && !!catalog && !catalogError, remember: rememberDirectory, publish: publishBrowseState }
         useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++ } }, [])
         const copy = value => JSON.parse(JSON.stringify(value))
         const clearHistory = () => { historyRequest.current?.abort(); historyRequest.current = null; historyRetry.current = null; setHistoryPage(null); setHistoryError(null); setHistoryLoading(false) }
@@ -2640,14 +2654,15 @@
         }, [focusRequest, documentId, revision, active])
         useEffect(() => {
           publishBrowseState()
-        }, [documentId, revision, query, search, mode, recordFilter, offset, targetId, focusRequest, active, historyPosition, examplePosition])
+        }, [documentId, revision, query, search, catalogSearchIn, mode, recordFilter, offset, targetId, focusRequest, active, historyPosition, examplePosition])
         useEffect(() => {
           if (!active) return
           const abort = new AbortController(); catalogScope.current = ''; setCatalog(null); setCatalogError(null)
-          api.current({ action: 'catalog', documentId, expectedRevision: revision, query: search, mode, records: recordFilter, offset }, abort.signal).then(result => {
+          api.current({ action: 'catalog', documentId, expectedRevision: revision, query: search, searchIn: catalogSearchIn, mode, records: recordFilter, offset }, abort.signal).then(result => {
             if (abort.signal.aborted) return
             if (result?.error) throw result.error
             if (result?.version !== 1 || result.documentId !== documentId || result.revision !== revision || result.offset !== offset || result.records !== recordFilter ||
+                (result.searchIn === undefined ? 'metadata' : result.searchIn) !== catalogSearchIn || catalogSearchIn === 'content' && result.query !== search ||
                 !Number.isSafeInteger(result.total) || result.total < 0 || !Array.isArray(result.items) || result.items.length !== Math.min(20, Math.max(0, result.total - offset)) ||
                 new Set(result.items.map(item => item?.id)).size !== result.items.length || result.items.some(item => !item || typeof item.id !== 'string' ||
                   !item.id.trim() || item.id.length > 4096 || typeof item.text !== 'string' || !['concept', 'connection_model', 'discrimination_model'].includes(item.type) ||
@@ -2657,11 +2672,28 @@
                     !item.latestRecord.id.trim() || item.latestRecord.id.length > 120 || typeof item.latestRecord.title !== 'string' ||
                     !item.latestRecord.title.trim() || item.latestRecord.title.length > 4000 || !Number.isSafeInteger(item.latestRecord.baseRevision) ||
                     item.latestRecord.baseRevision < 1 || item.latestRecord.baseRevision > revision || !Number.isSafeInteger(item.latestRecord.createdAt) ||
-                    item.latestRecord.createdAt < 0 || item.latestRecord.baseRevision === revision && item.currentRecordCount === 0))) throw new Error('靶图目录响应身份不一致')
+                    item.latestRecord.createdAt < 0 || item.latestRecord.baseRevision === revision && item.currentRecordCount === 0) ||
+                  catalogSearchIn === 'content' && (!search || !Number.isSafeInteger(item.matchCount) || item.matchCount < 1 || item.matchCount > item.recordCount ||
+                    !item.latestMatch || typeof item.latestMatch.id !== 'string' || !item.latestMatch.id.trim() || item.latestMatch.id.length > 120 ||
+                    typeof item.latestMatch.title !== 'string' || !item.latestMatch.title.trim() || item.latestMatch.title.length > 4000 ||
+                    !Number.isSafeInteger(item.latestMatch.baseRevision) || item.latestMatch.baseRevision < 1 || item.latestMatch.baseRevision > revision ||
+                    !Number.isSafeInteger(item.latestMatch.createdAt) || item.latestMatch.createdAt < 0 ||
+                    !TARGET_MAP_TOOLS.historyMatches(item.latestMatch, search, 'content')))) throw new Error('靶图目录响应身份不一致')
             catalogScope.current = directoryScope; setCatalog(result)
           }).catch(value => { if (!abort.signal.aborted) { setCatalogError(value); if (value.code === 'revision_conflict') setError(value) } })
           return () => abort.abort()
-        }, [active, documentId, revision, search, mode, recordFilter, offset, reload, catalogReload])
+        }, [active, documentId, revision, search, catalogSearchIn, mode, recordFilter, offset, reload, catalogReload])
+        const openCatalogTarget = item => {
+          if (!alive.current || !active || !current.current.active || saving || writeBusy.current || catalogError || !catalog?.items.includes(item) ||
+              catalogScope.current !== directoryScope || directoryContext.current?.catalog !== catalog || directoryContext.current.scope !== directoryScope) return
+          if (catalogSearchIn === 'content') {
+            clearHistory(); cancelRecord(); setArchive(null); setConfirmed(false); setRoundConfirmed(false)
+            const scope = JSON.stringify([documentId, revision, item.id])
+            setHistoryPosition({ scope, offset: 0, head: item.latestRecord.id, open: true, query: search, searchIn: 'content', locate: true })
+            setHistoryInput({ scope, value: search, searchIn: 'content' })
+          }
+          if (current.current.targetId !== item.id) { setDetail(null); setArchive(null); setTargetId(item.id) }
+        }
         useEffect(() => {
           const element = directoryRef.current
           if (!element || !active || !catalog || catalogError || catalogScope.current !== directoryScope) return
@@ -2882,6 +2914,11 @@
           // The saved head is a read fence, not a cached response or permission to accept a newer list.
           if (active && historyIntent?.open && historyNeedsRead && !historyError && !historyRequest.current && detailReady.current === detailScope) loadHistory(historyIntent.offset, historyIntent.head)
         }, [active, detail, loading, saving, historyPosition, historyNeedsRead, historyError, detailScope])
+        useEffect(() => {
+          if (!active || loading || !historyIntent?.locate || detailReady.current !== detailScope) return
+          setHistoryPosition(value => value === historyIntent ? { ...value, locate: false } : value)
+          setRecordNavigation({ scope: recordScope, destination: 'history', explicit: true })
+        }, [active, loading, historyPosition, detailScope])
         const toggleHistory = event => {
           if (!sameContext({ documentId, targetId, revision }) || !current.current.active) return
           const open = event.currentTarget.open
@@ -3476,7 +3513,9 @@
           h('div', { className: 'kg-target-layout' },
             h('aside', { className: 'kg-target-catalogue', 'aria-label': '靶图目标目录' },
               h('form', { onSubmit: event => { event.preventDefault(); setSearch(query); setOffset(0) } },
-                h('input', { type: 'search', 'aria-label': '搜索靶图目标', placeholder: '目标或最近保存标题', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
+                h('input', { type: 'search', 'aria-label': '搜索靶图目标', placeholder: catalogSearchIn === 'content' ? '已保存正文中的文字' : '目标或最近保存标题', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
+                h('select', { 'aria-label': '靶图目录检索范围', value: catalogSearchIn, onChange: event => { if (['metadata', 'content'].includes(event.target.value)) { setCatalogSearchIn(event.target.value); setOffset(0) } } },
+                  h('option', { value: 'metadata' }, '目标与最近标题'), h('option', { value: 'content' }, '已保存正文 · 全部修订')),
                 h('select', { 'aria-label': '靶图类型', value: mode, onChange: event => { setMode(event.target.value); setOffset(0) } },
                   h('option', { value: 'all' }, '全部目标'), h('option', { value: 'connection' }, '联结靶图'), h('option', { value: 'discrimination' }, '概念靶图')),
                 h('select', { 'aria-label': '靶图个人记录', value: recordFilter, onChange: event => { setRecordFilter(event.target.value); setOffset(0) } },
@@ -3485,11 +3524,15 @@
               button('刷新靶图目录', () => setCatalogReload(value => value + 1), saving),
               catalogError ? h('div', { role: 'alert' }, catalogError.message || String(catalogError),
                 button('重试读取靶图目录', () => setCatalogReload(value => value + 1), saving || catalogError.code === 'revision_conflict')) :
-                catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, '全图目标 ' + catalog.total + ' 个 · 当前 ' + catalog.items.length + ' 个') : h('p', { role: 'status' }, '正在读取目标…'),
+                catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, catalogSearchIn === 'content' && !search ? '输入正文检索词' :
+                  (catalogSearchIn === 'content' ? '正文命中目标 ' : '全图目标 ') + catalog.total + ' 个 · 当前 ' + catalog.items.length + ' 个') : h('p', { role: 'status' }, '正在读取目标…'),
               h('ul', { ref: directoryRef, className: 'kg-target-directory', 'aria-label': '靶图目标列表', tabIndex: 0, onScroll: rememberDirectory },
-                (catalog?.items || []).map(item => h('li', { key: item.id, 'data-target-catalogue-row': item.id }, button(item.text, () => { if (targetId !== item.id) { setDetail(null); setArchive(null); setTargetId(item.id) } }, saving,
+                (catalog?.items || []).map(item => h('li', { key: item.id, 'data-target-catalogue-row': item.id }, button(item.text, () => openCatalogTarget(item), saving,
                 { 'aria-pressed': targetId === item.id, 'aria-label': '打开靶图 ' + item.id }), h('small', null, item.id + ' · ' + (item.type === 'connection_model' ? '联结' : '判别')),
                 h('small', { style: { display: 'block' } }, item.recordCount ? '已保存个人记录 ' + item.recordCount + ' · 当前版 ' + item.currentRecordCount + ' · 其他版 ' + (item.recordCount - item.currentRecordCount) : '尚无已保存个人记录'),
+                item.latestMatch ? h('div', { 'data-target-catalogue-match': item.latestMatch.id },
+                  h('small', null, '命中 ' + item.matchCount + ' 份修订 · 最近命中：知识图第 ' + item.latestMatch.baseRevision + ' 版 · ' + TARGET_MAP_TOOLS.historyContentFields[item.latestMatch.match.field]),
+                  h('p', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, item.latestMatch.match.excerpt)) : null,
                 item.latestRecord ? h('details', { key: item.latestRecord.id, 'data-target-catalogue-record': item.latestRecord.id,
                   open: !!search && item.latestRecord.title.toLowerCase().includes(search.toLowerCase()) },
                   h('summary', null, '最近保存标题 · 知识图第 ' + item.latestRecord.baseRevision + ' 版'),
@@ -3764,7 +3807,7 @@
                       onChange: event => { setRoundConfirmed(event.target.checked); setConfirmed(false) } }), '保留旧记录，沿用上层表述，开启空白例组'),
                     button('开启新一轮', () => save(true), frozen || !roundConfirmed || !cleanForRound() || !draft.roundReason?.trim())) : null) : null) : !loading ? h('p', null, '选择一个概念或模型') : null,
               detail ? h('details', { key: historyScope, 'aria-label': '个人靶图修订记录', open: historyIntent?.open || false, onToggle: toggleHistory },
-                h('summary', null, '个人修订记录 · ' + (historyNeedsRead ? '第 ' + (historyOffset / 20 + 1) + ' 页待读取' : (historyOffset ? '第 ' + (historyOffset + 1) + '-' + (historyOffset + historyItems.length) : '最近 ' + historyItems.length) + ' / ' + historyTotal + ' 版')),
+                h('summary', { 'data-target-record-view': 'history', tabIndex: 0 }, '个人修订记录 · ' + (historyNeedsRead ? '第 ' + (historyOffset / 20 + 1) + ' 页待读取' : (historyOffset ? '第 ' + (historyOffset + 1) + '-' + (historyOffset + historyItems.length) : '最近 ' + historyItems.length) + ' / ' + historyTotal + ' 版')),
                 h('div', { className: 'kg-target-toolbar', style: { alignItems: 'end' } },
                   h('label', { style: { display: 'grid', gap: 4, flex: '1 1 180px', margin: 0 } }, '检索范围', h('select', { 'aria-label': '修订检索范围', value: historyQueryIn, disabled: saving || loading || historyLoading,
                     onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && ['metadata', 'content'].includes(event.target.value)) setHistoryInput({ scope: historyScope, value: historyQuery, searchIn: event.target.value }) } },

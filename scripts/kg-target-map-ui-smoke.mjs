@@ -951,7 +951,7 @@ owner.unmount()
 const navigationKey = (documentId = doc.documentId, revision = 1) => 'dsh-kg-target-navigation:' + JSON.stringify([documentId, revision])
 const refreshValue = refreshNavigation.get(navigationKey()), refreshState = JSON.parse(refreshValue)
 assert.deepEqual(Object.keys(refreshState).sort(), ['state', 'version'])
-assert.deepEqual(Object.keys(refreshState.state).sort(), ['directoryPosition', 'documentId', 'examplePosition', 'historyPosition', 'mode', 'offset', 'query', 'records', 'revision', 'search', 'targetId'])
+assert.deepEqual(Object.keys(refreshState.state).sort(), ['directoryPosition', 'documentId', 'examplePosition', 'historyPosition', 'mode', 'offset', 'query', 'records', 'revision', 'search', 'searchIn', 'targetId'])
 for (const options of [{ documentId: 'other-document' }, { revision: 2 }, { navigation: new Map() }]) {
   owner = mount({ navigation: new Map(refreshNavigation), ...options })
   assert(!owner.requests.some(item => item.args.action === 'read'), 'A different document, graph version or browser tab must not inherit navigation')
@@ -1273,6 +1273,78 @@ doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
 await submitTitleQuery('窗口中的新标题')
 assert(text(all(owner.tree, item => item.props['data-target-catalogue-record'] === latestTitleId)[0]).includes('知识图第 1 版'))
 assert.equal(writes, personalTitleWrites + 1)
+owner.unmount()
+
+doc.revision = 1; storage.clear(); records = []
+const catalogBodyTerm = 'ä_%<b>', catalogBodyNavigation = new Map(), catalogBodyWrites = writes
+for (const [targetId, id] of [['motion', 'body-motion-old'], ['externality', 'body-concept-old']]) {
+  const value = tools.blank(doc.graph.nodes.find(item => item.id === targetId))
+  value.mapping = 'İ 未知方向 Ä_%<b> 多个必要输入与限定语尚需核对'; value.title = '同名个人靶图'
+  const saved = tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 1, targetId,
+    id, parentId: '', reason: '', confirm: true, map: value }, records, 100).saved
+  assert(saved); records.push(saved)
+}
+doc.revision = 2
+records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 2, targetId: 'motion',
+  id: 'body-motion-new', parentId: '', reason: '', confirm: true, map: tools.blank(doc.graph.nodes.find(item => item.id === 'motion')) }, records, 200).saved)
+const catalogBodyRecords = JSON.stringify(records)
+owner = mount({ revision: 2, directory: true, recordNavigation: true, focusRequest: { ...focus, revision: 2 }, navigation: catalogBodyNavigation }); await owner.load()
+owner.change('映射规律表述', '跨靶图检索期间保留的未保存草稿')
+owner.change('确认保存个人靶图', undefined, true)
+const catalogBodyKey = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 2]), catalogBodyDraft = storage.get(catalogBodyKey)
+await submitTitleQuery(catalogBodyTerm); assert.equal(owner.directory.rows.length, 0)
+owner.change('靶图目录检索范围', 'content'); await owner.load()
+assert.deepEqual(owner.directory.rows.map(row => row.dataset.targetCatalogueRow), ['motion', 'externality'])
+assert(owner.control('确认保存个人靶图').props.checked, 'Search alone does not revoke save approval or alter drafts')
+const catalogBodyExcerpt = all(owner.tree, item => item.props['data-target-catalogue-match'] === 'body-motion-old')[0]
+assert(text(catalogBodyExcerpt).includes('命中 1 份修订')); assert(text(catalogBodyExcerpt).includes('知识图第 1 版'))
+assert(text(catalogBodyExcerpt).includes('Ä_%<b>')); assert.equal(all(catalogBodyExcerpt, item => item.type === 'b' || item.props.dangerouslySetInnerHTML).length, 0)
+const sameCatalogRenderClick = owner.control('打开靶图 motion').props.onClick
+owner.render(); sameCatalogRenderClick(); owner.render(); await owner.load(); await owner.load()
+assert(owner.control('个人靶图修订记录').props.open, 'A no-op React render must not invalidate a committed handler for the same catalogue snapshot')
+assert.equal(owner.control('修订检索范围').props.value, 'content'); assert.equal(owner.control('搜索个人修订记录').props.value, catalogBodyTerm)
+assert(owner.control('个人靶图修订记录').props.open)
+assert.equal(owner.focused, 'data-target-record-view:history', 'Opening a body result locates the filtered revision list instead of the unrelated current draft')
+const catalogHistoryRead = owner.requests.filter(item => item.args.action === 'history').at(-1)
+assert.equal(catalogHistoryRead.args.historyHead, 'body-motion-new', 'Fence by the full latest record, not the latest matching record')
+owner.click('查看命中字段'); await owner.load()
+assert(owner.control('映射规律表述').props.disabled); assert(owner.control('映射规律表述').props.value.includes('Ä_%<b>'))
+owner.click('返回未保存草稿'); assert.equal(storage.get(catalogBodyKey), catalogBodyDraft)
+owner.click('打开靶图 externality'); await owner.load(); await owner.load()
+assert.equal(owner.control('搜索个人修订记录').props.value, catalogBodyTerm)
+assert.equal(owner.requests.filter(item => item.args.action === 'history').at(-1).args.targetId, 'externality')
+sameCatalogRenderClick(); owner.render(); await owner.load(); await owner.load()
+assert.equal(owner.requests.filter(item => item.args.action === 'read').at(-1).args.targetId, 'motion', 'An unchanged catalogue action uses the current target, not its old render selection')
+assert.equal(owner.control('映射规律表述').props.value, '跨靶图检索期间保留的未保存草稿')
+assert.equal(storage.get(catalogBodyKey), catalogBodyDraft)
+for (const mutate of [
+  value => { value.searchIn = 'metadata' }, value => { value.query = 'other-query' },
+  value => { value.items[0].matchCount = 0 }, value => { value.items[0].matchCount = 9 },
+  value => { delete value.items[0].latestMatch }, value => { value.items[0].latestMatch.baseRevision = 3 },
+  value => { value.items[0].latestMatch.id = ' ' }, value => { value.items[0].latestMatch.match.field = '__proto__' },
+  value => { value.items[0].latestMatch.match.excerpt = 'Unrelated text' },
+]) {
+  owner.click('刷新靶图目录')
+  const request = owner.pending().find(item => item.args.action === 'catalog'), response = tools.handle(doc, request.args, records)
+  mutate(response); await owner.resolve(request, response)
+  assert.equal(owner.directory.rows.length, 0); assert(text(owner.tree).includes('靶图目录响应身份不一致'))
+  assert.equal(storage.get(catalogBodyKey), catalogBodyDraft)
+  owner.click('重试读取靶图目录'); await owner.load()
+}
+const staleCatalogOpen = owner.control('打开靶图 externality').props.onClick
+await submitTitleQuery('not found'); const beforeStaleCatalog = owner.requests.length
+staleCatalogOpen(); owner.render(); assert.equal(owner.requests.length, beforeStaleCatalog)
+await submitTitleQuery(catalogBodyTerm)
+owner.unmount(); owner = mount({ revision: 2, directory: true, recordNavigation: true, navigation: catalogBodyNavigation }); await owner.load(); await owner.load()
+assert.equal(owner.control('靶图目录检索范围').props.value, 'content'); assert.equal(owner.control('搜索靶图目标').props.value, catalogBodyTerm)
+assert.equal(storage.get(catalogBodyKey), catalogBodyDraft); assert(!owner.control('确认保存个人靶图').props.checked)
+assert.equal(JSON.stringify(records), catalogBodyRecords); assert.equal(writes, catalogBodyWrites)
+records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 2, targetId: 'motion',
+  id: 'body-motion-appended', parentId: 'body-motion-new', reason: '新修订不命中', confirm: true,
+  map: tools.blank(doc.graph.nodes.find(item => item.id === 'motion')) }, records, 300).saved)
+owner.click('打开靶图 motion'); await owner.load()
+assert(text(owner.tree).includes('修订记录有更新'), 'A nonmatching append invalidates the catalogue-to-history head fence')
+assert.equal(storage.get(catalogBodyKey), catalogBodyDraft)
 owner.unmount()
 
 doc.revision = 1; storage.clear(); records = []
@@ -4909,6 +4981,7 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   savedCatalogueFilterAndCounts: true, savedCatalogueDraftPreserved: true, savedCatalogueNavigationAndLegacy: true,
   savedCatalogueResponseFence: true, savedCatalogueReadOnly: true, personalTitleDiscovery: true,
   personalTitleLiteralRendering: true, personalTitleSaveRefresh: true, personalTitleResponseFence: true, personalTitleOldVersion: true,
+  catalogBodyDiscoveryAndHandoff: true, catalogBodyDraftAndNavigation: true, catalogBodyResponseAndAppendFences: true,
   historyTitleAndReasonSearch: true, historySearchThreePages: true, historySearchNavigation: true,
   historySearchRetryAndResponseFence: true, historySearchLiteralAndIdentity: true, historySearchDraftAndNoWrites: true,
   historyContentSearchAndExcerpts: true, historyContentScopeAndNavigation: true, historyContentResponseFenceAndDrafts: true,

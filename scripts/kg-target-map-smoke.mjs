@@ -53,6 +53,26 @@ for (const query of ['a_b%', '<img', '可能适用']) {
 assert.equal(read({ action: 'catalog', query: 'A%B' }, titleRecords).total, 0, 'Search characters are literal, not SQL wildcards')
 assert.equal(read({ action: 'catalog', query: literalTitle, mode: 'connection' }, titleRecords).total, 0)
 assert.equal(JSON.stringify(titleRecords), titleBytes, 'Catalogue metadata is detached from private records')
+const bodyRecords = catalogueRecords.map((record, index) => ({ ...record, baseRevision: 1,
+  map: { ...tools.blank({ type: 'concept', text: '同名标题' }), mapping: index === 1 ? '' : 'İ 未知方向 Ä_%<b> 可能成立',
+    conditions: index === 1 ? '多个必要输入 Ä_%<b> 尚未齐备' : '' } }))
+bodyRecords.push({ ...bodyRecords[0], id: 'distinct-target', target: { id: 'speed-after' } })
+bodyRecords.push({ ...bodyRecords[1], id: 'latest-without-hit', createdAt: 9, map: tools.blank({ type: 'concept', text: '同名标题' }) })
+const bodyQuery = { action: 'catalog', searchIn: 'content', query: 'ä_%<b>' }, bodyBytes = JSON.stringify(bodyRecords)
+const bodyCatalogue = read(bodyQuery, bodyRecords)
+assert.deepEqual(bodyCatalogue.items.map(item => item.id), ['speed-before', 'speed-after'], 'Find older saved body text across targets, independent of names and latest titles')
+assert.equal(bodyCatalogue.searchIn, 'content'); assert.equal(bodyCatalogue.query, bodyQuery.query)
+assert.equal(bodyCatalogue.items[0].matchCount, 2, 'Count saved records, not matching fields or occurrences')
+assert.equal(bodyCatalogue.items[0].latestMatch.id, 'catalogue-1')
+assert.equal(bodyCatalogue.items[0].latestMatch.match.field, 'conditions')
+assert.equal(bodyCatalogue.items[0].latestRecord.id, 'latest-without-hit', 'The latest matching record is not necessarily the latest saved record')
+assert.deepEqual(read(bodyQuery, bodyRecords.slice().reverse()), bodyCatalogue)
+assert.equal(read({ ...bodyQuery, query: '' }, bodyRecords).total, 0, 'An empty body query must not read or match every private snapshot')
+assert.equal(read({ ...bodyQuery, query: '同名标题' }, bodyRecords).total, 0, 'Body search does not silently expand to titles')
+assert.equal(read({ ...bodyQuery, query: 'a%b' }, bodyRecords).total, 0, 'Wildcards are literal')
+assert.equal(read({ ...bodyQuery, mode: 'connection' }, bodyRecords).total, 0)
+for (const searchIn of [null, true, 'semantic', {}]) assert.equal(read({ ...bodyQuery, searchIn }, bodyRecords).error?.code, 'invalid_input')
+bodyCatalogue.items[0].latestMatch.match.excerpt = 'Changed response'; assert.equal(JSON.stringify(bodyRecords), bodyBytes)
 assert.equal(read({ action: 'catalog' }).items[0].latestRecord, null)
 assert(read({ action: 'read', targetId: 'unknown' }).template.slots.every(slot => slot.name === ''), 'Unknown roles must not become a guessed direction')
 assert.equal(read({ action: 'read', targetId: 'externality' }).template.mode, 'discrimination')
@@ -534,7 +554,8 @@ try {
   const catalogArgs = { action: 'catalog', documentId: catalogDocumentId, expectedRevision: 1, records: 'saved' }
   assert.equal((await call(catalogArgs)).total, 0, 'Another document with the same motion ID has no personal target records')
   const saveCatalog = (targetId, expectedRevision = 1) => call({ ...request, documentId: catalogDocumentId, targetId, expectedRevision,
-    id: 'catalogue-' + targetId, map: { ...tools.blank(catalogGraph.nodes.find(node => node.id === targetId)), title: '个人标题 ' + targetId } })
+    id: 'catalogue-' + targetId, map: { ...tools.blank(catalogGraph.nodes.find(node => node.id === targetId)), title: '个人标题 ' + targetId,
+      conditions: '单位、对象时间、多个必要输入 Ä_%<b> 尚未核对；可能成立，并非证明' } })
   assert((await saveCatalog('target-800')).saved)
   assert((await saveCatalog('target-844')).saved)
   catalogGraph.nodes.pop()
@@ -565,6 +586,29 @@ try {
   assert.equal((await call({ ...catalogArgs, expectedRevision: 1 })).error.code, 'revision_conflict')
   assert.deepEqual(store.getCanonicalDocument(catalogDocumentId), catalogBefore)
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), catalogRows, 'Catalogues never write records or promote mastery')
+  const bodyArgs = { ...catalogArgs, searchIn: 'content', query: 'ä_%<b>' }, bodyPages = []
+  for (const offset of [0, 20, 40]) {
+    const page = await call({ ...bodyArgs, offset }); assert.equal(page.total, 43); bodyPages.push(...page.items)
+    assert(page.items.every(item => item.matchCount === 1 && item.latestMatch.match.field === 'conditions' &&
+      Object.keys(item.latestMatch).sort().join() === 'baseRevision,createdAt,id,match,title'))
+  }
+  assert.deepEqual(bodyPages.map(item => item.id), pages.map(item => item.id), 'Body queries cross the 800-node canvas boundary and page by target identity')
+  assert.equal(bodyPages[0].latestMatch.baseRevision, 1)
+  assert(!bodyPages.some(item => ['target-801', 'target-844'].includes(item.id)), 'Same name does not imply a saved match; removed targets remain excluded')
+  for (const query of ['', 'a%b', '个人标题', 'response_json']) assert.equal((await call({ ...bodyArgs, query })).total, 0)
+  assert.equal((await call({ ...bodyArgs, mode: 'connection' })).total, 0)
+  let bodyReads = 0
+  try {
+    DatabaseSync.prototype.prepare = function(sql, ...args) {
+      if (sql.startsWith('SELECT model_id AS targetId')) bodyReads++
+      return originalPrepare.call(this, sql, ...args)
+    }
+    await call(catalogArgs); await call({ ...bodyArgs, query: '' })
+    assert.equal((await call({ ...bodyArgs, expectedRevision: 1 })).error.code, 'revision_conflict')
+    for (const searchIn of [null, true, 'semantic']) assert.equal((await call({ ...bodyArgs, searchIn })).error.code, 'invalid_input')
+    assert.equal(bodyReads, 0, 'Default, empty, invalid and stale requests do not stream private bodies')
+    await call(bodyArgs); assert.equal(bodyReads, 1)
+  } finally { DatabaseSync.prototype.prepare = originalPrepare }
   const catalogWriter = await openSqliteStore(path)
   let catalogInterleaved = false
   try {
@@ -584,9 +628,10 @@ try {
       }
       return statement
     }
-    const snapshot = await call(catalogArgs)
+    const snapshot = await call(bodyArgs)
     assert(catalogInterleaved); assert.equal(snapshot.revision, 2); assert.equal(snapshot.items[1].currentRecordCount, 1)
     assert.equal(snapshot.items[1].latestRecord.baseRevision, 2)
+    assert.equal(snapshot.items[1].latestMatch.baseRevision, 2, 'Body excerpt and counts share the graph revision read transaction')
   } finally { DatabaseSync.prototype.prepare = originalPrepare; catalogWriter.close() }
   assert.equal((await call(catalogArgs)).error.code, 'revision_conflict')
   const revisedCatalog = await call({ ...catalogArgs, expectedRevision: 3 })
@@ -605,6 +650,12 @@ try {
   assert.equal((await call({ ...latestQuery, documentId: fixture.documentId, expectedRevision: 2 })).total, 0)
   const oldNamedRecord = await call({ ...latestQuery, action: 'record', targetId: 'target-800', recordId: 'catalogue-target-800' })
   assert.equal(oldNamedRecord.record.map.title, '个人标题 target-800'); assert.equal(oldNamedRecord.stale, true)
+  const olderBody = await call({ ...bodyArgs, expectedRevision: 3 })
+  assert.equal(olderBody.total, 43); assert.equal(olderBody.items[0].recordCount, 2)
+  assert.equal(olderBody.items[0].latestRecord.id, 'catalogue-renamed')
+  assert.equal(olderBody.items[0].latestMatch.id, 'catalogue-target-800'); assert.equal(olderBody.items[0].latestMatch.baseRevision, 1)
+  const hitHistory = await call({ ...bodyArgs, expectedRevision: 3, action: 'history', targetId: 'target-800', historyHead: olderBody.items[0].latestRecord.id })
+  assert.equal(hitHistory.historyTotal, 1); assert.equal(hitHistory.history[0].id, 'catalogue-target-800')
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), renamedRows)
   assert.deepEqual(store.getCanonicalDocument(fixture.documentId), beforeRoundGraph)
 } finally {
@@ -624,4 +675,5 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,
   savedCataloguePages: 3, savedCatalogueSnapshot: true, savedCatalogueReadOnly: true,
-  latestPersonalTitleSearch: true, latestTitleIdentityAndVersion: true, latestTitleMetadataOnly: true, latestTitleReadOnly: true }))
+  latestPersonalTitleSearch: true, latestTitleIdentityAndVersion: true, latestTitleMetadataOnly: true, latestTitleReadOnly: true,
+  catalogBodyAcrossTargetsAndVersions: true, catalogBodyLiteralPagesAndIdentity: true, catalogBodyExplicitReadsAndSnapshot: true }))

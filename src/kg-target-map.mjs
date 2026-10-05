@@ -161,7 +161,8 @@ export function createTargetMapTools() {
       const nodes = saved.graph?.nodes || [], documentId = args.documentId, revision = saved.revision
       if (args.action === 'catalog') {
         const query = args.query ?? '', mode = args.mode ?? 'all', offset = args.offset ?? 0, records = args.records === undefined ? 'all' : args.records
-        if (!text(query, 256) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
+        const searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn
+        if (!text(query, 256) || !['metadata', 'content'].includes(searchIn) || !['all', 'connection', 'discrimination'].includes(mode) || !['all', 'saved'].includes(records) || !Number.isSafeInteger(offset) || offset < 0) fail('靶图目录筛选无效')
         const counts = catalogCounts || new Map()
         if (!catalogCounts) for (const record of allRecords) {
           if (record.documentId !== documentId) continue
@@ -170,13 +171,22 @@ export function createTargetMapTools() {
           if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && record.id.localeCompare(count.latestRecord.id) > 0) {
             count.latestRecord = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt }
           }
+          const match = searchIn === 'content' && query ? historyContentMatch(record.map, query) : null
+          if (match) {
+            count.matchCount = (count.matchCount || 0) + 1
+            if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && record.id.localeCompare(count.latestMatch.id) > 0) {
+              count.latestMatch = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt, match }
+            }
+          }
           counts.set(record.target.id, count)
         }
         const items = nodes.filter(node => types.includes(node.type) && (mode === 'all' || (node.type === 'connection_model' ? 'connection' : 'discrimination') === mode) &&
           (records === 'all' || counts.get(node.id)?.recordCount > 0) &&
-          (!query || [node.text + ' ' + node.id, counts.get(node.id)?.latestRecord?.title || ''].some(value => value.toLowerCase().includes(query.toLowerCase()))))
-        return { version: 1, documentId, revision, records, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
+          (searchIn === 'content' ? !!query && counts.get(node.id)?.matchCount > 0 :
+            !query || [node.text + ' ' + node.id, counts.get(node.id)?.latestRecord?.title || ''].some(value => value.toLowerCase().includes(query.toLowerCase()))))
+        return { version: 1, documentId, revision, records, searchIn, query, total: items.length, offset, items: items.slice(offset, offset + 20).map(node => ({ id: node.id, text: node.text, type: node.type,
           recordCount: counts.get(node.id)?.recordCount || 0, currentRecordCount: counts.get(node.id)?.currentRecordCount || 0,
+          ...(searchIn === 'content' ? { matchCount: counts.get(node.id).matchCount, latestMatch: clone(counts.get(node.id).latestMatch) } : {}),
           latestRecord: counts.get(node.id)?.latestRecord ? clone(counts.get(node.id).latestRecord) : null })) }
       }
       if (!identity(args.targetId)) fail('靶图目标身份无效')
