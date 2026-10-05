@@ -178,6 +178,24 @@ for (const [field, path] of Object.entries(fieldPaths)) {
 }
 for (const query of ['"version"', 'self_reported_new', 'outcomeId', '__not_a_field__']) assert.equal(tools.historyContentMatch(map, query), null, 'Search field values, not JSON structure or enum tags')
 assert.equal(typeof tools.historyContentMatches, 'function', 'Every matching field must remain reachable, not just the first one')
+assert.equal(typeof tools.historyTextMatches, 'function', 'Saved fields need original-text occurrence offsets, not only a first excerpt')
+for (const [value, query, expected] of [
+  ['Aa aA aa', 'aA', [[0, 2], [3, 5], [6, 8]]],
+  ['aaaaa', 'aa', [[0, 2], [2, 4]]],
+  ['İX İx', 'x', [[1, 2], [4, 5]]],
+  ['İİ', 'i', [[0, 1], [1, 2]]],
+  ['İİ', '\u0307', [[0, 1], [1, 2]]],
+  ['ΟΣ ΟΣ', 'ος', [[0, 2], [3, 5]]],
+  ['🙂x🙂x', '🙂X', [[0, 3], [3, 6]]],
+  ['%_<b>\r\n%_<b>\r\n', '%_<B>\r\n', [[0, 7], [7, 14]]],
+  ['a-b a b', 'ab', []], ['e\u0301 é', 'é', [[3, 4]]],
+  ['x', '', []], ['', 'x', []], [undefined, 'x', []]
+]) {
+  const ranges = [...tools.historyTextMatches(value, query)].map(({ start, end }) => [start, end])
+  assert.deepEqual(ranges, expected, JSON.stringify([value, query]))
+  assert(ranges.every(([start, end], index) => start < end && (!index || start >= ranges[index - 1][1])))
+}
+assert.equal([...tools.historyTextMatches('x'.repeat(6000), 'X')].length, 6000, 'No silent occurrence truncation')
 {
   const snapshot = structuredClone(map), query = '多字段 Ä_%<b>\n', expected = []
   for (const [field, path] of Object.entries(fieldPaths)) {
@@ -601,6 +619,7 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   historyMetadataSearch: true, historySearchLiteralUnicode: true, historySearchAllVersions: true, historySearchUnmatchedAppendFence: true,
   historyContentFieldsAndExcerpts: true, historyContentLiteralAndIdentity: true, historyContentHttpPagingAndSnapshot: true,
   historyAllFieldsAndOrder: true, historyFieldCountNotOccurrences: true, historyFortyExamplesUntruncated: true,
+  historyOriginalOccurrenceRanges: true, historyOccurrenceUnicodeAndLiteral: true, historyOccurrenceNoTruncation: true,
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,

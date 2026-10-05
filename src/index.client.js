@@ -3296,20 +3296,30 @@ export default function clientPlugin() {
             yield ['feedback', item.feedback?.text, ['examples', item.id, 'feedback', 'text']]; yield ['feedbackSource', item.feedback?.source, ['examples', item.id, 'feedback', 'source']]
           }
         }
-        function* historyContentMatches(map, query) {
-          if (!query) return
-          const needle = query.toLowerCase()
-          for (const [field, value, path] of historyContentValues(map)) {
-            if (typeof value !== 'string') continue
-            const index = value.toLowerCase().indexOf(needle)
-            if (index < 0) continue
-            // Case folding can expand characters. Convert folded offsets before taking an original-text excerpt.
-            let folded = 0, start = 0, end = 0
-            for (const char of value) {
-              if (folded <= index) start = end
-              end += char.length; folded += char.toLowerCase().length
-              if (folded >= index + needle.length) break
+        function* historyTextMatches(value, query) {
+          if (typeof value !== 'string' || !query) return
+          const haystack = value.toLowerCase(), needle = query.toLowerCase()
+          let folded = 0, end = 0, index
+          // Search the whole lowercase string (including final sigma), but return intact original code points.
+          while ((index = haystack.indexOf(needle, folded)) >= 0) {
+            while (end < value.length) {
+              const char = String.fromCodePoint(value.codePointAt(end)), length = char.toLowerCase().length
+              if (folded + length > index) break
+              end += char.length; folded += length
             }
+            const start = end
+            while (folded < index + needle.length) {
+              const char = String.fromCodePoint(value.codePointAt(end))
+              end += char.length; folded += char.toLowerCase().length
+            }
+            yield { start, end }
+          }
+        }
+        function* historyContentMatches(map, query) {
+          for (const [field, value, path] of historyContentValues(map)) {
+            const match = historyTextMatches(value, query).next().value
+            if (!match) continue
+            const { start, end } = match
             let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
             if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
             if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
@@ -3401,7 +3411,7 @@ export default function clientPlugin() {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyContentMatches, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyTextMatches, historyContentMatch, historyContentMatches, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 
@@ -4313,12 +4323,12 @@ export default function clientPlugin() {
         const hitScope = [detailScope, archive, archiveHit, archiveComparison, archiveReference, draft, active, loading, saving, recordLoading, sequence.current, exampleFilters, historyToken]
         if (!archiveHitContext.current || hitScope.some((value, index) => value !== archiveHitContext.current.scope[index])) archiveHitContext.current = { scope: hitScope }
         const hitToken = archiveHitContext.current
-        const hitReady = () => archiveReady() && archiveHit?.record === archive && archiveHitContext.current === hitToken && !recordLoading
+        const hitReady = () => archiveReady() && archiveHit?.record === archive && archiveHitContext.current === hitToken && !recordLoading && !recordError
         const selectHistoryHit = index => {
           if (!hitReady() || !Number.isInteger(index) || index < 0 || index >= archiveHit.matches.length) return
           const match = archiveHit.matches[index]
           archiveHitContext.current = null
-          setArchiveHit({ ...archiveHit, ...match, index, unavailable: false })
+          setArchiveHit({ ...archiveHit, ...match, index, occurrence: 0, unavailable: false })
           setArchiveComparison(null)
           if (match.path[0] === 'examples') setExampleFilters(value => ({ ...value, archive: { scope: exampleScope,
             value: 'all', stage: 'all', query: '', feedback: 'all', revealedId: '',
@@ -4448,6 +4458,7 @@ export default function clientPlugin() {
           if (intent.destination !== 'loading' && !intent.explicit && previous && document?.activeElement &&
               document.activeElement !== document.body && !previous.contains(document.activeElement)) return
           if (intent.match) {
+            if (intent.occurrence && !recordError && focusMapElement('data-target-text-hit', JSON.stringify(intent.match.path), 'center')) return
             if (focusMapElement('data-target-gap-field', JSON.stringify(intent.match.path), 'center')) return
             setArchiveHit(value => value?.record === intent.record ? { ...value, unavailable: true } : value)
           }
@@ -4490,10 +4501,28 @@ export default function clientPlugin() {
             key: JSON.stringify([documentId, targetId, revision, archive.id, archive.baseRevision, gapPath]),
             className: 'kg-target-field-text', 'data-target-field-text': JSON.stringify(gapPath)
           }, h('summary', { 'aria-label': label + '完整文字' }, '完整文字'),
-          h('pre', { role: 'region', 'aria-label': label + '完整文字', tabIndex: 0 }, value)) : null
+          renderFullText(label, value, gapPath, hit)) : null
           return hit || fullText ? h('div', { style: { minWidth: 0 } }, control, fullText, hit ? historyHitControls(true) : null) : control
         }
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
+        const renderFullText = (label, value, path, hit) => {
+          const ranges = hit ? [...TARGET_MAP_TOOLS.historyTextMatches(value, archiveHit.query)] : [], index = archiveHit?.occurrence || 0
+          const range = ranges[index]
+          const selectOccurrence = next => {
+            if (!hitReady() || recordError || !range || !Number.isInteger(next) || next < 0 || next >= ranges.length) return
+            archiveHitContext.current = null
+            setArchiveHit({ ...archiveHit, occurrence: next })
+            setRecordNavigation({ scope: recordScope, destination: 'archive', record: archive, match: archiveHit, occurrence: true, explicit: true })
+          }
+          return h(React.Fragment, null, range ? h('div', { className: 'kg-target-toolbar', role: 'group', 'aria-label': '字段内出现位置',
+            style: { position: 'sticky', top: 0, zIndex: 1, background: 'var(--kg-edge-label-bg)' } },
+            button('←', () => selectOccurrence(index - 1), !hitReady() || index === 0, { className: 'kg-secondary kg-target-icon', 'aria-label': '上一个出现位置', title: '上一个出现位置' }),
+            h('span', { role: 'status', 'aria-label': '字段内出现位置 ' + (index + 1) + ' / ' + ranges.length,
+              style: { width: 'calc(2em + ' + (5 + 2 * String(ranges.length).length) + 'ch)', textAlign: 'center', flexShrink: 0, fontVariantNumeric: 'tabular-nums' } }, '出现 ' + (index + 1) + ' / ' + ranges.length),
+            button('→', () => selectOccurrence(index + 1), !hitReady() || index + 1 === ranges.length, { className: 'kg-secondary kg-target-icon', 'aria-label': '下一个出现位置', title: '下一个出现位置' })) : null,
+          h('pre', { role: 'region', 'aria-label': label + '完整文字', tabIndex: 0 }, range ? [value.slice(0, range.start),
+            h('mark', { key: 'hit', tabIndex: -1, 'data-target-text-hit': JSON.stringify(path), 'aria-label': '正文命中 ' + (index + 1) + ' / ' + ranges.length }, value.slice(range.start, range.end)), value.slice(range.end)] : value))
+        }
         const removalReady = (kind, id) => {
           const context = exampleBrowseContext.current
           if (!alive.current || !context.ready || !context.editable || frozen || recordRequest.current || writeBusy.current ||

@@ -50,7 +50,7 @@ const mount = (options = {}) => {
     owner.domNodes = new Map(); owner.focused = null; owner.scrolled = []; owner.exampleDetails = new Map()
     owner.panel = { nodes: [], ownerDocument: { body: {}, activeElement: null },
       querySelectorAll(selector) {
-        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]', '[data-target-gap-field]', '[data-target-removal]', '[data-target-remove-button]', '[data-target-outcome-list]'].includes(selector))
+        assert(['[data-target-slot]', '[data-target-example-slot]', '[data-target-record-view]', '[data-target-record-link]', '[data-target-example-list]', '[data-target-example-feedback]', '[data-target-example-heading]', '[data-target-example-pair-side]', '[data-target-gap-field]', '[data-target-text-hit]', '[data-target-removal]', '[data-target-remove-button]', '[data-target-outcome-list]'].includes(selector))
         const attribute = selector.slice(1, -1), nodes = this.nodes.filter(node => node.attribute === attribute && node.value !== owner.removedAnchor)
         return owner.duplicateAnchors ? [...nodes, ...nodes] : nodes
       },
@@ -87,7 +87,7 @@ const mount = (options = {}) => {
         assert(owner.tree.props.ref, 'Slot navigation needs a panel-scoped DOM root')
         owner.tree.props.ref.current = owner.panel
         owner.slotSelectionHeight = all(owner.tree, item => item.props['data-target-slot'] && item.props['data-selected']).length ? 32 : 0
-        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side', 'data-target-gap-field', 'data-target-removal', 'data-target-remove-button', 'data-target-outcome-list']
+        const attributes = ['data-target-slot', 'data-target-example-slot', 'data-target-record-view', 'data-target-record-link', 'data-target-example-list', 'data-target-example-feedback', 'data-target-example-heading', 'data-target-example-pair-side', 'data-target-gap-field', 'data-target-text-hit', 'data-target-removal', 'data-target-remove-button', 'data-target-outcome-list']
         owner.panel.nodes = all(owner.tree, item => attributes.some(attribute => item.props[attribute])).map(item => {
           const attribute = attributes.find(attribute => item.props[attribute]), value = item.props[attribute]
           const key = attribute + ':' + value
@@ -457,7 +457,7 @@ let historyBrowseState
     if (options.discrimination) record.map.mode = 'discrimination'
     for (const selected of options.allFields ? paths : [path]) {
       const parent = selected.slice(0, -1).reduce((value, key) => value[key], record.map)
-      parent[selected.at(-1)] = '前文'.repeat(100) + needle + '单位、对象时间、多个必要输入；限定语与循环、未知方向均保留'
+      parent[selected.at(-1)] = '前文'.repeat(100) + (needle + '单位、对象时间、多个必要输入；限定语与循环、未知方向均保留').repeat(options.repeat || 1)
     }
     tools.validate(record.map); records = [record]
     owner = mount({ recordNavigation: true, focusRequest: { ...focus, revision: doc.revision }, revision: doc.revision }); await owner.load()
@@ -467,6 +467,43 @@ let historyBrowseState
     return { record, match: tools.historyContentMatch(record.map, needle.toLowerCase(), { target: true }), bytes: JSON.stringify([...storage]) }
   }
   const hit = () => owner.click('查看修订命中字段 hit-record')
+  for (const revision of [1, 2]) {
+    const { record, bytes } = await setup(paths[0], { allFields: true, repeat: 3, revision })
+    hit(); await owner.load()
+    const requests = owner.requests.length
+    const marks = () => all(owner.tree, node => node.type === 'mark')
+    const check = (index, path, value) => {
+      assert.equal(marks().length, 1, 'Only the current occurrence in the selected field is marked')
+      assert.equal(text(marks()[0]), needle)
+      assert.equal(marks()[0].props['data-target-text-hit'], JSON.stringify(path))
+      assert.equal(marks()[0].props['aria-label'], '正文命中 ' + (index + 1) + ' / 3')
+      const full = all(owner.tree, node => node.props['data-target-field-text'] === JSON.stringify(path))[0]
+      const pre = all(full, node => node.type === 'pre')[0]
+      assert.equal(text(pre), value, 'Highlight never normalizes or rewrites the saved text')
+      const segments = pre.props.children.flat(Infinity)
+      assert.equal(segments.length, 3)
+      assert.equal(text(segments[0]), value.slice(0, [...tools.historyTextMatches(value, needle)][index].start))
+      assert.equal(owner.control('上一个出现位置').props.disabled, index === 0)
+      assert.equal(owner.control('下一个出现位置').props.disabled, index === 2)
+      assert.equal(owner.control('字段内出现位置').props.style.position, 'sticky', 'Occurrence controls remain reachable while reading long fields')
+      assert(text(owner.control('字段内出现位置')).includes('出现 ' + (index + 1) + ' / 3'))
+    }
+    check(0, ['mapping'], record.map.mapping)
+    const stale = owner.control('下一个出现位置').props.onClick
+    owner.click('下一个出现位置'); check(1, ['mapping'], record.map.mapping)
+    assert.equal(owner.focused, 'data-target-text-hit:' + JSON.stringify(['mapping']))
+    stale(); owner.render(); check(1, ['mapping'], record.map.mapping)
+    owner.click('下一个出现位置'); check(2, ['mapping'], record.map.mapping)
+    owner.click('上一个出现位置'); check(1, ['mapping'], record.map.mapping)
+    owner.change('搜索个人修订记录', '尚未提交的新检索词'); check(1, ['mapping'], record.map.mapping)
+    owner.change('历史正文命中字段', JSON.stringify(['slots', '__proto__', 'unit']))
+    check(0, ['slots', '__proto__', 'unit'], record.map.slots[1].unit)
+    owner.click('下一个出现位置'); check(1, ['slots', '__proto__', 'unit'], record.map.slots[1].unit)
+    owner.change('历史正文命中字段', JSON.stringify(['mapping'])); check(0, ['mapping'], record.map.mapping)
+    assert.equal(owner.requests.length, requests)
+    owner.click('返回未保存草稿'); assert.equal(marks().length, 0)
+    assert.equal(JSON.stringify([...storage]), bytes); assert.equal(writes, count); owner.unmount()
+  }
   for (const revision of [1, 2]) {
     const { record, bytes } = await setup(paths[0], { allFields: true, revision })
     const disclosures = () => all(owner.tree, node => node.props['data-target-field-text'])
@@ -540,9 +577,10 @@ let historyBrowseState
     assert.equal(writes, count); owner.unmount()
   }
   for (const boundary of ['next', 'filter', 'compare', 'query', 'return', 'read', 'target', 'revision', 'hide', 'unmount']) {
-    const { bytes } = await setup(paths[0], { allFields: true })
+    const { bytes } = await setup(paths[0], { allFields: true, repeat: 3 })
     hit(); await owner.load()
     const staleNext = owner.control('下一个命中字段').props.onClick, staleChoose = owner.control('历史正文命中字段').props.onChange
+    const staleOccurrence = owner.control('下一个出现位置').props.onClick
     if (boundary === 'next') owner.click('下一个命中字段')
     if (boundary === 'filter') owner.change('搜索例子文字', '改变历史筛选')
     if (boundary === 'compare') owner.click('对照上层表述')
@@ -554,9 +592,11 @@ let historyBrowseState
     if (boundary === 'hide') { owner.props.active = false; owner.render() }
     if (boundary === 'unmount') owner.unmount()
     const requests = owner.requests.length, focused = owner.focused, marked = JSON.stringify(all(owner.tree, node => node.props['data-target-history-hit']))
-    staleNext(); staleChoose({ target: { value: JSON.stringify(['boundary']) } }); owner.render()
+    const occurrences = JSON.stringify(all(owner.tree, node => node.type === 'mark'))
+    staleNext(); staleChoose({ target: { value: JSON.stringify(['boundary']) } }); staleOccurrence(); owner.render()
     assert.equal(owner.requests.length, requests, boundary); assert.equal(owner.focused, focused, boundary)
     assert.equal(JSON.stringify(all(owner.tree, node => node.props['data-target-history-hit'])), marked, boundary)
+    assert.equal(JSON.stringify(all(owner.tree, node => node.type === 'mark')), occurrences, boundary)
     assert.equal(JSON.stringify([...storage]), bytes); owner.unmount()
   }
   for (const revision of [1, 2]) {
@@ -4878,6 +4918,7 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   historyFieldStaleCallbacks: true, historyFieldIdentityAndDomRecovery: true, historyFieldTraversalNoReadsOrWrites: true,
   historyFullTextExactFields: true, historyFullTextLiteralAndReadonly: true, historyFullTextReadFailureFence: true,
   historyFullTextVersionIdentity: true, historyFullTextDraftPreserved: true,
+  historyOccurrenceOffsetsAndNavigation: true, historyOccurrenceReadonlyAndDrafts: true, historyOccurrenceStaleHandlers: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,

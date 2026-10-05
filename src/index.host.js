@@ -7089,20 +7089,30 @@ function createHostPlugin(graphContractOnly) {
             yield ['feedback', item.feedback?.text, ['examples', item.id, 'feedback', 'text']]; yield ['feedbackSource', item.feedback?.source, ['examples', item.id, 'feedback', 'source']]
           }
         }
-        function* historyContentMatches(map, query) {
-          if (!query) return
-          const needle = query.toLowerCase()
-          for (const [field, value, path] of historyContentValues(map)) {
-            if (typeof value !== 'string') continue
-            const index = value.toLowerCase().indexOf(needle)
-            if (index < 0) continue
-            // Case folding can expand characters. Convert folded offsets before taking an original-text excerpt.
-            let folded = 0, start = 0, end = 0
-            for (const char of value) {
-              if (folded <= index) start = end
-              end += char.length; folded += char.toLowerCase().length
-              if (folded >= index + needle.length) break
+        function* historyTextMatches(value, query) {
+          if (typeof value !== 'string' || !query) return
+          const haystack = value.toLowerCase(), needle = query.toLowerCase()
+          let folded = 0, end = 0, index
+          // Search the whole lowercase string (including final sigma), but return intact original code points.
+          while ((index = haystack.indexOf(needle, folded)) >= 0) {
+            while (end < value.length) {
+              const char = String.fromCodePoint(value.codePointAt(end)), length = char.toLowerCase().length
+              if (folded + length > index) break
+              end += char.length; folded += length
             }
+            const start = end
+            while (folded < index + needle.length) {
+              const char = String.fromCodePoint(value.codePointAt(end))
+              end += char.length; folded += char.toLowerCase().length
+            }
+            yield { start, end }
+          }
+        }
+        function* historyContentMatches(map, query) {
+          for (const [field, value, path] of historyContentValues(map)) {
+            const match = historyTextMatches(value, query).next().value
+            if (!match) continue
+            const { start, end } = match
             let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
             if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
             if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
@@ -7194,7 +7204,7 @@ function createHostPlugin(graphContractOnly) {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyContentMatches, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyTextMatches, historyContentMatch, historyContentMatches, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 
