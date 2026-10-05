@@ -7089,8 +7089,8 @@ function createHostPlugin(graphContractOnly) {
             yield ['feedback', item.feedback?.text, ['examples', item.id, 'feedback', 'text']]; yield ['feedbackSource', item.feedback?.source, ['examples', item.id, 'feedback', 'source']]
           }
         }
-        function historyContentMatch(map, query, { target = false } = {}) {
-          if (!query) return null
+        function* historyContentMatches(map, query) {
+          if (!query) return
           const needle = query.toLowerCase()
           for (const [field, value, path] of historyContentValues(map)) {
             if (typeof value !== 'string') continue
@@ -7106,9 +7106,12 @@ function createHostPlugin(graphContractOnly) {
             let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
             if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
             if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
-            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : ''), ...(target ? { path } : {}) }
+            yield { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : ''), path }
           }
-          return null
+        }
+        function historyContentMatch(map, query, { target = false } = {}) {
+          const match = historyContentMatches(map, query).next().value
+          return match ? target ? match : { field: match.field, excerpt: match.excerpt } : null
         }
         const historyMatches = (item, query, searchIn = 'metadata') => searchIn === 'content'
           ? !query || exact(item.match, ['field', 'excerpt']) && Object.hasOwn(historyContentFields, item.match.field) && text(item.match.excerpt, 640) && item.match.excerpt.toLowerCase().includes(query.toLowerCase())
@@ -7191,7 +7194,7 @@ function createHostPlugin(graphContractOnly) {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyContentMatches, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 

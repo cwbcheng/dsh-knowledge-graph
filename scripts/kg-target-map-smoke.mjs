@@ -177,6 +177,39 @@ for (const [field, path] of Object.entries(fieldPaths)) {
   assert.deepEqual(Object.keys(match).sort(), ['excerpt', 'field'], 'Navigation metadata is not added to history HTTP summaries')
 }
 for (const query of ['"version"', 'self_reported_new', 'outcomeId', '__not_a_field__']) assert.equal(tools.historyContentMatch(map, query), null, 'Search field values, not JSON structure or enum tags')
+assert.equal(typeof tools.historyContentMatches, 'function', 'Every matching field must remain reachable, not just the first one')
+{
+  const snapshot = structuredClone(map), query = '多字段 Ä_%<b>\n', expected = []
+  for (const [field, path] of Object.entries(fieldPaths)) {
+    const parent = path.slice(0, -1).reduce((value, key) => value[key], snapshot)
+    parent[path.at(-1)] = 'İ'.repeat(100) + query + '后文'.repeat(80) + query
+    const identity = path.map((key, index) => typeof key === 'number' ? path.slice(0, index + 1).reduce((value, part) => value[part], snapshot)[index > 2 ? 'slotId' : 'id'] : key)
+    if (field === 'input') identity.pop()
+    expected.push({ field, path: identity })
+  }
+  const matches = [...tools.historyContentMatches(snapshot, query.toLowerCase())]
+  assert.deepEqual(matches.map(({ field, path }) => ({ field, path })), expected)
+  assert(matches.every(item => item.excerpt.includes(query) && item.excerpt.length <= 640 && item.excerpt.isWellFormed()))
+  assert.equal(matches.length, 15, 'Repeated occurrences in a field are not counted as different fields')
+  assert.deepEqual(tools.historyContentMatch(snapshot, query, { target: true }), matches[0])
+  assert.deepEqual(tools.historyContentMatch(snapshot, query), { field: matches[0].field, excerpt: matches[0].excerpt })
+  snapshot.slots[1].name = snapshot.slots[0].name
+  const twins = [...tools.historyContentMatches(snapshot, query)].filter(item => item.field === 'slotName')
+  assert.equal(twins.length, 2); assert.notDeepEqual(twins[0].path, twins[1].path, 'Equal names and excerpts must not merge field identities')
+  for (const term of ['', 'no-such-field', 'self_reported_new']) assert.deepEqual([...tools.historyContentMatches(snapshot, term)], [])
+  const large = structuredClone(map)
+  large.examples = Array.from({ length: 40 }, (_, index) => {
+    const item = tools.example(large, 'example-' + index)
+    item.context = item.process = query
+    item.inputs.forEach(input => { input.value = query }); item.outputs.forEach(output => { output.detail = query })
+    return item
+  })
+  tools.validate(large)
+  const many = [...tools.historyContentMatches(large, query)]
+  assert.equal(many.length, 40 * (2 + large.slots.length), 'All necessary inputs and outputs in all forty examples are searchable')
+  assert.equal(new Set(many.map(item => JSON.stringify(item.path))).size, many.length)
+  assert.equal(many.at(-1).path[1], 'example-39', 'No directory or result-page limit truncates a saved snapshot')
+}
 const identifierOnly = tools.blank({ type: 'concept', text: '标题' }); identifierOnly.slots[0].id = 'identifier_only'; identifierOnly.mapping = 'a+b ≠ a-b'
 assert.equal(tools.historyContentMatch(identifierOnly, 'identifier_only'), null)
 assert.equal(tools.historyContentMatch(identifierOnly, 'a b'), null)
@@ -567,6 +600,7 @@ console.log(JSON.stringify({ ok: true, twoLevelsThreeExpressions: true, codomain
   sourceAndGenerated: true, historyPages: 3, historyNoWrites: true, historyAppendFence: true, historyIndependentWriterSnapshot: true,
   historyMetadataSearch: true, historySearchLiteralUnicode: true, historySearchAllVersions: true, historySearchUnmatchedAppendFence: true,
   historyContentFieldsAndExcerpts: true, historyContentLiteralAndIdentity: true, historyContentHttpPagingAndSnapshot: true,
+  historyAllFieldsAndOrder: true, historyFieldCountNotOccurrences: true, historyFortyExamplesUntruncated: true,
   explicitNewRound: true, roundRetryAndCas: true, previousRoundsUnchanged: true, seenAcrossRounds: true,
   graphUnchanged: true, noMasteryPromotion: true, objectKeyOrderIndependent: true, orderedArraysAndLiteralFields: true,
   reorderedHttpRetryNoWrites: true, reorderedPredictionProtected: true, savedCatalogueBeyondCanvas: true,

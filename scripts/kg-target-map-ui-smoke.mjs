@@ -455,8 +455,10 @@ let historyBrowseState
     record.map.examples[1].id = 'same["id"] '; record.map.examples[1].stage = 'reviewed'
     record.map.examples[1].feedback = { kind: 'ai', text: '冲突来源未核对；不是独立验证', source: 'AI 建议' }
     if (options.discrimination) record.map.mode = 'discrimination'
-    const parent = path.slice(0, -1).reduce((value, key) => value[key], record.map)
-    parent[path.at(-1)] = '前文'.repeat(100) + needle + '单位、对象时间、多个必要输入；限定语与循环、未知方向均保留'
+    for (const selected of options.allFields ? paths : [path]) {
+      const parent = selected.slice(0, -1).reduce((value, key) => value[key], record.map)
+      parent[selected.at(-1)] = '前文'.repeat(100) + needle + '单位、对象时间、多个必要输入；限定语与循环、未知方向均保留'
+    }
     tools.validate(record.map); records = [record]
     owner = mount({ recordNavigation: true, focusRequest: { ...focus, revision: doc.revision }, revision: doc.revision }); await owner.load()
     if (doc.revision === 1) owner.change(options.discrimination ? '判别规律表述' : '映射规律表述', '本地草稿：保留未知和冲突')
@@ -465,6 +467,80 @@ let historyBrowseState
     return { record, match: tools.historyContentMatch(record.map, needle.toLowerCase(), { target: true }), bytes: JSON.stringify([...storage]) }
   }
   const hit = () => owner.click('查看修订命中字段 hit-record')
+  {
+    const { record, bytes } = await setup(paths[0], { allFields: true })
+    hit(); await owner.load()
+    const matches = [...tools.historyContentMatches(record.map, needle)], requests = owner.requests.length
+    assert.equal(all(owner.control('历史正文命中字段'), node => node.type === 'option').length, 15)
+    for (const match of matches) {
+      owner.change('历史正文命中字段', JSON.stringify(match.path))
+      assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(match.path))
+      assert.equal(all(owner.tree, node => node.props['data-target-history-hit']).length, 1)
+      const counter = all(owner.control('历史命中导航'), node => node.type === 'span' && node.props.role === 'status')[0]
+      assert.equal(counter.props.style.width, 'calc(4em + 8ch)', 'Counter width reserves both positions using the total field count')
+      assert.equal(counter.props.style.fontVariantNumeric, 'tabular-nums')
+      const nearCounter = all(owner.control('字段命中导航'), node => node.type === 'span' && node.props.role === 'status')[0]
+      assert.equal(nearCounter.props.style.width, 'calc(0em + 8ch)', 'Narrow slot navigation reserves only the compact numeric counter')
+      assert.equal(nearCounter.props.style.fontVariantNumeric, 'tabular-nums')
+      assert.equal(nearCounter.props['aria-label'], counter.props['aria-label'])
+      assert.equal(text(nearCounter), (matches.indexOf(match) + 1) + ' / 15')
+    }
+    assert(owner.control('下一个命中字段').props.disabled)
+    for (let i = 13; i >= 0; i--) {
+      owner.click('上一个命中字段')
+      assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(matches[i].path))
+    }
+    assert(owner.control('上一个命中字段').props.disabled)
+    assert.equal(owner.requests.length, requests, 'Field traversal uses the already validated snapshot, not another record or a write')
+    owner.change('搜索例子文字', '隐藏历史例子')
+    owner.change('历史正文命中字段', JSON.stringify(matches[11].path))
+    assert.equal(owner.control('搜索例子文字').props.value, '')
+    assert.equal(all(owner.tree, node => node.props['data-target-case-id'] === record.map.examples[1].id)[0].props.open, true)
+    owner.click('对照上层表述')
+    owner.change('历史正文命中字段', JSON.stringify(matches[2].path))
+    assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(matches[2].path), 'Explicit navigation exits comparison without changing its records')
+    owner.click('返回未保存草稿')
+    assert.equal(owner.control('搜索例子文字').props.value, '草稿筛选不应被清除'); assert.equal(JSON.stringify([...storage]), bytes)
+    assert.equal(writes, count); owner.unmount()
+  }
+  for (const boundary of ['next', 'filter', 'compare', 'query', 'return', 'read', 'target', 'revision', 'hide', 'unmount']) {
+    const { bytes } = await setup(paths[0], { allFields: true })
+    hit(); await owner.load()
+    const staleNext = owner.control('下一个命中字段').props.onClick, staleChoose = owner.control('历史正文命中字段').props.onChange
+    if (boundary === 'next') owner.click('下一个命中字段')
+    if (boundary === 'filter') owner.change('搜索例子文字', '改变历史筛选')
+    if (boundary === 'compare') owner.click('对照上层表述')
+    if (boundary === 'query') owner.change('搜索个人修订记录', '另一个检索词')
+    if (boundary === 'return') owner.click('返回未保存草稿')
+    if (boundary === 'read') hit()
+    if (boundary === 'target') owner.click('打开靶图 externality')
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'hide') { owner.props.active = false; owner.render() }
+    if (boundary === 'unmount') owner.unmount()
+    const requests = owner.requests.length, focused = owner.focused, marked = JSON.stringify(all(owner.tree, node => node.props['data-target-history-hit']))
+    staleNext(); staleChoose({ target: { value: JSON.stringify(['boundary']) } }); owner.render()
+    assert.equal(owner.requests.length, requests, boundary); assert.equal(owner.focused, focused, boundary)
+    assert.equal(JSON.stringify(all(owner.tree, node => node.props['data-target-history-hit'])), marked, boundary)
+    assert.equal(JSON.stringify([...storage]), bytes); owner.unmount()
+  }
+  for (const revision of [1, 2]) {
+    const { record, bytes } = await setup(paths[0], { allFields: true, revision })
+    hit(); await owner.load()
+    const matches = [...tools.historyContentMatches(record.map, needle)]
+    for (const invalid of ['-1', '999', '__proto__', JSON.stringify(['slots', 'after', 'scope']), JSON.stringify(['examples', 1, 'context'])]) {
+      const focused = owner.focused
+      owner.change('历史正文命中字段', invalid); assert.equal(owner.focused, focused, invalid)
+      assert.equal(owner.control('历史正文命中字段').props.value, JSON.stringify(matches[0].path))
+    }
+    owner.duplicateAnchors = true; owner.click('下一个命中字段')
+    assert(text(owner.tree).includes('未找到唯一可见的命中字段'))
+    owner.duplicateAnchors = false; owner.click('下一个命中字段')
+    assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(matches[2].path))
+    assert(!text(owner.tree).includes('未找到唯一可见的命中字段'), 'A fresh explicit field selection recovers without guessing')
+    owner.change('历史正文命中字段', JSON.stringify(matches.at(-1).path))
+    assert.equal(owner.focused, 'data-target-gap-field:' + JSON.stringify(matches.at(-1).path))
+    assert(owner.control('靶图标题').props.disabled); assert.equal(JSON.stringify([...storage]), bytes); assert.equal(writes, count); owner.unmount()
+  }
   for (const path of paths) {
     const { record, match, bytes } = await setup(path)
     hit(); assert.equal(owner.focused, 'data-target-record-view:loading'); await owner.load()
@@ -4762,6 +4838,8 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   historyContentSearchAndExcerpts: true, historyContentScopeAndNavigation: true, historyContentResponseFenceAndDrafts: true,
   historyHitExactFields: true, historyHitRetryAndMatchFence: true, historyHitReadonlyAndDraftReturn: true,
   historyHitOldVersions: true, historyHitStaleActionsAndFocus: true, historyHitNoWrites: true,
+  historyAllFieldNavigation: true, historyFieldFilterRecovery: true, historyFieldComparisonExit: true,
+  historyFieldStaleCallbacks: true, historyFieldIdentityAndDomRecovery: true, historyFieldTraversalNoReadsOrWrites: true,
   localDraftDirectory: true, localDraftLiteralIdentityAndPaging: true, localDraftVersionAndReadFences: true,
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,

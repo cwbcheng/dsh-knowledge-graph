@@ -3294,8 +3294,8 @@ export default function clientPlugin() {
             yield ['feedback', item.feedback?.text, ['examples', item.id, 'feedback', 'text']]; yield ['feedbackSource', item.feedback?.source, ['examples', item.id, 'feedback', 'source']]
           }
         }
-        function historyContentMatch(map, query, { target = false } = {}) {
-          if (!query) return null
+        function* historyContentMatches(map, query) {
+          if (!query) return
           const needle = query.toLowerCase()
           for (const [field, value, path] of historyContentValues(map)) {
             if (typeof value !== 'string') continue
@@ -3311,9 +3311,12 @@ export default function clientPlugin() {
             let left = Math.max(0, start - 40), right = Math.min(value.length, end + 80)
             if (left > 0 && value.codePointAt(left - 1) > 0xffff) left--
             if (right < value.length && value.codePointAt(right - 1) > 0xffff) right++
-            return { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : ''), ...(target ? { path } : {}) }
+            yield { field, excerpt: (left ? '…' : '') + value.slice(left, right) + (right < value.length ? '…' : ''), path }
           }
-          return null
+        }
+        function historyContentMatch(map, query, { target = false } = {}) {
+          const match = historyContentMatches(map, query).next().value
+          return match ? target ? match : { field: match.field, excerpt: match.excerpt } : null
         }
         const historyMatches = (item, query, searchIn = 'metadata') => searchIn === 'content'
           ? !query || exact(item.match, ['field', 'excerpt']) && Object.hasOwn(historyContentFields, item.match.field) && text(item.match.excerpt, 640) && item.match.excerpt.toLowerCase().includes(query.toLowerCase())
@@ -3396,7 +3399,7 @@ export default function clientPlugin() {
             throw error
           }
         }
-        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyMatches, handle }
+        return { blank, slot, example, validate, transition, gaps, historyContentFields, historyContentMatch, historyContentMatches, historyMatches, handle }
       })()
       // <<< END TARGET MAP TOOLS <<<
 
@@ -3610,7 +3613,7 @@ export default function clientPlugin() {
         const [historyInput, setHistoryInput] = useState(null), historyContext = useRef(null)
         const [recordLoading, setRecordLoading] = useState(false), [recordError, setRecordError] = useState(null)
         const [recordNavigation, setRecordNavigation] = useState(null)
-        const [archiveHit, setArchiveHit] = useState(null)
+        const [archiveHit, setArchiveHit] = useState(null), archiveHitContext = useRef(null)
         const [archiveComparison, setArchiveComparison] = useState(null)
         const [archiveReference, setArchiveReference] = useState(null)
         const [exampleFilters, setExampleFilters] = useState({}), [exampleFocus, setExampleFocus] = useState(null)
@@ -3974,7 +3977,7 @@ export default function clientPlugin() {
             }
             setArchive(result.record)
             if (match) {
-              setArchiveHit({ record: result.record, ...match })
+              setArchiveHit({ record: result.record, query: hit.query, matches: [...TARGET_MAP_TOOLS.historyContentMatches(result.record.map, hit.query)], index: 0, ...match })
               if (match.path[0] === 'examples') {
                 const scope = JSON.stringify([JSON.stringify([documentId, revision, targetId, ['record', result.record.id]]), reload])
                 setExampleFilters(value => ({ ...value, archive: { scope, value: 'all', stage: 'all', query: '', feedback: 'all', expansion: [[match.path[1], true]], revealedId: '' } }))
@@ -4305,6 +4308,45 @@ export default function clientPlugin() {
         const archiveReady = () => alive.current && sameContext({ documentId, targetId, revision }) && current.current.active &&
           !loading && !saving && !writeBusy.current && !recordRequest.current && detailReady.current === detailScope &&
           !!archive && current.current.archive === archive && ownsDraft && current.current.draft === draft && current.current.archiveReference === archiveReference
+        const hitScope = [detailScope, archive, archiveHit, archiveComparison, archiveReference, draft, active, loading, saving, recordLoading, sequence.current, exampleFilters, historyToken]
+        if (!archiveHitContext.current || hitScope.some((value, index) => value !== archiveHitContext.current.scope[index])) archiveHitContext.current = { scope: hitScope }
+        const hitToken = archiveHitContext.current
+        const hitReady = () => archiveReady() && archiveHit?.record === archive && archiveHitContext.current === hitToken && !recordLoading
+        const selectHistoryHit = index => {
+          if (!hitReady() || !Number.isInteger(index) || index < 0 || index >= archiveHit.matches.length) return
+          const match = archiveHit.matches[index]
+          archiveHitContext.current = null
+          setArchiveHit({ ...archiveHit, ...match, index, unavailable: false })
+          setArchiveComparison(null)
+          if (match.path[0] === 'examples') setExampleFilters(value => ({ ...value, archive: { scope: exampleScope,
+            value: 'all', stage: 'all', query: '', feedback: 'all', revealedId: '',
+            expansion: [...exampleExpansion.filter(([id]) => id !== match.path[1]), [match.path[1], true]] } }))
+          setRecordNavigation({ scope: recordScope, destination: 'archive', record: archive, match, explicit: true })
+        }
+        const historyHitLabel = match => {
+          const [kind, id, part, slotId] = match.path, label = TARGET_MAP_TOOLS.historyContentFields[match.field]
+          const slotLabel = identity => {
+            const item = archive.map.slots.find(slot => slot.id === identity)
+            return (item.role === 'input' ? '输入槽位 ' : '输出槽位 ') + (archive.map.slots.filter(slot => slot.role === item.role).findIndex(slot => slot.id === identity) + 1)
+          }
+          if (kind === 'slots') return slotLabel(id) + ' · ' + label
+          if (kind === 'outcomes') return '输出取值 ' + (archive.map.outcomes.findIndex(item => item.id === id) + 1) + ' · ' + label
+          if (kind === 'examples') return '例子 ' + (archive.map.examples.findIndex(item => item.id === id) + 1) + ' · ' +
+            (['inputs', 'outputs'].includes(part) ? slotLabel(slotId) + ' · ' : '') + label
+          return label
+        }
+        const historyHitControls = nearField => archiveHit?.record === archive ? h('div', { className: 'kg-target-toolbar', role: 'group',
+          'aria-label': nearField ? '字段命中导航' : '历史命中导航', style: { minWidth: 0 } },
+          button('←', () => selectHistoryHit(archiveHit.index - 1), !hitReady() || archiveHit.index === 0,
+            { className: 'kg-secondary kg-target-icon', 'aria-label': '上一个命中字段', title: '上一个命中字段' }),
+          h('span', { role: 'status', 'aria-label': '命中字段 ' + (archiveHit.index + 1) + ' / ' + archiveHit.matches.length,
+            style: { width: 'calc(' + (nearField ? '0em' : '4em') + ' + ' + (4 + 2 * String(archiveHit.matches.length).length) + 'ch)', flexShrink: 0,
+              textAlign: 'center', fontVariantNumeric: 'tabular-nums' } }, (nearField ? '' : '命中字段 ') + (archiveHit.index + 1) + ' / ' + archiveHit.matches.length),
+          button('→', () => selectHistoryHit(archiveHit.index + 1), !hitReady() || archiveHit.index + 1 === archiveHit.matches.length,
+            { className: 'kg-secondary kg-target-icon', 'aria-label': '下一个命中字段', title: '下一个命中字段' }),
+          !nearField ? h('select', { 'aria-label': '历史正文命中字段', value: JSON.stringify(archiveHit.path), disabled: !hitReady(), style: { width: '100%', minWidth: 0 },
+            onChange: event => selectHistoryHit(archiveHit.matches.findIndex(match => JSON.stringify(match.path) === event.target.value)) },
+            archiveHit.matches.map((match, index) => h('option', { key: JSON.stringify(match.path), value: JSON.stringify(match.path) }, (index + 1) + '. ' + historyHitLabel(match)))) : null) : null
         const selectArchiveView = (kind, peer = comparingHistory ? reference : null) => {
           if (!archiveReady() || ![null, 'upper', 'examples'].includes(kind) || peer && (peer !== reference || peer.id === archive.id)) return
           setArchiveComparison(kind ? { kind, scope: navigationScope, record: archive, draft, reference: peer, onlyChanges: true, exampleId: '' } : null)
@@ -4436,12 +4478,13 @@ export default function clientPlugin() {
         const field = (label, value, change, disabled = frozen, large = false, visibleLabel = label, maxLength, gapPath) => {
           const invalid = visibleEditError?.field === label
           const hit = archive && !recordLoading && archiveHit?.record === archive && gapPath && JSON.stringify(gapPath) === JSON.stringify(archiveHit.path)
-          return h('label', gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1, 'data-target-history-hit': hit || undefined } : null, visibleLabel,
+          const control = h('label', gapPath ? { 'data-target-gap-field': JSON.stringify(gapPath), tabIndex: -1, 'data-target-history-hit': hit || undefined } : null, visibleLabel,
             hit ? h('small', { role: 'status', style: { display: 'block', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, '本次正文命中：', archiveHit.excerpt) : null,
             h(large ? 'textarea' : 'input', { 'aria-label': label, value, disabled, maxLength, 'aria-invalid': invalid || undefined,
               'aria-describedby': invalid ? editErrorId : undefined, ...(large ? { rows: 3 } : { type: 'text' }), onChange: event => {
                 if (change(event.target.value) === false) setEditError(error => error?.draft === draft ? { ...error, field: label } : error)
               } }), invalid ? editAlert() : null)
+          return hit ? h('div', { style: { minWidth: 0 } }, control, historyHitControls(true)) : control
         }
         const button = (label, action, disabled = frozen, props = {}) => h('button', { type: 'button', className: 'kg-secondary', disabled, onClick: action, ...props }, label)
         const removalReady = (kind, id) => {
@@ -4650,6 +4693,8 @@ export default function clientPlugin() {
               stale ? h('div', { role: 'alert' }, '草稿属于知识图第 ' + draft.baseRevision + ' 版，不能保存到第 ' + revision + ' 版。',
                 detail ? button('开启当前版本靶图', () => install(readDraft(targetId, revision) || { documentId, targetId, baseRevision: revision, parentId: detail.current?.id || '', reason: '', map: copy(detail.current?.map || detail.template) }), saving) : null) : null,
               archive ? h('div', { className: 'kg-target-archive', role: 'status', 'data-target-record-view': 'archive', tabIndex: -1 }, '历史快照 · ' + (archive.startsRound ? '新一轮起点 · ' : '') + '知识图第 ' + archive.baseRevision + ' 版 · ' + archive.reason,
+                archiveHit?.record === archive ? h('p', { style: { overflowWrap: 'anywhere' } }, '字面检索：', archiveHit.query) : null,
+                historyHitControls(false),
                 archiveHit?.record === archive && archiveHit.unavailable ? h('p', { role: 'alert' }, '未找到唯一可见的命中字段；快照仍为只读。') : null,
                 archive.startsRound && archive.parentId ? button('查看上一轮末版', () => openRecord(archive.parentId), saving || loading) : null,
                 button('返回未保存草稿', returnToDraft, saving),
