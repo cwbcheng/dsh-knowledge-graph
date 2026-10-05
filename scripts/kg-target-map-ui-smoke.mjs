@@ -4912,6 +4912,117 @@ records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount
   assert.equal(writes, writeCount)
 }
 
+// Malformed disk bytes are a separate recovery artifact, never a validated draft or a replacement for memory.
+{
+  const globals = { Blob: context.Blob, document: context.document, URL: context.URL }, downloads = [], blobs = new Map(), anchors = new Set(), count = writes
+  let downloadFailure = false, sequence = 0
+  context.Blob = Blob
+  context.URL = { createObjectURL(blob) { if (downloadFailure) throw Error('download unavailable'); const id = 'blob:raw-' + ++sequence; blobs.set(id, blob); return id }, revokeObjectURL: id => blobs.delete(id) }
+  context.document = { body: { appendChild: anchor => anchors.add(anchor) }, createElement() {
+    return { style: {}, click() { downloads.push({ filename: this.download, blob: blobs.get(this.href) }) }, remove() { anchors.delete(this) } }
+  } }
+  const key = (id, rev = 1, documentId = doc.documentId) => 'dsh-kg-target-map:' + JSON.stringify([documentId, id, rev])
+  const name = (id, rev = 1) => '下载原始缓存 ' + JSON.stringify([id, rev])
+  const rows = () => all(owner.tree, node => node.props['data-target-cache-recovery'])
+  const backup = async (id, rev, raw) => {
+    const before = JSON.stringify([...storage]), calls = owner.requests.length, size = downloads.length
+    const approvals = () => JSON.stringify(all(owner.tree, node => node.type === 'input' && node.props.type === 'checkbox').map(node => node.props.checked))
+    const approved = approvals()
+    owner.click(name(id, rev)); assert.equal(downloads.length, size + 1)
+    const file = downloads.at(-1), result = JSON.parse(await file.blob.text())
+    assert.equal(file.filename, 'target-map-cache-recovery-r' + rev + '.json')
+    assert.equal(file.blob.type, 'application/json;charset=utf-8')
+    assert.deepEqual(Object.keys(result).sort(), ['exportedAt', 'format', 'raw', 'status', 'storageKey', 'version'])
+    assert.equal(result.format, 'dsh.target-map-cache-recovery'); assert.equal(result.version, 1)
+    assert.equal(result.status, 'unreadable_cache_not_validated'); assert.equal(result.storageKey, key(id, rev))
+    assert.equal(new Date(result.exportedAt).toISOString(), result.exportedAt)
+    assert.equal(result.raw, raw, 'Every UTF-16 code unit, whitespace, malformed JSON and surrogate is preserved')
+    assert.equal(anchors.size, 0); assert.equal(blobs.size, 0)
+    assert.equal(JSON.stringify([...storage]), before); assert.equal(owner.requests.length, calls); assert.equal(approvals(), approved); assert.equal(writes, count)
+    assert(text(owner.tree).includes('已请求下载原始缓存；未修复、未验证、未改写'))
+    return result
+  }
+  records = []; storage.clear(); doc.revision = 1
+  const valid = { documentId: doc.documentId, targetId: 'motion', baseRevision: 1, parentId: '', reason: '', map: motionTargetMap() }
+  const samples = ['', '{\r\n "原文": "方向未知；两个必要输入；单位与对象时间；通常；循环；冲突来源', 'null', 'false',
+    JSON.stringify({ ...valid, targetId: 'foreign' }), JSON.stringify({ ...valid, baseRevision: 2 }),
+    JSON.stringify({ ...valid, map: { ...valid.map, slots: [] } }), '<script>not code</script>\u0000\ud800中\udfff\r\n', 'x'.repeat(500001)]
+  for (const [i, raw] of samples.entries()) storage.set(key('removed-' + i, i % 3 + 1), raw)
+  storage.set(key('removed-0 ', 1), '{same label different identity')
+  storage.set(key('removed-0', 1, 'foreign'), '{private foreign bytes')
+  storage.set('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'ambiguous', 1, 'extra']), '{not attributable')
+  storage.set('dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'noncanonical', 1], null, 1), '{noncanonical')
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+  assert.equal(rows().length, samples.length + 1); assert(!text(owner.tree).includes('private foreign bytes'))
+  assert(!all(rows(), node => ['script', 'img'].includes(node.type)).length)
+  for (const [i, raw] of samples.entries()) await backup('removed-' + i, i % 3 + 1, raw)
+  await backup('removed-0 ', 1, '{same label different identity')
+  owner.unmount(); storage.clear()
+
+  for (let i = 0; i < 43; i++) storage.set(key('bad-' + String(i).padStart(2, '0')), '{' + i)
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表'); assert.equal(rows().length, 20)
+  owner.click('原始缓存下一页'); assert.equal(rows().length, 20)
+  owner.click('原始缓存下一页'); assert.equal(rows().length, 3); assert(owner.control('原始缓存下一页').props.disabled)
+  owner.change('搜索本地草稿', 'bad-00'); assert.equal(rows().length, 1); await backup('bad-00', 1, '{0')
+  owner.unmount(); storage.clear()
+
+  for (const failure of ['changed', 'missing', 'read', 'download', 'blob', 'url', 'document']) {
+    storage.set(key('motion'), '{original')
+    owner = mount(); await owner.load(); owner.click('刷新本地草稿列表')
+    const saved = { Blob: context.Blob, URL: context.URL, document: context.document }
+    if (failure === 'changed') storage.set(key('motion'), '{changed')
+    if (failure === 'missing') storage.delete(key('motion'))
+    if (failure === 'read') storageReadFailures.add(key('motion'))
+    if (failure === 'download') downloadFailure = true
+    if (failure === 'blob') context.Blob = undefined
+    if (failure === 'url') context.URL = undefined
+    if (failure === 'document') context.document = undefined
+    const bytes = JSON.stringify([...storage]), calls = owner.requests.length, size = downloads.length
+    owner.click(name('motion')); assert(text(owner.tree).includes('原始缓存下载失败'), failure)
+    assert.equal(downloads.length, size); assert.equal(JSON.stringify([...storage]), bytes); assert.equal(owner.requests.length, calls)
+    Object.assign(context, saved); downloadFailure = false; storageReadFailures.clear()
+    storage.set(key('motion'), '{retry'); owner.click('刷新本地草稿列表'); await backup('motion', 1, '{retry')
+    owner.unmount(); storage.clear()
+  }
+
+  storage.set(key('motion'), '{protected disk bytes')
+  owner = mount({ focusRequest: focus }); await owner.load()
+  owner.change('映射规律表述', 'window draft must not replace damaged disk'); owner.change('确认保存个人靶图', undefined, true)
+  owner.click('刷新本地草稿列表'); assert.equal(rows().length, 1)
+  assert(text(owner.tree).includes('仅留在窗口'))
+  const recovered = await backup('motion', 1, '{protected disk bytes')
+  assert.equal(owner.control('映射规律表述').props.value, 'window draft must not replace damaged disk')
+  assert(owner.control('确认保存个人靶图').props.checked)
+  const beforeImport = JSON.stringify([...storage])
+  await owner.control('选择草稿备份 JSON').props.onChange({ target: { value: 'recovery.json', files: [{ name: 'recovery.json', size: 100, text: async () => JSON.stringify(recovered) }] } })
+  await owner.settle(); assert(text(owner.tree).includes('备份未导入')); assert.equal(JSON.stringify([...storage]), beforeImport)
+  owner.unmount(); storage.clear()
+
+  for (const boundary of ['query', 'page', 'refresh', 'hide', 'hide-return', 'revision', 'document', 'read', 'save-sync', 'unmount']) {
+    for (let i = 0; i < 21; i++) storage.set(key('bad-' + String(i).padStart(2, '0')), '{' + i)
+    owner = mount({ focusRequest: focus }); await owner.load(); owner.click('刷新本地草稿列表')
+    const original = owner.control(name('bad-00')).props.onClick; owner.render(); original(); owner.render()
+    assert(text(owner.tree).includes('已请求下载原始缓存'))
+    const stale = owner.control(name('bad-00')).props.onClick
+    if (boundary === 'query') owner.change('搜索本地草稿', 'none')
+    if (boundary === 'page') owner.click('原始缓存下一页')
+    if (boundary === 'refresh') owner.click('刷新本地草稿列表')
+    if (boundary.startsWith('hide')) { owner.props.active = false; owner.render(); if (boundary === 'hide-return') { owner.props.active = true; owner.render(); await owner.load() } }
+    if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
+    if (boundary === 'document') { owner.props.documentId += ' '; owner.render() }
+    if (boundary === 'read') owner.click('打开靶图 externality')
+    if (boundary === 'save-sync') { owner.change('确认保存个人靶图', undefined, true); owner.control('保存个人靶图').props.onClick() }
+    if (boundary === 'unmount') owner.unmount()
+    const bytes = JSON.stringify([...storage]), calls = owner.requests.length, size = downloads.length
+    stale(); owner.render(); assert.equal(downloads.length, size, boundary); assert.equal(JSON.stringify([...storage]), bytes); assert.equal(owner.requests.length, calls)
+    owner.unmount(); storage.clear()
+  }
+  storage.set(key('motion'), '{unavailable'); storageReadFailures.add(key('motion'))
+  owner = mount(); await owner.load(); owner.click('刷新本地草稿列表'); assert.equal(rows().length, 0)
+  storageReadFailures.clear(); owner.click('刷新本地草稿列表'); await backup('motion', 1, '{unavailable')
+  owner.unmount(); storage.clear(); Object.assign(context, globals); doc.revision = 1; records = []; assert.equal(writes, count)
+}
+
 console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigationAndReload: true, retryAndDoubleClick: true,
   casReview: true, versionIsolation: true, lateResponses: true, damagedStorageAndQuota: true, historyPagination: true,
   historyDraftPreserved: true, historyAppendFence: true, historyResponseFences: true, historyNoWrites: true, noAutoWrite: true,
@@ -4996,4 +5107,5 @@ console.log(JSON.stringify({ ok: true, generatedComponent: true, draftNavigation
   localDraftStorageFailures: true, localDraftWindowOnly: true, localDraftDiscoveryNoWrites: true,
   localDraftBackupWithoutTarget: true, localDraftBackupCompleteIdentity: true, localDraftBackupVersionBoundary: true,
   localDraftBackupFailuresAndRetry: true, localDraftBackupMemoryOnly: true, localDraftBackupContextFences: true,
-  localDraftBackupNoWritesOrApproval: true }))
+  localDraftBackupNoWritesOrApproval: true, rawCacheBackupExactBytes: true, rawCacheNoImportOrRepair: true,
+  rawCacheMemorySeparation: true, rawCachePagingAndIdentity: true, rawCacheFailureAndContextFences: true }))

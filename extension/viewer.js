@@ -2441,6 +2441,7 @@
         const [recordFilter, setRecordFilter] = useState(initial.records)
         const [catalogSearchIn, setCatalogSearchIn] = useState(initial.searchIn)
         const [localDraftList, setLocalDraftList] = useState(null), [localDraftQuery, setLocalDraftQuery] = useState(''), [localDraftOffset, setLocalDraftOffset] = useState(0)
+        const [cacheRecoveryOffset, setCacheRecoveryOffset] = useState(0)
         const localDraftContext = useRef(null), localDraftDestination = useRef(null)
         const [catalog, setCatalog] = useState(null), [targetId, setTargetId] = useState(initial.targetId), [detail, setDetail] = useState(null)
         const [catalogError, setCatalogError] = useState(null), [catalogReload, setCatalogReload] = useState(0)
@@ -2482,7 +2483,7 @@
         if (!historyContext.current || historyEventScope.some((value, index) => value !== historyContext.current.scope[index])) historyContext.current = { scope: historyEventScope }
         const historyToken = historyContext.current
         const localDraftScope = JSON.stringify([documentId, revision])
-        const localDraftEventScope = [localDraftScope, active, saving, loading, recordLoading, localDraftList, localDraftQuery, localDraftOffset]
+        const localDraftEventScope = [localDraftScope, active, saving, loading, recordLoading, localDraftList, localDraftQuery, localDraftOffset, cacheRecoveryOffset]
         if (!localDraftContext.current || localDraftEventScope.some((value, index) => value !== localDraftContext.current.scope[index])) localDraftContext.current = { scope: localDraftEventScope }
         const localDraftToken = localDraftContext.current
         const recordRequest = useRef(null), recordRetry = useRef(null)
@@ -2592,21 +2593,24 @@
             'target-map-draft-r' + draft.baseRevision + '.json')) throw new Error('当前浏览器无法下载文件')
         }
         const localDraftReady = () => alive.current && current.current.active && active && !writeBusy.current && !saving && !loading && !recordLoading && localDraftContext.current === localDraftToken
-        const localDraftValue = (id, rev) => {
-          const storageKey = key({ documentId, targetId: id, baseRevision: rev }), cached = cache.current.get(storageKey)
-          const raw = cached ? JSON.stringify(cached) : localStorage.getItem(storageKey)
+        const decodeLocalDraft = (raw, id, rev) => {
           if (raw === null || raw.length > 500000) throw new Error('本地草稿已不存在或超过读取容量')
-          const value = cached || JSON.parse(raw)
+          const value = JSON.parse(raw)
           if (!value || value.documentId !== documentId || value.targetId !== id || value.baseRevision !== rev ||
               typeof value.parentId !== 'string' || value.parentId.length > 120 || value.parentId && !value.parentId.trim() ||
               typeof value.reason !== 'string' || value.reason.length > 2000 || value.roundReason !== undefined &&
               (typeof value.roundReason !== 'string' || value.roundReason.length > 2000)) throw new Error('本地草稿身份或格式不兼容')
           TARGET_MAP_TOOLS.validate(value.map, { draft: true })
+          return value
+        }
+        const localDraftValue = (id, rev) => {
+          const storageKey = key({ documentId, targetId: id, baseRevision: rev }), cached = cache.current.get(storageKey)
+          const value = decodeLocalDraft(cached ? JSON.stringify(cached) : localStorage.getItem(storageKey), id, rev)
           return { value, fingerprint: JSON.stringify(value) }
         }
         const refreshLocalDrafts = () => {
           if (!localDraftReady()) return
-          const keys = new Set(cache.current.keys()), items = [], prefix = 'dsh-kg-target-map:'
+          const keys = new Set(cache.current.keys()), items = [], recovery = [], prefix = 'dsh-kg-target-map:'
           let unreadable = 0, storageError = false
           try { for (let i = 0; i < localStorage.length; i++) { const name = localStorage.key(i); if (name?.startsWith(prefix)) keys.add(name) } }
           catch { storageError = true }
@@ -2617,18 +2621,40 @@
             const [, id, rev] = identity
             if (identity.length !== 3 || typeof id !== 'string' || !id.trim() || id.length > 4096 || !Number.isSafeInteger(rev) || rev < 1 ||
                 name !== key({ documentId, targetId: id, baseRevision: rev })) { unreadable++; continue }
+            // Inspect disk independently: a valid window draft must not hide protected, malformed storage.
+            let raw = null, stored, failed = false
+            try { raw = localStorage.getItem(name); if (raw !== null) stored = decodeLocalDraft(raw, id, rev) }
+            catch { failed = true; if (raw !== null) recovery.push({ id, baseRevision: rev, raw }) }
             try {
-              const { value, fingerprint } = localDraftValue(id, rev)
-              items.push({ id, baseRevision: rev, title: value.map.title, fingerprint,
+              const cached = cache.current.get(name), value = cached ? decodeLocalDraft(JSON.stringify(cached), id, rev) : stored
+              if (!value) throw new Error('missing')
+              items.push({ id, baseRevision: rev, title: value.map.title, fingerprint: JSON.stringify(value),
                 windowOnly: cache.current.has(name) && (damaged.current.has(name) || cacheWarnings.has(name)) })
               storedDraftKeys.current.add(name)
-            } catch { unreadable++ }
+            } catch { failed = true }
+            if (failed) unreadable++
           }
           items.sort((a, b) => b.baseRevision - a.baseRevision || a.id.localeCompare(b.id))
-          setLocalDraftList({ scope: localDraftScope, items, unreadable, storageError, error: '' }); setLocalDraftOffset(0)
+          recovery.sort((a, b) => b.baseRevision - a.baseRevision || a.id.localeCompare(b.id))
+          setLocalDraftList({ scope: localDraftScope, items, recovery, unreadable, storageError, error: '' }); setLocalDraftOffset(0); setCacheRecoveryOffset(0)
         }
         const visibleLocalDrafts = localDraftList?.scope === localDraftScope ? localDraftList : null
         const localDraftMatches = (visibleLocalDrafts?.items || []).filter(item => [item.id, item.title].some(value => value.toLowerCase().includes(localDraftQuery.toLowerCase())))
+        const cacheRecoveryMatches = (visibleLocalDrafts?.recovery || []).filter(item => item.id.toLowerCase().includes(localDraftQuery.toLowerCase()))
+        const backupRawCache = item => {
+          if (!localDraftReady() || !visibleLocalDrafts?.recovery.includes(item) || !cacheRecoveryMatches.slice(cacheRecoveryOffset, cacheRecoveryOffset + 20).includes(item)) return
+          try {
+            const storageKey = key({ documentId, targetId: item.id, baseRevision: item.baseRevision }), raw = localStorage.getItem(storageKey)
+            if (raw === null) throw new Error('原始缓存已不存在')
+            if (raw !== item.raw) throw new Error('原始缓存内容已变化，请刷新列表后重新选择')
+            // JSON wraps the original string without parsing it, including lone UTF-16 surrogates.
+            const value = { format: 'dsh.target-map-cache-recovery', version: 1, status: 'unreadable_cache_not_validated',
+              exportedAt: new Date().toISOString(), storageKey, raw }
+            if (typeof Blob === 'undefined' || !downloadBrowserBlob(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }),
+              'target-map-cache-recovery-r' + item.baseRevision + '.json')) throw new Error('当前浏览器无法下载文件')
+            setLocalDraftList({ ...visibleLocalDrafts, error: '', backup: '目标 ' + item.id + ' · 知识图第 ' + item.baseRevision + ' 版：已请求下载原始缓存；未修复、未验证、未改写。' })
+          } catch (error) { setLocalDraftList({ ...visibleLocalDrafts, backup: '', error: '原始缓存下载失败：' + (error.message || '读取或下载不可用') + '；原存储未修改。' }) }
+        }
         const backupLocalDraft = item => {
           if (!localDraftReady() || !visibleLocalDrafts?.items.includes(item) || !localDraftMatches.includes(item)) return
           try {
@@ -2646,7 +2672,7 @@
             setConfirmed(false); setRoundConfirmed(false); setDetail(null); setArchive(null); setTargetId(item.id); setReload(value => value + 1)
           } catch (error) { setLocalDraftList({ ...visibleLocalDrafts, error: error.message || '本地草稿读取失败；当前草稿保留。' }) }
         }
-        useEffect(() => { setLocalDraftList(null); setLocalDraftQuery(''); setLocalDraftOffset(0); localDraftDestination.current = null }, [documentId, revision])
+        useEffect(() => { setLocalDraftList(null); setLocalDraftQuery(''); setLocalDraftOffset(0); setCacheRecoveryOffset(0); localDraftDestination.current = null }, [documentId, revision])
         useEffect(() => {
           if (!active || !focusRequest || focusRequest === lastFocus.current || focusRequest.documentId !== documentId || focusRequest.revision !== revision ||
               typeof focusRequest.targetId !== 'string' || !focusRequest.targetId.trim() || focusRequest.targetId.length > 4096) return
@@ -3544,7 +3570,7 @@
                 button('刷新本地草稿列表', refreshLocalDrafts, saving || loading || recordLoading),
                 visibleLocalDrafts ? h(React.Fragment, null,
                   h('label', null, '本地标题或目标 ID', h('input', { type: 'search', 'aria-label': '搜索本地草稿', maxLength: 256, value: localDraftQuery,
-                    onChange: event => { if (localDraftReady() && event.target.value.length <= 256) { setLocalDraftQuery(event.target.value); setLocalDraftOffset(0) } } })),
+                    onChange: event => { if (localDraftReady() && event.target.value.length <= 256) { setLocalDraftQuery(event.target.value); setLocalDraftOffset(0); setCacheRecoveryOffset(0) } } })),
                   visibleLocalDrafts.storageError ? h('p', { role: 'alert' }, '本地存储目录无法完整读取；只显示已读到的草稿，不能据此认定其他草稿不存在。') : null,
                   visibleLocalDrafts.unreadable ? h('p', { role: 'alert' }, visibleLocalDrafts.unreadable + ' 份本地草稿无法读取或格式不兼容，原存储未修改。') : null,
                   visibleLocalDrafts.error ? h('p', { role: 'alert' }, visibleLocalDrafts.error) : null,
@@ -3563,7 +3589,22 @@
                   h('div', { className: 'kg-target-toolbar' }, button('←', () => { if (localDraftReady()) setLocalDraftOffset(Math.max(0, localDraftOffset - 20)) }, saving || loading || localDraftOffset === 0,
                     { title: '本地草稿上一页', 'aria-label': '本地草稿上一页', className: 'kg-secondary kg-target-icon' }),
                     button('→', () => { if (localDraftReady()) setLocalDraftOffset(localDraftOffset + 20) }, saving || loading || localDraftOffset + 20 >= localDraftMatches.length,
-                      { title: '本地草稿下一页', 'aria-label': '本地草稿下一页', className: 'kg-secondary kg-target-icon' }))) : null)),
+                      { title: '本地草稿下一页', 'aria-label': '本地草稿下一页', className: 'kg-secondary kg-target-icon' })),
+                  visibleLocalDrafts.recovery.length ? h('section', { 'aria-label': '不可解析的原始缓存' },
+                    h('h4', null, '原始缓存 · 待修复'),
+                    h('p', { className: 'kg-model-meta' }, '存储键身份，未经内容核对 · 不可直接导入为草稿'),
+                    h('p', { role: 'status' }, '原始缓存 ' + cacheRecoveryMatches.length + ' / ' + visibleLocalDrafts.recovery.length + ' 份 · 第 ' + (cacheRecoveryOffset / 20 + 1) + ' 页'),
+                    h('ul', { className: 'kg-target-directory', 'aria-label': '原始缓存列表' }, cacheRecoveryMatches.slice(cacheRecoveryOffset, cacheRecoveryOffset + 20).map(item => h('li', {
+                      key: JSON.stringify([item.id, item.baseRevision]), 'data-target-cache-recovery': JSON.stringify([item.id, item.baseRevision]) },
+                      h('strong', { style: { display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, '目标 ' + item.id),
+                      h('small', { style: { display: 'block' } }, '知识图第 ' + item.baseRevision + ' 版 · ' + item.raw.length + ' UTF-16 代码单元'),
+                      button('下载原始缓存 JSON', () => backupRawCache(item), saving || loading || recordLoading,
+                        { 'aria-label': '下载原始缓存 ' + JSON.stringify([item.id, item.baseRevision]), className: 'kg-secondary' })))),
+                    !cacheRecoveryMatches.length ? h('p', null, '没有匹配的原始缓存') : null,
+                    h('div', { className: 'kg-target-toolbar' }, button('←', () => { if (localDraftReady()) setCacheRecoveryOffset(Math.max(0, cacheRecoveryOffset - 20)) }, saving || loading || recordLoading || cacheRecoveryOffset === 0,
+                      { title: '原始缓存上一页', 'aria-label': '原始缓存上一页', className: 'kg-secondary kg-target-icon' }),
+                      button('→', () => { if (localDraftReady()) setCacheRecoveryOffset(cacheRecoveryOffset + 20) }, saving || loading || recordLoading || cacheRecoveryOffset + 20 >= cacheRecoveryMatches.length,
+                        { title: '原始缓存下一页', 'aria-label': '原始缓存下一页', className: 'kg-secondary kg-target-icon' }))) : null) : null)),
             h('div', { 'aria-label': '个人靶图编辑区', 'aria-busy': loading || recordLoading },
               loading ? h('p', { role: 'status' }, '正在读取个人靶图…') : null,
               recordLoading ? h('div', { role: 'status', 'aria-label': '历史靶图读取', 'data-target-record-view': 'loading', tabIndex: -1 }, '正在读取历史靶图…',
