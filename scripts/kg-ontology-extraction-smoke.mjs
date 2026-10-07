@@ -25,8 +25,16 @@ const calls = []
 // A model that returns whatever types the prompt declared: it echoes the first
 // node type it was offered, which lets the test read the ontology back out of
 // the model's input rather than trusting host-side state.
-const extractor = async ({ title, systemPrompt, chunk }) => {
-  calls.push({ title, systemPrompt })
+const extractor = async ({ title, systemPrompt, prompt, chunk }) => {
+  calls.push({ title, systemPrompt, prompt })
+  if (title === 'aggregate' || title === 'aggregate-append') {
+    const unit = chunk.units[0]
+    return {
+      summary: '聚合本体材料',
+      nodes: [{ id: title === 'aggregate' ? 'a1' : 'a2', type: 'claim', text: unit.text, quote: unit.text, paragraph: unit.num }],
+      edges: [],
+    }
+  }
   if (title === 'lv-append') {
     const unit = chunk.units.find((item) => item.text.includes('可迁移性'))
     return {
@@ -212,6 +220,55 @@ assert.equal(newFeature.stage, 'processed')
 assert(!Object.hasOwn(newFeature, 'hidden'), 'append must not bypass the attribute allowlist')
 assert(newFeature.paragraph > Math.max(...lv.result.nodes.map((node) => node.paragraph)), 'appended source anchors must be offset into the canonical document')
 
+// ---- 8. a third profile reaches every extraction and persistence boundary ---
+const aggregateText = '甲与乙是并列判断，若丙成立则丁成立。'
+const aggregateStart = await handlers.get('extract')({
+  title: 'aggregate', text: aggregateText, ontology: 'aggregate-v1', relationBatchBudget: 1,
+})
+assert(aggregateStart.taskId, JSON.stringify(aggregateStart))
+const aggregate = await waitTask(aggregateStart.taskId)
+assert.equal(aggregate.status, 'succeeded', JSON.stringify(aggregate.error))
+assert.equal(aggregate.result.ontology, 'aggregate-v1')
+assert.equal(aggregate.result.graphOntology.id, 'aggregate-v1')
+assert.equal(aggregate.result.graphOntology.nodeTypes.length, 8)
+assert.equal(aggregate.result.graphOntology.relationTypes.length, 12)
+assert.equal(aggregate.result.nodes[0].type, 'claim')
+assert.equal(aggregate.result.nodes[0].text, aggregateText)
+assert.equal(aggregate.result.nodes[0].quote, aggregateText)
+assert.equal(aggregate.result.nodes[0].entailmentStatus, 'unverified', 'a new profile must not promote model output to semantic truth')
+assert.equal(aggregate.result.edges.length, 0, 'isolated grounded knowledge must not manufacture a relation')
+const aggregateCall = calls.find(call => call.title === 'aggregate')
+assert.match(aggregateCall.systemPrompt, /默认粒度是内容单元/)
+assert.match(aggregateCall.prompt, /建图结构约束 v1 · 经典文献聚合/)
+assert.match(aggregateCall.prompt, /前一整条规则不等于B已成立/)
+assert(!aggregateCall.systemPrompt.includes('学习观拆解引擎'), 'third-profile dispatch must not fall through to learning-view')
+assert(!propCall.prompt.includes('经典文献聚合'), 'default user prompts must not inherit aggregate granularity')
+const aggregateExport = await handlers.get('document-export')({
+  documentId: aggregate.result.source.documentId, includeSourceText: true,
+})
+assert.equal(aggregateExport.sourceText, aggregateText)
+assert.equal(aggregateExport.graph.ontology, 'aggregate-v1')
+
+const aggregateConflict = await handlers.get('append-extract')({
+  documentId: aggregate.result.source.documentId, title: 'aggregate-append',
+  text: '另一个独立判断，仍保留若甲则乙的条件。', ontology: 'learning-view-v1',
+})
+assert.equal(aggregateConflict.error?.code, 'ontology_conflict')
+const aggregateAppendStart = await handlers.get('append-extract')({
+  documentId: aggregate.result.source.documentId, title: 'aggregate-append',
+  text: '另一个独立判断，仍保留若甲则乙的条件。', relationBatchBudget: 1,
+})
+assert(aggregateAppendStart.taskId, JSON.stringify(aggregateAppendStart))
+const aggregateAppend = await waitTask(aggregateAppendStart.taskId)
+assert.equal(aggregateAppend.status, 'succeeded', JSON.stringify(aggregateAppend.error))
+assert.equal(aggregateAppend.result.ontology, 'aggregate-v1')
+const aggregateAppendCall = calls.find(call => call.title === 'aggregate-append')
+assert.match(aggregateAppendCall.systemPrompt, /新增节点沿用内容单元粒度/)
+assert.match(aggregateAppendCall.prompt, /经典文献聚合/)
+assert(aggregateAppend.result.nodes.some(node => node.text === aggregateText && node.quote === aggregateText),
+  'append must preserve the previously accepted conditional text and evidence')
+assert.equal(lv.result.ontology, 'learning-view-v1', 'aggregate extraction must not mutate another document ontology')
+
 console.log(JSON.stringify({
   ok: true,
   learningViewNodes: lvTypes,
@@ -223,4 +280,7 @@ console.log(JSON.stringify({
   storeRoundTrip: reopened.ontology,
   appendOntologyConflict: true,
   appendOntologyAndAttributes: true,
+  aggregateProfileAndPrompt: true,
+  aggregateEvidenceAndNoAuthorityPromotion: true,
+  aggregatePersistenceAndAppend: true,
 }))

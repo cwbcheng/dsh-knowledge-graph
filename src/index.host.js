@@ -1306,6 +1306,317 @@ function createHostPlugin(graphContractOnly) {
           "memory_material"
         ]
       },
+        "aggregate-v1": {
+        "id": "aggregate-v1",
+        "label": "经典文献聚合知识图",
+        "summary": "面向经史子集等古典文本的粗粒度抽取本体：以内容单元为节点粒度（约 1–1.5 节点/单元），沿用命题本体的 8 类节点、12 类关系与全部门禁。",
+        "nodeTypes": [
+          {
+            "id": "fact",
+            "zh": "事实",
+            "label": "事实",
+            "color": "#3b82f6",
+            "fill": "rgba(59,130,246,0.15)",
+            "aliases": [
+              "事实"
+            ]
+          },
+          {
+            "id": "claim",
+            "zh": "主张",
+            "label": "主张",
+            "color": "#0f766e",
+            "fill": "rgba(15,118,110,0.15)",
+            "aliases": [
+              "观点",
+              "主张"
+            ]
+          },
+          {
+            "id": "inference",
+            "zh": "推论",
+            "label": "推论",
+            "color": "#8b5cf6",
+            "fill": "rgba(139,92,246,0.15)",
+            "aliases": [
+              "推论"
+            ]
+          },
+          {
+            "id": "concept",
+            "zh": "概念",
+            "label": "概念",
+            "color": "#10b981",
+            "fill": "rgba(16,185,129,0.15)",
+            "aliases": [
+              "概念"
+            ]
+          },
+          {
+            "id": "definition",
+            "zh": "定义",
+            "label": "定义",
+            "color": "#f59e0b",
+            "fill": "rgba(245,158,11,0.16)",
+            "aliases": [
+              "定义"
+            ]
+          },
+          {
+            "id": "example",
+            "zh": "例子",
+            "label": "例子",
+            "color": "#06b6d4",
+            "fill": "rgba(6,182,212,0.15)",
+            "aliases": [
+              "例子"
+            ]
+          },
+          {
+            "id": "counter_example",
+            "zh": "反例",
+            "label": "反例",
+            "color": "#ef4444",
+            "fill": "rgba(239,68,68,0.15)",
+            "aliases": [
+              "反例",
+              "counterexample",
+              "counter-example"
+            ]
+          },
+          {
+            "id": "rule",
+            "zh": "规则",
+            "label": "规则",
+            "color": "#7c3aed",
+            "fill": "rgba(124,58,237,0.16)",
+            "aliases": [
+              "规则"
+            ]
+          }
+        ],
+        "relationTypes": [
+          {
+            "id": "supports",
+            "zh": "支持",
+            "aliases": [
+              "support",
+              "支持"
+            ],
+            "family": "directional",
+            "weight": 4
+          },
+          {
+            "id": "example",
+            "zh": "例子",
+            "aliases": [
+              "example_of",
+              "例子"
+            ],
+            "family": "satellite",
+            "weight": 6
+          },
+          {
+            "id": "counter_example",
+            "zh": "反例",
+            "aliases": [
+              "counterexample",
+              "反例"
+            ],
+            "family": "satellite",
+            "weight": 6
+          },
+          {
+            "id": "defines",
+            "zh": "定义",
+            "aliases": [
+              "define",
+              "定义"
+            ],
+            "family": "satellite",
+            "weight": 7
+          },
+          {
+            "id": "infers",
+            "zh": "推断",
+            "aliases": [
+              "infer",
+              "implies",
+              "推断"
+            ],
+            "family": "backbone",
+            "weight": 9
+          },
+          {
+            "id": "causes",
+            "zh": "因果",
+            "aliases": [
+              "cause",
+              "导致",
+              "drives",
+              "drive",
+              "驱动",
+              "因果"
+            ],
+            "family": "backbone",
+            "weight": 9
+          },
+          {
+            "id": "is_a",
+            "zh": "属于",
+            "aliases": [
+              "isa",
+              "属于"
+            ],
+            "family": "satellite",
+            "weight": 7
+          },
+          {
+            "id": "contains",
+            "zh": "包含",
+            "aliases": [
+              "contain",
+              "包含"
+            ],
+            "family": "satellite",
+            "weight": 7
+          },
+          {
+            "id": "driven_by",
+            "zh": "受驱动于",
+            "aliases": [
+              "drivenby",
+              "受驱动于"
+            ],
+            "family": "directional",
+            "weight": 4
+          },
+          {
+            "id": "not_is",
+            "zh": "不是",
+            "aliases": [
+              "notis",
+              "不等于",
+              "不是"
+            ],
+            "family": "neutral",
+            "weight": 7
+          },
+          {
+            "id": "analogy",
+            "zh": "类比说明",
+            "aliases": [
+              "analogizes",
+              "类比",
+              "类比说明"
+            ],
+            "family": "satellite",
+            "weight": 5
+          },
+          {
+            "id": "aims_at",
+            "zh": "旨在",
+            "aliases": [
+              "aim_at",
+              "旨在"
+            ],
+            "family": "directional",
+            "weight": 4
+          }
+        ],
+        "sourceRules": {
+          "example": "example",
+          "counter_example": "counter_example",
+          "defines": "definition"
+        },
+        "entityCandidateTypes": [
+          "concept",
+          "definition"
+        ],
+        "claimCandidateTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "rule",
+          "definition",
+          "counter_example"
+        ],
+        "evidenceRequiredTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "rule",
+          "definition",
+          "counter_example"
+        ],
+        "semanticGuardTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "rule",
+          "definition"
+        ],
+        "consumptionTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "concept",
+          "definition",
+          "example",
+          "counter_example",
+          "rule"
+        ],
+        "assertionTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "rule"
+        ],
+        "factCheckTypes": [
+          "fact",
+          "claim",
+          "inference",
+          "rule",
+          "definition",
+          "counter_example"
+        ],
+        "factCheckWeights": {
+          "fact": 0.9,
+          "counter_example": 0.9,
+          "rule": 0.85,
+          "definition": 0.75,
+          "claim": 0.7,
+          "inference": 0.6
+        },
+        "relationWeave": {
+          "relations": [
+            "example",
+            "analogy"
+          ],
+          "sources": [
+            "example"
+          ],
+          "targets": [
+            "fact",
+            "claim",
+            "inference",
+            "concept",
+            "definition",
+            "rule"
+          ]
+        },
+        "diagnostics": [],
+        "renderOrder": [
+          "fact",
+          "claim",
+          "inference",
+          "concept",
+          "definition",
+          "example",
+          "counter_example",
+          "rule"
+        ]
+      },
       })
 
       // Also generated from src/kg-ontology.mjs. Docs: diagnoseLearningView.
@@ -1497,6 +1808,11 @@ function createHostPlugin(graphContractOnly) {
       // <<< END GENERATED ONTOLOGY DATA <<<
 
        const DEFAULT_ONTOLOGY = 'proposition-v1'
+       // The non-default profile ids the prompt dispatch below keys on. They must
+       // match the ids `npm run gen:ontology` writes into ONTOLOGY_PROFILES; a
+       // mismatch would make a profile fall back to the default prompt.
+       const LEARNING_VIEW_ONTOLOGY = 'learning-view-v1'
+       const AGGREGATE_ONTOLOGY = 'aggregate-v1'
        // Alias spellings accepted for a profile id, so an older settings value
        // or a hand-written document id keeps resolving.
        const ONTOLOGY_ID_ALIASES = { 'learning-view': 'learning-view-v1', xuexigou: 'learning-view-v1', xuexiguan: 'learning-view-v1' }
@@ -2253,13 +2569,73 @@ function createHostPlugin(graphContractOnly) {
         ].join(NL)
       })()
 
+      // aggregate-v1 — the coarse-grained extraction prompt.
+      //
+      // This is SYSTEM_PROMPT with the granularity rules rewritten (rules 3, 10,
+      // 12, and the closing self-check) and nothing else touched. In particular
+      // the 8 node types, the 12 relations, their direction notes and the FOUR
+      // EVIDENCE GATES are copied verbatim, so the new profile cannot quietly
+      // weaken a gate:
+      //   gate 1  minimal quote per node            -> rule 2
+      //   gate 2  text must be supported by quote   -> rule 11
+      //   gate 3  every edge needs direct evidence  -> rule 13
+      //   gate 4  isolated nodes are allowed        -> rule 14
+      // proposition-v1's own bytes are untouched: it keeps returning SYSTEM_PROMPT.
+      const AGGREGATE_SYSTEM_PROMPT = [
+        '你是「知识拆解引擎」。用户会给你一段资料正文（章节、技术文档、学习笔记、经史子集等），正文已按内容切分为编号单元（一个编号单元可能含多个句子），[P数字] 为该单元编号。目标不是摘要，而是生成可复用、可继续推理的知识图；古典文本的默认粒度是内容单元，不是分句。',
+        '',
+        '节点必须从以下 8 类中选择：',
+        '1. fact 事实 —— 可直接观察、记录或核对的具体信息/元信息。作者的理论判断、经验概括、价值判断不得标 fact。',
+        '2. claim 主张 —— 作者/资料直接提出但未在当前文本中作为客观事实核实的观点、经验概括、理论判断。必须保留“可能、多数、通常、必须、如果”等限定强度。',
+        '3. inference 推论 —— 由已有事实/主张结合原文逻辑推出的可复用结论；不能只是换句话复述原句。',
+        '4. concept 概念 —— 稳定、可复用的术语或明确命名对象。作者临时标签、修辞表达不得仅因显眼就升级为 concept，除非文本明确把它当作持续讨论的理论对象。被两个以上独立核心命题反复引用、可跨段/跨章节继续承载知识的明确命名对象，应保留独立 concept anchor；concept 名称优先使用稳定对象本身，不把“重建/优化/提高/建立 + 对象”整体实体化，除非该过程本身被正式命名。',
+        '5. definition 定义 —— 对概念的精确界定。',
+        '6. example 例子 —— 用于说明某个事实、主张、规则或概念的具体实例。',
+        '7. counter_example 反例 —— 只有当一个具体案例明确削弱、限制或否定某个一般命题时使用，并应通过 counter_example 关系指向被挑战命题。负向结果、失败情形或对照情形如果仍在帮助说明/支持原命题，仍用 example，并通过 supports/analogy 表达作用。',
+        '8. rule 规则 —— 方法、步骤、操作流程或明确规范。',
+        '',
+        '关系必须从以下 12 类中选择：',
+        'supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
+        '其中 is_a：下位/具体项→上位类别；contains：整体→组成；driven_by：手段/行为→目标或驱动因素；not_is：A→B 表示“A不是/不等同于B”；analogy：类比案例→被说明的原则；aims_at：主体/方案/作品→目标。能用这些精确关系时，不要退化成 supports。',
+        '',
+        '硬性要求：',
+        '1. 每个节点必须给出 paragraph 字段：主要出处所在 [P数字] 的整数编号，必须准确。',
+        '2. 每个节点必须尽量给出 quote：使用能完整支撑该节点的最小原文片段。quote 必须保留会改变断言强度的否定、数量范围、可能性、频率、必要性和条件词，例如“可能、多数、部分、通常、必须、如果”。禁止用删掉这些词的片段来支撑更强的表述。',
+        '3. 一节点一命题，默认粒度是内容单元而不是分句：以一个 [P数字] 单元的主要断言/结果为一个命题，同一单元内的并列后果、递进步骤与连续判断合成同一个节点，由该单元的完整原文片段作 quote；只有当一个单元确实包含两个互不依赖、需要分别检索和判断的断言时，才拆成两个节点，并用关系连接。',
+        '4. fact 与 claim 必须严格区分：来源中“作者认为/可能/多数/通常/症结在于/本书认为”等理论或经验判断优先使用 claim；只有可直接观察、记录、核对的具体信息才使用 fact。',
+        '5. 宁缺毋滥：环境描写、铺垫、出版服务信息或与主题无关的句子不要进入核心图。',
+        '6. 只输出合法 JSON，禁止 markdown 代码块标记，禁止任何解释文字。',
+        '7. JSON 结构固定为：{"summary":"一句话总结全文","nodes":[{"id":"n1","type":"claim","text":"节点的原子表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"能直接证明这条关系的原文逐字摘录"}]}]}',
+        '8. type 只能取 fact/claim/inference/concept/definition/example/counter_example/rule；relation 只能取 supports/example/counter_example/defines/infers/causes/is_a/contains/driven_by/not_is/analogy/aims_at；paragraph 必须是真实编号。',
+        '9. 节点 id 用 n1、n2、n3... 全局唯一；edges 的 fromNodeId/toNodeId 必须引用存在节点。',
+        '10. 单批节点数最多 48 个；这是安全上限，不是压缩目标。本批节点数应与本批内容单元数大致相当（约 1–1.5 个节点/单元）：不要按分句逐句建点，也不得为了凑数把单元内本可合并的并列判断拆开；但同样不得为了压低数量而丢掉原文明示的独立结论、条件或限定。',
+        '11. 每个 fact/claim/inference 节点的 text 必须由 quote 支撑，且不得删除或强化原文的可能性、数量范围、条件、否定和必要性。',
+        '12. 同一稳定概念或同一原子命题只建一个节点；同一单元内的相关判断应合并进该单元的节点并保留其条件、否定与强度限定，禁止把跨单元的多条独立主张合成一个笼统的“主结论大节点”。若一个稳定对象被多个核心命题共同引用，应保留其 concept anchor，而不是只让该术语散落在命题文本里。',
+        '13. 关系方向必须符合语义；每条边必须有直接证明该 relation 的原文 evidence。端点分别出现、主题相似或同段出现都不能单独证明关系。',
+        '14. 与主题有关的节点可保持孤立；原文未定义的核心概念允许作为待后文展开的节点存在，禁止为了连通率强行补关系。原文明示“并非X/不是X/不意味着X/问题不在X而在Y”等纠偏时，应保留防止错误推理所必需的限定主张；原文明示某问题留待后文回答时，可用普通 claim 记录“当前范围尚未给出具体答案”，不要虚构答案。',
+        '15. 高知识密度 worked example 不得只因是例子而整体省略：若例子明确命名一个可复用对象或定义，并在同段或紧邻段落用于引出具体行为、误区、机制或验证区分，至少保留能把该例子连接到后续机制的最小 example/definition/concept 锚点。纯修辞且不承载这种连接作用的例子仍可省略。',
+        '16. 对以【图示关系】【表格】【统计图】标记的视觉转写，图中明确编码的节点、类别、分组、对应、包含、箭头/连线、先后顺序以及具有图例语义的颜色/形状都是候选知识，不能仅因它们表现为版面或颜色而当作装饰省略。能准确映射到允许 relation 时建立有直接 evidence 的边；若图中关系真实明确但不适合 12 种 relation，至少创建一个原子 fact/claim 节点忠实记录“谁与谁通过何种可见方式关联”，禁止整段丢弃或强行套用错误关系。纯粹位置且无图例/标签语义的 layout 仍可省略。',
+        '17. 输出前自查：节点粒度是否与内容单元一致（既没有逐句拆点，也没有把互不依赖的独立结论压成一个“主结论大节点”）？fact/claim 是否分对？counter_example 是否真的在反驳一个命题而不是仅描述负向/对照结果？核心稳定对象是否有 concept anchor？显式纠偏或留待后文的信息是否被遗漏？高知识密度 worked example 是否被整段丢失？是否保留“可能/多数/必须/如果”等强度？是否存在比 supports 更精确的关系？证据是否真的证明节点和关系？',
+      ].join(NL)
+
       /**
-       * The first-pass extraction prompt for a carrier's ontology. Unknown
-       * carriers fall back to proposition-v1, so nothing changes for documents
-       * that predate ontologies.
+       * The first-pass extraction prompt for a carrier's ontology, keyed by
+       * profile id.
+       *
+       * This used to be a binary ternary (`default ? SYSTEM_PROMPT : LEARNING_VIEW`),
+       * which meant a THIRD profile silently received the learning-view prompt —
+       * wrong vocabulary, wrong relation names, and the model would emit types the
+       * validator then deleted. A keyed table with an explicit default fallback
+       * makes an unknown id land on proposition-v1 instead of on the wrong
+       * ontology. proposition-v1's branch is still literally SYSTEM_PROMPT.
        */
+      const SYSTEM_PROMPT_BY_ONTOLOGY = Object.freeze({
+        [DEFAULT_ONTOLOGY]: SYSTEM_PROMPT,
+        [LEARNING_VIEW_ONTOLOGY]: LEARNING_VIEW_SYSTEM_PROMPT,
+        [AGGREGATE_ONTOLOGY]: AGGREGATE_SYSTEM_PROMPT,
+      })
       function systemPromptFor(carrier) {
-        return ontIdOf(carrier) === DEFAULT_ONTOLOGY ? SYSTEM_PROMPT : LEARNING_VIEW_SYSTEM_PROMPT
+        return SYSTEM_PROMPT_BY_ONTOLOGY[ontIdOf(carrier)] || SYSTEM_PROMPT
       }
 
       const VISUAL_TRANSCRIPTION_SYSTEM_PROMPT = [
@@ -2322,14 +2698,28 @@ function createHostPlugin(graphContractOnly) {
         '10. JSON 结构固定为：{"summary":"合并后的总结","nodes":[{"id":"n1","type":"claim","text":"原子表述","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"直接证明关系的原文摘录"}]}]}',
       ].join(NL)
 
+      // Per-profile incremental clauses. The generic text is enough for a profile
+      // whose extraction prompt already states its granularity, but the coarse
+      // profile restates it here because the append path is a second place where
+      // a model decides whether to split a unit into several nodes.
+      const APPEND_EXTRA_BY_ONTOLOGY = Object.freeze({
+        [AGGREGATE_ONTOLOGY]: [
+          '本次为增量拆解：输入是新正文和已有节点清单，继续使用上面的本体、属性和证据规则。',
+          '只输出新正文引入的新节点，不重新生成已有节点；引用已有知识时使用清单中的真实 id，不得编造 id。',
+          '新节点 paragraph 和关系 evidence 必须引用新正文的真实 [P数字]，不得将已有节点的原文位置当作新正文位置。',
+          '新增节点沿用内容单元粒度（约 1–1.5 个节点/单元）：同一单元内的并列后果、递进步骤与连续判断合成一个节点，只有两个互不依赖、需分别检索与判断的断言才拆开。',
+          '同一稳定对象若已在上面的节点清单中，请引用已有 id，不要为它新建概念节点；summary 输出合并后知识图的一句话总结；原文证据不足时保持孤立，不得为了接入旧图而虚构关系。',
+        ],
+      })
       function appendPromptFor(carrier) {
         if (ontIdOf(carrier) === DEFAULT_ONTOLOGY) return APPEND_SYSTEM_PROMPT
-        return systemPromptFor(carrier) + NL + NL + [
+        const extra = APPEND_EXTRA_BY_ONTOLOGY[ontIdOf(carrier)] || [
           '本次为增量拆解：输入是新正文和已有节点清单，继续使用上面的本体、属性和证据规则。',
           '只输出新正文引入的新节点，不重新生成已有节点；引用已有知识时使用清单中的真实 id，不得编造 id。',
           '新节点 paragraph 和关系 evidence 必须引用新正文的真实 [P数字]，不得将已有节点的原文位置当作新正文位置。',
           'summary 输出合并后知识图的一句话总结；原文证据不足时保持孤立，不得为了接入旧图而虚构关系。',
-        ].join(NL)
+        ]
+        return systemPromptFor(carrier) + NL + NL + extra.join(NL)
       }
 
       // Incremental trajectory append: NEW trace events plus the existing
@@ -2419,8 +2809,32 @@ function createHostPlugin(graphContractOnly) {
         ].join(NL)
       })()
 
+      // aggregate-v1 coverage pass. Same purpose as COVERAGE_SYSTEM_PROMPT and
+      // the same evidence rules, but the granularity rule is the coarse one, and
+      // the per-unit cap is explicit: this pass must not undo the main
+      // extractor's unit-level nodes by re-splitting a unit into its steps.
+      const AGGREGATE_COVERAGE_SYSTEM_PROMPT = [
+        '你是「知识图解释覆盖复核器」。你会收到一个原文内容块，以及已经通过确定性验收的该块知识节点。你的唯一任务是检查首轮图是否丢失后续解释/检索必需的信息：中间机制、独立后果、稳定概念锚点、显式防误推理限定、当前范围明确留待后文回答的信息，高知识密度例子，以及【图示关系】中明确可见但未进入图的节点、分组、对应、图例编码和箭头/连线关系。',
+        '',
+        '只补漏，不重做：',
+        '1. 只能输出首轮图中真正缺失的新节点，以及至少一端连接这些新节点的必要关系；禁止改写、删除、合并已有节点。唯一例外：若【图示关系】原文以箭头、连线标签、包含/分组、对应或图例类别直接证明两个已有节点之间缺少一条可映射到允许 relation 的边，可以只补这条边；不得借此按主题相似度补连通。',
+        '2. 优先恢复原文明确表达的多步机制链、条件→结果、中间状态、独立可查询后果。若首轮只保留“A最终导致E”，而原文明示A→B→C→D→E，则补回对解释为什么/如何有用的B/C/D。若原文明示“某方法看似合理，然而/但是在条件C下却行不通、失效、无法应用或难以发挥作用”，不得只保留条件或原因而遗漏这个限制结论本身；补回只表达该限制结果的最小原子 claim，并在原文直接证明时用 causes/supports 连接已经独立存在的原因或条件节点，禁止把原因、条件和结果重新压成一个总结节点。若一个明确命名的稳定对象被多个核心命题反复引用却没有独立 concept anchor，也可补回该对象；concept 名称使用稳定对象本身。',
+        '3. 一节点一命题，粒度与主抽取器一致：一个内容单元最多补 1 个节点，单元内的步骤沿用该单元已接受的节点，不要为每一步单独补点；不要为追求完整而把每句话都建成节点，也不要把多个单元压成一个总结节点。',
+        '4. 多个例子同时存在时，只补能揭示机制步骤、关键区分或连接多个核心命题的例子；纯修辞、只重复已有原则的比喻优先省略。例子节点仍用 example；如果它是类比，用 analogy 关系表达其作用。counter_example 只用于真正削弱/限制某个命题的案例；负向结果或对照情形若仍在支持原命题，不得标为 counter_example。若首轮已经保留后续行为或机制，却把承载该行为的明确命名对象/定义型 worked example 整段省略，应补回最小 example/definition/concept 锚点，并只用原文直接支持的 example/analogy/supports 等关系把新锚点连接到已有机制；不得因此收录所有例子。若一个完整原文单元没有任何已接受节点，但它以“例如/想象一下/哪怕/当…时/如果…就…”等具体场景直接说明已出现的抽象主张或机制，也应逐项检查是否漏掉一个最小 example 节点及必要的 example/supports/analogy 边；这只是补漏，不得因此收录纯修辞或所有例子。',
+        '5. 对【图示关系】逐项检查可见对象、箭头/连线、分组/包含、对应、顺序和具有图例语义的颜色/形状编码。若关系无法诚实映射到允许 relation，新增一个原子 fact/claim 节点忠实记录该关系，禁止强套 causes/supports 等错误边；纯位置且没有图例或标签语义时可以继续省略。',
+        '6. 所有新节点和关系必须由当前编号原文直接支持。quote/evidence 必须逐字来自原文；保留“可能、多数、通常、必须、如果、不是、会、能、可、将、应、只有”等限定。对“首先/接着/然后/随后”等显式流程步骤，text 要尽量贴近原句拆成原子陈述并保留原文的会/可能/能/可/将/应/必须/如果/只有等语义强度与条件；不得把可能性、能力或条件性表述提升为无条件事实。若原文明示“并非X/不是X/不意味着X/问题不在X而在Y”，检查防误推理所需的X侧限定是否漏掉；若原文明示问题将在后文回答，可补一条普通 claim 记录“当前范围尚未给出具体答案”，不得猜答案或新增 question/unresolved 类型。',
+        '7. 不要因为节点孤立、图不够漂亮或边太少而补知识。原文没有缺口时返回空 nodes/edges。',
+        '8. 最多补 12 个新节点。type/relation 与主抽取器完全相同。',
+        '9. 只输出合法 JSON：{"nodes":[{"id":"m1","type":"claim","text":"缺失的原子命题","quote":"原文逐字摘录","paragraph":2}],"edges":[{"fromNodeId":"m1","toNodeId":"n3","relation":"causes","evidence":[{"paragraph":2,"quote":"直接证明关系的原文"}]}]}。无缺口时输出 {"nodes":[],"edges":[]}。',
+      ].join(NL)
+
+      const COVERAGE_PROMPT_BY_ONTOLOGY = Object.freeze({
+        [DEFAULT_ONTOLOGY]: COVERAGE_SYSTEM_PROMPT,
+        [LEARNING_VIEW_ONTOLOGY]: LEARNING_VIEW_COVERAGE_SYSTEM_PROMPT,
+        [AGGREGATE_ONTOLOGY]: AGGREGATE_COVERAGE_SYSTEM_PROMPT,
+      })
       function coveragePromptFor(carrier) {
-        return ontIdOf(carrier) === DEFAULT_ONTOLOGY ? COVERAGE_SYSTEM_PROMPT : LEARNING_VIEW_COVERAGE_SYSTEM_PROMPT
+        return COVERAGE_PROMPT_BY_ONTOLOGY[ontIdOf(carrier)] || COVERAGE_SYSTEM_PROMPT
       }
 
       function simpleIllustrativeCoverageHintsHost(batch, graph) {
@@ -3063,8 +3477,44 @@ function createHostPlugin(graphContractOnly) {
         return lines.join(NL)
       })()
 
+      // aggregate-v1 weave pass. It is RELATION_WEAVE_SYSTEM_PROMPT with rules 1,
+      // 2 and 9 adjusted. Rule 2 is strengthened because coarse granularity
+      // changes what "co-occurrence" means: one node now covers a whole content
+      // unit, so two endpoints sitting in the same unit is weaker evidence than
+      // ever. Rule 1 states the leaf output-domain restriction at SYSTEM level:
+      // the host only appends it to the user prompt when a relation group has
+      // been split into leaves, and the model otherwise reads the leaf's context
+      // nodes as emittable endpoints — which fails the whole call with
+      // relation_output_outside_leaf_domain. Rule 9 keeps the 24-edge cap but
+      // states that it is a cap, never a target. Every evidence gate — including
+      // rule 2's ban on co-occurrence, rule 3's "每条边必须给 evidence … 并直接
+      // 证明该 relation", and rule 6's "孤立节点可以保持孤立" — is copied
+      // verbatim.
+      const AGGREGATE_WEAVE_SYSTEM_PROMPT = [
+        '你是「知识图关系编织引擎」。你会收到已经通过验收的节点、已有关系和编号原文。只在原文直接支持时补充遗漏关系；目标是语义精确，不是提高连通率。',
+        '',
+        '允许的关系：supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
+        '',
+        '硬性要求：',
+        '1. 只输出关系边，禁止新增、删除、合并或改写节点。fromNodeId/toNodeId 必须来自给定节点清单；当任务另行给出叶输出域（JSON 中的 fromNodeIds / toNodeIds / relations）时，只有 fromNodeId 属于 fromNodeIds、toNodeId 属于 toNodeIds 且 relation 属于 relations 的边才允许输出。域外节点只是上下文，不得作为端点出现在任何边中，也不得被当作该边的证据依据；输出域外的边会使整次关系调用作废。',
+        '2. 禁止仅因关键词相似、主题相近、同段出现或两个端点分别有证据就连边。本本体以内容单元为节点粒度，一个节点已承载该单元的多项判断，所以“两个节点落在同一内容单元”比逐句命题时更不能单独证明任何关系；关系必须由原文中直接表达该 relation 的句子证明。',
+        '3. 每条边必须给 evidence；quote 必须逐字来自原文，并直接证明该 relation。跨段关系列出共同证明关系所需的全部摘录。',
+        '4. 优先使用精确关系：is_a 下位→上位；contains 整体→组成；driven_by 手段/行为→目标；not_is A→B；analogy 类比案例→被说明原则；aims_at 主体/方案/作品→目标。只有确实只是论证支持时才用 supports。',
+        '5. 其它方向：例子→被说明项，定义→被定义项，事实/主张→推论，因→果。counter_example 必须由真正反驳/限制一般命题的案例指向被挑战命题；仅仅是负向结果或对照情形时使用 example + supports/analogy。example/counter_example/defines 的源节点类型仍应分别为 example/counter_example/definition。',
+        '6. 候选关系对只是召回提示，不是关系证据。孤立节点可以保持孤立，未定义概念也可以悬空。连续流程候选同样只是召回提示；只有原文直接呈现前一步产物/状态进入后一步，或直接支持 causes/infers/supports 中某一关系时才连边，单纯时间相邻不得连边。显式限制结论依据候选用于检查前文累计论证是否直接支持“某方法在条件下行不通/失效/无法发挥”等结论；建议方向是依据→限制结论，跨段时必须列出共同证明关系的全部摘录，不能只因共享主题词连边。例子角色候选也只是召回提示；example/analogy 的语义方向仍是具体例子→被说明项，不能仅因已有反向边或相邻出现就复制、反转或补边。',
+        '7. 原文明示“属于/是一种/包含/由…驱动/不是/类比/旨在/导致/因此/例子/定义”等关系时，应选择对应的最精确 relation。若原文使用“拿…来说/好比/类似于/类比”等显式跨域说明语气，且具体案例用于解释一个抽象原则，优先使用 analogy（案例→原则），不要因为它是具体案例就退化成 example 或 supports。',
+        '8. 对【图示关系】，箭头、连线、颜色或空间邻近本身不自动等于 causes/supports。只有图中标签、图例或随图文字直接给出且可准确映射到允许 relation 时才补边；自定义对应关系或纯视觉编码若不适合现有 relation，应由关系 fact/claim 节点承载，不得为追求连通强行套边。',
+        '9. 每次最多补充 24 条高置信关系，这是上限而不是目标；原文能直接证明多少就输出多少，少于上限、只输出少量甚至 edges:[] 都完全可以接受，宁缺毋滥，不得为凑数或提高连通率而连边。',
+        '10. 只输出合法 JSON，结构固定为：{"edges":[{"fromNodeId":"n1","toNodeId":"n2","relation":"is_a","evidence":[{"paragraph":2,"quote":"直接证明关系的原文逐字摘录"}]}]}',
+      ].join(NL)
+
+      const WEAVE_PROMPT_BY_ONTOLOGY = Object.freeze({
+        [DEFAULT_ONTOLOGY]: RELATION_WEAVE_SYSTEM_PROMPT,
+        [LEARNING_VIEW_ONTOLOGY]: LEARNING_VIEW_WEAVE_SYSTEM_PROMPT,
+        [AGGREGATE_ONTOLOGY]: AGGREGATE_WEAVE_SYSTEM_PROMPT,
+      })
       function weavePromptFor(carrier) {
-        return ontIdOf(carrier) === DEFAULT_ONTOLOGY ? RELATION_WEAVE_SYSTEM_PROMPT : LEARNING_VIEW_WEAVE_SYSTEM_PROMPT
+        return WEAVE_PROMPT_BY_ONTOLOGY[ontIdOf(carrier)] || RELATION_WEAVE_SYSTEM_PROMPT
       }
 
       // Verification / questioning prompts. The verifier is an ADVERSARIAL
@@ -3083,6 +3533,41 @@ function createHostPlugin(graphContractOnly) {
         '节点类型：fact 事实 / claim 主张 / inference 推论 / concept 概念 / definition 定义 / example 例子 / counter_example 反例 / rule 规则',
         '关系类型：supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
         '审校时重点检查：作者主张是否被误标 fact；节点是否包含多个独立命题；counter_example 是否真正削弱/限制了一个明确命题；稳定核心对象是否缺少 concept anchor 或被“重建/优化/提高 + 对象”错误实体化；是否遗漏显式纠偏/防误推理限定或“留待后文回答”的范围信息；是否丢失“可能/多数/部分/通常/必须/如果/不是”等语义限定；是否把可用精确关系退化成 supports。',
+        '',
+        '检查维度：',
+        '1. grounding 事实性：节点 text 是否忠于原文 quote 所在段落？是否夸大、曲解或超出原文？quote 是否真能在对应段落找到？',
+        '2. type 类型：节点类型是否贴切（尤其 fact 与 inference、definition 与 concept 的区分）？',
+        '3. relation 关系：边是否存在且方向正确？example/counter_example 的源应是例子/反例，defines 的源应是定义；infers 的目标应是推论。',
+        '4. duplicate 重复：不同 id 的节点是否在说同一件事，应当合并？',
+        '5. contradiction 矛盾：图内两个节点是否互相冲突？',
+        '6. completeness 遗漏：原文中重要的结论、定义、规则、稳定概念锚点、显式纠偏/防误推理限定或明确留待后文回答的信息是否漏拆？',
+        '7. summary 总结：summary 是否忠于全文、不夸大？',
+        '',
+        '硬性要求：',
+        '1. 原文是唯一事实源：禁止用外部知识或你的常识去"纠正"原文内容本身；只判断图与原文是否一致。',
+        '2. 每条 issue 必须给出 evidence（至少一条）：{"paragraph": 段落编号, "quote": "原文逐字摘录"}；quote 必须能在原文中找到，找不到证据的质疑禁止输出。',
+        '3. 只有 confidence >= 0.7 的 issue 才允许输出；宁缺毋滥。',
+        '4. 只输出合法 JSON，禁止 markdown 代码块标记，禁止解释文字。',
+        '5. JSON 结构固定为：{"issues":[{"id":"v1","severity":"error|warning|suggestion","category":"grounding|type|relation|duplicate|contradiction|completeness|summary","targetKind":"node|edge|graph","targetId":"n3 或 fromNodeId>toNodeId","title":"一句话问题","detail":"为什么有问题","evidence":[{"paragraph":2,"quote":"原文逐字摘录"}],"confidence":0.9,"proposedFix":{"action":"none|update_node|delete_node|add_node|update_edge|delete_edge|add_edge|merge_nodes|update_summary","nodePatch":{"id":"n3","patch":{"type":"fact","text":"修正后的表述","quote":"修正后的摘录","paragraph":2}},"edgePatch":{"fromNodeId":"n1","toNodeId":"n2","relation":"supports","evidence":[{"paragraph":2,"quote":"直接证明新关系的原文逐字摘录"}]},"mergeIntoId":"n5"}}]}',
+        '6. targetId：node 用节点 id；edge 用 "fromNodeId>toNodeId"；graph 用 null。没有修复方案时 proposedFix 用 {"action":"none"}。',
+        '7. 控制输出长度：title 不超过 80 字，detail 不超过 300 字，evidence.quote 不超过 200 字，避免输出被截断。',
+        '8. 每批最多输出 15 个 issue：只报最确定的 error/warning，suggestion 最多 3 条；宁可下一批/下次复核再报，也不要输出超长内容导致超时。',
+      ].join(NL)
+
+      // aggregate-v1 reviewer. Identical to VERIFY_SYSTEM_PROMPT except for the
+      // atomicity criterion: proposition-v1 lists "节点是否包含多个独立命题" as a
+      // defect, which is exactly what this profile ASKS for at unit granularity.
+      // Left unadjusted, the reviewer would report every correctly coarse node as
+      // an issue and drive the fix loop back toward per-clause nodes. Every other
+      // check — grounding, the mandatory locatable evidence per issue, type,
+      // relation direction, duplicate, contradiction, completeness, summary, and
+      // the issue budget — is copied verbatim, so no gate is relaxed.
+      const AGGREGATE_VERIFY_SYSTEM_PROMPT = [
+        '你是「知识图审校引擎」。用户会同时给你（A）资料原文（已按内容切分并编号，[P数字] 为内容单元编号）和（B）由另一个模型生成的知识图 JSON。你的任务不是复述，而是逐节点、逐边地质疑这张图，找出与原文不符、证据不足、类型/关系不合理、自相矛盾或明显重复的内容。',
+        '',
+        '节点类型：fact 事实 / claim 主张 / inference 推论 / concept 概念 / definition 定义 / example 例子 / counter_example 反例 / rule 规则',
+        '关系类型：supports 支持 / example 例子 / counter_example 反例 / defines 定义 / infers 推断 / causes 因果 / is_a 属于 / contains 包含 / driven_by 受驱动于 / not_is 不是 / analogy 类比说明 / aims_at 旨在',
+        '本本体以内容单元为节点粒度：一个节点承载同一单元内的并列后果、递进步骤与连续判断是预期的，不要因此报“包含多个独立命题”。只有当一个节点把两个互不依赖、需要分别检索和判断的断言压在一起，或把跨单元的多条独立主张合成一个笼统的“主结论大节点”时，才算粒度问题。审校时重点检查：作者主张是否被误标 fact；counter_example 是否真正削弱/限制了一个明确命题；稳定核心对象是否缺少 concept anchor 或被“重建/优化/提高 + 对象”错误实体化；是否遗漏显式纠偏/防误推理限定或“留待后文回答”的范围信息；是否丢失“可能/多数/部分/通常/必须/如果/不是”等语义限定；是否把可用精确关系退化成 supports；是否为了减少节点数丢掉了原文明示的独立结论、条件或限定。',
         '',
         '检查维度：',
         '1. grounding 事实性：节点 text 是否忠于原文 quote 所在段落？是否夸大、曲解或超出原文？quote 是否真能在对应段落找到？',
@@ -3137,8 +3622,13 @@ function createHostPlugin(graphContractOnly) {
         ].join(NL)
       })()
 
+      const VERIFY_PROMPT_BY_ONTOLOGY = Object.freeze({
+        [DEFAULT_ONTOLOGY]: VERIFY_SYSTEM_PROMPT,
+        [LEARNING_VIEW_ONTOLOGY]: LEARNING_VIEW_VERIFY_SYSTEM_PROMPT,
+        [AGGREGATE_ONTOLOGY]: AGGREGATE_VERIFY_SYSTEM_PROMPT,
+      })
       function verifyPromptFor(carrier) {
-        return (ontIdOf(carrier) === DEFAULT_ONTOLOGY ? VERIFY_SYSTEM_PROMPT : LEARNING_VIEW_VERIFY_SYSTEM_PROMPT)
+        return (VERIFY_PROMPT_BY_ONTOLOGY[ontIdOf(carrier)] || VERIFY_SYSTEM_PROMPT)
           + NL + FIX_TEXT_LIMIT_PROMPT
       }
 
@@ -3185,8 +3675,17 @@ function createHostPlugin(graphContractOnly) {
         ].join(NL)
       })()
 
+      // aggregate-v1 shares QUESTION_SYSTEM_PROMPT verbatim: that pass repairs
+      // relation and evidence defects against the same 12-relation vocabulary and
+      // never mentions atomicity, so a copy would only be a second place to
+      // drift. It is still an explicit table entry, not a fallthrough.
+      const QUESTION_PROMPT_BY_ONTOLOGY = Object.freeze({
+        [DEFAULT_ONTOLOGY]: QUESTION_SYSTEM_PROMPT,
+        [LEARNING_VIEW_ONTOLOGY]: LEARNING_VIEW_QUESTION_SYSTEM_PROMPT,
+        [AGGREGATE_ONTOLOGY]: QUESTION_SYSTEM_PROMPT,
+      })
       function questionPromptFor(graph) {
-        return (ontIdOf(graph) === DEFAULT_ONTOLOGY ? QUESTION_SYSTEM_PROMPT : LEARNING_VIEW_QUESTION_SYSTEM_PROMPT)
+        return (QUESTION_PROMPT_BY_ONTOLOGY[ontIdOf(graph)] || QUESTION_SYSTEM_PROMPT)
           + NL + FIX_TEXT_LIMIT_PROMPT
       }
 
@@ -4272,9 +4771,35 @@ function createHostPlugin(graphContractOnly) {
         '每个节点可补充 contentLayer：main 表示正文知识；source_context 表示版本、底本、校勘、转写、来源或建图说明。层次不改变 type，也不证明真伪。不要因为 fact 类型、历史年代、序言或正文讨论“来源”就归入 source_context；明确章节层次见下方上下文。',
         '完成前检查：核心概念是否只有名字却丢了原文明示的定义/论证？并列与条件是否被错误连成推理？关系证据是否同时支持两端含义、方向与 relation？正文与版本说明是否分开？允许真实孤立知识，禁止为了连通率编造边。',
       ].join(NL)
-      function buildUserPrompt(title, batch, index, total) {
+      // aggregate-v1's user-side guide. The shared guide above is kept byte-for-byte
+      // for the default profile (kg-generation-structure-host-smoke asserts five of
+      // its literals on every proposition extraction), so the coarse granularity
+      // cannot live there. Making the guide profile-aware — rather than dropping
+      // the granularity instructions into the SYSTEM_PROMPT alone — is the plan's
+      // recommended option (§8.3-D(a)): the guide is re-sent with every batch, and
+      // granularity is the one thing the model re-decides per batch, so restating
+      // it beside the numbered units is what holds the 1–1.5 nodes/unit target.
+      //
+      // Everything except the first and last lines is copied from the shared guide:
+      // the concept-anchor policy, the "same theme is not a relation" rule, the
+      // conditional-rule rule and the contentLayer rule all still hold.
+      const EXTRACTION_STRUCTURE_GUIDE_AGGREGATE = [
+        '【建图结构约束 v1 · 经典文献聚合】默认粒度是内容单元，不是分句。先辨认本批明确反复讨论的稳定概念，再以每个 [P数字] 单元的主要断言/结果为一个节点：同一单元内的并列后果、递进步骤与连续判断合入同一个节点，用该单元的完整原文片段作 quote。只有当一个单元确实包含两个互不依赖、需要分别检索和判断的断言时才拆成两个节点。不得为了压低节点数丢掉原文明示的独立结论、条件或限定。',
+        '稳定概念使用可跨段复用的简洁名称；若本批多条核心主张反复引用同一明确命名对象，应给它一个有原文出处的 concept 锚点。不要把每个名词、标题、修辞或推测出来的主题都升级为概念。',
+        '自查主要论证、明确对比、手段与目的是否只剩互不关联的句子。原文能直接证明允许的 relation 才建边；同主题、同段落、引用同一概念仅用于检索组织，不是 supports/infers/causes 的证据。没有可表达的关系时保留完整 claim/rule，不强套关系。',
+        '保留完整条件：若A则B 与 若B则C 是两条条件规则，前一整条规则不等于B已成立，不能直接 infers 到后一整条规则。只有原文给出条件成立或明确传递论证时才串联；规范、类比与哲学论述不冒充已验证的物理因果。',
+        '每个节点可补充 contentLayer：main 表示正文知识；source_context 表示版本、底本、校勘、转写、来源或建图说明。层次不改变 type，也不证明真伪。不要因为 fact 类型、历史年代、序言或正文讨论“来源”就归入 source_context；明确章节层次见下方上下文。',
+        '完成前检查：节点数是否与本批内容单元数大致相当（约 1–1.5 个节点/单元）？是否把同一单元的并列判断拆成了多张卡片，或把互不依赖的独立结论压成了一个“主结论大节点”？核心概念是否只有名字却丢了原文明示的定义/论证？并列与条件是否被错误连成推理？关系证据是否同时支持两端含义、方向与 relation？正文与版本说明是否分开？允许真实孤立知识，禁止为了连通率编造边。',
+      ].join(NL)
+      /**
+       * The per-batch user prompt. `carrier` (the task/document/graph) selects the
+       * ontology's structure guide; omitting it keeps the default guide, so the
+       * pre-existing callers and tests are unaffected.
+       */
+      function buildUserPrompt(title, batch, index, total, carrier) {
         const units = Array.isArray(batch) ? batch : (batch && Array.isArray(batch.units) ? batch.units : [])
-        let s = EXTRACTION_STRUCTURE_GUIDE + NL + NL
+        const guide = ontIdOf(carrier) === AGGREGATE_ONTOLOGY ? EXTRACTION_STRUCTURE_GUIDE_AGGREGATE : EXTRACTION_STRUCTURE_GUIDE
+        let s = guide + NL + NL
         if (title) s += '资料标题：' + title + NL
         if (total > 1) s += '（这是资料的 ' + (index + 1) + '/' + total + ' 部分，请只基于本部分内容拆解，不要臆测其他部分）' + NL
         if (batch && !Array.isArray(batch)) {
@@ -10365,7 +10890,7 @@ function createHostPlugin(graphContractOnly) {
              const existingDigest = acc.nodes.size > 0
                ? serializeExistingGraph({ nodes: Array.from(acc.nodes.values()) }, 24, batchQuery, acc.lookupTokens)
                : ''
-             let userText = buildUserPrompt(task.title, batch, i, batches.length)
+             let userText = buildUserPrompt(task.title, batch, i, batches.length, task)
             if (task.imageSource?.kind === 'markdown-assets') userText += task.imageInterpretation
               ? NL + '本批内容是 AI 对已保存图片的视觉转写，不是原书正文或已核实事实。只能从转写中明确可见的文字、表格和图示关系提出候选节点；引用转写段落，不能依据文件名、图号或常识补全图中未写明的内容。候选结论保持待复核。'
               : NL + '图片链接、文件名和图号只是原文定位信息，不是知识命题。你没有收到图片像素，禁止猜测图中内容或依据文件名建立节点。仅从可见正文提取知识，保留原文段落编号。'

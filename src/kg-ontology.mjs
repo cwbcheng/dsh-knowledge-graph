@@ -2,7 +2,7 @@
  * Ontology profiles — the single source of truth for node types, relation
  * types and their presentation.
  *
- * Two profiles ship today:
+ * Three profiles ship today:
  *
  *   proposition-v1     the original extraction ontology (fact/claim/…, 8 node
  *                      types, 12 relations). Frozen: every literal here must
@@ -14,6 +14,14 @@
  *                      knowledge graph; only the node and relation types change.
  *                      Spec: docs/learning-view-ontology.md
  *
+ *   aggregate-v1       coarse-grained extraction for classical texts (the Dao
+ *                      text and its like). SAME node/relation vocabulary and
+ *                      SAME evidence gates as proposition-v1 — it differs only
+ *                      in the granularity the prompts ask for: about one node
+ *                      per source unit instead of one node per clause. It is a
+ *                      separate profile precisely so proposition-v1's prompt
+ *                      bytes never change.
+ *
  * Both halves of the plugin (persistent lib/index.js and dynamic
  * src/index.host.js) read profiles from here, so a type is declared once. The
  * presentation face travels with the graph payload so the client can never
@@ -24,6 +32,7 @@
 
 export const ONTOLOGY_PROPOSITION = 'proposition-v1'
 export const ONTOLOGY_LEARNING_VIEW = 'learning-view-v1'
+export const ONTOLOGY_AGGREGATE = 'aggregate-v1'
 export const DEFAULT_ONTOLOGY_ID = ONTOLOGY_PROPOSITION
 
 // Layout families. The client turns these into its relation-aware ranking:
@@ -442,14 +451,48 @@ const LEARNING_VIEW = {
   ],
 }
 
+/**
+ * aggregate-v1 — coarse-grained extraction for classical texts.
+ *
+ * WHY THIS EXISTS: proposition-v1's contract is one proposition per node, which
+ * is right for technical material but yields roughly 3.3 nodes per carrying
+ * paragraph on a classical text — the Dao text alone expands past a thousand
+ * nodes and the graph stops being readable. The fix is not to relax
+ * proposition-v1 (existing graphs must keep extracting and rendering
+ * identically) but to add a profile whose PROMPTS ask for unit-level granularity:
+ * about 1–1.5 nodes per [P数字] source unit, node count for the Dao text ≈250–350.
+ *
+ * WHY IT IS A SPREAD OF PROPOSITION: the plan requires the two profiles to be
+ * structurally identical — same 8 node types, same 12 relations, same
+ * family/weight/colour, same every gate set, `diagnostics: []` — and differs
+ * only in prompt text (see src/index.host.js AGGREGATE_SYSTEM_PROMPT and
+ * AGGREGATE_COVERAGE_SYSTEM_PROMPT). Deriving the record from PROPOSITION makes
+ * that requirement structural rather than a promise: the four evidence gates
+ * (`evidenceRequiredTypes`, `semanticGuardTypes`, quote anchoring, isolated-node
+ * permission) and the weaver/candidate sets CANNOT drift, because they are the
+ * same arrays. A hand-copied literal is exactly how a gate gets silently
+ * dropped, and `new Set(undefined)` does not throw — it yields an empty set and
+ * disables the gate without any error.
+ *
+ * NOTE: the spread copies array/object REFERENCES. Nothing in this module or the
+ * host mutates a profile, so sharing is safe and is the point.
+ */
+const AGGREGATE = {
+  ...PROPOSITION,
+  id: ONTOLOGY_AGGREGATE,
+  label: '经典文献聚合知识图',
+  summary: '面向经史子集等古典文本的粗粒度抽取本体：以内容单元为节点粒度（约 1–1.5 节点/单元），沿用命题本体的 8 类节点、12 类关系与全部门禁。',
+}
+
 const PROFILES = Object.freeze({
   [ONTOLOGY_PROPOSITION]: PROPOSITION,
   [ONTOLOGY_LEARNING_VIEW]: LEARNING_VIEW,
+  [ONTOLOGY_AGGREGATE]: AGGREGATE,
 })
 
 /** All profile ids, in a stable order. */
 export function ontologyIds() {
-  return [ONTOLOGY_PROPOSITION, ONTOLOGY_LEARNING_VIEW]
+  return [ONTOLOGY_PROPOSITION, ONTOLOGY_LEARNING_VIEW, ONTOLOGY_AGGREGATE]
 }
 
 /**
@@ -462,6 +505,7 @@ export function rawProfiles() {
   return {
     [ONTOLOGY_PROPOSITION]: PROPOSITION,
     [ONTOLOGY_LEARNING_VIEW]: LEARNING_VIEW,
+    [ONTOLOGY_AGGREGATE]: AGGREGATE,
   }
 }
 

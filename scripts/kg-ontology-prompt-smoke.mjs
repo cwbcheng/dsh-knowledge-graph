@@ -149,6 +149,31 @@ for (const required of ['判别', '联结', '上料', '下料', '不得编造材
 assert(!lv.includes('fact 事实'), 'learning-view prompt must not describe proposition node types')
 assert(prompts['proposition-v1'].includes('fact 事实'), 'proposition prompt must keep its original node descriptions')
 
+// Granularity may differ; evidence gates, vocabulary and rendering must not.
+const aggregate = getOntology('aggregate-v1')
+assert.equal(aggregate.id, 'aggregate-v1')
+assert.deepEqual(Object.keys(aggregate).sort(), Object.keys(proposition).sort())
+for (const [key, value] of Object.entries(proposition)) {
+  if (['id', 'label', 'summary'].includes(key)) continue
+  assert.deepEqual(aggregate[key], value, 'aggregate must preserve proposition contract: ' + key)
+}
+const aggregatePasses = pipeline['aggregate-v1']
+assert.notEqual(aggregatePasses.extract, pipeline['proposition-v1'].extract)
+assert.notEqual(aggregatePasses.extract, pipeline['learning-view-v1'].extract)
+assert.match(aggregatePasses.extract, /默认粒度是内容单元/)
+assert.match(aggregatePasses.coverage, /粒度与主抽取器一致/)
+assert.match(aggregatePasses.verify, /本本体以内容单元为节点粒度/)
+assert.match(aggregatePasses.extract, /不得为了压低数量而丢掉原文明示的独立结论、条件或限定/)
+assert.match(aggregatePasses.extract, /每条边必须有直接证明该 relation 的原文 evidence/)
+assert.match(aggregatePasses.extract, /禁止为了连通率强行补关系/)
+assert.match(aggregatePasses.coverage, /quote\/evidence 必须逐字来自原文/)
+assert.match(aggregatePasses.weave, /禁止仅因关键词相似、主题相近、同段出现或两个端点分别有证据就连边/)
+assert.match(aggregatePasses.weave, /每条边必须给 evidence；quote 必须逐字来自原文，并直接证明该 relation/)
+assert.match(aggregatePasses.verify, /quote 是否真能在对应段落找到/)
+assert.match(aggregatePasses.verify, /每条 issue 必须给出 evidence/)
+assert(!pipeline['proposition-v1'].extract.includes('默认粒度是内容单元'),
+  'aggregate granularity must not leak into the default extraction prompt')
+
 // ---- the prompt selector falls back safely --------------------------------
 // A carrier with no ontology resolves to the default, so pre-ontology documents
 // are unaffected by this refactor.
