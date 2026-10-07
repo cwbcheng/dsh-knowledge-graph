@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { getOntology, ontologyIdOf, rawProfiles } from './kg-ontology.mjs'
+import { getOntology, ontologyIdOf, rawProfiles, withManualModels } from './kg-ontology.mjs'
 import { createImageNodeTools } from './kg-image-nodes.mjs'
 import { createModelStructureTools, createModelConsumptionTools } from './kg-model-structure.mjs'
 import { createTargetMapTools } from './kg-target-map.mjs'
@@ -844,7 +844,7 @@ export class SqliteKnowledgeStore {
     const sourceInput = graph.source && typeof graph.source === 'object' ? graph.source : {}
     let nodes = hasNodes ? graph.nodes.slice() : []
     let edges = hasEdges ? graph.edges.slice() : []
-    const profile = getOntology(ontologyIdOf(graph))
+    const profile = withManualModels(getOntology(ontologyIdOf(graph)))
     const nodeIds = new Set()
     for (let index = 0; index < nodes.length; index++) {
       const node = nodes[index]
@@ -2602,7 +2602,7 @@ export class SqliteKnowledgeStore {
     })
     // Validate against the canonical ontology inside the same snapshot as the
     // selected graph. Dropping an invalid filter would silently broaden it.
-    const allowed = validateConsumeOptions(options, getOntology(ontologyIdOf({ ...meta, source: sourceRaw })))
+    const allowed = validateConsumeOptions(options, withManualModels(getOntology(ontologyIdOf({ ...meta, source: sourceRaw }))))
     const queryRaw = text(options.query).trim().slice(0, 600)
     const query = normalizeConsumeText(queryRaw)
     const terms = consumeTerms(queryRaw)

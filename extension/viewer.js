@@ -3967,7 +3967,7 @@
         return state
       }
 
-      function ConnectionModelPanel({ documentId, revision, load, learningCall, onLocate, onReview, onRoles, onStructure, onRefresh, focusRequest, busy, restoreState, onStateChange }) {
+      function ConnectionModelPanel({ documentId, revision, load, learningCall, onLocate, onReview, onRoles, onStructure, onImport, onRefresh, focusRequest, busy, restoreState, onStateChange }) {
         const [initial] = useState(() => connectionModelBrowseState(restoreState, documentId, revision))
         const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search)
         const [section, setSection] = useState(initial.section), [offset, setOffset] = useState(initial.offset)
@@ -3985,6 +3985,19 @@
         const [fieldRequest, setFieldRequest] = useState(0)
         const [selectedSlot, setSelectedSlot] = useState(initial.selectedSlot), [selectedExample, setSelectedExample] = useState(initial.selectedExample)
         const [structureFocus, setStructureFocus] = useState(null)
+        const [importOpen, setImportOpen] = useState(false), [importText, setImportText] = useState('')
+        const [importPreview, setImportPreview] = useState(null), [importError, setImportError] = useState(''), [importBusy, setImportBusy] = useState(false)
+        const importModels = async commit => {
+          if (busy || importBusy || !onImport) return
+          setImportBusy(true); setImportError('')
+          try {
+            const graph = JSON.parse(importText)
+            const result = await onImport({ graph, revision, preview: commit ? importPreview : null })
+            if (commit) { setImportOpen(false); setImportText(''); setImportPreview(null); setReload(value => value + 1) }
+            else setImportPreview(result)
+          } catch (reason) { setImportPreview(null); setImportError(reason.message || '模型未导入') }
+          finally { setImportBusy(false) }
+        }
         const fieldRef = useRef(null)
         const api = useRef({ load, onRoles, onLocate, onReview, onRefresh, onStateChange })
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
@@ -4162,7 +4175,23 @@
             h('select', { value: section, 'aria-label': '模型章节', onChange: event => { setSection(event.target.value); setOffset(0) } },
               h('option', { value: '' }, '全部章节'), (page?.topics || []).filter(topic => topic.id).map(topic => h('option', { key: topic.id, value: topic.id }, topic.title + ' (' + topic.count + ')'))),
             h('label', null, h('input', { type: 'checkbox', checked: needsReview, onChange: event => { setNeedsReview(event.target.checked); setOffset(0) } }), ' 待核对'),
-            h('button', { type: 'button', className: 'kg-secondary', title: '重新读取模型', 'aria-label': '重新读取模型', disabled: saving || busy, onClick: refresh }, '↻')),
+            h('button', { type: 'button', className: 'kg-secondary', title: '重新读取模型', 'aria-label': '重新读取模型', disabled: saving || busy || importBusy, onClick: refresh }, '↻'),
+            onImport ? h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy || importBusy,
+              onClick: () => setImportOpen(value => !value) }, '导入联结模型') : null),
+          importOpen ? h('section', { className: 'kg-model-material', 'aria-label': '导入联结模型' },
+            h('p', null, '粘贴包含 nodes、edges 的 JSON。仅新增联结模型、概念和规则；原文摘录、结构引用及当前版本须通过校验。'),
+            h('textarea', { value: importText, rows: 8, maxLength: 2000000, 'aria-label': '联结模型 JSON', disabled: importBusy,
+              onChange: event => { setImportText(event.target.value); setImportPreview(null); setImportError('') }, style: { width: '100%' } }),
+            importError ? h('p', { role: 'alert' }, importError) : null,
+            importPreview ? h('div', { role: 'status' },
+              h('p', null, '校验通过：新增 ' + importPreview.models + ' 个模型、' + importPreview.nodes + ' 个节点、' + importPreview.edges + ' 条关系。全部以待审校状态保存。'),
+              importPreview.titles.map((text, index) => h('p', { key: index }, text))) : null,
+            h('button', { type: 'button', className: 'kg-secondary', disabled: !importText.trim() || importBusy || busy,
+              onClick: () => importModels(false) }, '校验并预览'),
+            h('button', { type: 'button', className: 'kg-primary', disabled: !importPreview || importPreview.revision !== revision || importBusy || busy,
+              onClick: () => importModels(true) }, importBusy ? '处理中…' : '保存导入'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: importBusy,
+              onClick: () => setImportOpen(false) }, '收起')) : null,
           concept ? h('div', { className: 'kg-model-toolbar' }, h('strong', null, concept.text),
             h('select', { 'aria-label': '概念在模型中的作用', value: role, onChange: event => { setRole(event.target.value); setOffset(0) } },
               h('option', { value: '' }, '全部关联模型'), h('option', { value: 'input' }, '由它能推测什么'),

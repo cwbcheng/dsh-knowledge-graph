@@ -24,7 +24,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs'
 
-import { diagnoseLearningView, ontologyIds, rawProfiles } from '../src/kg-ontology.mjs'
+import { diagnoseLearningView, ontologyIds, rawProfiles, withManualModels } from '../src/kg-ontology.mjs'
 
 const HOST_PATH = new URL('../src/index.host.js', import.meta.url)
 const OPEN = '      // >>> GENERATED ONTOLOGY DATA — DO NOT EDIT <<<'
@@ -54,6 +54,8 @@ function renderBlock() {
     '      const ONTOLOGY_PROFILES = Object.freeze({',
     ...lines,
     '      })',
+    '      const ONT_WITH_MANUAL_MODELS = ' + withManualModels.toString().split('\n').join('\n      '),
+    '      const ONTOLOGY_GRAPH_PROFILES = Object.fromEntries(Object.entries(ONTOLOGY_PROFILES).map(([id, profile]) => [id, ONT_WITH_MANUAL_MODELS(profile)]))',
     '',
     '      // Also generated from src/kg-ontology.mjs. Docs: diagnoseLearningView.',
     '      const ONT_DIAGNOSE_LEARNING_VIEW = ' + diagnoseLines,

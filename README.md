@@ -689,6 +689,16 @@ ExternalClaim {
 - 每节点优先携带 `paragraph`（段落编号，确定性回链）与 `quote`（原文逐字摘录）。
 - `verification` / `factCheck` 可选，旧版本生成的历史数据没有这些字段时按未验证/未核查处理，完全向后兼容。
 
+## 手工导入联结模型
+
+在知识图工作台的“联结模型”目录点击“导入联结模型”，粘贴 `{ "graph": { "nodes": [], "edges": [] } }` 格式的 JSON，先“校验并预览”，再“保存导入”。也可以直接粘贴含 `nodes`、`edges` 的对象。只允许新增联结模型、概念、规则，原有节点和关系保留。新增内容统一进入待审校、未验证状态。
+
+`aggregate-v1` 的自动抽取词表继续使用原有 8 类节点和 12 类关系；手工图层额外支持 `connection_model`、`maps_between`（`role: input | output`）和 `has_rule`。`modelStructure` 记录模型身份、输入输出槽位、条件分支、解释边界与配对例子。AI 归纳应使用 `identity: hypothesis` 及 `provenance.kind: ai`；逐字摘录才使用 `source`。摘录与从零开始的段落索引必须对应现有原文，概念槽位必须指向图中的概念节点。
+
+预览不写库。保存采用当前文档版本的原子提交；内容或版本变化后须重新预览。服务端校验来源、结构、重复身份及版本，失败时不导入部分数据。每批最多新增 300 个节点和 1,000 条关系。
+
+`node scripts/kg-aggregate-model-import-smoke.mjs` 覆盖经典图层兼容、原图保留、过期版本拒绝、错误摘录拒绝以及 SQLite 重开后的模型与方向保留。
+
 ## 许可
 
 [MIT](LICENSE) © cwbcheng
