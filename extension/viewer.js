@@ -9911,6 +9911,8 @@
         const [flashId, setFlashId] = useState(null)
         const pressTimer = useRef(null)
         const panRef = useRef(null)
+        const touchRef = useRef({ points: new Map(), base: null, moved: false, background: false })
+        const suppressClickRef = useRef(false)
         // The workbench window and the trajectory tab can render two
         // GraphViewers in the same document; a shared marker id would make
         // url(#kg-arrow) resolve to the wrong SVG after one unmounts.
@@ -10144,21 +10146,30 @@
           const onWheel = (e) => {
             if (!e.ctrlKey && !e.metaKey) return
             if (e.target?.closest?.('.kg-graph-controls, .kg-node-detail')) return
+            if (!Number.isFinite(e.deltaY) || e.deltaY === 0) return
             e.preventDefault()
             const rect = el.getBoundingClientRect()
-            zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top)
+            const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1
+            zoomAt(Math.exp(-clamp(e.deltaY * unit, -100, 100) * 0.002), e.clientX - rect.left, e.clientY - rect.top)
           }
           el.addEventListener('wheel', onWheel, { passive: false })
           return () => el.removeEventListener('wheel', onWheel)
         }, [zoomAt])
 
-        useEffect(() => () => {
-          if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
-        }, [])
+        useEffect(() => {
+          setDragging(false)
+          return () => {
+            if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
+            const el = containerRef.current
+            const ids = [...touchRef.current.points.keys(), ...(panRef.current ? [panRef.current.id] : [])]
+            touchRef.current.points.clear(); touchRef.current.base = null; panRef.current = null
+            for (const id of ids) if (el?.hasPointerCapture(id)) el.releasePointerCapture(id)
+          }
+        }, [prepared])
 
         const startPress = useCallback((e, node) => {
           const el = containerRef.current
-          if (!el) return
+          if (!el || (e.pointerType === 'touch' && (touchRef.current.moved || touchRef.current.points.size > 1))) return
           const rect = el.getBoundingClientRect()
           const x0 = e.clientX - rect.left
           const y0 = e.clientY - rect.top
@@ -10169,13 +10180,76 @@
           if (pressTimer.current) { pressTimer.current(); pressTimer.current = null }
         }, [])
 
+        const touchGeometry = () => {
+          const [a, b] = touchRef.current.points.values()
+          if (!a) return null
+          return b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(b.x - a.x, b.y - a.y) }
+            : { x: a.x, y: a.y }
+        }
+        const rebaseTouch = () => {
+          const geometry = touchGeometry()
+          touchRef.current.base = geometry ? { ...geometry, view: viewScheduler.current.get() } : null
+        }
+        const consumeTouch = (e) => {
+          const touch = touchRef.current, el = containerRef.current
+          if (!touch.moved) { cancelPress(); setTooltip(null); setDetail(null); setDragging(true) }
+          touch.moved = true; suppressClickRef.current = true
+          for (const id of touch.points.keys()) if (!el.hasPointerCapture(id)) el.setPointerCapture(id)
+          e.preventDefault(); e.stopPropagation()
+        }
+        // Capture runs before node/image/badge handlers stop propagation. Keep
+        // the first contact's target until it moves, so ordinary taps still work.
+        const onCanvasPointerDownCapture = (e) => {
+          const el = containerRef.current, touch = touchRef.current
+          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0 || e.button !== 0 || e.target?.closest?.('.kg-graph-controls, .kg-node-detail')) return
+          if (!touch.points.size) suppressClickRef.current = false
+          if (e.pointerType !== 'touch' || panRef.current) return
+          if (!touch.points.size) {
+            touch.moved = false
+            touch.background = !e.target?.closest?.('.kg-node, .kg-edge, .kg-edge-label[role="button"]')
+          }
+          touch.points.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          rebaseTouch()
+          if (touch.points.size > 1) consumeTouch(e)
+        }
+        const onCanvasPointerMoveCapture = (e) => {
+          const touch = touchRef.current, el = containerRef.current
+          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0 || !touch.points.has(e.pointerId) || !touch.base) return
+          touch.points.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          const next = touchGeometry(), base = touch.base
+          const dx = next.x - base.x, dy = next.y - base.y
+          if (!touch.moved && next.distance == null && Math.abs(dx) + Math.abs(dy) <= 3) return
+          consumeTouch(e)
+          if (next.distance == null) setView({ ...base.view, tx: base.view.tx + dx, ty: base.view.ty + dy })
+          else {
+            const rect = el.getBoundingClientRect()
+            const floor = Math.min(minScale, graphFitScale(el.clientWidth, el.clientHeight, bbox))
+            const zoomed = zoomAround(base.view, Math.max(next.distance, 1) / Math.max(base.distance, 1), base.x - rect.left, base.y - rect.top, floor)
+            setView({ ...zoomed, tx: zoomed.tx + dx, ty: zoomed.ty + dy })
+          }
+        }
+        const endTouch = (e, cancelled) => {
+          const touch = touchRef.current, el = containerRef.current
+          if (!touch.points.has(e.pointerId)) return
+          if (!cancelled) onCanvasPointerMoveCapture(e)
+          else { cancelPress(); suppressClickRef.current = true }
+          touch.points.delete(e.pointerId)
+          rebaseTouch()
+          if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+          viewScheduler.current.flush()
+          if (!touch.points.size) {
+            setDragging(false)
+            if (!cancelled && !touch.moved && touch.background) { onSelectEdge(null); onSelectNode(null) }
+          }
+        }
+
         const onBgPointerDown = (e) => {
-          if (e.button !== 0 || panRef.current) return
+          if (e.button !== 0 || e.pointerType === 'touch' || touchRef.current.points.size || panRef.current) return
           const el = containerRef.current
           if (!el) return
           const t = e.target
           if (t && typeof t.closest === 'function') {
-            const interactive = t.closest('button, select, input, textarea, a, [role="dialog"], .kg-graph-controls, .kg-node, .kg-edge')
+            const interactive = t.closest('button, select, input, textarea, a, [role="dialog"], .kg-graph-controls, .kg-node, .kg-edge, .kg-edge-label[role="button"]')
             // The workbench itself is a dialog; only graph-local controls block panning.
             if (interactive && el.contains(interactive)) return
           }
@@ -10192,7 +10266,7 @@
           if (!pan || pan.id !== e.pointerId) return
           const dx = e.clientX - pan.sx
           const dy = e.clientY - pan.sy
-          if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true
+          if (Math.abs(dx) + Math.abs(dy) > 3) { pan.moved = true; suppressClickRef.current = true }
           setView((v) => ({ ...v, tx: pan.tx + dx, ty: pan.ty + dy }))
         }
         const endPan = (e, cancelled) => {
@@ -10202,7 +10276,7 @@
           if (!cancelled) {
             const dx = e.clientX - pan.sx
             const dy = e.clientY - pan.sy
-            if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true
+            if (Math.abs(dx) + Math.abs(dy) > 3) { pan.moved = true; suppressClickRef.current = true }
             setView((v) => ({ ...v, tx: pan.tx + dx, ty: pan.ty + dy }))
           }
           viewScheduler.current.flush()
@@ -10650,7 +10724,7 @@
           className: 'kg-graph' + (dragging ? ' kg-panning' : ''),
           role: 'group',
           style: height ? { height: height + 'px' } : undefined,
-          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
+          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，双指捏合或 Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
         },
           h('div', { className: 'kg-graph-toolbar', role: 'group', 'aria-label': '图谱浏览' },
             h('button', { type: 'button', ref: searchButton, title: '查找当前视图节点', 'aria-label': '查找节点', 'aria-expanded': searchOpen,
@@ -10674,11 +10748,19 @@
           // All camera and pointer geometry uses the canvas, excluding toolbar rows.
           h('div', {
           className: 'kg-graph-viewport', ref: containerRef,
+          onPointerDownCapture: onCanvasPointerDownCapture,
+          onPointerMoveCapture: onCanvasPointerMoveCapture,
+          onPointerUpCapture: (e) => endTouch(e, false),
+          onPointerCancelCapture: (e) => endTouch(e, true),
+          onClickCapture: (e) => { if (suppressClickRef.current && e.detail !== 0) { e.preventDefault(); e.stopPropagation() } },
           onPointerDown: onBgPointerDown,
           onPointerMove: onBgPointerMove,
           onPointerUp: (e) => endPan(e, false),
           onPointerCancel: (e) => endPan(e, true),
-          onLostPointerCapture: (e) => endPan(e, true),
+          onLostPointerCapture: (e) => {
+            if (e.target !== containerRef.current) return
+            endTouch(e, true); endPan(e, true)
+          },
         },
           h('svg', { width: '100%', height: '100%', style: { display: 'block' } },
             h('defs', null,

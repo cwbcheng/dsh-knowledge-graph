@@ -238,7 +238,205 @@ assert.equal(camera(), moved, 'No stale panning after pointer cancellation')
 viewport().props.onPointerDown({button:0,pointerId:2,clientX:140,clientY:190,target:panTarget}); render()
 viewport().props.onPointerUp({pointerId:2,clientX:110,clientY:170}); render()
 assert.equal(camera(), prePan)
+
+// Run the real canvas capture handlers before node handlers, just as the DOM
+// does. A node's stopPropagation must not hide either finger from the camera.
+const cameraValues = () => {
+  const values = camera().match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)
+  return { tx: Number(values[1]), ty: Number(values[2]), k: Number(values[3]) }
+}
+const nodeElement = () => all(tree, byClass('kg-node')).find(item => item.props['data-node-id'] === 'n1')
+const nodeTarget = { closest: selector => /\.kg-node(?![-\w])/.test(selector) ? nodeElement() : null }
+const touch = (name, id, x, y, target = nodeTarget) => {
+  const event = { pointerId: id, pointerType: 'touch', button: 0, clientX: x, clientY: y,
+    target, detail: 1, stopped: false, prevented: false,
+    stopPropagation() { this.stopped = true }, preventDefault() { this.prevented = true } }
+  const canvas = viewport()
+  assert.equal(typeof canvas.props[name + 'Capture'], 'function', 'Touch gestures need capture-phase routing over nodes: ' + name)
+  canvas.props[name + 'Capture'](event)
+  if (!event.stopped && target === nodeTarget) nodeElement().props[name]?.(event)
+  if (!event.stopped) target[name]?.(event)
+  if (!event.stopped) canvas.props[name]?.(event)
+  render()
+  return event
+}
+const touchClick = (target = nodeTarget, detail = 1) => {
+  const event = { target, detail, stopped: false, prevented: false,
+    stopPropagation() { this.stopped = true }, preventDefault() { this.prevented = true } }
+  viewport().props.onClickCapture?.(event)
+  if (!event.stopped && target === nodeTarget) nodeElement().props.onClick(event)
+  render()
+  return event
+}
+click('重置缩放为 100%')
+props.onSelectNode(null); render()
+const pressTimers = []
+props.ctx.timeout = (fn, delay) => {
+  const timer = { fn, delay, cancelled: false }; pressTimers.push(timer)
+  return () => { timer.cancelled = true }
+}
+const beforePinch = cameraValues()
+touch('onPointerDown', 11, 450, 460)
+assert.equal(captured.size, 0, 'A stationary first finger must retain node tap targeting')
+assert(pressTimers.some(timer => timer.delay === 600 && !timer.cancelled), 'A stationary touch retains long-press details')
+touch('onPointerDown', 12, 650, 460)
+assert(captured.has(11) && captured.has(12), 'Both fingers are captured even when they start on a node')
+assert(pressTimers.filter(timer => timer.delay === 600).every(timer => timer.cancelled), 'Pinching cancels node long-press timers')
+const afterSecondFinger = camera()
+viewport().props.onLostPointerCapture({pointerId:11,target:nodeTarget}); render()
+assert.equal(camera(), afterSecondFinger, 'Transfer of implicit capture from a node is not gesture cancellation')
+touch('onPointerMove', 11, 500, 460)
+touch('onPointerMove', 12, 600, 460)
+const shrunk = cameraValues()
+assert.equal(shrunk.k, beforePinch.k / 2, 'Pinching a node must actually shrink the graph')
+assert(Math.abs((450 - shrunk.tx) / shrunk.k - (450 - beforePinch.tx) / beforePinch.k) < 1e-8)
+assert(Math.abs((300 - shrunk.ty) / shrunk.k - (300 - beforePinch.ty) / beforePinch.k) < 1e-8,
+  'The world point under the pinch midpoint stays fixed in canvas coordinates')
+touch('onPointerMove', 11, 520, 470)
+touch('onPointerMove', 12, 620, 470)
+const translatedPinch = cameraValues()
+assert.equal(translatedPinch.k, shrunk.k)
+assert.equal(translatedPinch.tx, shrunk.tx + 20)
+assert.equal(translatedPinch.ty, shrunk.ty + 10, 'A moving pinch midpoint also pans the camera')
+touch('onPointerUp', 12, 620, 470)
+const oneFingerBaseline = cameraValues()
+touch('onPointerMove', 11, 535, 490)
+const afterOneFingerMove = cameraValues()
+assert.equal(afterOneFingerMove.k, oneFingerBaseline.k)
+assert.equal(afterOneFingerMove.tx, oneFingerBaseline.tx + 15)
+assert.equal(afterOneFingerMove.ty, oneFingerBaseline.ty + 20, 'Lifting one finger rebases pan without a jump')
+touch('onPointerUp', 11, 535, 490)
+assert.equal(captured.size, 0)
+assert(touchClick().prevented, 'The compatibility click after a pinch cannot select a node')
+assert.equal(props.selectedNodeId, null)
+touch('onPointerDown', 13, 500, 460)
+touch('onPointerUp', 13, 500, 460)
+assert(!touchClick().prevented)
+assert.equal(props.selectedNodeId, 'n1', 'A new single-finger tap must still select a node')
+assert(all(tree, byClass('kg-node-detail')).length)
+
+// A drag starting on a node is navigation, not an accidental selection.
+props.onSelectNode(null); render()
+touch('onPointerDown', 14, 500, 460)
+touch('onPointerMove', 14, 525, 480)
+const beforeCancel = camera()
+touch('onPointerCancel', 14, 900, 900)
+assert.equal(camera(), beforeCancel, 'Cancellation must not consume a spurious final coordinate')
+assert.equal(captured.size, 0)
+touch('onPointerMove', 14, 1000, 1000)
+assert.equal(camera(), beforeCancel, 'Cancelled contacts cannot leave a stale drag')
+assert(touchClick().prevented)
+assert.equal(props.selectedNodeId, null)
+
+// Nested node badges and relation chips stop propagation in the bubble phase.
+const badgeTarget = { closest: selector => /\.kg-node(?![-\w])/.test(selector) ? nodeElement() : null,
+  onPointerDown: event => event.stopPropagation(), onPointerUp: event => event.stopPropagation() }
+const edgeTarget = { closest: selector => /\.kg-edge(?![-\w])/.test(selector) ? {} : null,
+  onPointerDown: event => event.stopPropagation() }
+for (const target of [panTarget, badgeTarget, edgeTarget]) {
+  click('重置缩放为 100%')
+  touch('onPointerDown', 21, 450, 460, target)
+  touch('onPointerDown', 22, 650, 460, target)
+  touch('onPointerMove', 21, 400, 460, target)
+  touch('onPointerMove', 22, 700, 460, target)
+  assert.equal(cameraValues().k, 1.5, 'Spreading fingers also zooms in')
+  touch('onPointerDown', 23, 550, 500, target)
+  const thirdFinger = camera()
+  touch('onPointerMove', 23, 800, 700, target)
+  assert.equal(camera(), thirdFinger, 'An unrelated third finger cannot perturb the active pair')
+  touch('onPointerUp', 21, 400, 460, target)
+  const changedPair = camera()
+  touch('onPointerMove', 22, 700, 460, target)
+  assert.equal(camera(), changedPair, 'Changing the active pair rebases without jumping')
+  touch('onPointerCancel', 22, 0, 0, target)
+  touch('onPointerCancel', 23, 0, 0, target)
+  assert.equal(captured.size, 0)
+}
+props.onSelectNode('n1'); render()
+const detailsTarget = {closest: () => all(tree, byClass('kg-node-detail'))[0] || {}}
+const beforeDetailsTouch = camera()
+touch('onPointerDown', 31, 450, 460, detailsTarget)
+touch('onPointerDown', 32, 650, 460, detailsTarget)
+touch('onPointerMove', 31, 500, 460, detailsTarget)
+touch('onPointerUp', 31, 500, 460, detailsTarget)
+touch('onPointerUp', 32, 650, 460, detailsTarget)
+assert.equal(camera(), beforeDetailsTouch, 'Scrolling a detail/search panel is not a graph gesture')
+assert.equal(captured.size, 0)
+touchClick(nodeTarget, 0)
+assert.equal(props.selectedNodeId, 'n1', 'Keyboard-generated clicks remain accessible after gestures')
+
+click('重置缩放为 100%')
+touch('onPointerDown', 41, 500, 460)
+touch('onPointerDown', 42, 500, 460)
+touch('onPointerMove', 42, 550, 460)
+assert(Object.values(cameraValues()).every(Number.isFinite), 'Coincident contacts must not create NaN or an infinite camera')
+assert(cameraValues().k <= 2)
+touch('onPointerUp', 41, 500, 460)
+touch('onPointerUp', 42, 550, 460)
+
+// Limits do not ratchet a fitted large graph upward or move the pinch anchor.
+click('重置缩放为 100%')
+touch('onPointerDown', 51, 450, 460)
+touch('onPointerDown', 52, 650, 460)
+touch('onPointerMove', 51, 549.5, 460)
+touch('onPointerMove', 52, 550.5, 460)
+assert(Math.abs(cameraValues().k - Math.min((900 - 32) / 20000, (600 - 32) / 13000)) < 1e-8,
+  'A large graph can pinch below the ordinary 30% editor floor down to fit')
+touch('onPointerMove', 51, 450, 460)
+touch('onPointerMove', 52, 650, 460)
+assert.equal(cameraValues().k, 1, 'Reversing a pinch after hitting the floor returns to the baseline')
+touch('onPointerMove', 51, 150, 460)
+touch('onPointerMove', 52, 950, 460)
+assert.equal(cameraValues().k, 2)
+touch('onPointerMove', 51, 450, 460)
+touch('onPointerMove', 52, 650, 460)
+assert.equal(cameraValues().k, 1, 'Reversing after hitting the maximum also returns to baseline')
+captured.delete(51)
+viewport().props.onLostPointerCapture({pointerId:51,target:el}); render()
+const lostCaptureView = camera()
+touch('onPointerMove', 51, 0, 0)
+assert.equal(camera(), lostCaptureView, 'A contact whose canvas capture is lost must be forgotten')
+el.clientHeight = 0
+touch('onPointerMove', 52, 0, 0)
+touch('onPointerUp', 52, 0, 0)
+assert.equal(camera(), lostCaptureView, 'A hidden canvas cannot produce invalid zoom geometry')
+el.clientHeight = 600
+assert.equal(captured.size, 0)
+
+// Touchpads send many small Ctrl-wheel deltas. Zero/horizontal-only events do
+// not zoom; ordinary two-finger scrolling and detail panels remain independent.
+for (const input of [{ctrlKey:false,deltaY:20}, {ctrlKey:true,deltaY:0}, {ctrlKey:true,deltaY:NaN},
+  {ctrlKey:true,deltaY:20,target:detailsTarget}]) {
+  const before = camera()
+  listeners.get('wheel')({ clientX:550,clientY:460,target:nodeTarget,
+    preventDefault() { assert.fail('An unrelated wheel event was consumed') }, ...input })
+  render()
+  assert.equal(camera(), before)
+}
+const wheelAtNode = deltaY => {
+  listeners.get('wheel')({ctrlKey:true,deltaY,clientX:550,clientY:460,target:nodeTarget,preventDefault(){}})
+  render()
+}
+const wheelBaseline = cameraValues()
+wheelAtNode(1)
+assert(cameraValues().k < wheelBaseline.k && cameraValues().k > wheelBaseline.k * 0.99,
+  'A small touchpad pinch shrinks smoothly rather than taking a fixed 10% step')
+wheelAtNode(-1)
+for (const key of ['k','tx','ty']) assert(Math.abs(cameraValues()[key] - wheelBaseline[key]) < 1e-8,
+  'Touchpad pinch direction round trips preserve the same camera')
+assert.equal(JSON.stringify({ nodes, edges }), original, 'Gesture handling cannot alter canonical graph data')
+touch('onPointerDown', 61, 450, 460)
+touch('onPointerDown', 62, 650, 460)
+assert.equal(captured.size, 2)
+const stablePrepared = props.prepared
+props.prepared = { ...stablePrepared }; render()
+assert.equal(captured.size, 0, 'Replacing a graph releases every active contact')
+props.prepared = stablePrepared; render()
+touch('onPointerDown', 63, 450, 460)
+touch('onPointerDown', 64, 650, 460)
 owner.slots.forEach(state => state.cleanup?.())
+assert.equal(captured.size, 0, 'Unmount releases every pointer capture')
+assert(pressTimers.every(timer => timer.cancelled), 'Unmount cancels long-press work')
 assert.equal(frames.size, 0, 'Unmount cancels pending camera work')
 
 // A bounding-box center can lie in a large empty gap between real nodes.
@@ -315,4 +513,6 @@ for (const width of [900, 344]) {
 }
 console.log(JSON.stringify({ ok: true, nodeSearch: true, paginatedResults: 65, readableFocus: true,
   cameraRestoration: true, endpointNavigation: true, parallelRelationIdentity: true,
-  separateToolbarAndCanvas: true, canvasWheelAnchor: true, pointerCancellation: true, readOnly: true, firstViews }))
+  separateToolbarAndCanvas: true, canvasWheelAnchor: true, pointerCancellation: true,
+  nodePinchZoom: true, movingPinchAnchor: true, touchTapPreserved: true, multiTouchRebase: true,
+  touchCaptureCleanup: true, touchpadContinuousZoom: true, readOnly: true, firstViews }))
