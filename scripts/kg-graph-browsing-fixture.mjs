@@ -18,21 +18,22 @@ h1{font-size:18px;margin:0}header label{display:flex;align-items:center;gap:6px}
 </head><body><div id="root"></div><script>
 const h=React.createElement, timers={timeout(fn,ms){const id=setTimeout(fn,ms);return ()=>clearTimeout(id)}};
 const names=['学习目标','检索练习','间隔复习','迁移能力','先验知识','概念边界','反例检验','反馈质量'];
-const nodes=Array.from({length:65},(_,i)=>({id:'n'+i,type:i%3?'fact':'concept',
+const count=Math.max(65,Math.min(12000,Math.floor(Number(new URLSearchParams(location.search).get('nodes'))||65)));
+const nodes=Array.from({length:count},(_,i)=>({id:'n'+i,type:i%3?'fact':'concept',
  text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。',paragraph:i}));
-nodes[64].text='跨章节检索目标 · 末尾节点';
+nodes[count-1].text='跨章节检索目标 · 末尾节点';
 const edges=nodes.slice(1).map((node,i)=>({fromNodeId:'n'+i,toNodeId:node.id,relation:i%2?'supports':'explains'}));
-edges.push({fromNodeId:'n0',toNodeId:'n64',relation:'supports'},{fromNodeId:'n0',toNodeId:'n64',relation:'contradicts'});
+edges.push({fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'supports'},{fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'contradicts'});
 const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n'),v=KGViewer.makeView(graph,source);
 function App(){
- const [mode,setMode]=React.useState('layered'),[node,setNode]=React.useState(null),[edge,setEdge]=React.useState(null),[focus,setFocus]=React.useState({seq:0}),[windowed,setWindowed]=React.useState(false);
+ const [mode,setMode]=React.useState(count>65?'overview':'layered'),[node,setNode]=React.useState(null),[edge,setEdge]=React.useState(null),[focus,setFocus]=React.useState({seq:0}),[windowed,setWindowed]=React.useState(false);
  const visible=React.useMemo(()=>windowed?nodes.slice(0,20):nodes,[windowed]);
  const relations=React.useMemo(()=>windowed?edges.filter(e=>visible.some(n=>n.id===e.fromNodeId)&&visible.some(n=>n.id===e.toNodeId)):edges,[visible,windowed]);
  const locate=id=>{setNode(id);setEdge(null);document.getElementById('source-'+id)?.scrollIntoView({block:'nearest'})};
  return h('main',{className:'kg-root'},h('header',null,h('h1',null,'知识图浏览 · 隔离测试'),
- h('label',null,'视图',h('select',{'aria-label':'测试视图',value:windowed?'window':'all',onChange:e=>{setWindowed(e.target.value==='window');setNode(null);setEdge(null)}},h('option',{value:'all'},'全部 65 个节点'),h('option',{value:'window'},'前 20 个节点'))),
+ h('label',null,'视图',h('select',{'aria-label':'测试视图',value:windowed?'window':'all',onChange:e=>{setWindowed(e.target.value==='window');setNode(null);setEdge(null)}},h('option',{value:'all'},'全部 '+count+' 个节点'),h('option',{value:'window'},'前 20 个节点'))),
  h('label',null,'布局',h('select',{'aria-label':'测试布局',value:mode,onChange:e=>setMode(e.target.value)},['layered','overview','radial','circular'].map(x=>h('option',{key:x,value:x},x))))),
- h('div',{className:'kg-cols'},h('section',{className:'kg-original','aria-label':'合成原文'},nodes.map(n=>h('div',{key:n.id,id:'source-'+n.id,className:'fixture-source'},
+ h('div',{className:'kg-cols'},h('section',{className:'kg-original','aria-label':'合成原文'},(count>65?[...nodes.slice(0,20),nodes[count-1]]:nodes).map(n=>h('div',{key:n.id,id:'source-'+n.id,className:'fixture-source'},
  h('button',{'aria-label':'定位示例 '+n.id,onClick:()=>{locate(n.id);setFocus(f=>({nodeId:n.id,seq:f.seq+1}))}},'P'+(n.paragraph+1)),h('p',null,n.quote)))),
  h('div',{className:'kg-graph-col'},h(KGViewer.GraphViewer,{nodes:visible,edges:relations,anchors:v.anchors,sourceText:source,
  selectedNodeId:node,selectedEdgeId:edge,focusReq:focus,onSelectNode:locate,onSelectEdge:i=>{setEdge(i);setNode(null)},ctx:timers,
