@@ -40,32 +40,50 @@ const h=React.createElement, timers={timeout(fn,ms){const id=setTimeout(fn,ms);r
 const names=['学习目标','检索练习','间隔复习','迁移能力','先验知识','概念边界','反例检验','反馈质量'];
 const count=Math.max(65,Math.min(12000,Math.floor(Number(new URLSearchParams(location.search).get('nodes'))||65)));
 const quoteRepeats=Math.max(0,Math.min(320,Math.floor(Number(new URLSearchParams(location.search).get('quoteRepeats')))||0));
+const imageCount=Math.max(0,Math.min(200,count,Math.floor(Number(new URLSearchParams(location.search).get('images')))||0));
+const imageRecords=Array.from({length:imageCount},(_,i)=>({id:'fixture-image-'+i,caption:'合成原图 '+i,
+ interpretationStatus:i%2?'not_requested':'ai_unverified',startParagraph:i*50,endParagraph:i*50+24}));
+let imageReads=0;
+const countedImages=records=>new Proxy(records,{get(target,key,receiver){if(typeof key==='string'&&/^\\d+$/.test(key))imageReads++;return Reflect.get(target,key,receiver)}});
+const visualSource=imageCount?{kind:'markdown-assets',images:countedImages(imageRecords)}:null;
 const nodes=Array.from({length:count},(_,i)=>({id:'n'+i,type:i%3?'fact':'concept',
  text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。'+'合成摘录，保留完整证据。'.repeat(quoteRepeats),paragraph:i}));
+for(let i=0;i<imageCount;i++){nodes[i].id='image:'+imageRecords[i].id;nodes[i].type='image';nodes[i].text=imageRecords[i].caption}
 nodes[count-1].text='跨章节检索目标 · 末尾节点';
-const edges=nodes.slice(1).map((node,i)=>({fromNodeId:'n'+i,toNodeId:node.id,relation:i%2?'supports':'explains'}));
-edges.push({fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'supports'},{fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'contradicts'});
-const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n');
+const edges=nodes.slice(1).map((node,i)=>({fromNodeId:nodes[i].id,toNodeId:node.id,relation:i%2?'supports':'explains'}));
+edges.push({fromNodeId:nodes[0].id,toNodeId:nodes[count-1].id,relation:'supports'},{fromNodeId:nodes[0].id,toNodeId:nodes[count-1].id,relation:'contradicts'});
+const graph={nodes,edges,...(visualSource?{source:{visualSource}}:{})},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n');
 // Long-excerpt search probes have known synthetic source offsets. Avoid timing
 // unrelated paragraph/anchor preparation as part of a search experiment.
 let offset=0;
 const v=quoteRepeats?{anchors:Object.fromEntries(nodes.map(n=>{const entry=[n.id,offset];offset+=n.quote.length+2;return entry}))}:KGViewer.makeView(graph,source);
 function App(){
  const [mode,setMode]=React.useState(count>65?'overview':'layered'),[node,setNode]=React.useState(null),[edge,setEdge]=React.useState(null),[focus,setFocus]=React.useState({seq:0}),[windowed,setWindowed]=React.useState(false);
+ const [metadata,setMetadata]=React.useState(visualSource);
  const visible=React.useMemo(()=>windowed?nodes.slice(0,20):nodes,[windowed]);
  const relations=React.useMemo(()=>windowed?edges.filter(e=>visible.some(n=>n.id===e.fromNodeId)&&visible.some(n=>n.id===e.toNodeId)):edges,[visible,windowed]);
  const locate=id=>{setNode(id);setEdge(null);document.getElementById('source-'+id)?.scrollIntoView({block:'nearest'})};
  return h('main',{className:'kg-root'},h('header',null,h('h1',null,'知识图浏览 · 隔离测试'),
  h('label',null,'视图',h('select',{'aria-label':'测试视图',value:windowed?'window':'all',onChange:e=>{setWindowed(e.target.value==='window');setNode(null);setEdge(null)}},h('option',{value:'all'},'全部 '+count+' 个节点'),h('option',{value:'window'},'前 20 个节点'))),
- h('label',null,'布局',h('select',{'aria-label':'测试布局',value:mode,onChange:e=>setMode(e.target.value)},['layered','overview','radial','circular'].map(x=>h('option',{key:x,value:x},x))))),
+ h('label',null,'布局',h('select',{'aria-label':'测试布局',value:mode,onChange:e=>setMode(e.target.value)},['layered','overview','radial','circular'].map(x=>h('option',{key:x,value:x},x)))),
+ imageCount?h('button',{onClick:()=>setMetadata(current=>({...current,images:countedImages(current.images.map((image,i)=>i?image:{...image,
+ caption:image.caption+'（更新）',interpretationStatus:image.interpretationStatus==='ai_unverified'?'not_requested':'ai_unverified'}))}))},'更新图片元数据（隔离测试）'):null),
  h('div',{className:'kg-cols'},h('section',{className:'kg-original','aria-label':'合成原文'},(count>65?[...nodes.slice(0,20),nodes[count-1]]:nodes).map(n=>h('div',{key:n.id,id:'source-'+n.id,className:'fixture-source'},
  h('button',{'aria-label':'定位示例 '+n.id,onClick:()=>{locate(n.id);setFocus(f=>({nodeId:n.id,seq:f.seq+1}))}},'P'+(n.paragraph+1)),h('p',null,n.quote)))),
  h('div',{className:'kg-graph-col'},h(KGViewer.GraphViewer,{nodes:visible,edges:relations,anchors:v.anchors,sourceText:source,
  selectedNodeId:node,selectedEdgeId:edge,focusReq:focus,onSelectNode:locate,onSelectEdge:i=>{setEdge(i);setNode(null)},ctx:timers,
- height:650,layoutMode:mode,onLayoutModeChange:setMode}))),
+ height:650,layoutMode:mode,onLayoutModeChange:setMode,visualSource:metadata,
+ renderSourceImage:image=>h('div',{'data-fixture-image':image.id},h('img',{src:'/figure.png',alt:image.caption,style:{width:'100%',height:80,objectFit:'contain'}}),h('small',null,image.caption))}))),
  h('div',{id:'status',role:'status'},'选中节点：'+(node||'无')+' · 选中关系：'+(edge??'无')+' · 原始数据：'+(JSON.stringify(graph)===original?'未修改':'发生变更')));
 }
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+if(imageCount){
+ const output=document.createElement('output');output.id='image-telemetry';output.style.cssText='display:block;margin:8px 16px';document.body.append(output);
+ const started=performance.now();imageReads=0;
+ const ready=()=>{if(!document.querySelector('.kg-node')){requestAnimationFrame(ready);return}
+ output.textContent='首次可见场景 '+(performance.now()-started).toFixed(2)+' ms · 图片记录读取 '+imageReads+' 次 · '+count+' 个节点 / '+imageCount+' 张图片';
+ };requestAnimationFrame(ready);
+}
 if(new URLSearchParams(location.search).has('telemetry')){
  const output=document.createElement('output');output.id='search-telemetry';output.style.cssText='display:block;max-width:1288px;margin:8px auto;font:12px system-ui';
  output.textContent='搜索测量：等待输入 · '+count+' 个节点 · '+nodes.reduce((sum,n)=>sum+n.quote.length,0)+' 个摘录字符';document.body.append(output);
@@ -91,7 +109,7 @@ if(new URLSearchParams(location.search).has('telemetry')){
  },true);
 }
 </script></body></html>`
-const assets = { '/viewer.js': 'extension/viewer.js', '/viewer.css': 'extension/viewer.css',
+const assets = { '/viewer.js': 'extension/viewer.js', '/viewer.css': 'extension/viewer.css', '/figure.png': 'extension/icons/icon128.png',
   '/react.js': 'extension/vendor/react.production.min.js', '/react-dom.js': 'extension/vendor/react-dom.production.min.js' }
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname
@@ -99,7 +117,7 @@ const server = createServer((req, res) => {
   if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
   if (path === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
   if (!assets[path]) { res.writeHead(404); res.end(); return }
-  res.setHeader('content-type', path.endsWith('.css') ? 'text/css' : 'text/javascript')
+  res.setHeader('content-type', path.endsWith('.png') ? 'image/png' : path.endsWith('.css') ? 'text/css' : 'text/javascript')
   if (path === '/viewer.js' && baselineViewer) { res.end(baselineViewer); return }
   res.end(readFileSync(new URL('../' + assets[path], import.meta.url)))
 })
