@@ -96,6 +96,6 @@ assert(!client.includes('在工作窗口查看') && !client.includes('只读总�
 assert(client.includes('const off = projectedAnchor === undefined ? displayView.anchors[nodeId] : projectedAnchor')
   && client.includes('}).map(n => n.id) : displayView.paraNodes[pi] || []'),
   'node-to-source and source-to-node navigation must share the complete working view')
-assert(client.includes("if (overview && !related.edgeIdx.has(i)) return null"),
-  'overview must not build thousands of relationship elements before selection')
+// The generated scene's bounded relation work and parallel-selection behavior
+// are exercised by kg-svg-render-performance-smoke.mjs in test:kg-performance.
 console.log(JSON.stringify({ ok: true, nodes: nodes.length, completeWorkingView: true, compactCommit: true, staleRevisionRejected: true }))
