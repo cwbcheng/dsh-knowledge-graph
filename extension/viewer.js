@@ -9981,6 +9981,89 @@
           node.id === 'image:' + encodeURIComponent(image.id)) || null : null
       }
 
+      function createGraphImageIndex(visualSource) {
+        const images = visualSource?.images || [], originals = [], byNodeId = new Map(), figuresByParagraph = new Map(), events = []
+        for (let index = 0; index < images.length; index++) {
+          const image = images[index], id = 'image:' + encodeURIComponent(image.id)
+          originals.push(image)
+          // Match Array.find even when legacy metadata repeats an image ID.
+          if (!byNodeId.has(id)) byNodeId.set(id, image)
+          if (visualSource.kind === 'markdown-assets') {
+            const paragraphs = new Set(image.paragraphs || [])
+            if (image.interpretationStatus === 'ai_unverified') paragraphs.add(image.startParagraph)
+            for (const paragraph of paragraphs) {
+              if (!Number.isSafeInteger(paragraph)) continue
+              const figures = figuresByParagraph.get(paragraph) || []
+              figures.push({ index, image })
+              figuresByParagraph.set(paragraph, figures)
+            }
+          }
+          if ((visualSource.kind === 'image-derived' || image.interpretationStatus === 'ai_unverified') &&
+              Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
+              image.startParagraph <= image.endParagraph) {
+            events.push({ paragraph: image.startParagraph, index, active: 1 },
+              { paragraph: image.endParagraph + 1, index, active: 0 })
+          }
+        }
+        // Sweep interval boundaries instead of expanding potentially huge
+        // paragraph ranges. The minimum original index preserves first-match
+        // provenance for overlaps, unsorted images and inclusive endpoints.
+        events.sort((a, b) => a.paragraph - b.paragraph)
+        const active = new Uint8Array(images.length), heap = [], starts = [], winners = []
+        for (let cursor = 0; cursor < events.length;) {
+          const paragraph = events[cursor].paragraph
+          do {
+            const event = events[cursor++]
+            active[event.index] = event.active
+            if (event.active) {
+              let child = heap.length
+              heap.push(event.index)
+              while (child > 0) {
+                const parent = Math.floor((child - 1) / 2)
+                if (heap[parent] < event.index) break
+                heap[child] = heap[parent]; child = parent
+              }
+              heap[child] = event.index
+            }
+          } while (cursor < events.length && events[cursor].paragraph === paragraph)
+          while (heap.length && !active[heap[0]]) {
+            const last = heap.pop()
+            if (!heap.length) break
+            let parent = 0
+            while (parent * 2 + 1 < heap.length) {
+              let child = parent * 2 + 1
+              if (child + 1 < heap.length && heap[child + 1] < heap[child]) child++
+              if (last < heap[child]) break
+              heap[parent] = heap[child]; parent = child
+            }
+            heap[parent] = last
+          }
+          starts.push(paragraph)
+          winners.push(heap.length ? originals[heap[0]] : null)
+        }
+        return {
+          sourceForNode: node => node?.type === 'image' ? byNodeId.get(node.id) || null : null,
+          figuresForParagraphs(paragraphs) {
+            if (paragraphs.length === 1) return (figuresByParagraph.get(paragraphs[0]) || []).map(entry => entry.image)
+            // A split source table spans several paragraphs. Keep each original
+            // entry once and preserve list order, including duplicate image IDs.
+            const figures = new Set()
+            for (const paragraph of paragraphs) for (const entry of figuresByParagraph.get(paragraph) || []) figures.add(entry.index)
+            return [...figures].sort((a, b) => a - b).map(index => originals[index])
+          },
+          transcriptAt(paragraph) {
+            if (!Number.isSafeInteger(paragraph)) return null
+            let low = 0, high = starts.length
+            while (low < high) {
+              const mid = Math.floor((low + high) / 2)
+              if (starts[mid] <= paragraph) low = mid + 1
+              else high = mid
+            }
+            return low ? winners[low - 1] : null
+          },
+        }
+      }
+
       function createGraphNodeSearch(nodes) {
         const normalizedText = new Map()
         let completed = null
@@ -10063,6 +10146,7 @@
         const searchInput = useRef(null), searchButton = useRef(null), detailElement = useRef(null)
         const focusDetail = useRef(false), previousSelection = useRef(null)
         const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
+        const imageIndex = useMemo(() => createGraphImageIndex(visualSource), [visualSource])
         const searchNodes = useMemo(() => createGraphNodeSearch(nodes), [nodes])
         const searchTypes = useMemo(() => [...new Set(nodes.map(node => node.type))], [nodes])
         const deferredSearch = searchOpen && nodes.length > 200 && !!searchQuery.trim()
@@ -10777,11 +10861,11 @@
           const issueCount = issueMaps.nodeMap.has(node.id) ? openIssuesOf(issueMaps.nodeMap.get(node.id)).length : 0
           const hub = (nodeDegree.get(node.id) || 0) >= 4
           const off = anchors[node.id]
-          const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
-          const sourceImage = sourceImageForNode(visualSource, node)
+          const transcriptImage = imageIndex.transcriptAt(node.paragraph)
+          const sourceImage = imageIndex.sourceForNode(node)
           const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法定位来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
           return [node.id, { s, meta, x, y, issueSev, issueCount, hub, sourceImage, aria }]
-        })), [visibleNodes, layout, sizes, issueMaps, nodeDegree, anchors, visualSource])
+        })), [visibleNodes, layout, sizes, issueMaps, nodeDegree, anchors, imageIndex])
         // A parent may replace its callbacks on every selection. Cached SVG
         // nodes still dispatch through the current actions, including badges.
         const nodeActions = useRef(null), nodeCache = useRef(new Map())
@@ -10856,7 +10940,7 @@
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                tooltip.node.type === 'image' ? '保留原图' : (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '暂无摘录') + (anchors[tooltip.node.id] == null ? '（无法定位来源）' : '')),
+                tooltip.node.type === 'image' ? '保留原图' : (imageIndex.transcriptAt(tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '暂无摘录') + (anchors[tooltip.node.id] == null ? '（无法定位来源）' : '')),
             )
           : null
 
@@ -10874,9 +10958,9 @@
                 }, '×'),
               ),
               h('div', { className: 'kg-node-detail-text' }, detail.text),
-              sourceImageForNode(visualSource, detail) && renderSourceImage ? renderSourceImage(sourceImageForNode(visualSource, detail), false) : null,
+              imageIndex.sourceForNode(detail) && renderSourceImage ? renderSourceImage(imageIndex.sourceForNode(detail), false) : null,
               detail.quote
-                ? h('div', { className: 'kg-node-detail-quote' }, (visualTranscriptImageAt(visualSource, detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
+                ? h('div', { className: 'kg-node-detail-quote' }, (imageIndex.transcriptAt(detail.paragraph) ? 'AI 视觉转写摘录（请对照原图复核）：' : '原文摘录：') + detail.quote)
                 : null,
               h('div', { className: 'kg-node-detail-actions' },
                 onGather ? h('button', { type: 'button', className: 'kg-secondary',
@@ -10886,7 +10970,7 @@
                   disabled: anchors[detail.id] == null,
                   onClick: () => onSelectNode(detail.id),
                 }, anchors[detail.id] == null ? '无法定位来源' :
-                  (visualTranscriptImageAt(visualSource, detail.paragraph) ? '定位视觉转写' : '定位原文')),
+                  (imageIndex.transcriptAt(detail.paragraph) ? '定位视觉转写' : '定位原文')),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
                       type: 'button', className: 'kg-secondary',

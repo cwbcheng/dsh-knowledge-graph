@@ -174,6 +174,41 @@ assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'New ren
 visualScene = render(GraphScene, { ...visualProps, anchors: {} }, visualHooks)
 assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法定位来源/, 'Anchor replacement refreshes accessible evidence')
 
+// Exercise the production scene to guard against restoring one image-list
+// scan per node or per opened detail card.
+let imageReads = 0
+const originals = Array.from({ length: 200 }, (_, i) => ({ id: 'figure-' + i, caption: 'Figure ' + i,
+  startParagraph: i * 10, endParagraph: i * 10 + 4, interpretationStatus: 'ai_unverified' }))
+const sourceImages = new Proxy(originals, { get(target, key, receiver) {
+  if (typeof key === 'string' && /^\d+$/.test(key)) imageReads++
+  return Reflect.get(target, key, receiver)
+} })
+const sourceNodes = nodes.map((node, i) => ({ id: i < originals.length ? 'image:figure-' + i : node.id,
+  type: i < originals.length ? 'image' : 'fact', text: node.text, quote: 'Synthetic source ' + i, paragraph: i }))
+const sourceBefore = JSON.stringify({ nodes: sourceNodes, images: originals })
+const sourceProps = { ...props, nodes: sourceNodes, edges: [], visualSource: { kind: 'markdown-assets', images: sourceImages },
+  anchors: Object.fromEntries(sourceNodes.map(node => [node.id, 0])), renderSourceImage: visualProps.renderSourceImage,
+  prepared: { ...props.prepared, sizes: new Map(sourceNodes.map(node => [node.id, { w: 200, h: 180, lines: [node.text] }])),
+    layout: { pos: new Map(sourceNodes.map((node, i) => [node.id, { x: i % 10 * 300, y: Math.floor(i / 10) * 240 }])) } } }
+const sourceHooks = owner()
+let sourceScene = render(GraphScene, sourceProps, sourceHooks)
+assert.equal(imageReads, originals.length, 'A large scene must read the source list once, not once per node')
+const sourceShells = all(sourceScene, byClass('kg-node'))
+for (let i = originals.length; i < sourceShells.length; i++) {
+  const ai = originals.some(image => i >= image.startParagraph && i <= image.endParagraph)
+  assert.equal(sourceShells[i].props['aria-label'].includes('AI 视觉转写摘录'), ai, 'Full source classification at node ' + i)
+}
+sourceShells[0].props.onClick({ stopPropagation() {} })
+sourceScene = render(GraphScene, { ...sourceProps, selectedNodeId: sourceNodes[0].id }, sourceHooks)
+const imageDetail = all(sourceScene, byClass('kg-node-detail'))[0]
+assert.equal(all(imageDetail, byClass('preview'))[0].props.children[0], originals[0].caption)
+assert.equal(imageReads, originals.length, 'Opening an original image must reuse the scene index')
+sourceShells[200].props.onClick({ stopPropagation() {} })
+sourceScene = render(GraphScene, { ...sourceProps, selectedNodeId: sourceNodes[200].id }, sourceHooks)
+assert.match(all(sourceScene, byClass('kg-node-detail-quote'))[0].props.children[0], /AI 视觉转写摘录/)
+assert.equal(imageReads, originals.length, 'Opening a transcript must reuse the scene index')
+assert.equal(JSON.stringify({ nodes: sourceNodes, images: originals }), sourceBefore)
+
 const movedLayout = { pos: new Map(layout.pos) }
 movedLayout.pos.set('n20', { x: 123, y: 456 })
 scene = render(GraphScene, { ...props, prepared: { ...props.prepared, layout: movedLayout } }, root)
@@ -280,4 +315,5 @@ assert.deepEqual(identityRelations.map(item => render(GraphEdgeInteraction, item
 assert.equal(JSON.stringify(identityEdges), identityBefore, 'Selection does not mutate canonical relations')
 console.log(JSON.stringify({ nodes: count, edges: edges.length, hoverElements, selectionElements, localFocus: true, hiddenLabels: true, parallelSelection: true, cachedTextInvalidation: true, overviewNodes: allNodes.length,
   overviewNodeSelectionReads, overviewParallelSelectionReads, canonicalIndices: true, exactEndpointIdentity: true, selfLoops: true,
-  changedNodeShells, retainedShells: count - changedNodeShells, currentCallbacks: true, contextReplacement: true, issueAndImageInvalidation: true, fullAccessibleEvidence: true }))
+  changedNodeShells, retainedShells: count - changedNodeShells, currentCallbacks: true, contextReplacement: true, issueAndImageInvalidation: true, fullAccessibleEvidence: true,
+  indexedSourceImages: originals.length, sceneImageReads: imageReads, indexedImageDetails: true }))
