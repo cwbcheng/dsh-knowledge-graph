@@ -23,7 +23,8 @@ const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
-const legacyTokenMode = process.argv.includes('--legacy-token-lookup')
+const legacyFragmentMode = process.argv.includes('--legacy-fragment-lookup')
+const legacyTokenMode = process.argv.includes('--legacy-token-lookup') || legacyFragmentMode
 const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
@@ -73,11 +74,13 @@ const graph = {
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
 }
 if (legacyTokenMode) for (const node of graph.nodes.slice(-200)) {
-  // Isolate the existing legacy fallback: neither the quote nor display text
-  // can match directly, but the original token score picks the numbered unit.
+  // Quotes have no exact match or paragraph metadata. Fragment mode alternates
+  // old prefix/suffix matches with the token fallback's numbered source unit.
   const index = Number(node.id.slice(1))
   delete node.paragraph
-  node.text = node.quote = 'ZZZ observation ' + index + ' recorded QQQ'
+  node.text = node.quote = legacyFragmentMode && index % 3 === 1 ? node.quote.slice(8) + ' INVALIDEND'
+    : legacyFragmentMode && index % 3 === 2 ? 'INVALIDSTART ' + node.quote.slice(0, 27)
+      : 'ZZZ observation ' + index + ' recorded QQQ'
   node.evidence = []
   node.groundingStatus = 'unverified'
 }
@@ -381,6 +384,11 @@ const server = createServer(async (req, res) => {
           legacyTokenFixture: true, legacyNodes: legacyNodes.length,
           missingParagraphMetadata: legacyNodes.filter(node => !Number.isInteger(node.paragraph)).length,
           originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalLegacyNodeContent,
+          ...(legacyFragmentMode ? { legacyFragmentFixture: true, fragmentKinds: {
+            prefix: legacyNodes.filter(node => node.quote.endsWith(' INVALIDEND')).length,
+            suffix: legacyNodes.filter(node => node.quote.startsWith('INVALIDSTART ')).length,
+            tokenFallback: legacyNodes.filter(node => node.quote.startsWith('ZZZ ')).length,
+          } } : {}),
         } })() : {}),
       } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
