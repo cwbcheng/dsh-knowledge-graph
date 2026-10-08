@@ -2,6 +2,13 @@
 // there is no model, DSH profile, database, or graph-writing endpoint.
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+
+// Optional baseline bundle for identical before/after browser measurements:
+// node scripts/kg-graph-browsing-fixture.mjs [baseline-git-revision]
+const revision = process.argv[2]
+if (revision?.startsWith('-')) throw new Error('Expected a git revision, not an option')
+const baselineViewer = revision ? execFileSync('git', ['show', revision + ':extension/viewer.js'], { maxBuffer: 8 * 1024 * 1024 }) : null
 
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Graph browsing fixture</title>
@@ -19,12 +26,17 @@ h1{font-size:18px;margin:0}header label{display:flex;align-items:center;gap:6px}
 const h=React.createElement, timers={timeout(fn,ms){const id=setTimeout(fn,ms);return ()=>clearTimeout(id)}};
 const names=['学习目标','检索练习','间隔复习','迁移能力','先验知识','概念边界','反例检验','反馈质量'];
 const count=Math.max(65,Math.min(12000,Math.floor(Number(new URLSearchParams(location.search).get('nodes'))||65)));
+const quoteRepeats=Math.max(0,Math.min(320,Math.floor(Number(new URLSearchParams(location.search).get('quoteRepeats')))||0));
 const nodes=Array.from({length:count},(_,i)=>({id:'n'+i,type:i%3?'fact':'concept',
- text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。',paragraph:i}));
+ text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。'+'合成摘录，保留完整证据。'.repeat(quoteRepeats),paragraph:i}));
 nodes[count-1].text='跨章节检索目标 · 末尾节点';
 const edges=nodes.slice(1).map((node,i)=>({fromNodeId:'n'+i,toNodeId:node.id,relation:i%2?'supports':'explains'}));
 edges.push({fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'supports'},{fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'contradicts'});
-const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n'),v=KGViewer.makeView(graph,source);
+const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n');
+// Long-excerpt search probes have known synthetic source offsets. Avoid timing
+// unrelated paragraph/anchor preparation as part of a search experiment.
+let offset=0;
+const v=quoteRepeats?{anchors:Object.fromEntries(nodes.map(n=>{const entry=[n.id,offset];offset+=n.quote.length+2;return entry}))}:KGViewer.makeView(graph,source);
 function App(){
  const [mode,setMode]=React.useState(count>65?'overview':'layered'),[node,setNode]=React.useState(null),[edge,setEdge]=React.useState(null),[focus,setFocus]=React.useState({seq:0}),[windowed,setWindowed]=React.useState(false);
  const visible=React.useMemo(()=>windowed?nodes.slice(0,20):nodes,[windowed]);
@@ -41,6 +53,17 @@ function App(){
  h('div',{id:'status',role:'status'},'选中节点：'+(node||'无')+' · 选中关系：'+(edge??'无')+' · 原始数据：'+(JSON.stringify(graph)===original?'未修改':'发生变更')));
 }
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+if(new URLSearchParams(location.search).has('telemetry')){
+ const output=document.createElement('output');output.id='search-telemetry';output.style.cssText='display:block;max-width:1288px;margin:8px auto;font:12px system-ui';
+ output.textContent='搜索测量：等待输入 · '+count+' 个节点 · '+nodes.reduce((sum,n)=>sum+n.quote.length,0)+' 个摘录字符';document.body.append(output);
+ let normalized=0;const normalize=String.prototype.normalize;
+ String.prototype.normalize=function(form){if(form==='NFKC'&&this.includes(String.fromCharCode(10)))normalized++;return normalize.call(this,form)};
+ document.addEventListener('input',event=>{
+  if(!event.target.matches('.kg-node-search input'))return;
+  const start=performance.now(),before=normalized,query=event.target.value;
+  setTimeout(()=>{output.textContent='查询「'+query+'」 · 输入后下一任务 '+(performance.now()-start).toFixed(2)+' ms · 下一任务前规范化 '+(normalized-before)+' 个节点'},0);
+ },true);
+}
 </script></body></html>`
 const assets = { '/viewer.js': 'extension/viewer.js', '/viewer.css': 'extension/viewer.css',
   '/react.js': 'extension/vendor/react.production.min.js', '/react-dom.js': 'extension/vendor/react-dom.production.min.js' }
@@ -51,7 +74,7 @@ const server = createServer((req, res) => {
   if (path === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
   if (!assets[path]) { res.writeHead(404); res.end(); return }
   res.setHeader('content-type', path.endsWith('.css') ? 'text/css' : 'text/javascript')
-  res.end(readFileSync(new URL('../' + assets[path], import.meta.url)))
+  res.end(path === '/viewer.js' && baselineViewer ? baselineViewer : readFileSync(new URL('../' + assets[path], import.meta.url)))
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 const stop = () => { server.closeAllConnections(); server.close() }
