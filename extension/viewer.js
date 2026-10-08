@@ -9331,6 +9331,37 @@
         }
       }
 
+      function createGraphRelationIndex(edges) {
+        const entries = [], incident = new Map(), bySource = new Map()
+        const parallelLeaders = new Map(), parallelGroup = new Map(), edgeIndexes = new Map()
+        const addIncident = (id, entry) => {
+          let list = incident.get(id)
+          if (!list) { list = []; incident.set(id, list) }
+          list.push(entry)
+        }
+        ;(edges || []).forEach((edge, index) => {
+          const entry = { edge, index }
+          entries[index] = entry
+          edgeIndexes.set(edge, index)
+          addIncident(edge.fromNodeId, entry)
+          if (edge.toNodeId !== edge.fromNodeId) addIncident(edge.toNodeId, entry)
+          // Keep endpoint identities separate: IDs containing '>' must not
+          // collide with another ordered pair's concatenated string.
+          let targets = bySource.get(edge.fromNodeId)
+          if (!targets) { targets = new Map(); bySource.set(edge.fromNodeId, targets) }
+          let members = targets.get(edge.toNodeId)
+          if (!members) { members = []; targets.set(edge.toNodeId, members) }
+          members.push(edge)
+        })
+        for (const targets of bySource.values()) for (const members of targets.values()) {
+          if (members.length < 2) continue
+          const leader = members[0]
+          parallelGroup.set(leader, members)
+          for (const edge of members) parallelLeaders.set(edge, leader)
+        }
+        return { entries, incident, parallelLeaders, parallelGroup, edgeIndexes }
+      }
+
       function layoutGraph(nodes, edges, sizes, mode, onProgress) {
         if (mode === 'neighborhood') return layoutNeighborhood(nodes, sizes)
         if (mode === 'overview') return layoutOverview(nodes, sizes)
@@ -10046,6 +10077,9 @@
           }
           return () => animations.forEach(animation => animation.cancel())
         }, [prepared])
+        const relationIndex = useMemo(() => createGraphRelationIndex(edges), [edges])
+        const { parallelLeaders, parallelGroup, edgeIndexes } = relationIndex
+        const selectedRelation = selectedEdgeId != null ? relationIndex.entries[selectedEdgeId]?.edge : null
         const nodeDegree = useMemo(() => {
           const degree = new Map((nodes || []).map((node) => [node.id, 0]))
           for (const edge of edges || []) {
@@ -10077,26 +10111,28 @@
           const ids = new Set()
           const edgeIdx = new Set()
           if (!focus) return { ids, edgeIdx }
+          let entries
           if (focus.kind === 'node') {
             ids.add(focus.id)
-            for (let i = 0; i < (edges || []).length; i++) {
-              const e = edges[i]
-              if (e.fromNodeId === focus.id || e.toNodeId === focus.id) {
-                ids.add(e.fromNodeId)
-                ids.add(e.toNodeId)
-                edgeIdx.add(i)
-              }
-            }
+            entries = relationIndex.incident.get(focus.id) || []
           } else {
-            const e = (edges || [])[focus.idx]
-            if (e) {
-              ids.add(e.fromNodeId)
-              ids.add(e.toNodeId)
-              edgeIdx.add(focus.idx)
-            }
+            const entry = relationIndex.entries[focus.idx]
+            entries = entry ? [entry] : []
+          }
+          for (const { edge, index } of entries) {
+            ids.add(edge.fromNodeId)
+            ids.add(edge.toNodeId)
+            edgeIdx.add(index)
+            // A parallel member has no independent path. Retain its leader
+            // in overview and highlight that shared line in every layout.
+            const leader = parallelLeaders.get(edge)
+            if (leader) edgeIdx.add(edgeIndexes.get(leader))
           }
           return { ids, edgeIdx }
-        }, [focus, edges])
+        }, [focus, relationIndex])
+        const sceneEdges = useMemo(() => overview
+          ? [...related.edgeIdx].sort((a, b) => a - b).map(index => relationIndex.entries[index])
+          : relationIndex.entries, [overview, related, relationIndex])
 
         // Fan-out curvature: for every source node with 2+ outgoing edges,
         // sort them by target angle and give each a signed perpendicular bend.
@@ -10438,29 +10474,7 @@
         // identical curves. We render a single visible path per ordered pair
         // and stack its relation labels as individually clickable chips, so the
         // pair stays visually clean while every relation stays selectable.
-        const { parallelLeaders, parallelGroup, edgeIndexes } = useMemo(() => {
-          const parallelLeaders = new Map()
-          const parallelGroup = new Map()
-          const edgeIndexes = new Map()
-          const byOrderedPair = new Map()
-          ;(edges || []).forEach((edge, index) => {
-            edgeIndexes.set(edge, index)
-            const key = String(edge.fromNodeId) + '>' + String(edge.toNodeId)
-            let list = byOrderedPair.get(key)
-            if (!list) { list = []; byOrderedPair.set(key, list) }
-            list.push({ edge, index })
-          })
-          for (const list of byOrderedPair.values()) {
-            if (list.length < 2) continue
-            const leader = list[0]
-            const members = list.map((entry) => entry.edge)
-            parallelGroup.set(leader.edge, members)
-            for (const entry of list) parallelLeaders.set(entry.edge, leader.edge)
-          }
-          return { parallelLeaders, parallelGroup, edgeIndexes }
-        }, [edges])
-        const edgeEls = useMemo(() => (edges || []).map((edge, i) => {
-          if (overview && !related.edgeIdx.has(i)) return null
+        const edgeEls = useMemo(() => sceneEdges.map(({ edge, index: i }) => {
           const a = layout.pos.get(edge.fromNodeId)
           const b = layout.pos.get(edge.toNodeId)
           const sa = sizes.get(edge.fromNodeId)
@@ -10477,7 +10491,7 @@
               'aria-hidden': 'true',
             })
           }
-          const sel = selectedEdgeId === i
+          const sel = selectedEdgeId === i || parallelLeaders.get(selectedRelation) === edge
           const inFocus = focus ? related.edgeIdx.has(i) : true
           const dim = focus ? !inFocus : false
           const rel = edgeRelationLabel(edge)
@@ -10654,7 +10668,7 @@
               )
             })() : null,
           ) })
-        }), [edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
+        }), [sceneEdges, edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, selectedRelation, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
 
         // Selection changes borders/opacity, not thousands of text/tspan
         // subtrees. Reuse those elements so React also skips reconciling them.
