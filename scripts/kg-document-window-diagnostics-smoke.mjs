@@ -26,7 +26,7 @@ try {
   assert.equal(meter.counts.fullNodeReads, 1)
   assert.equal(meter.counts.fullEdgeReads, 1)
   meter.reset()
-  for (const args of [{ nodeOffset: 800 }, { nodeOffset: 11200 }, { query: 'observation 11999.' }, { query: 'not-in-this-document' }]) {
+  for (const args of [{ nodeOffset: 800 }, { nodeOffset: 11200 }, { query: 'observation 1800.' }, { query: 'observation 11999.' }, { query: 'not-in-this-document' }]) {
     const response = await host.post({ documentId: large.documentId, nodeLimit: 800, includeSourceText: false, ...args })
     assert.equal(response.revision, 1)
     assert.equal(response.sourceText, '')

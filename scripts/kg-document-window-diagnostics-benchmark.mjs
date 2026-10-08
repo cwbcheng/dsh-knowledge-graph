@@ -1,4 +1,4 @@
-// Optional timing diagnostic: node scripts/kg-document-window-diagnostics-benchmark.mjs [baseline-git-revision]
+// Optional timing diagnostic: node scripts/kg-document-window-diagnostics-benchmark.mjs [baseline-git-revision] [--edge-shapes]
 // HTTP/SQLite timings include instrumentation and JSON, not browser rendering.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
@@ -49,7 +49,11 @@ export function countHydration(Store, database) {
         statement.all = function (...params) {
           const rows = all.apply(this, params)
           counts[table] += rows.length
-          if (!/\bLIMIT\b/.test(sql)) counts[table === 'nodes' ? 'fullNodeReads' : 'fullEdgeReads']++
+          // ID-batched neighbor hydration has no SQL LIMIT, but is bounded by
+          // its IN list. Count only canonical, document-wide SELECTs here.
+          if (!/\bLIMIT\b/.test(sql) && /\bWHERE document_id = \?\s+ORDER BY\b/.test(sql)) {
+            counts[table === 'nodes' ? 'fullNodeReads' : 'fullEdgeReads']++
+          }
           return rows
         }
       }
@@ -102,8 +106,12 @@ async function baselineModules(revision) {
 }
 
 async function benchmark() {
-  const revision = process.argv[2]
-  if (revision?.startsWith('-')) throw new Error('Expected an optional baseline git revision')
+  const args = process.argv.slice(2)
+  const revisions = args.filter(arg => !arg.startsWith('-'))
+  if (revisions.length > 1 || args.some(arg => arg.startsWith('-') && arg !== '--edge-shapes')) {
+    throw new Error('Expected an optional baseline git revision and --edge-shapes')
+  }
+  const revision = revisions[0]
   const variants = []
   if (revision) variants.push({ name: revision, ...await baselineModules(revision) })
   variants.push({ name: 'current', host: await import('../lib/index.js'), store: await import('../lib/kg-store.mjs') })
@@ -143,7 +151,65 @@ async function benchmark() {
         nodeLimit: 800, trials: 5, fourPagesMedianMs: Math.round(median * 100) / 100,
         measurementsMs: elapsed.map(value => Math.round(value * 100) / 100), ...totals[0], canonicalDiagnosticsIdentical: true }))
     }
+    if (args.includes('--edge-shapes')) await edgeShapeBenchmark(variants, directory)
   } finally { rmSync(directory, { recursive: true, force: true }) }
+}
+
+async function edgeShapeBenchmark(variants, directory) {
+  const database = join(directory, 'edge-shapes.sqlite')
+  const seed = await openSqliteStore(database)
+  const make = (name, size) => {
+    const value = diagnosticFixture(size)
+    value.documentId = value.graph.source.id = value.graph.source.documentId = name
+    for (const node of value.graph.nodes) for (const evidence of node.evidence) evidence.documentId = evidence.sourceId = name
+    return value
+  }
+  const sparse = make('sparse', 12000)
+  const outside = make('outside-degree', 12000)
+  outside.graph.edges = []
+  for (let i = 0; i < 200; i++) for (let j = 2000; j < 3000; j++) {
+    outside.graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + j, relation: 'supports' })
+  }
+  const dense = make('dense-parallel', 800)
+  dense.graph.edges = []
+  for (let i = 0; i < 200; i++) for (let j = 0; j < 200; j++) {
+    if (i !== j) for (const relation of ['supports', 'relates_to']) {
+      dense.graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + j, relation })
+    }
+  }
+  try {
+    for (const value of [sparse, outside, dense]) seed.saveGraph(value.graph, { sourceText: value.sourceText, sourceUnits: value.sourceUnits })
+  } finally { seed.close() }
+  const cases = [
+    ...[200, 800, 2000].map(limit => ({ documentId: 'sparse', limit, offset: 1600 })),
+    ...[20, 200, 800].map(limit => ({ documentId: 'outside-degree', limit })),
+    ...[20, 200, 800].map(limit => ({ documentId: 'dense-parallel', limit })),
+    { documentId: 'sparse', limit: 800, query: 'observation 11999.' },
+    { documentId: 'sparse', limit: 800, query: 'not-in-this-source' },
+  ]
+  const expected = new Map()
+  for (const variant of variants) {
+    const reader = await variant.store.openSqliteStore(database)
+    try {
+      for (const test of cases) {
+        const { documentId, ...options } = test
+        options.includeSourceText = false
+        const key = JSON.stringify(test), times = []
+        const first = reader.getDocumentWindow(documentId, options)
+        if (!expected.has(key)) expected.set(key, first)
+        assert.deepEqual(first, expected.get(key))
+        for (let trial = 0; trial < 5; trial++) {
+          const start = performance.now(), window = reader.getDocumentWindow(documentId, options)
+          times.push(performance.now() - start)
+          assert.deepEqual(window, expected.get(key), 'Strategies must return exactly the same bounded graph')
+        }
+        console.log(JSON.stringify({ variant: variant.name, ...test, trials: 5,
+          storeWindowMedianMs: Math.round(times.sort((a, b) => a - b)[2] * 100) / 100,
+          returnedNodes: first.nodes.length, returnedEdges: first.edges.length, totalEdges: first.view.totalEdges,
+          baselineWindowIdentical: true }))
+      }
+    } finally { reader.close() }
+  }
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) await benchmark()
