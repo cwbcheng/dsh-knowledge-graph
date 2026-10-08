@@ -21,7 +21,8 @@ const sourceBoundaryMode = process.argv.includes('--source-boundary')
 const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
-const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode
+const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
+const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
 const sourcePeersMode = process.argv.includes('--source-peers')
@@ -39,7 +40,11 @@ const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const paragraphs = Array.from({ length: sourceImagePerformanceMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+if (sourceImagePerformanceMode) {
+  paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
+  paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
+}
 if (relationSemanticMode) paragraphs[0] = 'The two outcomes were correlated, but no causal direction was established.'
 if (textSemanticMode) paragraphs[0] = 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.'
 if (sourcePeersMode || offWindowPeerMode) paragraphs[0] = 'In the trained subgroup, strategy A reached 8 of 10 and strategy B reached 7 of 10.'
@@ -72,9 +77,12 @@ const visualFixtureBytes = visualInspectorMode ? readFileSync(new URL('../extens
 // Append re-keys source identity to the complete text; compare retained content and anchors, not generated metadata.
 const nodeContent = nodes => nodes.map(({ id, type, text, quote, paragraph, evidence }) => ({ id, type, text, quote, paragraph,
   evidence: (evidence || []).map(({ paragraph, quote }) => ({ paragraph, quote })) }))
-if (visualInspectorMode) graph.source.visualSource.images = Array.from({ length: 14 }, (_, i) => ({
+if (visualInspectorMode) graph.source.visualSource.images = Array.from({ length: sourceImagePerformanceMode ? 200 : 14 }, (_, i) => ({
   id: 'figure-' + (i + 1), name: 'images/figure-' + (i + 1) + '.png', caption: '受控视觉样本 ' + (i + 1),
-  paragraphs: [i + 1], startParagraph: i + 1, endParagraph: i + 1, interpretationStatus: 'not_requested',
+  paragraphs: sourceImagePerformanceMode ? [i * 50, ...(i < 2 ? [4, 4] : [])] : [i + 1],
+  startParagraph: sourceImagePerformanceMode ? i * 50 + 1 : i + 1,
+  endParagraph: sourceImagePerformanceMode ? i * 50 + 24 : i + 1,
+  interpretationStatus: sourceImagePerformanceMode && i % 2 === 0 ? 'ai_unverified' : 'not_requested',
   attachment: { attachmentId: 'fixture-visual-' + (i + 1), mediaType: 'image/png', width: 128, height: 128, bytes: visualFixtureBytes.length },
 }))
 if (imageReviewMode) for (const image of graph.source.visualSource.images.slice(0, 2)) {
