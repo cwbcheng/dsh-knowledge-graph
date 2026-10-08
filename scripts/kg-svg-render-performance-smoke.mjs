@@ -35,14 +35,17 @@ const all = (element, predicate) => {
 }
 const byClass = name => element => element.props?.className?.split(' ').includes(name)
 const count = 2000
-const nodes = Array.from({ length: count }, (_, i) => ({ id: 'n' + i, type: 'claim', text: 'Node ' + i }))
+let excerptReads = 0
+const excerpt = '完整合成摘录，保留可访问证据。'.repeat(80)
+const nodes = Array.from({ length: count }, (_, i) => ({ id: 'n' + i, type: 'claim', text: 'Node ' + i,
+  get quote() { excerptReads++; return excerpt + i } }))
 const edges = nodes.slice(1).map((node, i) => ({ fromNodeId: node.id, toNodeId: 'n' + i, relation: 'supports' }))
 edges.push({ ...edges[1], relation: 'analogy' })
 const sizes = new Map(nodes.map(node => [node.id, { w: 200, h: 120, lines: ['first', 'second', 'third', 'fourth'] }]))
 const layout = { pos: new Map(nodes.map((node, i) => [node.id, { x: i % 10 * 300, y: Math.floor(i / 10) * 240 }])) }
 const geometry = new Map(edges.map((edge, i) => [edge, { d: 'M 0 0 L 10 10', lblX: i * 10, lblY: 20, labelW: 30, labelH: 15, labelHidden: i === 0 }]))
 let selectedEdge = null
-const props = { nodes, edges, anchors: {}, selectedNodeId: null, selectedEdgeId: null, focusReq: { seq: 0 },
+const props = { nodes, edges, anchors: Object.fromEntries(nodes.map(node => [node.id, 0])), selectedNodeId: null, selectedEdgeId: null, focusReq: { seq: 0 },
   onSelectNode() {}, onSelectEdge: index => { selectedEdge = index }, ctx: { timeout: () => () => {} },
   prepared: { sizes, layout, bbox: { w: 3000, h: 48000, cx: 0, cy: 0 }, edgeLanes: new Map(), layeredEdgeGeometry: geometry },
   layoutMode: 'layered', onLayoutModeChange() {}, onReady() {} }
@@ -105,6 +108,71 @@ const selected = all(scene, byClass('kg-node')).find(node => node.props['data-no
 assert.equal(selected.props['aria-pressed'], true)
 assert.equal(selected.props.style.opacity, 1)
 assert.equal(all(scene, byClass('kg-node'))[0].props.style.opacity, 0.22)
+
+// Switching an existing focus changes four nodes in this chain. Everything
+// else keeps the complete SVG element, even when the parent replaces callbacks.
+const firstSelectionNodes = all(scene, byClass('kg-node'))
+const callbacks = [], nextProps = { ...props, selectedNodeId: 'n21', onSelectNode: id => callbacks.push(id) }
+excerptReads = 0
+scene = render(GraphScene, nextProps, root)
+const secondSelectionNodes = all(scene, byClass('kg-node'))
+const changedNodeShells = secondSelectionNodes.filter((node, i) => node !== firstSelectionNodes[i]).length
+assert.equal(changedNodeShells, 4)
+assert.equal(excerptReads, 0, 'Selection must reuse full evidence labels instead of reading every quote')
+assert.equal(secondSelectionNodes[10], firstSelectionNodes[10])
+assert(secondSelectionNodes[10].props['aria-label'].endsWith(excerpt + '10'), 'Accessible evidence is not truncated')
+secondSelectionNodes[10].props.onKeyDown({ key: 'Enter', preventDefault() {} })
+secondSelectionNodes[10].props.onClick({ stopPropagation() {} })
+assert.deepEqual(callbacks, ['n10', 'n10'], 'Retained pointer and keyboard controls dispatch to the current callback')
+assert.equal(secondSelectionNodes[20].props['aria-pressed'], false)
+assert.equal(secondSelectionNodes[21].props['aria-pressed'], true)
+assert.equal(secondSelectionNodes[22].props.style.opacity, 1)
+assert.equal(secondSelectionNodes[19].props.style.opacity, 0.22)
+
+// Context replacement must also refresh retained long-press/cancel actions.
+let pressed = 0, cancelled = 0
+scene = render(GraphScene, { ...nextProps, ctx: { timeout(fn, ms) { assert.equal(ms, 600); pressed++; return () => cancelled++ } } }, root)
+const retained = all(scene, byClass('kg-node'))[10]
+assert.equal(retained, secondSelectionNodes[10])
+const viewportRef = all(scene, byClass('kg-graph-viewport'))[0].props.ref
+viewportRef.current = { getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+retained.props.onPointerDown({ clientX: 20, clientY: 30, stopPropagation() {} })
+retained.props.onPointerLeave()
+assert.equal(pressed, 1)
+assert.equal(cancelled, 1)
+viewportRef.current = null
+
+const report = { issues: [{ id: 'issue-10', targetKind: 'node', targetId: 'n10', status: 'open', severity: 'error' }] }
+const issueHooks = owner(), opened = []
+let issueScene = render(GraphScene, { ...props, selectedNodeId: 'n20', issueReport: report, onOpenNodeIssues: () => opened.push('old') }, issueHooks)
+const beforeBadge = all(issueScene, byClass('kg-node-issue-badge'))[0]
+issueScene = render(GraphScene, { ...props, selectedNodeId: 'n21', issueReport: report, onOpenNodeIssues: node => opened.push(node.id) }, issueHooks)
+const afterBadge = all(issueScene, byClass('kg-node-issue-badge'))[0]
+assert.equal(afterBadge, beforeBadge, 'Unchanged issue badges are retained')
+afterBadge.props.onClick({ stopPropagation() {} })
+afterBadge.props.onKeyDown({ key: ' ', preventDefault() {}, stopPropagation() {} })
+assert.deepEqual(opened, ['n10', 'n10'])
+issueScene = render(GraphScene, { ...props, issueReport: { issues: report.issues.map(issue => ({ ...issue, status: 'dismissed' })) } }, issueHooks)
+assert.equal(all(issueScene, byClass('kg-node-issue-badge')).length, 0, 'New reports clear stale issue tint and badges')
+
+const image = { id: 'figure>1', caption: 'Original', interpretationStatus: 'ai_unverified', startParagraph: 2, endParagraph: 3 }
+const visualNodes = [{ id: 'image:' + encodeURIComponent(image.id), type: 'image', text: 'Original image', paragraph: 0 },
+  { id: 'transcript', type: 'fact', text: 'Transcript', quote: 'Extracted text', paragraph: 2 }]
+const visualSizes = new Map(visualNodes.map(node => [node.id, { w: 200, h: 180, lines: [node.text] }]))
+const visualProps = { ...props, nodes: visualNodes, edges: [], anchors: { transcript: 0 }, visualSource: { images: [image] },
+  prepared: { ...props.prepared, sizes: visualSizes, layout: { pos: new Map(visualNodes.map((node, i) => [node.id, { x: i * 300, y: 100 }])) } },
+  renderSourceImage: source => React.createElement('span', { className: 'preview' }, source.caption) }
+const visualHooks = owner()
+let visualScene = render(GraphScene, visualProps, visualHooks)
+assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'Original')
+assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /AI 视觉转写摘录，非原书文字/)
+visualScene = render(GraphScene, { ...visualProps, visualSource: { images: [{ ...image, caption: 'Updated', interpretationStatus: 'not_requested' }] } }, visualHooks)
+assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'Updated', 'New image metadata invalidates retained previews')
+assert(!all(visualScene, byClass('kg-node'))[1].props['aria-label'].includes('AI 视觉转写'))
+visualScene = render(GraphScene, { ...visualProps, renderSourceImage: () => React.createElement('span', { className: 'preview' }, 'New renderer') }, visualHooks)
+assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'New renderer', 'Replacing the renderer invalidates cached image elements')
+visualScene = render(GraphScene, { ...visualProps, anchors: {} }, visualHooks)
+assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法回链来源/, 'Anchor replacement refreshes accessible evidence')
 
 const movedLayout = { pos: new Map(layout.pos) }
 movedLayout.pos.set('n20', { x: 123, y: 456 })
@@ -211,4 +279,5 @@ assert.deepEqual(identityRelations.map(item => render(GraphEdgeInteraction, item
   ['关系边：支持（a>b → c）', '关系边：支持（c → a>b）', '关系边：类比说明（ c  → a>b）'], 'Incident paths retain canonical order')
 assert.equal(JSON.stringify(identityEdges), identityBefore, 'Selection does not mutate canonical relations')
 console.log(JSON.stringify({ nodes: count, edges: edges.length, hoverElements, selectionElements, localFocus: true, hiddenLabels: true, parallelSelection: true, cachedTextInvalidation: true, overviewNodes: allNodes.length,
-  overviewNodeSelectionReads, overviewParallelSelectionReads, canonicalIndices: true, exactEndpointIdentity: true, selfLoops: true }))
+  overviewNodeSelectionReads, overviewParallelSelectionReads, canonicalIndices: true, exactEndpointIdentity: true, selfLoops: true,
+  changedNodeShells, retainedShells: count - changedNodeShells, currentCallbacks: true, contextReplacement: true, issueAndImageInvalidation: true, fullAccessibleEvidence: true }))

@@ -11860,66 +11860,91 @@ export default function clientPlugin() {
           ]]
         })), [visibleNodes, layout, sizes, nodeDegree, showNodeDetails])
 
-        const nodeEls = useMemo(() => visibleNodes.map((node) => {
+        // Selection and flash updates do not change evidence, geometry or issue
+        // metadata. Retain them separately from each node's visual state.
+        const nodePresentation = useMemo(() => new Map(visibleNodes.map((node) => {
           const p = layout.pos.get(node.id)
           const s = sizes.get(node.id)
-          if (!p || !s) return null
+          if (!p || !s) return [node.id, null]
           const meta = TYPE_META[node.type] || { label: '未知', color: '#6b7280', fill: 'rgba(107,114,128,0.15)' }
           const x = p.x - s.w / 2
           const y = p.y - s.h / 2
-          const sel = selectedNodeId === node.id
-          const flash = flashId === node.id
-          const inFocus = focus ? related.ids.has(node.id) : true
-          const dim = focus ? !inFocus : false
-          const neighbor = focus && inFocus && !sel
           const issueSev = issueSeverityFor(node.id)
           const issueCount = issueMaps.nodeMap.has(node.id) ? openIssuesOf(issueMaps.nodeMap.get(node.id)).length : 0
-          const degree = nodeDegree.get(node.id) || 0
-          const hub = degree >= 4
+          const hub = (nodeDegree.get(node.id) || 0) >= 4
           const off = anchors[node.id]
           const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
           const sourceImage = sourceImageForNode(visualSource, node)
           const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
-          return h('g', {
-            key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
-            'aria-pressed': sel, 'aria-label': aria,
-            style: { cursor: 'pointer', opacity: dim ? 0.22 : 1 },
-            onPointerDown: (e) => { e.stopPropagation(); startPress(e, node) },
-            onPointerUp: cancelPress,
-            onPointerLeave: cancelPress,
-            onClick: (e) => { e.stopPropagation(); cancelPress(); setTooltip(null); onSelectNode(node.id); setDetail((d) => (d && d.id === node.id ? null : node)) },
-            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectNode(node.id); setDetail((d) => (d && d.id === node.id ? null : node)) } },
-          },
-            h('rect', {
-              x, y, width: s.w, height: s.h, rx: 10,
-              fill: meta.fill,
-              stroke: sel ? '#3b82f6' : (flash ? '#f59e0b' : (issueSev ? SEVERITY_COLOR[issueSev] : (neighbor ? '#3b82f6' : meta.color))),
-              strokeWidth: sel || flash ? 3 : (issueSev ? 2.5 : (neighbor ? 2.4 : (hub ? 2.2 : 1.6))),
-              className: flash ? 'kg-node-flash' : '',
-              style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
-            }),
-            sourceImage && renderSourceImage && showNodeDetails ? h('foreignObject', {
-              x: x + 8, y: y + 8, width: s.w - 16, height: 116, 'data-image-node': node.id,
-              onPointerDown: event => event.stopPropagation(), onClick: event => event.stopPropagation(),
-            }, renderSourceImage(sourceImage, true)) : null,
-            issueCount > 0
-              ? h('g', {
-                  className: 'kg-node-issue-badge',
-                  role: 'button',
-                  tabIndex: 0,
-                  'aria-label': '查看该节点的 ' + issueCount + ' 个问题',
-                  style: { cursor: 'pointer' },
-                  onPointerDown: (e) => e.stopPropagation(),
-                  onPointerUp: (e) => e.stopPropagation(),
-                  onClick: (e) => { e.stopPropagation(); if (typeof onOpenNodeIssues === 'function') onOpenNodeIssues(node) },
-                  onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (typeof onOpenNodeIssues === 'function') onOpenNodeIssues(node) } },
-                },
-                  h('circle', { cx: x + s.w - 6, cy: y + 6, r: 7, fill: issueSev ? SEVERITY_COLOR[issueSev] : '#6b7280', stroke: '#fff', strokeWidth: 1.5 }),
-                  h('text', { x: x + s.w - 6, y: y + 9.5, textAnchor: 'middle', fontSize: 8.5, fill: '#fff', fontWeight: 700 }, issueCount > 9 ? '9+' : String(issueCount)))
-              : null,
-            nodeLabels.get(node.id),
-          )
-        }), [visibleNodes, layout, sizes, selectedNodeId, flashId, focus, related, issueMaps, nodeDegree, nodeLabels, anchors, visualSource, renderSourceImage, startPress, cancelPress, onSelectNode, onOpenNodeIssues, showNodeDetails])
+          return [node.id, { s, meta, x, y, issueSev, issueCount, hub, sourceImage, aria }]
+        })), [visibleNodes, layout, sizes, issueMaps, nodeDegree, anchors, visualSource])
+        // A parent may replace its callbacks on every selection. Cached SVG
+        // nodes still dispatch through the current actions, including badges.
+        const nodeActions = useRef(null), nodeCache = useRef(new Map())
+        nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail }
+        const nodeEls = useMemo(() => {
+          const next = new Map()
+          const elements = visibleNodes.map((node) => {
+            const presentation = nodePresentation.get(node.id)
+            if (!presentation) return null
+            const { s, meta, x, y, issueSev, issueCount, hub, sourceImage, aria } = presentation
+            const labels = nodeLabels.get(node.id)
+            const sel = selectedNodeId === node.id, flash = flashId === node.id
+            const inFocus = focus ? related.ids.has(node.id) : true
+            const dim = !!focus && !inFocus, neighbor = !!focus && inFocus && !sel
+            const state = (sel ? 1 : 0) | (flash ? 2 : 0) | (dim ? 4 : 0) | (neighbor ? 8 : 0)
+            const cached = nodeCache.current.get(node.id)
+            if (cached?.presentation === presentation && cached.labels === labels && cached.state === state &&
+                cached.renderSourceImage === renderSourceImage && cached.showNodeDetails === showNodeDetails) {
+              next.set(node.id, cached)
+              return cached.element
+            }
+            const element = h('g', {
+              key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
+              'aria-pressed': sel, 'aria-label': aria,
+              style: { cursor: 'pointer', opacity: dim ? 0.22 : 1 },
+              onPointerDown: (e) => { e.stopPropagation(); nodeActions.current.startPress(e, node) },
+              onPointerUp: () => nodeActions.current.cancelPress(),
+              onPointerLeave: () => nodeActions.current.cancelPress(),
+              onClick: (e) => { e.stopPropagation(); const actions = nodeActions.current; actions.cancelPress(); actions.setTooltip(null); actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) },
+              onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const actions = nodeActions.current; actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) } },
+            },
+              h('rect', {
+                x, y, width: s.w, height: s.h, rx: 10,
+                fill: meta.fill,
+                stroke: sel ? '#3b82f6' : (flash ? '#f59e0b' : (issueSev ? SEVERITY_COLOR[issueSev] : (neighbor ? '#3b82f6' : meta.color))),
+                strokeWidth: sel || flash ? 3 : (issueSev ? 2.5 : (neighbor ? 2.4 : (hub ? 2.2 : 1.6))),
+                className: flash ? 'kg-node-flash' : '',
+                style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
+              }),
+              sourceImage && renderSourceImage && showNodeDetails ? h('foreignObject', {
+                x: x + 8, y: y + 8, width: s.w - 16, height: 116, 'data-image-node': node.id,
+                onPointerDown: event => event.stopPropagation(), onClick: event => event.stopPropagation(),
+              }, renderSourceImage(sourceImage, true)) : null,
+              issueCount > 0
+                ? h('g', {
+                    className: 'kg-node-issue-badge',
+                    role: 'button',
+                    tabIndex: 0,
+                    'aria-label': '查看该节点的 ' + issueCount + ' 个问题',
+                    style: { cursor: 'pointer' },
+                    onPointerDown: (e) => e.stopPropagation(),
+                    onPointerUp: (e) => e.stopPropagation(),
+                    onClick: (e) => { e.stopPropagation(); const open = nodeActions.current.onOpenNodeIssues; if (typeof open === 'function') open(node) },
+                    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); const open = nodeActions.current.onOpenNodeIssues; if (typeof open === 'function') open(node) } },
+                  },
+                    h('circle', { cx: x + s.w - 6, cy: y + 6, r: 7, fill: issueSev ? SEVERITY_COLOR[issueSev] : '#6b7280', stroke: '#fff', strokeWidth: 1.5 }),
+                    h('text', { x: x + s.w - 6, y: y + 9.5, textAnchor: 'middle', fontSize: 8.5, fill: '#fff', fontWeight: 700 }, issueCount > 9 ? '9+' : String(issueCount)))
+                : null,
+              labels,
+            )
+            next.set(node.id, { presentation, labels, state, renderSourceImage, showNodeDetails, element })
+            return element
+          })
+          // Keep only the current viewport; panning never accumulates old nodes.
+          nodeCache.current = next
+          return elements
+        }, [visibleNodes, nodePresentation, nodeLabels, selectedNodeId, flashId, focus, related, renderSourceImage, showNodeDetails])
 
         const tooltipEl = tooltip
           ? h('div', { className: 'kg-tooltip', style: { left: tooltip.x, top: tooltip.y } },
