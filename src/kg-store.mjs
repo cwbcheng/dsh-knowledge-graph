@@ -2398,11 +2398,13 @@ export class SqliteKnowledgeStore {
         WHERE document_id = ? AND paragraph = ? ORDER BY node_id LIMIT 1`).get(documentId, options.focusParagraph)
       if (focus) {
         focusNodeId = focus.node_id
-        // Use the same NULL-first paragraph / binary node-id order as the
-        // ordinary window. Only count preceding rows; never hydrate the book.
-        const preceding = this.db.prepare(`SELECT COUNT(*) AS count FROM graph_nodes
-          WHERE document_id = ? AND (paragraph IS NULL OR paragraph < ? OR (paragraph = ? AND node_id < ?))`)
-          .get(documentId, options.focusParagraph, options.focusParagraph, focusNodeId)
+        // focus is already the first binary node ID in its paragraph, so no
+        // same-paragraph row can precede it. Separate NULLs and earlier units
+        // into covering index ranges instead of testing every document row.
+        const preceding = this.db.prepare(`SELECT
+          (SELECT COUNT(*) FROM graph_nodes WHERE document_id = ? AND paragraph IS NULL)
+          + (SELECT COUNT(*) FROM graph_nodes WHERE document_id = ? AND paragraph < ?) AS count`)
+          .get(documentId, documentId, options.focusParagraph)
         offset = Math.floor(Number(preceding.count) / limit) * limit
       } else offset = 0
     }

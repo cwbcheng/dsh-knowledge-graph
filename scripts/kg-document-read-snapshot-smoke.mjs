@@ -134,7 +134,7 @@ try {
     ['paragraph identity', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
       expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.includes('paragraph = ? ORDER BY node_id LIMIT 1')],
     ['paragraph rank', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
-      expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.includes('paragraph IS NULL OR paragraph < ?')],
+      expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.includes('paragraph IS NULL') && sql.includes('paragraph < ?')],
     ['paragraph rows', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
       expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.startsWith('SELECT * FROM graph_nodes')],
   ]
