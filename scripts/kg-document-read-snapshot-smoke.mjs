@@ -66,7 +66,7 @@ function interleave(reader, read, sqlMatch, commit = () => save(revised)) {
     return value
   } finally { reader.db.prepare = prepare }
 }
-const head = sql => sql === 'SELECT * FROM documents WHERE document_id = ?'
+const head = sql => /^SELECT (?:\*|document_id, .*) FROM documents WHERE document_id = \?$/.test(sql)
 for (const [name, original] of Object.entries(originalMethods)) {
   SqliteKnowledgeStore.prototype[name] = function (...args) {
     if (!armed || this.filename !== database) return original.apply(this, args)

@@ -10,6 +10,7 @@ import { openSqliteStore } from '../src/kg-store.mjs'
 import * as plugin from '../lib/index.js'
 import { SqliteKnowledgeStore } from '../lib/kg-store.mjs'
 import { diagnosticFixture, countHydration } from './kg-document-window-diagnostics-benchmark.mjs'
+import { countWindowSourceHydration } from './kg-document-window-source-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -24,7 +25,8 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
-const windowDiagnosticsMode = process.argv.includes('--window-diagnostics')
+const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
+const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -211,6 +213,7 @@ if (documentQueueMode) {
 const routes = new Map(), ctx = new Context(), pending = new Set()
 const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0, questionRequests: 0, snapshotExports: 0 }
 const diagnosticMeter = windowDiagnosticsMode ? countHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+const sourceMeter = windowSourceOmissionMode ? countWindowSourceHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -361,6 +364,7 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      ...(windowSourceOmissionMode ? { sourceHydration: sourceMeter.counts } : {}),
       ...(windowDiagnosticsMode ? { windowHydration: diagnosticMeter.counts,
         sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
         canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
@@ -476,6 +480,7 @@ const server = createServer(async (req, res) => {
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 async function stop() {
+  sourceMeter?.stop()
   diagnosticMeter?.stop()
   for (const stream of pending) stream.return()
   await ctx.fiber.dispose(); store.close(); server.closeAllConnections(); server.close()

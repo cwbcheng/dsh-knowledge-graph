@@ -88,7 +88,7 @@ export async function startDiagnosticHost(database, host) {
   } }
 }
 
-async function baselineModules(revision) {
+export async function baselineModules(revision) {
   const show = file => execFileSync('git', ['show', revision + ':' + file], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   // Only replace the store under test; refuse a baseline with a different host or domain helpers.
   const hostSource = show('lib/index.js')
