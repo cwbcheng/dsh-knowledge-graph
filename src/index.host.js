@@ -2252,7 +2252,16 @@ function createHostPlugin(graphContractOnly) {
            nodes: [centerId, ...page].map(id => ({ ...byId.get(id), gatherDepth: depthById.get(id) })), edges }
        }
 
-       function buildGraphViewHost(graph, nodeOffset, queryText, requestedLimit) {
+       function paragraphLocationInputErrorHost(args) {
+         if (args.focusParagraph === undefined) return null
+         if (!Number.isSafeInteger(args.focusParagraph) || args.focusParagraph < 0
+           || !Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 0
+           || (typeof args.query === 'string' && args.query.trim())) {
+           return { error: { code: 'invalid_input', message: '原文定位需要非负整数段落编号和知识图版本，不能同时查询其他子图' } }
+         }
+         return null
+       }
+       function buildGraphViewHost(graph, nodeOffset, queryText, requestedLimit, focusParagraph) {
          const nodeLimit = graphViewNodeLimitHost(requestedLimit)
          if (!graph || typeof graph !== 'object') return graph
          // Always inspect the canonical graph, never this view's query/window subset.
@@ -2314,8 +2323,11 @@ function createHostPlugin(graphContractOnly) {
            }
          }
          const requestedOffset = Number.isInteger(nodeOffset) && nodeOffset > 0 ? nodeOffset : 0
-         const offset = Math.min(requestedOffset, Math.max(0, allNodes.length - 1))
-         const nodes = allNodes.slice(offset, offset + nodeLimit).map(cloneGraphNodeHost)
+         const locatingParagraph = Number.isSafeInteger(focusParagraph) && focusParagraph >= 0
+         const focusIndex = locatingParagraph ? allNodes.findIndex(node => node.paragraph === focusParagraph) : -1
+         const offset = locatingParagraph ? (focusIndex < 0 ? 0 : Math.floor(focusIndex / nodeLimit) * nodeLimit)
+           : Math.min(requestedOffset, Math.max(0, allNodes.length - 1))
+         const nodes = locatingParagraph && focusIndex < 0 ? [] : allNodes.slice(offset, offset + nodeLimit).map(cloneGraphNodeHost)
          const ids = new Set(nodes.map((node) => node && node.id).filter(Boolean))
          const edges = allEdges
            .filter((edge) => edge && ids.has(edge.fromNodeId) && ids.has(edge.toNodeId))
@@ -2342,6 +2354,7 @@ function createHostPlugin(graphContractOnly) {
              totalNodes: allNodes.length,
              totalEdges: allEdges.length,
              truncated: allNodes.length > nodes.length || allEdges.length > edges.length,
+             ...(locatingParagraph ? { focusParagraph, focusNodeId: focusIndex < 0 ? '' : allNodes[focusIndex].id } : {}),
            },
          }
        }
@@ -14778,15 +14791,21 @@ function createHostPlugin(graphContractOnly) {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = canonicalDocumentInputHost(a.documentId, true)
          if (!documentId) return { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } }
+         const locationError = paragraphLocationInputErrorHost(a)
+         if (locationError) return locationError
          const saved = loadCanonicalDocumentHost(documentId)
          if (!saved) return { error: { code: 'not_found', message: '当前 Host 中找不到该文档；持久化模式可从 SQLite 恢复' } }
+         if (a.focusParagraph !== undefined && a.expectedRevision !== saved.revision) {
+           return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后定位', currentRevision: saved.revision } }
+         }
          const graph = buildGraphViewHost(
            { ...saved.graph, revision: saved.revision, source: { ...(saved.graph.source || {}), revision: saved.revision } },
            Number.isInteger(a.nodeOffset) ? a.nodeOffset : 0,
            typeof a.query === 'string' ? a.query : '',
            a.nodeLimit,
+           a.focusParagraph,
          )
-         return { documentId, sourceText: saved.sourceText, revision: saved.revision, graph }
+         return { documentId, sourceText: a.includeSourceText === false ? '' : saved.sourceText, revision: saved.revision, graph }
        })
 
        harness.handle('target-map', async (args) => {

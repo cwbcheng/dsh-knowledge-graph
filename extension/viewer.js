@@ -6847,6 +6847,40 @@
         return { graph, sourceText, paragraphs, anchors, unresolved, paraTypes, paraNodes, ontology }
       }
 
+      /** Resolve a source paragraph in a bounded canonical page, retaining its
+       * original text and revision. Recheck the displayed quote anchor before
+       * selecting anything: stale paragraph metadata must not imply a source.
+       */
+      async function loadParagraphWindow(view, paragraph, { revision, commits, isCurrent, load }) {
+        if (!view || !isCurrent() || !Number.isSafeInteger(paragraph) || paragraph < 0 || !view.paragraphs[paragraph]) return null
+        const localId = view.paraNodes[paragraph]?.[0]
+        if (localId) return { view, nodeId: localId }
+        const meta = graphViewMetadata(view.graph)
+        const documentId = documentIdOfGraph(view.graph)
+        if (!documentId || !meta || meta.totalNodes <= view.graph.nodes.length) return null
+        if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('无法确认知识图版本，请重新载入后定位')
+        await commits.catch(() => {})
+        if (!isCurrent()) return null
+        const loaded = await load({ documentId, focusParagraph: paragraph, expectedRevision: revision,
+          nodeLimit: meta.nodeLimit, includeSourceText: false })
+        if (!isCurrent()) return null
+        if (loaded?.error) throw new Error(loaded.error.message || '无法读取该段对应的知识图')
+        if (!loaded?.graph || !Array.isArray(loaded.graph.nodes) || loaded.documentId !== documentId
+          || loaded.revision !== revision || loaded.graph.source?.documentId !== documentId
+          || loaded.graph.source?.revision !== revision || loaded.graph.view?.focusParagraph !== paragraph
+          || loaded.graph.nodes.length > meta.nodeLimit || typeof loaded.graph.view?.focusNodeId !== 'string') {
+          throw new Error('原文定位结果未得到确认，请重新载入后重试')
+        }
+        const focusId = loaded.graph.view.focusNodeId
+        if (!focusId) return null
+        if (!loaded.graph.nodes.some(node => node.id === focusId)) throw new Error('原文定位结果缺少目标节点，请重新载入后重试')
+        const graph = { ...loaded.graph, ...(view.graph.graphStructureQuality && !loaded.graph.graphStructureQuality
+          ? { graphStructureQuality: view.graph.graphStructureQuality } : {}) }
+        const next = makeView(graph, view.sourceText)
+        const nodeId = next.paraNodes[paragraph]?.[0]
+        return nodeId ? { view: next, nodeId } : null
+      }
+
       // --------------------- verification helpers ---------------------
       const edgeKeyOf = (e) => (e && typeof e.fromNodeId === 'string' && typeof e.toNodeId === 'string') ? e.fromNodeId + '>' + e.toNodeId : ''
       function edgeIndexForIssue(graph, issue) {
@@ -9878,7 +9912,12 @@
         }, [props.documentId, props.revision, props.nodes, props.edges])
         useEffect(() => () => { sequence.current++; active.current?.abort() }, [])
         useEffect(() => {
-          if (result && result.nodes.some(n => n.id === props.focusReq?.nodeId)) setSelection({ node: props.focusReq.nodeId, edge: null })
+          const nodeId = props.focusReq?.nodeId
+          if (!nodeId || !props.focusReq?.seq || props.focusReq === restore.current?.selection.focusReq) return
+          if (result && result.nodes.some(n => n.id === nodeId)) setSelection({ node: nodeId, edge: null })
+          // A source target in the base window must not remain hidden behind
+          // an unrelated neighborhood. Keep the new selection when leaving.
+          else if (request && props.nodes.some(n => n.id === nodeId)) exit(false)
         }, [props.focusReq?.seq])
         const focused = !!request
         const capability = typeof props.loadNeighborhood === 'function' && props.documentId && Number.isSafeInteger(props.revision)

@@ -309,6 +309,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               try { payload = raw ? JSON.parse(raw) : {} } catch (e) { payload = {} }
               const documentId = canonicalDocumentInputHost(payload?.documentId, true)
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
+              const locationError = paragraphLocationInputErrorHost(payload)
+              if (locationError) return writeJson(res, 200, locationError)
               const store = await getSqliteStore()
               const nodeOffset = Number.isInteger(payload.nodeOffset) ? payload.nodeOffset : 0
               const query = typeof payload.query === 'string' ? payload.query : ''
@@ -317,9 +319,13 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 limit: graphViewNodeLimitHost(payload.nodeLimit),
                 edgeLimit: graphViewNodeLimitHost(payload.nodeLimit) * 6,
                 query,
+                ...(payload.focusParagraph === undefined ? {} : {
+                  focusParagraph: payload.focusParagraph, expectedRevision: payload.expectedRevision,
+                }),
                 includeSourceText: payload.includeSourceText !== false,
-              }, GENERATION_STRUCTURE_TOOLS.inspect)
+              }, payload.focusParagraph === undefined ? GENERATION_STRUCTURE_TOOLS.inspect : undefined)
               if (!saved) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该文档' } })
+              if (saved.error) return writeJson(res, 200, saved)
               const revision = Number.isInteger(saved.revision) ? saved.revision : 0
               const sourceText = saved.sourceText || ''
               const graph = { ...saved, source: { ...(saved.source || {}), revision } }

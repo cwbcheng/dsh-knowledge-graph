@@ -18,6 +18,7 @@ const replaceText = value => {
   return typeof value === 'string' ? value.replace(/10 元/g, '11 元') : value
 }
 const revised = replaceText(fixture)
+const locationParagraph = fixture.graph.nodes.find(node => Number.isSafeInteger(node.paragraph)).paragraph
 revised.graph.summary = 'Revised isolated graph'
 revised.graph.source.title = 'Revised document title'
 revised.graph.nodes.push({ ...structuredClone(revised.graph.nodes[0]), id: 'same-name-other-identity' })
@@ -82,7 +83,8 @@ try {
   const baseUrl = 'http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/'
   const post = async (method, args) => {
     const response = await fetch(baseUrl + method, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ documentId: document.documentId, ...args }) })
+      body: JSON.stringify({ documentId: document.documentId, ...args,
+        ...(args.focusParagraph === undefined ? {} : { expectedRevision: writer.getDocumentRevision(document.documentId) }) }) })
     assert.equal(response.status, 200)
     return response.json()
   }
@@ -91,6 +93,8 @@ try {
     ['document-load', { nodeLimit: 20, nodeOffset: 30, includeSourceText: false }],
     ['document-load', { nodeLimit: 20, query: '行驶距离' }],
     ['document-load', { query: 'no-such-node', includeSourceText: false }],
+    ['document-load', { focusParagraph: locationParagraph, nodeLimit: 20, includeSourceText: false }],
+    ['document-load', { focusParagraph: 10000, includeSourceText: false }],
     ['document-export', { includeSourceText: true }],
     ['document-export', {}],
   ]
@@ -127,6 +131,12 @@ try {
     ['query empty', () => store.getDocumentWindow(document.documentId, { query: 'no-such-node', limit: 20 }), head],
     ['tail clamping', () => store.getDocumentWindow(document.documentId, { offset: 999, limit: 2000 }), head],
     ['last chunk query', () => store.getDocumentWindow(document.documentId), sql => sql.startsWith('SELECT * FROM chunks')],
+    ['paragraph identity', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
+      expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.includes('paragraph = ? ORDER BY node_id LIMIT 1')],
+    ['paragraph rank', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
+      expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.includes('paragraph IS NULL OR paragraph < ?')],
+    ['paragraph rows', () => store.getDocumentWindow(document.documentId, { focusParagraph: locationParagraph,
+      expectedRevision: writer.getDocumentRevision(document.documentId), limit: 5 }), sql => sql.startsWith('SELECT * FROM graph_nodes')],
   ]
   for (const [label, read, boundary] of reads) {
     const baseline = read()

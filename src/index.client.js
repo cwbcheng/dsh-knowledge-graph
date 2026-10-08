@@ -8023,6 +8023,40 @@ export default function clientPlugin() {
         return { graph, sourceText, paragraphs, anchors, unresolved, paraTypes, paraNodes, ontology }
       }
 
+      /** Resolve a source paragraph in a bounded canonical page, retaining its
+       * original text and revision. Recheck the displayed quote anchor before
+       * selecting anything: stale paragraph metadata must not imply a source.
+       */
+      async function loadParagraphWindow(view, paragraph, { revision, commits, isCurrent, load }) {
+        if (!view || !isCurrent() || !Number.isSafeInteger(paragraph) || paragraph < 0 || !view.paragraphs[paragraph]) return null
+        const localId = view.paraNodes[paragraph]?.[0]
+        if (localId) return { view, nodeId: localId }
+        const meta = graphViewMetadata(view.graph)
+        const documentId = documentIdOfGraph(view.graph)
+        if (!documentId || !meta || meta.totalNodes <= view.graph.nodes.length) return null
+        if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('无法确认知识图版本，请重新载入后定位')
+        await commits.catch(() => {})
+        if (!isCurrent()) return null
+        const loaded = await load({ documentId, focusParagraph: paragraph, expectedRevision: revision,
+          nodeLimit: meta.nodeLimit, includeSourceText: false })
+        if (!isCurrent()) return null
+        if (loaded?.error) throw new Error(loaded.error.message || '无法读取该段对应的知识图')
+        if (!loaded?.graph || !Array.isArray(loaded.graph.nodes) || loaded.documentId !== documentId
+          || loaded.revision !== revision || loaded.graph.source?.documentId !== documentId
+          || loaded.graph.source?.revision !== revision || loaded.graph.view?.focusParagraph !== paragraph
+          || loaded.graph.nodes.length > meta.nodeLimit || typeof loaded.graph.view?.focusNodeId !== 'string') {
+          throw new Error('原文定位结果未得到确认，请重新载入后重试')
+        }
+        const focusId = loaded.graph.view.focusNodeId
+        if (!focusId) return null
+        if (!loaded.graph.nodes.some(node => node.id === focusId)) throw new Error('原文定位结果缺少目标节点，请重新载入后重试')
+        const graph = { ...loaded.graph, ...(view.graph.graphStructureQuality && !loaded.graph.graphStructureQuality
+          ? { graphStructureQuality: view.graph.graphStructureQuality } : {}) }
+        const next = makeView(graph, view.sourceText)
+        const nodeId = next.paraNodes[paragraph]?.[0]
+        return nodeId ? { view: next, nodeId } : null
+      }
+
       // --------------------- verification helpers ---------------------
       const edgeKeyOf = (e) => (e && typeof e.fromNodeId === 'string' && typeof e.toNodeId === 'string') ? e.fromNodeId + '>' + e.toNodeId : ''
       function edgeIndexForIssue(graph, issue) {
@@ -11054,7 +11088,12 @@ export default function clientPlugin() {
         }, [props.documentId, props.revision, props.nodes, props.edges])
         useEffect(() => () => { sequence.current++; active.current?.abort() }, [])
         useEffect(() => {
-          if (result && result.nodes.some(n => n.id === props.focusReq?.nodeId)) setSelection({ node: props.focusReq.nodeId, edge: null })
+          const nodeId = props.focusReq?.nodeId
+          if (!nodeId || !props.focusReq?.seq || props.focusReq === restore.current?.selection.focusReq) return
+          if (result && result.nodes.some(n => n.id === nodeId)) setSelection({ node: nodeId, edge: null })
+          // A source target in the base window must not remain hidden behind
+          // an unrelated neighborhood. Keep the new selection when leaving.
+          else if (request && props.nodes.some(n => n.id === nodeId)) exit(false)
         }, [props.focusReq?.seq])
         const focused = !!request
         const capability = typeof props.loadNeighborhood === 'function' && props.documentId && Number.isSafeInteger(props.revision)
@@ -14857,6 +14896,8 @@ export default function clientPlugin() {
         const paragraphRemovalRef = useRef(false)
         const currentResultRef = useRef(resultView)
         currentResultRef.current = resultView
+        const paragraphLocateSeqRef = useRef(0)
+        useEffect(() => () => { paragraphLocateSeqRef.current++ }, [])
         const [continuousRelations, setContinuousRelations] = useState(true)
         const [relationBatchBudget, setRelationBatchBudget] = useState(3)
         const [contentScope, setContentScope] = useState('all')
@@ -15359,6 +15400,7 @@ export default function clientPlugin() {
          }, [candidateSyncKey])
          const loadGraphWindow = async ({ page, query, nodeLimit, force = false } = {}) => {
            if (!resultView || !resultView.graph || graphWindowLoading || allNodesLoading) return false
+           paragraphLocateSeqRef.current++
            const openingView = resultView
            const documentId = documentIdOfGraph(resultView.graph)
            const currentMeta = graphViewMetadata(resultView.graph)
@@ -17485,6 +17527,7 @@ export default function clientPlugin() {
         }
 
         const handleSelectNode = (nodeId, projectedAnchor) => {
+          paragraphLocateSeqRef.current++
           const locatingScope = contentScopeForNode(resultView?.graph, contentScope, nodeId)
           if (locatingScope !== contentScope) setContentScope(locatingScope)
           if (projectedAnchor === undefined) { setSelectedNodeId(nodeId); setSelectedEdgeId(null) }
@@ -17518,6 +17561,7 @@ export default function clientPlugin() {
           toastStore.show('已定位原文第 ' + (pi + 1) + ' 段')
         }
         const locateConsumptionReference = async (reference, stillCurrent = () => currentResultRef.current === resultView) => {
+          paragraphLocateSeqRef.current++
           if (!resultView || !reference) return false
           if (!stillCurrent()) throw new Error('知识图已切换，旧定位已取消')
           setContentScope('all')
@@ -17796,10 +17840,16 @@ export default function clientPlugin() {
           ctx.timeout(() => handleSelectNode(node.id), 0)
         }
         const handleSelectEdge = (idx) => {
+          paragraphLocateSeqRef.current++
           setSelectedEdgeId(idx)
           setSelectedNodeId(null)
         }
-        const handleParagraphClick = (pi) => {
+        const handleParagraphClick = async (pi) => {
+          const seq = ++paragraphLocateSeqRef.current
+          const revision = graphRevisionRef.current
+          const commits = graphCommitQueueRef.current
+          const isCurrent = () => paragraphLocateSeqRef.current === seq && currentResultRef.current === resultView
+            && graphRevisionRef.current === revision && graphCommitQueueRef.current === commits
           setContentScope('all')
           setActivePara(pi)
           const paragraph = displayView.paragraphs[pi]
@@ -17807,11 +17857,25 @@ export default function clientPlugin() {
             const offset = gatherProjection.anchors[n.id]
             return offset != null && offset >= paragraph.start && offset < paragraph.end
           }).map(n => n.id) : displayView.paraNodes[pi] || []
-          if (ids.length === 0) {
-            toastStore.show('该段没有可定位的节点')
-            return
+          let id = ids[0]
+          if (!id) {
+            try {
+              const located = await loadParagraphWindow(resultView, pi, { revision, isCurrent,
+                commits, load: loadGraphDocument })
+              if (!isCurrent()) return
+              if (!located) { toastStore.show('该段没有可定位的节点'); return }
+              id = located.nodeId
+              if (located.view !== resultView) {
+                setResultView(located.view)
+                setGraphPageDraft(String(graphViewMetadata(located.view.graph).page))
+                setGraphQueryDraft('')
+              }
+              setChapterFilter('all')
+            } catch (error) {
+              if (isCurrent()) toastStore.show(error.message || '无法定位该段节点，请重试')
+              return
+            }
           }
-          const id = ids[0]
           setSelectedNodeId(id)
           setSelectedEdgeId(null)
           setFocusReq((f) => ({ nodeId: id, seq: f.seq + 1 }))
@@ -17820,6 +17884,7 @@ export default function clientPlugin() {
 
         const loadHistoryEntry = async (entry) => {
           if (!entry || !entry.documentId) return
+          paragraphLocateSeqRef.current++
           const loadSeq = ++historyLoadSeqRef.current
           cancelVerifyTasks()
           setError(null)
@@ -18789,6 +18854,8 @@ export default function clientPlugin() {
         const factReportRef = useRef(null)
         const currentViewRef = useRef(view)
         currentViewRef.current = view
+        const paragraphLocateSeqRef = useRef(0)
+        useEffect(() => () => { paragraphLocateSeqRef.current++ }, [])
         useEffect(() => { verificationRef.current = verification }, [verification])
         useEffect(() => { factReportRef.current = factReport }, [factReport])
         const cancelTrajVerifyTasks = () => {
@@ -19936,6 +20003,7 @@ export default function clientPlugin() {
           return false
         }
         const handleSelectNode = (nodeId, projectedAnchor) => {
+          paragraphLocateSeqRef.current++
           if (projectedAnchor === undefined) { setSelectedNodeId(nodeId); setSelectedEdgeId(null) }
           if (!nodeId || !view) return
           const off = projectedAnchor === undefined ? view.anchors[nodeId] : projectedAnchor
@@ -19951,6 +20019,7 @@ export default function clientPlugin() {
           showToast('已定位轨迹事件 #' + (pi + 1))
         }
         const locateTrajectoryConsumptionReference = async (reference) => {
+          paragraphLocateSeqRef.current++
           if (!view || !reference) return false
           const nodeId = typeof reference.nodeId === 'string' ? reference.nodeId : ''
           let targetView = view
@@ -19989,17 +20058,34 @@ export default function clientPlugin() {
           }
           return true
         }
-        const handleSelectEdge = (idx) => { setSelectedEdgeId(idx); setSelectedNodeId(null) }
-        const handleParagraphClick = (pi) => {
+        const handleSelectEdge = (idx) => { paragraphLocateSeqRef.current++; setSelectedEdgeId(idx); setSelectedNodeId(null) }
+        const handleParagraphClick = async (pi) => {
           if (!view) return
+          const seq = ++paragraphLocateSeqRef.current
+          const revision = trajRevisionRef.current
+          const commits = trajCommitQueueRef.current
+          const isCurrent = () => paragraphLocateSeqRef.current === seq && currentViewRef.current === view
+            && trajRevisionRef.current === revision && trajCommitQueueRef.current === commits && mountedSessionRef.current === sessionId
           setActivePara(pi)
           const paragraph = view.paragraphs[pi]
           const ids = gatherProjection && paragraph ? gatherProjection.nodes.filter(n => {
             const offset = gatherProjection.anchors[n.id]
             return offset != null && offset >= paragraph.start && offset < paragraph.end
           }).map(n => n.id) : view.paraNodes[pi] || []
-          if (ids.length === 0) { showToast('该事件没有可定位的节点'); return }
-          const id = ids[0]
+          let id = ids[0]
+          if (!id) {
+            try {
+              const located = await loadParagraphWindow(view, pi, { revision, isCurrent,
+                commits, load: loadGraphDocument })
+              if (!isCurrent()) return
+              if (!located) { showToast('该事件没有可定位的节点'); return }
+              id = located.nodeId
+              if (located.view !== view) setView(located.view)
+            } catch (error) {
+              if (isCurrent()) showToast(error.message || '无法定位该事件节点，请重试')
+              return
+            }
+          }
           setSelectedNodeId(id)
           setSelectedEdgeId(null)
           setFocusReq((f) => ({ nodeId: id, seq: f.seq + 1 }))
