@@ -56,12 +56,25 @@ ReactDOM.createRoot(document.getElementById('root')).render(h(App));
 if(new URLSearchParams(location.search).has('telemetry')){
  const output=document.createElement('output');output.id='search-telemetry';output.style.cssText='display:block;max-width:1288px;margin:8px auto;font:12px system-ui';
  output.textContent='搜索测量：等待输入 · '+count+' 个节点 · '+nodes.reduce((sum,n)=>sum+n.quote.length,0)+' 个摘录字符';document.body.append(output);
- let normalized=0;const normalize=String.prototype.normalize;
+ let normalized=0,checks=0,sequence=0,observer=null;const normalize=String.prototype.normalize,includes=String.prototype.includes;
+ String.prototype.includes=function(query,...rest){if(query!==String.fromCharCode(10)&&includes.call(this,String.fromCharCode(10)))checks++;return includes.call(this,query,...rest)};
  String.prototype.normalize=function(form){if(form==='NFKC'&&this.includes(String.fromCharCode(10)))normalized++;return normalize.call(this,form)};
  document.addEventListener('input',event=>{
   if(!event.target.matches('.kg-node-search input'))return;
-  const start=performance.now(),before=normalized,query=event.target.value;
-  setTimeout(()=>{output.textContent='查询「'+query+'」 · 输入后下一任务 '+(performance.now()-start).toFixed(2)+' ms · 下一任务前规范化 '+(normalized-before)+' 个节点'},0);
+  const start=performance.now(),before=normalized,beforeChecks=checks,query=event.target.value,token=++sequence;
+  observer?.disconnect();
+  setTimeout(()=>{
+   if(token!==sequence)return;
+   const firstTask='查询「'+query+'」 · 输入后下一任务 '+(performance.now()-start).toFixed(2)+' ms · 下一任务前规范化 '+(normalized-before)+' 个节点';
+   output.textContent=firstTask;
+   const finish=()=>{
+    const status=document.querySelector('.kg-node-search-count');
+    if(!status||document.querySelector('.kg-node-search input')?.value!==query){observer?.disconnect();return}
+    if(status.getAttribute('aria-busy')==='true')return;
+    output.textContent=firstTask+' · 完整查询 '+(performance.now()-start).toFixed(2)+' ms · 文本检查 '+(checks-beforeChecks)+' 次';observer?.disconnect();
+   };
+   observer=new MutationObserver(finish);observer.observe(document.getElementById('root'),{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['aria-busy']});finish();
+  },0);
  },true);
 }
 </script></body></html>`

@@ -11128,9 +11128,14 @@ export default function clientPlugin() {
 
       function createGraphNodeSearch(nodes) {
         const normalizedText = new Map()
+        let completed = null
         const matcher = (rawQuery, type) => {
           const query = rawQuery.trim().normalize('NFKC').toLocaleLowerCase()
-          return node => {
+          // Literal substring matching is transitive after normalization. Reuse
+          // one completed result only when both query and type narrow its scope.
+          // Backspacing, Unicode recomposition or a broader type must start over.
+          const candidates = completed && query.includes(completed.query) && (!completed.type || completed.type === type) ? completed.matches : nodes
+          const match = node => {
             if (type && node.type !== type) return false
             if (!query) return true
             let text = normalizedText.get(node)
@@ -11142,26 +11147,33 @@ export default function clientPlugin() {
             }
             return text.includes(query)
           }
+          return { query, type, candidates, match }
+        }
+        const finish = (request, matches) => {
+          completed = { query: request.query, type: request.type, matches }
+          return matches
         }
         return {
           find(rawQuery, type) {
-            return !rawQuery.trim() && !type ? nodes : nodes.filter(matcher(rawQuery, type))
+            const request = matcher(rawQuery, type)
+            return finish(request, !request.query && !type ? nodes : request.candidates.filter(request.match))
           },
           async findAsync(rawQuery, type, signal) {
             // Let the input and pending state commit before touching long quotes.
             // A real task yield also works in throttled/background tabs.
             await graphYield(signal)
-            const matches = [], match = matcher(rawQuery, type)
+            const matches = [], request = matcher(rawQuery, type)
             let lastYield = performance.now()
-            for (const node of nodes) {
-              if (match(node)) matches.push(node)
+            for (const node of request.candidates) {
+              if (request.match(node)) matches.push(node)
               if (performance.now() - lastYield >= 8) {
                 await graphYield(signal)
                 lastYield = performance.now()
               }
             }
             if (signal.aborted) throw new DOMException('已取消查找', 'AbortError')
-            return matches
+            // Aborted/partial results never become the next query's candidates.
+            return finish(request, matches)
           },
         }
       }
