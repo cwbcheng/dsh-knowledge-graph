@@ -22,6 +22,7 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup')
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -40,7 +41,7 @@ const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: sourceImagePerformanceMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const paragraphs = Array.from({ length: sourceImagePerformanceMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
@@ -63,7 +64,7 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: 'n' + i, type: 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: 'n' + i, type: paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
@@ -348,6 +349,10 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      ...(paragraphWindowMode ? (() => { const saved = store.getDocument(documentId); return {
+        paragraphWindowFixture: true, sourceUnchanged: saved.sourceText === sourceText,
+        nodeCount: saved.nodes.length, edgeCount: saved.edges.length,
+      } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),
         originalNodeContentPreserved: JSON.stringify(nodeContent(store.getDocument(documentId).nodes.filter(node => /^n\d+$/.test(node.id)))) === JSON.stringify(nodeContent(graph.nodes)),

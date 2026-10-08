@@ -7738,6 +7738,20 @@ export default function clientPlugin() {
         return out
       }
 
+      function paragraphIndexAtOffset(paragraphs, offset) {
+        // splitParagraphs emits ordered, non-overlapping source spans. Find the
+        // first span ending after the anchor, then check its start so blank
+        // lines stay unassigned and the exclusive end keeps its exact meaning.
+        let low = 0, high = paragraphs.length
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2)
+          if (paragraphs[mid].end <= offset) low = mid + 1
+          else high = mid
+        }
+        const paragraph = paragraphs[low]
+        return paragraph && offset >= paragraph.start && offset < paragraph.end ? low : -1
+      }
+
       function sourceCodeRanges(source) {
         const ranges = []
         let fence = null
@@ -8012,7 +8026,7 @@ export default function clientPlugin() {
         for (const n of graph.nodes) {
           const off = anchors[n.id]
           if (off == null) continue
-          const pi = paragraphs.findIndex((p) => off >= p.start && off < p.end)
+          const pi = paragraphIndexAtOffset(paragraphs, off)
           if (pi < 0) continue
           if (paraTypes[pi].indexOf(n.type) < 0) paraTypes[pi].push(n.type)
           paraNodes[pi].push(n.id)
