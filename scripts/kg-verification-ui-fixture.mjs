@@ -25,7 +25,8 @@ const sourceImagePerformanceMode = process.argv.includes('--source-image-perform
 const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
 const legacyFragmentMode = process.argv.includes('--legacy-fragment-lookup')
 const legacyTokenMode = process.argv.includes('--legacy-token-lookup') || legacyFragmentMode
-const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode
+const normalizedAnchorMode = process.argv.includes('--normalized-anchor-lookup')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode || normalizedAnchorMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -45,6 +46,10 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = Array.from({ length: sourceImagePerformanceMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
+  paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
+    : i % 3 === 2 ? paragraphs[i].replace('Fixture ', 'Fixture,') : paragraphs[i])
+}
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
@@ -84,7 +89,16 @@ if (legacyTokenMode) for (const node of graph.nodes.slice(-200)) {
   node.evidence = []
   node.groundingStatus = 'unverified'
 }
+if (normalizedAnchorMode) for (const node of graph.nodes.slice(-200)) {
+  const index = Number(node.id.slice(1))
+  delete node.paragraph
+  node.text = node.quote = index % 3 === 0 ? node.quote.replace('\t\t', ' ')
+    : index % 3 === 1 ? node.quote.replace('.', '!') : node.quote.replace('Fixture,', 'Fixture ').replace('.', '!')
+  node.evidence = []
+  node.groundingStatus = 'unverified'
+}
 const legacyNodeIds = new Set(legacyTokenMode ? graph.nodes.slice(-200).map(node => node.id) : [])
+const normalizedNodeIds = new Set(normalizedAnchorMode ? graph.nodes.slice(-200).map(node => node.id) : [])
 if (trajectoryEventMode) {
   // The first event spans three content units; later event sequences deliberately
   // differ from paragraph numbers so an accidental 1:1 mapping is observable.
@@ -217,6 +231,7 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
 }
 store.saveGraph(graph, { sourceText })
 const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
+const originalNormalizedNodeContent = normalizedAnchorMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 if (documentQueueMode) {
   const second = structuredClone(graph), id = 'verification-second'
   second.source = { ...second.source, id, documentId: id, title: 'Second verification fixture' }
@@ -389,6 +404,13 @@ const server = createServer(async (req, res) => {
             suffix: legacyNodes.filter(node => node.quote.startsWith('INVALIDSTART ')).length,
             tokenFallback: legacyNodes.filter(node => node.quote.startsWith('ZZZ ')).length,
           } } : {}),
+        } })() : {}),
+        ...(normalizedAnchorMode ? (() => { const normalizedNodes = saved.nodes.filter(node => normalizedNodeIds.has(node.id)); return {
+          normalizedAnchorFixture: true, normalizedNodes: normalizedNodes.length,
+          missingParagraphMetadata: normalizedNodes.filter(node => !Number.isInteger(node.paragraph)).length,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalNormalizedNodeContent,
+          normalizationModes: Object.fromEntries(['ws', 'punct', 'both'].map((mode, index) =>
+            [mode, normalizedNodes.filter(node => Number(node.id.slice(1)) % 3 === index).length])),
         } })() : {}),
       } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,

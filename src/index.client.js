@@ -7370,32 +7370,26 @@ export default function clientPlugin() {
 
       // --------------------- anchor resolution ---------------------
       // Quote normalization modes for fuzzy matching.
-      const PUNCT_CHARS = (function () {
-        const set = new Set()
-        const add = (s) => { for (const ch of s) set.add(ch) }
-        add('，。！？、；：…—（）,.!?;:()·～')
-        add(String.fromCharCode(8220) + String.fromCharCode(8221) + String.fromCharCode(8216) + String.fromCharCode(8217))
-        add(String.fromCharCode(12300) + String.fromCharCode(12301) + String.fromCharCode(12302) + String.fromCharCode(12303))
-        return set
-      })()
       function normalizeFor(s, mode) {
-        const out = []
-        const map = []
-        let pendingWS = false
-        for (let i = 0; i < s.length; i++) {
-          const ch = s[i]
-          const ws = isWS(ch)
-          const punct = PUNCT_CHARS.has(ch)
-          if (mode === 'ws' && ws) {
-            if (out.length > 0 && !pendingWS) { out.push(' '); map.push(i); pendingWS = true }
-          } else if (mode === 'punct' && punct) {
-            pendingWS = false
-          } else if (mode === 'both' && (ws || punct)) {
-            if (out.length > 0 && !pendingWS) { out.push(' '); map.push(i); pendingWS = true }
-          } else {
-            out.push(ch); map.push(i); pendingWS = false
+        // Keep the original four whitespace characters and punctuation set.
+        // Copy retained runs as slices; map every emitted UTF-16 unit back to
+        // its source offset, including the first separator in collapsed runs.
+        const pattern = mode === 'ws' ? /[ \n\t\u3000]+/g
+          : mode === 'punct' ? /[，。！？、；：…—（）,.!?;:()·～\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+/g
+          : mode === 'both' ? /[ \n\t\u3000，。！？、；：…—（）,.!?;:()·～\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+/g : null
+        const out = [], map = new Array(s.length)
+        let cursor = 0, used = 0, match
+        while (pattern && (match = pattern.exec(s))) {
+          if (match.index > cursor) {
+            out.push(s.slice(cursor, match.index))
+            for (let i = cursor; i < match.index; i++) map[used++] = i
           }
+          if (mode !== 'punct' && used > 0) { out.push(' '); map[used++] = match.index }
+          cursor = pattern.lastIndex
         }
+        out.push(s.slice(cursor))
+        for (let i = cursor; i < s.length; i++) map[used++] = i
+        map.length = used
         return { text: out.join(''), map }
       }
       function fuzzyMatch(needle, source, maxSkips) {
