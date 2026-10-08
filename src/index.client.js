@@ -8732,12 +8732,12 @@ export default function clientPlugin() {
         if (lines.length > 4) { lines.length = 4; lines[3] = lines[3].slice(0, 36) + '…' }
         return lines.length > 0 ? lines : ['']
       }
-      function computeNodeSizes(nodes, edges) {
+      function computeNodeSizes(nodes, edges, preparedDegree) {
         const canvas = document.createElement('canvas')
         const g = canvas.getContext('2d')
         g.font = '600 13px system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
-        const degree = new Map(nodes.map((node) => [node.id, 0]))
-        for (const edge of edges || []) {
+        const degree = preparedDegree || new Map(nodes.map((node) => [node.id, 0]))
+        if (!preparedDegree) for (const edge of edges || []) {
           if (degree.has(edge.fromNodeId)) degree.set(edge.fromNodeId, degree.get(edge.fromNodeId) + 1)
           if (degree.has(edge.toNodeId)) degree.set(edge.toNodeId, degree.get(edge.toNodeId) + 1)
         }
@@ -10816,8 +10816,22 @@ export default function clientPlugin() {
         report({ stage: 0, title: '测量节点', detail: '0/' + nodes.length + ' 个节点' })
         await graphPaint(signal)
         let lastYield = performance.now()
+        // Count once for all text batches. Scanning the entire relation array
+        // per 100 nodes turns loading into O(ceil(nodes / 100) * edges).
+        // Keep this pass cooperative too, before starting text or the worker.
+        const degree = new Map()
+        for (let index = 0; index < edges.length; index++) {
+          const edge = edges[index]
+          degree.set(edge.fromNodeId, (degree.get(edge.fromNodeId) || 0) + 1)
+          degree.set(edge.toNodeId, (degree.get(edge.toNodeId) || 0) + 1)
+          if (((index + 1) % 1000 === 0 || index === edges.length - 1) && performance.now() - lastYield >= 8) {
+            report({ stage: 0, title: '测量节点', detail: '已统计 ' + (index + 1) + '/' + edges.length + ' 条关系' })
+            await graphYield(signal)
+            lastYield = performance.now()
+          }
+        }
         for (let index = 0; index < nodes.length; index += 100) {
-          for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges)) sizes.set(id, size)
+          for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges, degree)) sizes.set(id, size)
           if (performance.now() - lastYield >= 8 || index + 100 >= nodes.length) {
             report({ stage: 0, title: '测量节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
             await graphYield(signal)
@@ -11143,6 +11157,58 @@ export default function clientPlugin() {
           node.id === 'image:' + encodeURIComponent(image.id)) || null : null
       }
 
+      function createGraphNodeSearch(nodes) {
+        const normalizedText = new Map()
+        let completed = null
+        const matcher = (rawQuery, type) => {
+          const query = rawQuery.trim().normalize('NFKC').toLocaleLowerCase()
+          // Literal substring matching is transitive after normalization. Reuse
+          // one completed result only when both query and type narrow its scope.
+          // Backspacing, Unicode recomposition or a broader type must start over.
+          const candidates = completed && query.includes(completed.query) && (!completed.type || completed.type === type) ? completed.matches : nodes
+          const match = node => {
+            if (type && node.type !== type) return false
+            if (!query) return true
+            let text = normalizedText.get(node)
+            if (text === undefined) {
+              // Quotes can be much longer than SVG labels. Normalize only
+              // when a text query needs this node, once per immutable graph.
+              text = [node.id, node.text, node.quote].join('\n').normalize('NFKC').toLocaleLowerCase()
+              normalizedText.set(node, text)
+            }
+            return text.includes(query)
+          }
+          return { query, type, candidates, match }
+        }
+        const finish = (request, matches) => {
+          completed = { query: request.query, type: request.type, matches }
+          return matches
+        }
+        return {
+          find(rawQuery, type) {
+            const request = matcher(rawQuery, type)
+            return finish(request, !request.query && !type ? nodes : request.candidates.filter(request.match))
+          },
+          async findAsync(rawQuery, type, signal) {
+            // Let the input and pending state commit before touching long quotes.
+            // A real task yield also works in throttled/background tabs.
+            await graphYield(signal)
+            const matches = [], request = matcher(rawQuery, type)
+            let lastYield = performance.now()
+            for (const node of request.candidates) {
+              if (request.match(node)) matches.push(node)
+              if (performance.now() - lastYield >= 8) {
+                await graphYield(signal)
+                lastYield = performance.now()
+              }
+            }
+            if (signal.aborted) throw new DOMException('已取消查找', 'AbortError')
+            // Aborted/partial results never become the next query's candidates.
+            return finish(request, matches)
+          },
+        }
+      }
+
       function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
@@ -11168,23 +11234,37 @@ export default function clientPlugin() {
         const [searchOpen, setSearchOpen] = useState(false)
         const [searchQuery, setSearchQuery] = useState(''), [searchType, setSearchType] = useState('')
         const [searchPage, setSearchPage] = useState(0)
+        const [searchResult, setSearchResult] = useState(null)
         const [navigation, setNavigation] = useState([])
         const searchInput = useRef(null), searchButton = useRef(null), detailElement = useRef(null)
         const focusDetail = useRef(false), previousSelection = useRef(null)
         const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
-        const searchIndex = useMemo(() => nodes.map(node => ({ node,
-          text: [node.id, node.text, node.quote].join('\n').normalize('NFKC').toLocaleLowerCase() })), [nodes])
+        const searchNodes = useMemo(() => createGraphNodeSearch(nodes), [nodes])
         const searchTypes = useMemo(() => [...new Set(nodes.map(node => node.type))], [nodes])
-        const searchMatches = useMemo(() => {
-          const query = searchQuery.trim().normalize('NFKC').toLocaleLowerCase()
-          return searchIndex.filter(item => (!searchType || item.node.type === searchType) && (!query || item.text.includes(query)))
-        }, [searchIndex, searchQuery, searchType])
+        const deferredSearch = searchOpen && nodes.length > 200 && !!searchQuery.trim()
+        // Tag completed results, so even the render before effect cleanup cannot
+        // expose another query's nodes or navigate into a replaced graph.
+        const currentSearchResult = searchResult?.index === searchNodes && searchResult.query === searchQuery && searchResult.type === searchType ? searchResult : null
+        const searchPending = deferredSearch && !currentSearchResult
+        const searchError = deferredSearch && currentSearchResult?.error
+        const searchMatches = useMemo(() => !searchOpen ? [] : deferredSearch ? currentSearchResult?.matches || [] : searchNodes.find(searchQuery, searchType),
+          [searchNodes, searchOpen, searchQuery, searchType, deferredSearch, currentSearchResult])
+        useEffect(() => {
+          if (!deferredSearch || currentSearchResult) return
+          const controller = new AbortController()
+          searchNodes.findAsync(searchQuery, searchType, controller.signal).then(matches => {
+            if (!controller.signal.aborted) setSearchResult({ index: searchNodes, query: searchQuery, type: searchType, matches })
+          }, error => {
+            if (!controller.signal.aborted) setSearchResult({ index: searchNodes, query: searchQuery, type: searchType, matches: [], error: error.message || String(error) })
+          })
+          return () => controller.abort()
+        }, [searchNodes, deferredSearch, searchQuery, searchType])
         const searchPages = Math.max(1, Math.ceil(searchMatches.length / 20))
         const activeSearchPage = Math.min(searchPage, searchPages - 1)
         const shownMatches = searchMatches.slice(activeSearchPage * 20, (activeSearchPage + 1) * 20)
         useEffect(() => { if (searchOpen) searchInput.current?.focus() }, [searchOpen])
         useEffect(() => {
-          setNavigation([]); setDetail(null); setSearchOpen(false); setSearchPage(0)
+          setNavigation([]); setDetail(null); setSearchOpen(false); setSearchPage(0); setSearchResult(null)
         }, [nodes, edges, layoutMode])
         const rememberPosition = (selection = { node: selectedNodeId, edge: selectedEdgeId, detail: detail?.id }) => {
           const size = viewportSizeRef.current || { width: containerRef.current?.clientWidth, height: containerRef.current?.clientHeight }
@@ -12098,15 +12178,16 @@ export default function clientPlugin() {
               h('input', { ref: searchInput, type: 'search', value: searchQuery, placeholder: '名称、ID 或原文摘录', 'aria-label': '查找当前视图节点',
                 onChange: event => { setSearchQuery(event.target.value); setSearchPage(0) },
                 onKeyDown: event => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing && !event.isComposing && shownMatches.length) {
-                  event.preventDefault(); navigateNode(shownMatches[0].node.id)
+                  event.preventDefault(); navigateNode(shownMatches[0].id)
                 } } }),
               h('select', { value: searchType, 'aria-label': '查找节点类型', onChange: event => { setSearchType(event.target.value); setSearchPage(0) } },
                 h('option', { value: '' }, '全部类型'), searchTypes.map(type => h('option', { key: type, value: type }, TYPE_META[type]?.label || type)))),
-            h('div', { className: 'kg-node-search-count', role: 'status' }, searchMatches.length + ' 个匹配 · 当前视图 ' + nodes.length + ' 个节点'),
-            h('div', { className: 'kg-node-search-list' }, shownMatches.length ? shownMatches.map(({ node }) => h('button', {
+            h('div', { className: 'kg-node-search-count', role: 'status', 'aria-busy': searchPending },
+              searchPending ? '正在查找…' : searchError ? '查找失败，请重新输入查询' : searchMatches.length + ' 个匹配 · 当前视图 ' + nodes.length + ' 个节点'),
+            h('div', { className: 'kg-node-search-list' }, shownMatches.length ? shownMatches.map(node => h('button', {
               key: node.id, type: 'button', className: 'kg-node-search-result', 'data-node-id': node.id, onClick: () => navigateNode(node.id),
             }, h('span', null, node.text || node.id), h('small', null, (TYPE_META[node.type]?.label || node.type) + ' · ' + node.id)))
-              : h('p', null, '当前视图没有匹配节点')),
+              : searchPending || searchError ? null : h('p', null, '当前视图没有匹配节点')),
             h('div', { className: 'kg-node-search-pages' },
               h('button', { type: 'button', 'aria-label': '上一页匹配节点', title: '上一页', disabled: !activeSearchPage, onClick: () => setSearchPage(activeSearchPage - 1) }, '←'),
               h('span', null, (activeSearchPage + 1) + ' / ' + searchPages),

@@ -39,12 +39,17 @@ if(new URLSearchParams(location.search).has('selectionTelemetry')){
 const h=React.createElement, timers={timeout(fn,ms){const id=setTimeout(fn,ms);return ()=>clearTimeout(id)}};
 const names=['学习目标','检索练习','间隔复习','迁移能力','先验知识','概念边界','反例检验','反馈质量'];
 const count=Math.max(65,Math.min(12000,Math.floor(Number(new URLSearchParams(location.search).get('nodes'))||65)));
+const quoteRepeats=Math.max(0,Math.min(320,Math.floor(Number(new URLSearchParams(location.search).get('quoteRepeats')))||0));
 const nodes=Array.from({length:count},(_,i)=>({id:'n'+i,type:i%3?'fact':'concept',
- text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。',paragraph:i}));
+ text:names[i%names.length]+' · 合成示例 '+i,quote:'示例段落 '+i+'：'+names[i%names.length]+'的对照材料。'+'合成摘录，保留完整证据。'.repeat(quoteRepeats),paragraph:i}));
 nodes[count-1].text='跨章节检索目标 · 末尾节点';
 const edges=nodes.slice(1).map((node,i)=>({fromNodeId:'n'+i,toNodeId:node.id,relation:i%2?'supports':'explains'}));
 edges.push({fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'supports'},{fromNodeId:'n0',toNodeId:'n'+(count-1),relation:'contradicts'});
-const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n'),v=KGViewer.makeView(graph,source);
+const graph={nodes,edges},original=JSON.stringify(graph),source=nodes.map(n=>n.quote).join('\\n\\n');
+// Long-excerpt search probes have known synthetic source offsets. Avoid timing
+// unrelated paragraph/anchor preparation as part of a search experiment.
+let offset=0;
+const v=quoteRepeats?{anchors:Object.fromEntries(nodes.map(n=>{const entry=[n.id,offset];offset+=n.quote.length+2;return entry}))}:KGViewer.makeView(graph,source);
 function App(){
  const [mode,setMode]=React.useState(count>65?'overview':'layered'),[node,setNode]=React.useState(null),[edge,setEdge]=React.useState(null),[focus,setFocus]=React.useState({seq:0}),[windowed,setWindowed]=React.useState(false);
  const visible=React.useMemo(()=>windowed?nodes.slice(0,20):nodes,[windowed]);
@@ -61,6 +66,30 @@ function App(){
  h('div',{id:'status',role:'status'},'选中节点：'+(node||'无')+' · 选中关系：'+(edge??'无')+' · 原始数据：'+(JSON.stringify(graph)===original?'未修改':'发生变更')));
 }
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+if(new URLSearchParams(location.search).has('telemetry')){
+ const output=document.createElement('output');output.id='search-telemetry';output.style.cssText='display:block;max-width:1288px;margin:8px auto;font:12px system-ui';
+ output.textContent='搜索测量：等待输入 · '+count+' 个节点 · '+nodes.reduce((sum,n)=>sum+n.quote.length,0)+' 个摘录字符';document.body.append(output);
+ let normalized=0,checks=0,sequence=0,observer=null;const normalize=String.prototype.normalize,includes=String.prototype.includes;
+ String.prototype.includes=function(query,...rest){if(query!==String.fromCharCode(10)&&includes.call(this,String.fromCharCode(10)))checks++;return includes.call(this,query,...rest)};
+ String.prototype.normalize=function(form){if(form==='NFKC'&&this.includes(String.fromCharCode(10)))normalized++;return normalize.call(this,form)};
+ document.addEventListener('input',event=>{
+  if(!event.target.matches('.kg-node-search input'))return;
+  const start=performance.now(),before=normalized,beforeChecks=checks,query=event.target.value,token=++sequence;
+  observer?.disconnect();
+  setTimeout(()=>{
+   if(token!==sequence)return;
+   const firstTask='查询「'+query+'」 · 输入后下一任务 '+(performance.now()-start).toFixed(2)+' ms · 下一任务前规范化 '+(normalized-before)+' 个节点';
+   output.textContent=firstTask;
+   const finish=()=>{
+    const status=document.querySelector('.kg-node-search-count');
+    if(!status||document.querySelector('.kg-node-search input')?.value!==query){observer?.disconnect();return}
+    if(status.getAttribute('aria-busy')==='true')return;
+    output.textContent=firstTask+' · 完整查询 '+(performance.now()-start).toFixed(2)+' ms · 文本检查 '+(checks-beforeChecks)+' 次';observer?.disconnect();
+   };
+   observer=new MutationObserver(finish);observer.observe(document.getElementById('root'),{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['aria-busy']});finish();
+  },0);
+ },true);
+}
 </script></body></html>`
 const assets = { '/viewer.js': 'extension/viewer.js', '/viewer.css': 'extension/viewer.css',
   '/react.js': 'extension/vendor/react.production.min.js', '/react-dom.js': 'extension/vendor/react-dom.production.min.js' }
