@@ -9982,12 +9982,22 @@
       }
 
       function createGraphImageIndex(visualSource) {
-        const images = visualSource?.images || [], originals = [], byNodeId = new Map(), events = []
+        const images = visualSource?.images || [], originals = [], byNodeId = new Map(), figuresByParagraph = new Map(), events = []
         for (let index = 0; index < images.length; index++) {
           const image = images[index], id = 'image:' + encodeURIComponent(image.id)
           originals.push(image)
           // Match Array.find even when legacy metadata repeats an image ID.
           if (!byNodeId.has(id)) byNodeId.set(id, image)
+          if (visualSource.kind === 'markdown-assets') {
+            const paragraphs = new Set(image.paragraphs || [])
+            if (image.interpretationStatus === 'ai_unverified') paragraphs.add(image.startParagraph)
+            for (const paragraph of paragraphs) {
+              if (!Number.isSafeInteger(paragraph)) continue
+              const figures = figuresByParagraph.get(paragraph) || []
+              figures.push({ index, image })
+              figuresByParagraph.set(paragraph, figures)
+            }
+          }
           if ((visualSource.kind === 'image-derived' || image.interpretationStatus === 'ai_unverified') &&
               Number.isSafeInteger(image.startParagraph) && Number.isSafeInteger(image.endParagraph) &&
               image.startParagraph <= image.endParagraph) {
@@ -10033,6 +10043,14 @@
         }
         return {
           sourceForNode: node => node?.type === 'image' ? byNodeId.get(node.id) || null : null,
+          figuresForParagraphs(paragraphs) {
+            if (paragraphs.length === 1) return (figuresByParagraph.get(paragraphs[0]) || []).map(entry => entry.image)
+            // A split source table spans several paragraphs. Keep each original
+            // entry once and preserve list order, including duplicate image IDs.
+            const figures = new Set()
+            for (const paragraph of paragraphs) for (const entry of figuresByParagraph.get(paragraph) || []) figures.add(entry.index)
+            return [...figures].sort((a, b) => a - b).map(index => originals[index])
+          },
           transcriptAt(paragraph) {
             if (!Number.isSafeInteger(paragraph)) return null
             let low = 0, high = starts.length

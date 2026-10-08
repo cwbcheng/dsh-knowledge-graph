@@ -13,6 +13,15 @@ const compare = (source, paragraphs) => {
   const nodes = [null, {}, { type: 'fact', id: 'image:missing' }, { type: 'image', id: 'image:missing' },
     ...(source?.images || []).map(image => ({ type: 'image', id: 'image:' + encodeURIComponent(image.id) }))]
   for (const node of nodes) assert.equal(index.sourceForNode(node), sourceImageForNode(source, node))
+  const validParagraphs = paragraphs.filter(Number.isSafeInteger)
+  const originalFigures = indices => source?.kind === 'markdown-assets' ? (source.images || []).filter(image =>
+    (image.paragraphs || []).some(paragraph => indices.includes(paragraph)) ||
+    (image.interpretationStatus === 'ai_unverified' && indices.includes(image.startParagraph))) : []
+  for (const paragraph of validParagraphs) assert.deepEqual(Array.from(index.figuresForParagraphs([paragraph])), originalFigures([paragraph]))
+  for (const indices of [[], validParagraphs, [...validParagraphs].reverse(), [0, 0, 1, -1]]) {
+    assert.deepEqual(Array.from(index.figuresForParagraphs(indices)), originalFigures(indices),
+      'Grouped figures must retain every original entry in source order without repeating paragraph anchors')
+  }
   assert.equal(JSON.stringify(source), before, 'Indexing must not sort or rewrite stored image metadata')
   return index
 }
@@ -59,6 +68,7 @@ for (let trial = 0; trial < 200; trial++) {
   const source = { kind: trial % 2 ? 'image-derived' : 'markdown-assets', images: Array.from({ length: 64 }, (_, i) => {
     const start = random(100) - 40
     return { id: 'random-' + i, startParagraph: start, endParagraph: start + random(70) - 4,
+      paragraphs: [random(100) - 40, start, start, String(start), start + 0.5],
       interpretationStatus: random(3) ? 'ai_unverified' : 'not_requested' }
   }) }
   compare(source, Array.from({ length: 171 }, (_, i) => i - 50))
@@ -83,4 +93,5 @@ for (const path of ['src/index.client.js', 'lib/client.js']) {
 }
 console.log(JSON.stringify({ ok: true, overlapProbes: 200, firstMatchAndInclusiveBounds: true,
   exactImageIdentity: true, boundedHugeRanges: true, originalMetadataUnchanged: true,
+  groupedSourceFigures: true, exactParagraphAnchors: true,
   graphParagraphs: 12000, imageRecords: 200, imageReads: reads, generatedParity: true }))
