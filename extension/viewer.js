@@ -6807,6 +6807,57 @@
         return resolveAnchor(node.quote, sourceText, node.text, sourceForms)
       }
 
+      function createParagraphTokenLookup(paragraphs) {
+        let paragraphTokens = null, postings = null, scores = null
+        return quote => {
+          const qt = tokenize(quote)
+          if (!qt.length) return null
+          let bestPi = -1, bestScore = 0
+          if (!paragraphTokens && !postings) {
+            // Keep a single legacy query on the original scan. A later query
+            // converts these sets without tokenizing the source again.
+            paragraphTokens = paragraphs.map(p => new Set(tokenize(p.text)))
+            for (let i = 0; i < paragraphs.length; i++) {
+              const tokens = paragraphTokens[i]
+              let score = 0
+              for (const t of qt) if (t.length >= 2 && tokens.has(t)) score += 1
+              if (score > bestScore) { bestScore = score; bestPi = i }
+            }
+          } else {
+            if (!postings) {
+              postings = new Map()
+              for (let i = 0; i < paragraphs.length; i++) {
+                for (const t of paragraphTokens[i]) {
+                  if (t.length < 2) continue
+                  const previous = postings.get(t)
+                  // Single-paragraph words need no separate posting array.
+                  if (previous === undefined) postings.set(t, i)
+                  else if (typeof previous === 'number') postings.set(t, [previous, i])
+                  else previous.push(i)
+                }
+                paragraphTokens[i] = null
+              }
+              paragraphTokens = null
+              scores = new Uint32Array(paragraphs.length)
+            }
+            scores.fill(0)
+            const weights = new Map()
+            for (const t of qt) if (t.length >= 2) weights.set(t, (weights.get(t) || 0) + 1)
+            for (const [t, weight] of weights) {
+              const matches = postings.get(t)
+              if (matches === undefined) continue
+              for (const i of typeof matches === 'number' ? [matches] : matches) {
+                const score = scores[i] + weight
+                scores[i] = score
+                // Query-word order cannot change the first-paragraph tie rule.
+                if (score > bestScore || (score === bestScore && i < bestPi)) { bestScore = score; bestPi = i }
+              }
+            }
+          }
+          return bestScore >= 2 ? paragraphs[bestPi].start : null
+        }
+      }
+
       function makeView(graph, sourceText) {
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
@@ -6820,10 +6871,9 @@
         // Normalize this document at most once per mode, not once per node.
         // Keep the cache local so switching documents cannot reuse stale offsets.
         const sourceForms = new Map()
-        // Legacy token fallback can scan every paragraph for several nodes.
-        // Tokenize each paragraph lazily once in this view, preserving query
-        // token multiplicity, first-score ties and the existing match threshold.
-        const paragraphTokens = []
+        // The legacy matcher and its lazy token/index state live only in this
+        // call. Direct anchors never build source tokens or score buffers.
+        const resolveTokenAnchor = createParagraphTokenLookup(paragraphs)
         const anchors = {}
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
@@ -6847,22 +6897,7 @@
         for (const n of graph.nodes) {
           // Legacy nodes without a paragraph retain quote/token fallbacks.
           let off = resolveNodeAnchor(n, sourceText, paragraphs, sourceForms)
-          if (off == null && n.quote) {
-            const qt = tokenize(n.quote)
-            if (qt.length > 0) {
-              let bestPi = -1
-              let bestScore = 0
-              for (let i = 0; i < paragraphs.length; i++) {
-                const tokens = paragraphTokens[i] || (paragraphTokens[i] = new Set(tokenize(paragraphs[i].text)))
-                let score = 0
-                for (const t of qt) {
-                  if (t.length >= 2 && tokens.has(t)) score += 1
-                }
-                if (score > bestScore) { bestScore = score; bestPi = i }
-              }
-              if (bestScore >= 2) off = paragraphs[bestPi].start
-            }
-          }
+          if (off == null && n.quote) off = resolveTokenAnchor(n.quote)
           anchors[n.id] = off
           if (off == null) unresolved.push({ id: n.id, quote: (n.quote || '').slice(0, 30) })
         }
