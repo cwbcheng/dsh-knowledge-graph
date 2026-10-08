@@ -197,7 +197,7 @@ const competing = tools.handle(doc, { action: 'save', documentId: doc.documentId
 records.push(competing)
 owner.change('确认保存个人靶图', undefined, true); owner.click('保存个人靶图'); await owner.load()
 assert(text(owner.tree).includes('靶图已有新修订'))
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(owner.control('映射规律表述').props.value, '本地并发草稿')
 assert(text(owner.tree).includes('当前草稿未覆盖'))
 owner.click('查看最新修订'); await owner.load()
@@ -330,14 +330,14 @@ owner.change('映射规律表述', '未保存：多个必要输入、单位、�
 const searchDraftBytes = JSON.stringify([...storage]), callsBeforeSearch = owner.requests.length
 const searchRows = () => all(owner.tree, item => item.props['data-target-history-row'])
 assert(searchRows().some(item => text(item).includes('旧标题 Ä_%<b>\n同名')), 'Revision titles must be readable without opening each archive')
-const oldSearchHandler = owner.control('检索修订记录').props.onClick
+const oldSearchHandler = owner.control('查找修订记录').props.onClick
 owner.change('搜索个人修订记录', 'ä_%<b>')
 oldSearchHandler(); owner.render(); assert.equal(owner.requests.length, callsBeforeSearch, 'A superseded query handler cannot issue a different search')
 for (const event of [{ key: 'Enter', isComposing: true }, { key: 'Enter', nativeEvent: { isComposing: true } }]) {
   owner.control('搜索个人修订记录').props.onKeyDown({ ...event, preventDefault() { throw new Error('IME confirmation is not a search command') } })
   owner.render(); assert.equal(owner.requests.length, callsBeforeSearch)
 }
-owner.click('检索修订记录'); await owner.load()
+owner.click('查找修订记录'); await owner.load()
 assert(text(owner.tree).includes('命中 43 / 全部 48 版'))
 assert.equal(searchRows().length, 20); assert(searchRows().every(item => text(item).includes('旧标题 Ä_%<b>\n同名')))
 owner.click('较早的修订记录'); await owner.load()
@@ -351,14 +351,14 @@ owner.click('查看靶图修订 history-10'); await owner.load()
 assert.equal(owner.control('靶图标题').props.value, '旧标题 Ä_%<b>\n同名'); assert(owner.control('靶图标题').props.disabled)
 owner.click('返回未保存草稿'); assert.equal(JSON.stringify([...storage]), searchDraftBytes)
 owner.click('较早的修订记录'); await owner.load(); assert.equal(searchRows().length, 3)
-owner.change('搜索个人修订记录', '修订理由 2'); owner.click('检索修订记录'); await owner.load()
+owner.change('搜索个人修订记录', '修订理由 2'); owner.click('查找修订记录'); await owner.load()
 assert.equal(searchRows().length, 11)
-owner.change('搜索个人修订记录', 'HISTORY-2'); owner.click('检索修订记录'); await owner.load()
+owner.change('搜索个人修订记录', 'HISTORY-2'); owner.click('查找修订记录'); await owner.load()
 assert.equal(searchRows().length, 11)
-owner.change('搜索个人修订记录', '无匹配'); owner.click('检索修订记录'); await owner.load()
+owner.change('搜索个人修订记录', '无匹配'); owner.click('查找修订记录'); await owner.load()
 assert(text(owner.tree).includes('没有匹配的修订记录')); assert(text(owner.tree).includes('命中 0 / 全部 48 版'))
 assert(owner.control('较早的修订记录').props.disabled); assert(owner.control('较新的修订记录').props.disabled)
-owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录')
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('查找修订记录')
 const searchFailure = owner.pending().find(item => item.args.action === 'history')
 searchFailure.reject(new Error('history search unavailable')); searchFailure.settled = true; await owner.settle()
 owner.click('重试读取修订记录'); assert.deepEqual(owner.pending().at(-1).args, searchFailure.args); await owner.load()
@@ -371,9 +371,9 @@ for (const mutate of [value => { value.query = '' }, value => { value.historyRec
   assert(text(owner.tree).includes('修订记录响应身份或分页范围不一致')); assert.equal(searchRows().length, 0)
 }
 owner.click('重新读取修订记录'); await owner.load()
-owner.click('清除修订检索'); await owner.load(); assert.equal(owner.control('搜索个人修订记录').props.value, '')
+owner.click('清除修订查找'); await owner.load(); assert.equal(owner.control('搜索个人修订记录').props.value, '')
 assert(text(owner.tree).includes('最近 20 / 48 版'))
-owner.change('搜索个人修订记录', 'history-10'); owner.click('检索修订记录')
+owner.change('搜索个人修订记录', 'history-10'); owner.click('查找修订记录')
 const staleSearch = owner.pending().find(item => item.args.action === 'history')
 owner.click('打开靶图 externality'); await owner.load(); assert(staleSearch.signal.aborted)
 assert.equal(owner.control('搜索个人修订记录').props.value, '')
@@ -394,28 +394,28 @@ owner = mount({ focusRequest: focus, onStateChange: value => { browse = value } 
 owner.control('个人靶图修订记录').props.onToggle({ currentTarget: { open: true } }); owner.render()
 owner.change('映射规律表述', '正文检索不改未保存草稿')
 const bytes = JSON.stringify([...storage]), rows = () => all(owner.tree, item => item.props['data-target-history-row'])
-owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录'); await owner.load()
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('查找修订记录'); await owner.load()
 assert.equal(rows().length, 0, 'Default metadata scope must not silently search body text')
-const staleScopeHandler = owner.control('检索修订记录').props.onClick, beforeScopeChange = owner.requests.length
-owner.change('修订检索范围', 'content'); staleScopeHandler(); owner.render()
+const staleScopeHandler = owner.control('查找修订记录').props.onClick, beforeScopeChange = owner.requests.length
+owner.change('修订查找范围', 'content'); staleScopeHandler(); owner.render()
 assert.equal(owner.requests.length, beforeScopeChange, 'Changing scope does not issue a request or revive old scope handlers')
-owner.click('检索修订记录'); await owner.load()
-assert.equal(rows().length, 20); assert(text(owner.tree).includes('正文检索：ä_%<b> · 命中 43'))
+owner.click('查找修订记录'); await owner.load()
+assert.equal(rows().length, 20); assert(text(owner.tree).includes('正文查找：ä_%<b> · 命中 43'))
 assert(rows().every(row => text(row).includes('命中边界与疑问：') && text(row).includes('Ä_%<b>\n')))
 assert(!all(owner.tree, item => item.type === 'b').length)
 owner.click('较早的修订记录'); await owner.load()
 assert.equal(browse.historyPosition.searchIn, 'content'); assert.equal(browse.historyPosition.offset, 20)
 const nav = owner.navigation
 owner.unmount(); owner = mount({ navigation: nav }); await owner.load(); await owner.load()
-assert.equal(owner.control('修订检索范围').props.value, 'content'); assert(text(owner.tree).includes('第 21-40 / 43'))
+assert.equal(owner.control('修订查找范围').props.value, 'content'); assert(text(owner.tree).includes('第 21-40 / 43'))
 owner.click('查看靶图修订 history-10'); await owner.load()
 assert(owner.control('靶图标题').props.disabled); owner.click('返回未保存草稿')
 assert.equal(JSON.stringify([...storage]), bytes)
-owner.change('修订检索范围', 'metadata')
+owner.change('修订查找范围', 'metadata')
 owner.click('较早的修订记录'); await owner.load()
 assert.equal(owner.requests.at(-1).args.searchIn, 'content', 'Paging follows the submitted scope, not an unsubmitted selector change')
 assert.equal(rows().length, 3)
-owner.change('修订检索范围', 'content'); owner.click('检索修订记录')
+owner.change('修订查找范围', 'content'); owner.click('查找修订记录')
 const failure = owner.pending().at(-1)
 failure.reject(new Error('body search unavailable')); failure.settled = true; await owner.settle()
 assert.equal(rows().length, 0); owner.click('重试读取修订记录')
@@ -430,13 +430,13 @@ for (const corrupt of [result => { result.searchIn = 'metadata' }, result => { d
   assert(text(owner.tree).includes('修订记录响应身份或分页范围不一致')); assert.equal(rows().length, 0)
 }
 owner.click('重试读取修订记录'); await owner.load()
-owner.click('清除修订检索'); await owner.load()
-assert.equal(rows().length, 20); assert.equal(owner.control('修订检索范围').props.value, 'content')
+owner.click('清除修订查找'); await owner.load()
+assert.equal(rows().length, 20); assert.equal(owner.control('修订查找范围').props.value, 'content')
 assert(!all(owner.tree, item => item.props['data-target-history-match']).length)
-owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('检索修订记录')
+owner.change('搜索个人修订记录', 'ä_%<b>'); owner.click('查找修订记录')
 const stale = owner.pending().at(-1)
 owner.click('打开靶图 externality'); await owner.load(); assert(stale.signal.aborted)
-assert.equal(owner.control('修订检索范围').props.value, 'metadata')
+assert.equal(owner.control('修订查找范围').props.value, 'metadata')
 assert.equal(JSON.stringify([...storage].filter(([key]) => key.includes('motion'))), bytes)
 assert.equal(writes, writesBeforePaging)
 owner.unmount(); records = previousRecords; storage.clear()
@@ -463,7 +463,7 @@ let historyBrowseState
     owner = mount({ recordNavigation: true, focusRequest: { ...focus, revision: doc.revision }, revision: doc.revision }); await owner.load()
     if (doc.revision === 1) owner.change(options.discrimination ? '判别规律表述' : '映射规律表述', '本地草稿：保留未知和冲突')
     owner.change('搜索例子文字', '草稿筛选不应被清除')
-    owner.change('修订检索范围', 'content'); owner.change('搜索个人修订记录', needle.toLowerCase()); owner.click('检索修订记录'); await owner.load()
+    owner.change('修订查找范围', 'content'); owner.change('搜索个人修订记录', needle.toLowerCase()); owner.click('查找修订记录'); await owner.load()
     return { record, match: tools.historyContentMatch(record.map, needle.toLowerCase(), { target: true }), bytes: JSON.stringify([...storage]) }
   }
   const hit = () => owner.click('查看修订命中字段 hit-record')
@@ -670,7 +670,7 @@ let historyBrowseState
   for (const boundary of ['query', 'scope', 'refresh', 'target', 'revision', 'hide', 'unmount']) {
     await setup(); const stale = owner.control('查看修订命中字段 hit-record').props.onClick
     if (boundary === 'query') owner.change('搜索个人修订记录', '另外的查询')
-    if (boundary === 'scope') owner.change('修订检索范围', 'metadata')
+    if (boundary === 'scope') owner.change('修订查找范围', 'metadata')
     if (boundary === 'refresh') owner.click('重新读取修订记录')
     if (boundary === 'target') owner.click('打开靶图 externality')
     if (boundary === 'revision') { owner.props.revision = 2; owner.render() }
@@ -892,7 +892,7 @@ assert(!all(owner.tree, item => item.props['aria-label'] === '映射规律表述
 const failedRestore = owner.pending().find(item => item.args.action === 'read')
 failedRestore.reject(new Error('restore transport unavailable')); failedRestore.settled = true; await owner.load()
 assert(text(owner.tree).includes('restore transport unavailable'))
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(owner.control('映射规律表述').props.value, '返回工作台仍保留的未保存限定语')
 assert(!owner.control('确认保存个人靶图').props.checked)
 assert(owner.control('保存个人靶图').props.disabled)
@@ -1011,7 +1011,7 @@ owner = mount({ navigation: failedRefreshNavigation })
 const failedRefresh = owner.pending().find(item => item.args.action === 'read')
 failedRefresh.reject(new Error('refresh synthetic 503')); failedRefresh.settled = true; await owner.load()
 assert(text(owner.tree).includes('refresh synthetic 503')); assert.equal(owner.control('搜索靶图目标').props.value, '刷新后仍不提交的搜索')
-owner.click('重读靶图'); await owner.load(); assert(!owner.control('确认保存个人靶图').props.checked); owner.unmount()
+owner.click('重新加载靶图'); await owner.load(); assert(!owner.control('确认保存个人靶图').props.checked); owner.unmount()
 for (const targetId of ['speed-before', 'speed-after', ' x ', 'x'.repeat(4096), 'x'.repeat(4097)]) {
   const identityNavigation = new Map([[navigationKey(), JSON.stringify({ ...refreshState, state: { ...refreshState.state, targetId } })]])
   owner = mount({ navigation: identityNavigation })
@@ -1293,7 +1293,7 @@ owner.change('映射规律表述', '跨靶图检索期间保留的未保存草�
 owner.change('确认保存个人靶图', undefined, true)
 const catalogBodyKey = 'dsh-kg-target-map:' + JSON.stringify([doc.documentId, 'motion', 2]), catalogBodyDraft = storage.get(catalogBodyKey)
 await submitTitleQuery(catalogBodyTerm); assert.equal(owner.directory.rows.length, 0)
-owner.change('靶图目录检索范围', 'content'); await owner.load()
+owner.change('靶图目录查找范围', 'content'); await owner.load()
 assert.deepEqual(owner.directory.rows.map(row => row.dataset.targetCatalogueRow), ['motion', 'externality'])
 assert(owner.control('确认保存个人靶图').props.checked, 'Search alone does not revoke save approval or alter drafts')
 const catalogBodyExcerpt = all(owner.tree, item => item.props['data-target-catalogue-match'] === 'body-motion-old')[0]
@@ -1302,7 +1302,7 @@ assert(text(catalogBodyExcerpt).includes('Ä_%<b>')); assert.equal(all(catalogBo
 const sameCatalogRenderClick = owner.control('打开靶图 motion').props.onClick
 owner.render(); sameCatalogRenderClick(); owner.render(); await owner.load(); await owner.load()
 assert(owner.control('个人靶图修订记录').props.open, 'A no-op React render must not invalidate a committed handler for the same catalogue snapshot')
-assert.equal(owner.control('修订检索范围').props.value, 'content'); assert.equal(owner.control('搜索个人修订记录').props.value, catalogBodyTerm)
+assert.equal(owner.control('修订查找范围').props.value, 'content'); assert.equal(owner.control('搜索个人修订记录').props.value, catalogBodyTerm)
 assert(owner.control('个人靶图修订记录').props.open)
 assert.equal(owner.focused, 'data-target-record-view:history', 'Opening a body result locates the filtered revision list instead of the unrelated current draft')
 const catalogHistoryRead = owner.requests.filter(item => item.args.action === 'history').at(-1)
@@ -1336,7 +1336,7 @@ await submitTitleQuery('not found'); const beforeStaleCatalog = owner.requests.l
 staleCatalogOpen(); owner.render(); assert.equal(owner.requests.length, beforeStaleCatalog)
 await submitTitleQuery(catalogBodyTerm)
 owner.unmount(); owner = mount({ revision: 2, directory: true, recordNavigation: true, navigation: catalogBodyNavigation }); await owner.load(); await owner.load()
-assert.equal(owner.control('靶图目录检索范围').props.value, 'content'); assert.equal(owner.control('搜索靶图目标').props.value, catalogBodyTerm)
+assert.equal(owner.control('靶图目录查找范围').props.value, 'content'); assert.equal(owner.control('搜索靶图目标').props.value, catalogBodyTerm)
 assert.equal(storage.get(catalogBodyKey), catalogBodyDraft); assert(!owner.control('确认保存个人靶图').props.checked)
 assert.equal(JSON.stringify(records), catalogBodyRecords); assert.equal(writes, catalogBodyWrites)
 records.push(tools.handle(doc, { action: 'save', documentId: doc.documentId, expectedRevision: 2, targetId: 'motion',
@@ -1576,7 +1576,7 @@ owner.click('查看靶图修订 preview-1'); owner.click('取消读取历史靶�
 assert(owner.control('映射规律表述').props.disabled, 'Cancelling a read cannot remove a graph revision conflict')
 owner.click('查看靶图修订 preview-0')
 const reloadedPreview = owner.pending().find(item => item.args.recordId === 'preview-0')
-owner.click('重读靶图'); assert(reloadedPreview.signal.aborted)
+owner.click('重新加载靶图'); assert(reloadedPreview.signal.aborted)
 await owner.resolve(reloadedPreview); await owner.load()
 assert(!text(owner.tree).includes('历史快照 ·') && !owner.control('映射规律表述').props.disabled)
 const staleOpen = owner.control('查看靶图修订 preview-0').props.onClick
@@ -1740,7 +1740,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'revision') { doc.revision = 2; owner.props.revision = 2; owner.render() }
   if (boundary === 'hidden') { owner.props.active = false; owner.render() }
   if (boundary === 'unmount') owner.unmount()
-  if (boundary === 'reload') owner.click('重读靶图')
+  if (boundary === 'reload') owner.click('重新加载靶图')
   const afterBoundary = owner.scrolled.length
   const afterPosition = [owner.inner.scrollTop, owner.outer.scrollTop]
   staleCancelNavigation(); owner.render(); await owner.resolve(pending, response)
@@ -2322,7 +2322,7 @@ for (const boundary of ['target', 'target_back', 'document', 'revision', 'hidden
   if (boundary === 'cancel') owner.click('取消读取历史靶图')
   if (boundary === 'newer_read') owner.click('查看靶图修订 basis-new-round')
   if (boundary === 'return') owner.click('返回未保存草稿')
-  if (boundary === 'reload') { await owner.resolve(request, { error: { code: 'revision_conflict', message: 'changed' } }); owner.click('重读靶图'); await owner.load() }
+  if (boundary === 'reload') { await owner.resolve(request, { error: { code: 'revision_conflict', message: 'changed' } }); owner.click('重新加载靶图'); await owner.load() }
   if (boundary !== 'cancel') { staleOpen(); owner.render() }
   await owner.resolve(request, response)
   if (boundary !== 'unmount') {
@@ -2423,7 +2423,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'reload') {
     owner.click('查看靶图修订 outcome-record'); const pending = owner.pending().at(-1)
     await owner.resolve(pending, { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   staleFilter(); owner.render()
   const filter = all(owner.tree, item => item.props['aria-label'] === '按输出取值查看例子')[0]
@@ -2534,7 +2534,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'archive') { owner.click('查看靶图修订 outcome-record'); await owner.load() }
   if (boundary === 'reload') {
     owner.click('查看靶图修订 outcome-record'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   stalePick({ target: { value: 'outcome-case-3' } }); staleDifference({ target: { checked: true } }); owner.render()
   const picker = all(owner.tree, node => node.props['aria-label'] === '右侧例子')[0]
@@ -2602,7 +2602,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'archive') { owner.click('查看靶图修订 outcome-record'); await owner.load() }
   if (boundary === 'reload') {
     owner.click('查看靶图修订 outcome-record'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   if (boundary === 'filter') owner.change('按输出取值查看例子', outcomeChoice('after', 'rest'))
   if (boundary === 'hidden_example') { owner.change('按输出取值查看例子', outcomeChoice('after', 'rest')); staleEdit = owner.control('例子 1 对应输出 after').props.onChange }
@@ -2750,7 +2750,7 @@ await owner.resolve(owner.pending().find(item => item.args.action === 'catalog')
 const feedbackRestoreFailure = owner.pending().find(item => item.args.action === 'read')
 feedbackRestoreFailure.reject(new Error('503 feedback intent restore')); feedbackRestoreFailure.settled = true; await owner.settle()
 assert.equal(JSON.parse(owner.navigation.get(navigationKey())).state.examplePosition.feedback, 'personal')
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(owner.control('按对照来源查看例子').props.value, 'personal'); assert.deepEqual(visibleCases(), ['feedback-5'])
 owner.change('按对照来源查看例子', 'ai'); owner.click('增加具体推测')
 assert.equal(owner.control('按对照来源查看例子').props.value, 'all'); assert.equal(visibleCases().length, 7); owner.unmount()
@@ -2838,7 +2838,7 @@ await owner.resolve(owner.pending().find(item => item.args.action === 'catalog')
 expansionInitialRead.reject(new Error('503 restore expansion')); expansionInitialRead.settled = true; await owner.settle()
 assert.equal(exampleDetails('__proto__'), undefined, 'Navigation cannot render cached records before a successful read')
 assert.deepEqual(JSON.parse(owner.navigation.get(navigationKey())).state.examplePosition.expansion, expansionEnvelope.state.examplePosition.expansion)
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(exampleDetails('__proto__').props.open, true); assert.equal(exampleDetails('feedback-1').props.open, true)
 assert.equal(exampleDetails('feedback-0').props.open, false); assert.equal(owner.control('搜索例子文字').props.value, '同文')
 assert(!owner.control('确认保存个人靶图').props.checked); assert.equal(JSON.stringify([...storage]), expansionStorage)
@@ -3019,7 +3019,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'archive') { owner.click('查看靶图修订 stage-predictions'); await owner.load() }
   if (boundary === 'reload') {
     owner.click('查看靶图修订 stage-predictions'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   if (boundary === 'filter') owner.change('按输出取值查看例子', 'unassigned')
   if (boundary === 'stage') owner.change('按记录阶段查看例子', 'material')
@@ -3124,7 +3124,7 @@ for (const boundary of ['query', 'stage', 'filter', 'edit', 'target', 'document'
   if (boundary === 'archive') { owner.click('查看靶图修订 stage-predictions'); await owner.load() }
   if (boundary === 'reload') {
     owner.click('查看靶图修订 stage-predictions'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   if (boundary === 'read_pending') owner.click('查看靶图修订 stage-predictions')
   if (boundary === 'read_pending_sync') owner.control('查看靶图修订 stage-predictions').props.onClick()
@@ -3230,7 +3230,7 @@ pendingFilterRead.reject(new Error('503 filter restore')); pendingFilterRead.set
 assert(text(owner.tree).includes('503 filter restore'))
 assert.equal(JSON.parse(owner.navigation.get(navigationKey())).state.examplePosition.query, '相反结果')
 assert.equal(storage.get(editKey), filterRefreshDraft)
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(owner.control('搜索例子文字').props.value, '相反结果', 'Only a successful scoped detail read consumes pending restoration')
 owner.unmount()
 
@@ -3244,7 +3244,7 @@ for (const boundary of ['document', 'revision', 'target', 'tab', 'hidden', 'relo
   if (boundary === 'hidden') { owner.props.active = false; owner.render() }
   if (boundary === 'reload') {
     owner.click('查看靶图修订 stage-predictions'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   const navigation = JSON.stringify([...owner.navigation]), local = JSON.stringify([...storage]), requests = owner.requests.length
   oldSearch({ target: { value: '旧查询不可重新持久化' } }); owner.render()
@@ -3398,7 +3398,7 @@ for (const boundary of ['target', 'document', 'revision', 'hidden', 'unmount', '
   if (boundary === 'pending') owner.click('查看靶图修订 history-right')
   if (boundary === 'reload') {
     owner.click('查看靶图修订 history-right'); await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   if (boundary === 'page-reload') { const nav = owner.navigation; owner.unmount(); owner = mount({ navigation: nav }); await owner.load() }
   const beforeTree = text(owner.tree), beforeLocal = JSON.stringify([...storage]), beforeNav = JSON.stringify([...owner.navigation]), beforeRequests = owner.requests.length
@@ -3547,7 +3547,7 @@ for (const boundary of ['pair', 'filter', 'filter-return', 'stage', 'feedback', 
   if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
   if (boundary === 'reload') {
     await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   const before = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
   recover(); owner.render()
@@ -3630,7 +3630,7 @@ for (const boundary of ['pair', 'filter', 'filter-return', 'stage', 'feedback', 
   if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
   if (boundary === 'reload') {
     await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   const snapshot = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
   choose(); back(); menu({ target: { value: navigationIds[2] } }); owner.render()
@@ -3723,7 +3723,7 @@ for (const boundary of ['filter', 'filter-return', 'stage', 'feedback', 'text', 
   if (boundary === 'archive-return') owner.click('返回未保存草稿')
   if (boundary === 'reload') {
     await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } })
-    owner.click('重读靶图'); await owner.load()
+    owner.click('重新加载靶图'); await owner.load()
   }
   const snapshot = [text(owner.tree), JSON.stringify([...storage]), JSON.stringify([...owner.navigation]), owner.focused, owner.requests.length]
   choose({ target: { value: navigationIds[2] } }); next(); owner.render()
@@ -3837,7 +3837,7 @@ for (const boundary of ['filter', 'filter-return', 'edit', 'delete', 'expansion'
   if (['archive', 'archive-return', 'comparison-return'].includes(boundary)) await owner.load()
   if (boundary === 'archive-return') owner.click('返回未保存草稿')
   if (boundary === 'comparison-return') { owner.click('对照上层表述'); owner.click('快照内容') }
-  if (boundary === 'reload') { await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } }); owner.click('重读靶图'); await owner.load() }
+  if (boundary === 'reload') { await owner.resolve(owner.pending().at(-1), { error: { code: 'revision_conflict', message: 'changed' } }); owner.click('重新加载靶图'); await owner.load() }
   const before = [...contents(), text(owner.tree), JSON.stringify([...owner.navigation]), owner.focused]
   old(); owner.render()
   const after = [...contents(), text(owner.tree), JSON.stringify([...owner.navigation]), owner.focused]
@@ -4156,7 +4156,7 @@ owner.click('打开靶图 motion')
 const retryRead = owner.pending().find(request => request.args.action === 'read')
 retryRead.reject(new Error('capacity fixture 503')); retryRead.settled = true; await owner.settle()
 assert.equal(storage.get(draftKey), longDraft)
-owner.click('重读靶图'); await owner.load()
+owner.click('重新加载靶图'); await owner.load()
 assert.equal(storage.get(draftKey), longDraft)
 assert.equal(owner.control('例子 1 对照结果').props.value.length, 8000)
 doc.revision = 2; owner.props.revision = 2; owner.render(); await owner.load()
@@ -4385,7 +4385,7 @@ for (const damage of ['json', 'schema', 'identity', 'size', 'read']) {
   assert.equal(cacheAlert(), '', 'Even while loading, another target must not inherit the warning')
   const failed = owner.pending().find(item => item.args.action === 'read'); failed.reject(new Error('cache fixture read failure')); failed.settled = true; await owner.settle()
   assert.equal(cacheAlert(), '', 'An HTTP failure cannot relabel the previous draft as this target')
-  owner.click('重读靶图'); await owner.load(); owner.change('判别规律表述', '健康草稿')
+  owner.click('重新加载靶图'); await owner.load(); owner.change('判别规律表述', '健康草稿')
   const healthyBytes = storage.get(draftKey('externality'))
   oldEdit({ target: { value: 'late edit' } }); owner.render()
   assert.equal(storage.get(draftKey('externality')), healthyBytes); assert.equal(storage.get(draftKey('motion')), raw)
@@ -4730,7 +4730,7 @@ records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount
   const localReadArgs = structuredClone(readingLocal.args)
   readingLocal.reject(new Error('local destination HTTP 503')); readingLocal.settled = true; await owner.settle()
   assert(text(owner.tree).includes('local destination HTTP 503'))
-  owner.click('重读靶图'); assert.deepEqual(structuredClone(owner.pending().at(-1).args), localReadArgs); await owner.load()
+  owner.click('重新加载靶图'); assert.deepEqual(structuredClone(owner.pending().at(-1).args), localReadArgs); await owner.load()
   assert.equal(owner.control('靶图标题').props.value, '另一个窗口修改'); assert(!owner.control('确认保存个人靶图').props.checked)
   owner.unmount(); storage.clear()
 
@@ -4756,7 +4756,7 @@ records = []; storage.clear(); doc.revision = 1; assert.equal(writes, writeCount
   storageReadFailures.clear(); owner.click('刷新本地草稿列表'); assert.equal(rows().length, 1)
   const lengthDescriptor = Object.getOwnPropertyDescriptor(localStorage, 'length')
   Object.defineProperty(localStorage, 'length', { configurable: true, get() { throw new Error('storage listing unavailable') } })
-  owner.click('刷新本地草稿列表'); assert(text(owner.tree).includes('本地存储目录无法完整读取'))
+  owner.click('刷新本地草稿列表'); assert(text(owner.tree).includes('部分本地草稿无法读取'))
   Object.defineProperty(localStorage, 'length', lengthDescriptor)
   owner.click('刷新本地草稿列表'); assert.equal(rows().length, 1); owner.unmount(); storage.clear()
 

@@ -309,14 +309,14 @@ for (const mode of ['approved', 'cancelled', 'old-host', 'invalid-counts', 'revi
   await new Function(...Object.keys(env), fullHandler)(...Object.values(env))({ reuseVerified: true })
   assert.deepEqual(calls.map(call => call.method), mode === 'approved' ? ['verification-plan', 'verify-graph'] : ['verification-plan'],
     'incremental admission must fail closed: ' + mode)
-  if (mode === 'approved' || mode === 'cancelled') assert.match(confirmations[0], /可复用 2 批，需要重新审校 1 批/)
+  if (mode === 'approved' || mode === 'cancelled') assert.match(confirmations[0], /可复用 2 批，需要重新检查 1 批/)
   if (['old-host', 'invalid-counts', 'revision-changed', 'plan-offline'].includes(mode)) { assert.equal(busy.current, false); assert.equal(errors.length, 1) }
 }
 
 const h = (tag, attrs, ...children) => ({ tag, attrs, children })
 const render = new Function('h', 'useState', 'useEffect', 'TaskPauseControls', common + '; return VerificationTaskStatus')(h, value => [value, () => {}], () => {}, () => null)
 const tree = render({ progress: { kind: 'verify', status: 'running', elapsedMs: 1500, startedAt: Date.now(), stage: 'waiting', verification: { totalBatches: 3, completedBatches: 1, phase: 'confirm' }, requests: [] }, taskId: 't', ctx: {} })
-assert.ok(JSON.stringify(tree).includes('已审校 1/3 批'))
+assert.ok(JSON.stringify(tree).includes('已检查 1/3 批'))
 assert.ok(JSON.stringify(tree).includes('独立复核候选问题'))
 assert.ok(JSON.stringify(tree).includes('1 秒'))
 assert.equal(render({ progress: null, ctx: {} }), null)

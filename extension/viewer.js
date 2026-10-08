@@ -79,10 +79,10 @@
       // "second layer" becomes a few short rows instead of one endless band.
       const LAYER_MAX_ROW_WIDTH = 900
       const LAYOUT_MODES = [
-        { id: 'force', label: '力导向' },
-        { id: 'circular', label: '圆形' },
-        { id: 'radial', label: '放射' },
-        { id: 'layered', label: '分层' },
+        { id: 'force', label: '自由布局' },
+        { id: 'circular', label: '环形布局' },
+        { id: 'radial', label: '中心布局' },
+        { id: 'layered', label: '层级布局' },
       ]
 
       // ---- vendored d3-force 3.0.0 (ISC license, https://d3js.org/d3-force) ----
@@ -324,7 +324,7 @@
         return parts.length > 0 ? base + '·' + parts.join('·') : base
       }
        const REVIEW_STATUS_ORDER = ['candidate', 'accepted', 'rejected']
-       const REVIEW_STATUS_LABEL = { candidate: '待审核', accepted: '已接受', rejected: '已驳回' }
+       const REVIEW_STATUS_LABEL = { candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }
        function chapterSectionsOf(graph) {
          const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : null
          return source && Array.isArray(source.sections)
@@ -411,7 +411,7 @@
         contradiction: '矛盾', completeness: '遗漏', summary: '总结', other: '其它',
       }
       const VERDICT_LABEL = {
-        supported: '图成立', contradicted: '质疑成立', insufficient: '证据不足', out_of_scope: '超出范围',
+        supported: '原图有依据', contradicted: '质疑成立', insufficient: '证据不足', out_of_scope: '超出范围',
       }
       const FACT_VERDICT_META = {
         supported: { label: '支持', color: '#059669', bg: 'rgba(5,150,105,0.08)', border: 'rgba(5,150,105,0.25)' },
@@ -542,7 +542,7 @@
         useEffect(() => {
           scope.current = documentId + ':' + revision
           setSelectedId(''); setName(''); setMessage('')
-          load().catch(error => setMessage(error?.message || '无法读取任务视图'))
+          load().catch(error => setMessage(error?.message || '无法读取阅读书签'))
           return () => { scope.current = '' }
         }, [documentId, revision])
         const perform = async (action) => {
@@ -566,30 +566,30 @@
             if (action === 'apply') {
               if (!response.resolved || response.resolved.revision !== revision) throw new Error('知识图已变化，请刷新后重试')
               await onApply(response.resolved)
-              setMessage(response.resolved.warnings?.join('；') || '已恢复任务视图')
+              setMessage(response.resolved.warnings?.join('；') || '已恢复阅读书签')
             } else {
               await load()
-              if (action === 'delete') { setSelectedId(''); setName(''); setMessage('任务视图已删除') }
-              else { setSelectedId(response.perspective.id); setName(response.perspective.name); setMessage('任务视图已保存') }
+              if (action === 'delete') { setSelectedId(''); setName(''); setMessage('阅读书签已删除') }
+              else { setSelectedId(response.perspective.id); setName(response.perspective.name); setMessage('阅读书签已保存') }
             }
           } catch (error) {
-            if (scope.current === key) setMessage(error?.message || '任务视图操作失败')
+            if (scope.current === key) setMessage(error?.message || '阅读书签操作失败')
           } finally { if (scope.current === key) setBusy(false) }
         }
-        return h('div', { className: 'kg-perspectives', 'aria-label': '任务视图' },
-          h('label', null, '任务视图 ', h('select', { value: selectedId, disabled: busy,
+        return h('div', { className: 'kg-perspectives', 'aria-label': '阅读书签' },
+          h('label', null, '阅读书签 ', h('select', { value: selectedId, disabled: busy,
             onChange: event => { const id = event.target.value; setSelectedId(id); setName(items.find(item => item.id === id)?.name || '') } },
-            h('option', { value: '' }, '新视图'), items.map(item => h('option', { key: item.id, value: item.id }, item.name + ' · v' + item.version)))),
-          h('input', { value: name, maxLength: 80, placeholder: '视图名称', 'aria-label': '任务视图名称',
+            h('option', { value: '' }, '新建书签'), items.map(item => h('option', { key: item.id, value: item.id }, item.name + ' · v' + item.version)))),
+          h('input', { value: name, maxLength: 80, placeholder: '书签名称', 'aria-label': '阅读书签名称',
             onChange: event => setName(event.target.value) }),
           h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !name.trim() || items.length >= 20,
-            onClick: () => perform('save') }, '另存新视图'),
+            onClick: () => perform('save') }, '另存书签'),
           h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !selected || !name.trim(),
-            onClick: () => perform('overwrite') }, '更新所选视图'),
+            onClick: () => perform('overwrite') }, '更新书签'),
           h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !selected,
-            onClick: () => perform('apply') }, '打开视图'),
+            onClick: () => perform('apply') }, '打开书签'),
           h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: busy || !selected,
-            onClick: () => { if (window.confirm('删除这个任务视图？知识图不会改变。')) perform('delete') } }, '删除'),
+            onClick: () => { if (window.confirm('删除这个阅读书签？知识图不会改变。')) perform('delete') } }, '删除书签'),
           message ? h('span', { role: 'status', className: 'kg-hint' }, message) : null)
       }
       function ConceptDossierPanel({ documentId, revision, selectedNodeId, graph, onLocate, onOpenSource }) {
@@ -749,7 +749,7 @@
           finally { if (scope.current === key) setBusy(false) }
         }
         const confirmedSnapshot = item => !item.stale || item.missing ? null : item.confirmedReference ? h('details', null,
-          h('summary', null, '查看保存时的来源内容（revision ' + item.boundRevision + '）'),
+          h('summary', null, '查看保存时的来源内容（版本 ' + item.boundRevision + '）'),
           h('p', null, item.confirmedReference.text || ''),
           h('p', { className: 'kg-hint' }, item.confirmedReference.quote
             ? '当时记录的引文：' + item.confirmedReference.quote : '当时未找到可核对的引文'))
@@ -764,8 +764,8 @@
           h('p', null, item.text || '概念节点已删除'),
           h('p', { className: 'kg-hint' }, item.evidenceStatus === 'source_quote_matched'
             ? '原文 P' + (item.evidenceParagraph + 1) + '：' + item.quote : '未找到可核对的原文引文'),
-          h('p', { className: 'kg-hint' }, '原文语义一致性：' + ({ verified: '已验证', unsupported: '不支持',
-            uncertain: '不确定', unverified: '未核实' }[item.attributionStatus] || '未核实') + ' · 现实真实性：未评估'),
+          h('p', { className: 'kg-hint' }, '与原文是否一致：' + ({ verified: '已验证', unsupported: '不支持',
+            uncertain: '不确定', unverified: '未复核' }[item.attributionStatus] || '未复核') + ' · 现实真实性：未评估'),
           item.sourceParagraphText ? h('details', null,
             h('summary', null, '查看 ' + (item.source?.title || item.documentId) + ' 原文 P' + (item.evidenceParagraph + 1)),
             h('p', null, item.sourceParagraphText, item.sourceParagraphTruncated ? '（段落过长，仅显示引文附近内容）' : '')) : null,
@@ -784,11 +784,11 @@
           active && anchor ? h(React.Fragment, null,
             h('div', { className: 'kg-dossier-item' }, reference(anchor)),
             h('div', { className: 'kg-dossiers-controls' },
-              h('input', { value: query, maxLength: 80, 'aria-label': '跨书概念检索词', placeholder: '按名称或关键词找其他书的概念',
+              h('input', { value: query, maxLength: 80, 'aria-label': '跨书概念关键词', placeholder: '按名称或关键词找其他书的概念',
                 onChange: event => setQuery(event.target.value),
                 onKeyDown: event => { if (event.key === 'Enter') setSubmittedQuery(query.trim()) } }),
-              h('button', { type: 'button', className: 'kg-secondary', onClick: () => setSubmittedQuery(query.trim()) }, '查找候选')),
-            h('p', { className: 'kg-hint' }, candidates.length + (submittedQuery ? ' 个检索候选' : ' 个同名候选') + '；请逐一判断是否同义、分歧或仅相关。'),
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => setSubmittedQuery(query.trim()) }, '查找对照概念')),
+            h('p', { className: 'kg-hint' }, candidates.length + (submittedQuery ? ' 个查找候选' : ' 个同名候选') + '；请逐一判断是否同义、分歧或仅相关。'),
             candidates.map(item => {
               const key = keyOf(item); const choice = choices[key] || {}
               return h('div', { key, className: 'kg-dossier-item' }, reference(item),
@@ -814,7 +814,7 @@
                     onChange: event => setChoices({ ...choices, [key]: { ...choice, item, note: event.target.value } }) })))
             }),
             !edit && Object.values(choices).some(choice => choice.include) ? h('p', { className: 'kg-hint' },
-              '已选 ' + Object.values(choices).filter(choice => choice.include).length + ' 个候选（跨检索保留）') : null,
+              '已选 ' + Object.values(choices).filter(choice => choice.include).length + ' 个候选（跨查找保留）') : null,
             !edit && candidates.length ? h('div', { className: 'kg-dossiers-controls' },
               h('input', { value: title, maxLength: 100, disabled: busy, 'aria-label': '概念档案标题',
                 onChange: event => setTitle(event.target.value) }),
@@ -1536,10 +1536,10 @@
         const changes = [], old = model.modelStructure
         const changed = (text, before, after) => { if (before !== after) changes.push({ text, before: before ?? '未记录', after: after ?? '已删除' }) }
         const identities = { undetermined: '尚未判定', assertion: '原文断言，仍需核验', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明' }
-        changed('内容身份', identities[old?.identity], identities[modelStructure.identity])
+        changed('内容性质', identities[old?.identity], identities[modelStructure.identity])
         const evidence = (label, before, after) => {
           const kinds = { unknown: '来源待核对', source: '原文引用，语义待核对', user: '用户整理，未独立验证', ai: 'AI 建议，未独立验证' }
-          changed(label + ' / 来源身份', kinds[before?.kind], kinds[after?.kind])
+          changed(label + ' / 来源类型', kinds[before?.kind], kinds[after?.kind])
           const paragraph = value => value ? value.paragraph === null ? '无段落' : 'P' + (value.paragraph + 1) : undefined
           changed(label + ' / 原文段落', paragraph(before), paragraph(after))
           changed(label + ' / 逐字引用', before?.quote, after?.quote); changed(label + ' / 整理说明', before?.note, after?.note)
@@ -1613,9 +1613,9 @@
             h(ModelStructureEvidence, { value: example.provenance, documentId, revision, onLocate }))),
           !structure.examples.length ? h('p', null, '当前分支尚未找到对应实例') : null,
           h('div', { className: 'kg-model-toolbar' }, h('span', null, '实例 ' + structure.examples.length + ' / ' + structure.filteredTotal + ' · 全模型 ' + structure.exampleTotal),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: structure.exampleOffset === 0, onClick: () => onPage(Math.max(0, structure.exampleOffset - 20)) }, '前页实例'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: structure.exampleOffset === 0, onClick: () => onPage(Math.max(0, structure.exampleOffset - 20)) }, '上一页实例'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: structure.exampleOffset + structure.examples.length >= structure.filteredTotal,
-              onClick: () => onPage(structure.exampleOffset + 20) }, '后页实例')))
+              onClick: () => onPage(structure.exampleOffset + 20) }, '下一页实例')))
       }
 
       function modelGapText(item) {
@@ -1630,12 +1630,12 @@
           example_branch: name + '：适用分支尚未关联；关联后仍需核对是否满足条件。',
           example_inputs: name + '：缺少必要输入状态：' + (item.missing || []).map(slot => slot.name).join('、'),
           example_outputs: name + '：缺少输出状态：' + (item.missing || []).map(slot => slot.name).join('、'),
-          example_reasoning: name + '：推测过程尚未记录。', source_unknown: name.replace(/ \/ (condition|mapping|boundary)$/, (_, key) => ' · ' + ({ condition: '适用条件', mapping: '映射规律', boundary: '边界' }[key])) + '：来源身份尚未核对。',
-          identity_unknown: '内容身份尚未判定，不能默认当作原文认可的知识。',
-          identity_caution: '当前内容身份为“' + (MODEL_IDENTITY_LABELS[item.identity] || '未判定') + '”；字段齐全也不代表可以用于真实预测。',
+          example_reasoning: name + '：推测过程尚未记录。', source_unknown: name.replace(/ \/ (condition|mapping|boundary)$/, (_, key) => ' · ' + ({ condition: '适用条件', mapping: '映射规律', boundary: '边界' }[key])) + '：来源类型尚未核对。',
+          identity_unknown: '内容性质尚未判定，不能默认当作原文认可的知识。',
+          identity_caution: '当前内容性质为“' + (MODEL_IDENTITY_LABELS[item.identity] || '未判定') + '”；字段齐全也不代表可以用于真实预测。',
           legacy_port: name + '：原有图谱端点存在未定角色或异常关系，新结构不会自动修正它。',
           legacy_difference: '独立结构与旧图谱端点并不一一对应，需分别核对；不会自动补边。',
-          wording_caution: '已有文本提示：' + (item.detail || '') + '。这不是自动判定的内容身份，请对照原文。',
+          wording_caution: '已有文本提示：' + (item.detail || '') + '。这不是自动判定的内容性质，请对照原文。',
           shape_invalid: '当前字段尚不符合保存格式：' + (item.detail || ''),
           canonical_invalid: '已有正式结构未通过当前引用或格式校验：' + (item.detail || '') })[item.code] || '该记录需进一步核对。'
       }
@@ -1644,12 +1644,12 @@
         return h('div', null,
           h('p', { className: 'kg-model-meta' }, '结构缺项 ' + report.counts.structure + ' · 实例缺项 ' + report.counts.examples +
             ' · 来源待核对 ' + report.counts.sources + ' · 其他核对事项 ' + report.counts.review),
-          h('p', { className: 'kg-model-meta' }, '已填写内容的来源：存储文本引用 ' + report.origins.source + ' · 用户整理 ' + report.origins.user +
+          h('p', { className: 'kg-model-meta' }, '已填写内容的来源：原文引用 ' + report.origins.source + ' · 用户整理 ' + report.origins.user +
             ' · AI 建议 ' + report.origins.ai + ' · 未定 ' + report.origins.unknown + '。均未独立核验语义。'),
           report.items.map(item => h('article', { key: item.id, className: 'kg-model-gap' }, h('p', null, modelGapText(item)),
             h('div', { className: 'kg-model-toolbar' },
               item.target && onEdit ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy,
-                'aria-label': '整理缺口 ' + item.id, onClick: () => { if (!busy) onEdit({ ...item.target, missingSlotId: item.missing?.[0]?.slotId }) } }, '进入草稿整理') : null,
+                'aria-label': '整理缺口 ' + item.id, onClick: () => { if (!busy) onEdit({ ...item.target, missingSlotId: item.missing?.[0]?.slotId }) } }, '填写草稿') : null,
               Number.isInteger(item.paragraph) && onLocate ? h('button', { type: 'button', className: 'kg-secondary',
                 onClick: () => onLocate({ paragraph: item.paragraph }) }, '核对原文 P' + (item.paragraph + 1)) : null))),
           !report.total ? h('p', null, '未发现上述记录缺项；条件满足、原文一致性和模型真伪仍未验证。') : null)
@@ -1681,14 +1681,14 @@
           return () => { abort.abort(); sequence.current++ }
         }, [documentId, revision, modelId, active, offset, reload])
         if (!active) return null
-        return h('section', { className: 'kg-model-gaps', 'aria-label': '正式模型结构缺口' }, h('h4', null, '已记录结构的缺口'),
+        return h('section', { className: 'kg-model-gaps', 'aria-label': '已保存结构的待补充内容' }, h('h4', null, '已记录结构的缺口'),
           h('p', { className: 'kg-model-meta' }, '记录缺项不是学习能力诊断；完整配对不等于条件满足或关系成立。'),
           loading ? h('p', { role: 'status' }, '正在检查全部分支与实例…') : null, error ? h('p', { role: 'alert' }, error) : null,
           report ? h(ModelGapList, { report, busy, onEdit: target => api.current.onEdit?.(target), onLocate: reference => api.current.onLocate?.(reference) }) : null,
           h('div', { className: 'kg-model-toolbar' }, h('span', null, report ? '核对事项 ' + report.items.length + ' / ' + report.total : ''),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '前页缺口'),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !report || offset + report.items.length >= report.total, onClick: () => setOffset(offset + 20) }, '后页缺口'),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: () => setReload(value => value + 1) }, '重读缺口')))
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页待补充内容'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !report || offset + report.items.length >= report.total, onClick: () => setOffset(offset + 20) }, '下一页待补充内容'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: () => setReload(value => value + 1) }, '刷新待补充内容')))
       }
 
       function ModelSourceFieldPicker({ documentId, revision, modelId, target, load, onApply, onLocate, onClose, busy }) {
@@ -1719,8 +1719,8 @@
         }, [documentId, revision, modelId, offset, reload, target.id, target.field])
         const unit = page?.items.find(item => item.paragraph === paragraph)
         const valid = !!unit && !!quote.trim() && quote.length <= 2000 && unit.text.includes(quote)
-        return h('section', { ref: root, tabIndex: -1, className: 'kg-model-source-picker', 'aria-label': '原文选取到结构草稿' },
-          h('h4', null, '选取存储文本 · ' + ({ condition: '适用条件', mapping: '完整映射规律', boundary: '边界与未定义情形' }[target.field])),
+        return h('section', { ref: root, tabIndex: -1, className: 'kg-model-source-picker', 'aria-label': '从原文填写字段' },
+          h('h4', null, '选取原文 · ' + ({ condition: '适用条件', mapping: '完整映射规律', boundary: '边界与未定义情形' }[target.field])),
           h('p', { className: 'kg-model-meta' }, '这些是模型及关联材料的原文上下文，不是已认定的字段依据。选取后仍需核对限定语、出处及完整含义。'),
           loading ? h('p', { role: 'status' }, '正在读取原文候选…') : null, error ? h('p', { role: 'alert' }, error) : null,
           page?.items.map(item => h('article', { key: item.paragraph, className: 'kg-model-gap' },
@@ -1729,13 +1729,13 @@
                 onClick: () => { if (busy) return; setParagraph(item.paragraph); setQuote(item.text.length <= 2000 ? item.text : ''); setError('') } }, '选取 P' + (item.paragraph + 1)),
               onLocate ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onLocate?.({ paragraph: item.paragraph }) }, '打开原文 P' + (item.paragraph + 1)) : null),
             h('pre', null, item.text))),
-          page && !page.items.length ? h('p', null, '未找到与当前模型定位相连的存储文本。可以手工整理，但不能伪造原文依据。') : null,
+          page && !page.items.length ? h('p', null, '未找到与当前模型定位相连的原文。可以手工整理，但不能伪造原文依据。') : null,
           unit ? h('label', null, '待选原文片段 P' + (unit.paragraph + 1), h('textarea', { 'aria-label': '待选原文片段', value: quote, maxLength: 2000, disabled: busy,
             onChange: event => setQuote(event.target.value) }), !valid ? h('span', { role: 'status' }, '请选择本段内连续、逐字一致的片段，最多 2000 字；未填入草稿。') : null) : null,
           h('div', { className: 'kg-model-toolbar' }, h('span', null, page ? '原文段落 ' + page.items.length + ' / ' + page.total : ''),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 12)) }, '前页原文候选'),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !page || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 12) }, '后页原文候选'),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: () => setReload(value => value + 1) }, '重读原文候选')),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 12)) }, '上一页原文'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !page || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 12) }, '下一页原文'),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: () => setReload(value => value + 1) }, '重新加载原文候选')),
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', disabled: busy || loading || !valid, onClick: () => {
             if (busy || loading || !valid) return
             try { if (api.current.onApply?.({ documentId, revision, modelId, target, unit, quote }) === true) onClose() }
@@ -1784,7 +1784,7 @@
             if (abort.signal.aborted || id !== sequence.current) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || result.model?.nodeId !== modelId) throw new Error('结构读取身份或版本不一致')
-            if (result.modelStructureVersion !== 1 || !Array.isArray(result.legacyPorts)) throw new Error('当前 Host 尚未部署结构核对版本；草稿未改写，请等待同版本部署。')
+            if (result.modelStructureVersion !== 1 || !Array.isArray(result.legacyPorts)) throw new Error('当前服务尚未部署结构核对版本；草稿未改写，请等待同版本部署。')
             setSupported(true)
             setAssistSupported(result.modelDiagnosticsVersion === 1); setLegacyPorts(result.legacyPorts)
             setEndpointNames(current => ({ ...current, ...Object.fromEntries(result.ports.map(port => [port.node.nodeId, port.node.text])) }))
@@ -1811,7 +1811,7 @@
             if (abort.signal.aborted || id !== conceptSequence.current) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || !Array.isArray(result.items)) throw new Error('概念目录身份或版本不一致')
-            if (result.modelStructureVersion !== 1) throw new Error('当前 Host 尚未部署结构核对版本；概念选择和结构写入不可用。')
+            if (result.modelStructureVersion !== 1) throw new Error('当前服务尚未部署结构核对版本；概念选择和结构写入不可用。')
             setConceptPage(result)
             setEndpointNames(current => ({ ...current, ...Object.fromEntries(result.items.map(item => [item.nodeId, item.text])) }))
           }).catch(reason => { if (!abort.signal.aborted && id === conceptSequence.current) setError(reason.message || '概念目录读取失败') })
@@ -1829,9 +1829,9 @@
           if (!active || loading || !draft || !requestedFocus || requestedFocus.section !== 'identity' && requestedFocus.section !== section) return
           const labels = { role: '槽位角色', state: '时间或对象状态', condition: '适用条件', mapping: '完整映射规律', boundary: '边界与未定义情形',
             scenario: '具体情境', branchId: '实例适用分支', reasoning: '推测过程' }
-          let label = requestedFocus.section === 'identity' ? '模型内容身份' : labels[requestedFocus.field]
-          if (requestedFocus.field?.endsWith('.provenance')) label = labels[requestedFocus.field.split('.')[0]] + '来源身份'
-          else if (requestedFocus.field === 'provenance') label = requestedFocus.section === 'slots' ? '槽位来源来源身份' : '实例来源身份 '
+          let label = requestedFocus.section === 'identity' ? '模型内容性质' : labels[requestedFocus.field]
+          if (requestedFocus.field?.endsWith('.provenance')) label = labels[requestedFocus.field.split('.')[0]] + '来源类型'
+          else if (requestedFocus.field === 'provenance') label = requestedFocus.section === 'slots' ? '槽位来源类型' : '实例来源类型 '
           if (requestedFocus.id && requestedFocus.section !== 'examples') label += ' ' + requestedFocus.id
           if (['inputs', 'outputs'].includes(requestedFocus.field)) {
             const slot = draft.spec.slots.find(slot => slot.id === requestedFocus.missingSlotId)
@@ -1856,7 +1856,7 @@
           if (name === 'branches' && draft.spec.examples.some(example => example.branchId === id)) {
             setError('该分支仍被实例引用，请先修改实例的分支。'); return
           }
-          if (!window.confirm('从草稿中删除这一项？正式图谱尚未修改。')) return
+          if (!window.confirm('从草稿中删除这一项？已保存的知识图尚未修改。')) return
           edit(spec => { spec[name] = spec[name].filter(item => item.id !== id) })
         }
         const write = async commit => {
@@ -1878,7 +1878,7 @@
           finally { if (id === operation.current) { lock.current = false; setSaving(false); api.current.onBusy?.(false) } }
         }
         const provenance = (value, change, label, identity = '') => h('details', null, h('summary', null, label + ' · ' + MODEL_PROVENANCE_LABELS[value.kind]),
-          h('label', null, '来源身份', h('select', { 'aria-label': label + '来源身份 ' + identity, value: value.kind, disabled: saving,
+          h('label', null, '来源类型', h('select', { 'aria-label': label + '来源类型 ' + identity, value: value.kind, disabled: saving,
             onChange: event => change({ ...value, kind: event.target.value }) }, Object.entries(MODEL_PROVENANCE_LABELS).map(([id, text]) => h('option', { key: id, value: id }, text)))),
           h('label', null, '原文段落编号 P（从 1 起）', h('input', { type: 'number', min: 1, step: 1, value: value.paragraph === null ? '' : value.paragraph + 1,
             'aria-label': label + '原文段落 ' + identity, disabled: saving, onChange: event => change({ ...value, paragraph: event.target.value === '' ? null : Number(event.target.value) - 1 }) })),
@@ -1895,20 +1895,20 @@
         const updateExample = change => edit(next => change(next.examples.find(item => item.id === example.id)))
         const gaps = spec ? MODEL_STRUCTURE_TOOLS.diagnose(spec, { ports: legacyPorts, names: endpointNames }) : null
         const visibleGapOffset = gaps ? Math.min(gapOffset, Math.max(0, Math.floor((gaps.total - 1) / 20) * 20)) : 0
-        return h('section', { ref: root, className: 'kg-model-structure', 'aria-label': '模型结构核对' },
-          h('h4', null, '输入输出槽位、分支与实例'),
+        return h('section', { ref: root, className: 'kg-model-structure', 'aria-label': '整理模型结构' },
+          h('h4', null, '整理输入、输出、条件和实例'),
           h('p', { className: 'kg-model-meta' }, '草稿不等于原文断言；确认保存会修改正式模型结构，不会自动生成图谱关系。'),
           error ? h('p', { role: 'alert' }, error) : null, notice ? h('p', { role: 'status' }, notice) : null,
           loading ? h('p', { role: 'status' }, '正在读取模型结构…') : null,
           draft?.revision !== revision && draft ? h('p', { role: 'alert' }, '草稿基于第 ' + draft.revision + ' 版，当前为第 ' + revision + ' 版；草稿保留，不能覆盖新图。') : null,
           spec ? h(React.Fragment, null,
-            h('details', { className: 'kg-model-gaps' }, h('summary', null, '草稿缺口与核对事项 (' + gaps.total + ')'),
+            h('details', { className: 'kg-model-gaps' }, h('summary', null, '草稿待补充内容与核对事项 (' + gaps.total + ')'),
               h(ModelGapList, { report: { ...gaps, items: gaps.items.slice(visibleGapOffset, visibleGapOffset + 20) },
                 busy: saving || externalBusy, onEdit: target => setRequestedFocus(target), onLocate: reference => api.current.onLocate?.(reference) }),
               h('div', { className: 'kg-model-toolbar' },
-                h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset === 0, onClick: () => setGapOffset(Math.max(0, visibleGapOffset - 20)) }, '前页草稿缺口'),
-                h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset + 20 >= gaps.total, onClick: () => setGapOffset(visibleGapOffset + 20) }, '后页草稿缺口'))),
-            h('label', null, '内容身份', h('select', { 'aria-label': '模型内容身份', value: spec.identity, disabled: saving,
+                h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset === 0, onClick: () => setGapOffset(Math.max(0, visibleGapOffset - 20)) }, '上一页草稿待补充内容'),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset + 20 >= gaps.total, onClick: () => setGapOffset(visibleGapOffset + 20) }, '下一页草稿待补充内容'))),
+            h('label', null, '内容性质', h('select', { 'aria-label': '模型内容性质', value: spec.identity, disabled: saving,
               onChange: event => edit(next => { next.identity = event.target.value }) }, Object.entries(MODEL_IDENTITY_LABELS).map(([id, label]) => h('option', { key: id, value: id }, label)))),
             h('div', { className: 'kg-model-toolbar', role: 'group', 'aria-label': '结构编辑区域' }, [['slots', '变量槽位'], ['branches', '条件分支'], ['examples', '成对实例']].map(([id, label]) =>
               h('button', { key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': section === id, onClick: () => setSection(id) }, label + ' (' + spec[id].length + ')'))),
@@ -1922,15 +1922,15 @@
                   } }, ['unknown', 'input', 'output'].map(id => h('option', { key: id, value: id }, { unknown: '待核对', input: '输入', output: '输出' }[id])))),
                   text('单位', slot.unit, value => edit(next => { next.slots.find(item => item.id === slot.id).unit = value }), 80, false, slot.id),
                   text('时间或对象状态', slot.state, value => edit(next => { next.slots.find(item => item.id === slot.id).state = value }), 200, false, slot.id)),
-                provenance(slot.provenance, value => edit(next => { next.slots.find(item => item.id === slot.id).provenance = value }), '槽位来源', slot.id))),
+                provenance(slot.provenance, value => edit(next => { next.slots.find(item => item.id === slot.id).provenance = value }), '槽位', slot.id))),
               h('div', { className: 'kg-model-toolbar' }, h('input', { type: 'search', 'aria-label': '搜索槽位概念', value: query, maxLength: 200, onChange: event => { setQuery(event.target.value); setChoice('') } }),
                 h('select', { 'aria-label': '选择槽位概念', value: choice, onChange: event => setChoice(event.target.value) }, h('option', { value: '' }, '选择现有概念'),
                   conceptPage?.items.map(item => h('option', { key: item.nodeId, value: item.nodeId }, item.text))),
                 h('button', { type: 'button', className: 'kg-secondary', title: '添加独立槽位', 'aria-label': '添加独立槽位', disabled: saving || !choice || !conceptPage?.items.some(item => item.nodeId === choice) || spec.slots.length >= 40,
                   onClick: () => add('slots', { id: uuid(), conceptId: choice, label: '', role: 'unknown', unit: '', state: '', provenance: source() }) }, '+'),
-                h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => { setChoice(''); setOffset(Math.max(0, offset - 20)) } }, '前页概念'),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => { setChoice(''); setOffset(Math.max(0, offset - 20)) } }, '上一页概念'),
                 h('button', { type: 'button', className: 'kg-secondary', disabled: !conceptPage || offset + conceptPage.items.length >= conceptPage.total,
-                  onClick: () => { setChoice(''); setOffset(offset + 20) } }, '后页概念'))) : null,
+                  onClick: () => { setChoice(''); setOffset(offset + 20) } }, '下一页概念'))) : null,
             section === 'branches' ? h('div', null,
               sourceTarget ? h(ModelSourceFieldPicker, { key: JSON.stringify([documentId, modelId, revision, sourceTarget]), documentId, revision, modelId, target: sourceTarget,
                 load, busy: saving || externalBusy || loading || !assistSupported || draft.revision !== revision,
@@ -1947,7 +1947,7 @@
                   if (!branch) throw new Error('目标分支已不存在，未填入草稿。')
                   const value = MODEL_STRUCTURE_TOOLS.fieldFromSource(sourceTarget, selection.unit, selection.quote)
                   if (branch[sourceTarget.field].text && !window.confirm('替换这个字段的当前草稿及来源？正式模型尚未修改。')) return false
-                  value.provenance.note = '用户选取存储文本作为本字段表述；限定语、出处与语义仍需核对。'
+                  value.provenance.note = '用户选取原文作为本字段表述；限定语、出处与语义仍需核对。'
                   edit(next => { next.branches.find(item => item.id === sourceTarget.id)[sourceTarget.field] = value })
                   return true
                 } }) : null,
@@ -1989,13 +1989,13 @@
                 if (!window.confirm('丢弃此模型的结构草稿，重新读取当前版本？')) return
                 remember(null); setDraft(null); setPreview(null)
                 try { await api.current.onRefresh?.(); setReload(value => value + 1) } catch (reason) { setError(reason.message) }
-              } }, '丢弃草稿并重读')),
+              } }, '丢弃草稿并重新加载')),
             preview ? h('section', { 'aria-label': '结构修改预览' }, h('h4', null, '待确认的结构修改 · 来源语义未认证'),
               preview.diff.map((item, index) => h('p', { key: index }, item.text + '：' + item.before + ' → ' + item.after)),
               h('details', { open: preview.changes.length <= 8 }, h('summary', null, '逐项更改 (' + preview.changes.length + ')'),
                 preview.changes.map((item, index) => h('div', { key: index, className: 'kg-model-branch' }, h('strong', null, item.text),
                   h('p', null, '修改前：' + (item.before || '空白')), h('p', null, '修改后：' + (item.after || '空白'))))),
-              h('p', null, '内容身份：' + MODEL_IDENTITY_LABELS[preview.specification.identity]),
+              h('p', null, '内容性质：' + MODEL_IDENTITY_LABELS[preview.specification.identity]),
               preview.specification.slots.map(slot => h('p', { key: slot.id }, (slot.label || slot.conceptId) + ' · ' + ({ input: '输入', output: '输出', unknown: '待核对' }[slot.role]) + ' · ' + (slot.unit || '单位未定') + ' · ' + (slot.state || '状态未定'))),
               preview.specification.branches.map(branch => h('div', { key: branch.id }, h('strong', null, branch.label), h('p', null, branch.condition.text || '适用条件待核对'), h('p', null, branch.mapping.text || '映射待整理'), h('p', null, branch.boundary.text))),
               h('button', { type: 'button', className: 'kg-primary', disabled: saving || externalBusy || !supported || draft.revision !== revision, onClick: () => write(true) }, saving ? '保存中…' : '确认保存结构'),
@@ -2857,7 +2857,7 @@
             TARGET_MAP_TOOLS.validate(result.record.map)
             const match = hit ? TARGET_MAP_TOOLS.historyContentMatch(result.record.map, hit.query, { target: true }) : null
             if (hit && (result.record.baseRevision !== hit.baseRevision || !match || match.field !== hit.match.field || match.excerpt !== hit.match.excerpt)) {
-              throw new Error('历史快照与检索命中不一致；未定位到其他同名字段，请重新检索。')
+              throw new Error('历史快照与查找命中不一致；未定位到其他同名字段，请重新查找。')
             }
             if (basis) {
               const original = result.record.map.examples.find(item => item.id === basis.example.id)
@@ -3482,7 +3482,7 @@
               h('p', null, kind === 'slots' ? '同时移除全部例子中的 ' + bindings + ' 项' + (item.role === 'input' ? '输入' : '输出') + '记录，以及 ' + map.outcomes.filter(value => value.slotId === item.id).length + ' 个输出取值。其他槽位与例子保留。' :
                 kind === 'outcomes' ? '同时清除 ' + bindings + ' 个例子对此取值的对应；例子及输出细节保留。' :
                   '同时移除此例子的 ' + item.inputs.length + ' 项输入、' + item.outputs.length + ' 项输出、推测过程、接触声明及对照内容。上层模型与其他例子保留。'),
-              h('p', { className: 'kg-model-meta' }, '影响范围：当前草稿，包含筛选外记录；不删除已保存修订或正式图谱。'),
+              h('p', { className: 'kg-model-meta' }, '影响范围：当前草稿，包含筛选外记录；不删除已保存修订或已保存的知识图。'),
               h('div', { className: 'kg-target-toolbar' }, button('取消', () => {
                 if (removalCurrent.current !== visibleRemoval) return
                 removalCurrent.current = null; setRemoval(null); focusMapElement('data-target-remove-button', key, 'nearest')
@@ -3529,7 +3529,7 @@
         return h('section', { ref: panelRef, className: 'kg-target-map', 'aria-label': '渐构靶图工作台' },
           h('h3', null, '渐构靶图'), h('p', { className: 'kg-model-meta' }, '个人学习记录 · 资料中的目标与我的表述分开保存 · 不代表掌握或独立验证'),
           error ? h('div', { role: 'alert' }, error.message || String(error), h('div', { className: 'kg-target-toolbar' },
-            button('重读靶图', () => setReload(value => value + 1), saving), button('重新载入知识图', () => onRefresh?.(), saving || !onRefresh))) : null,
+            button('重新加载靶图', () => setReload(value => value + 1), saving), button('重新载入知识图', () => onRefresh?.(), saving || !onRefresh))) : null,
           notice ? h('p', { role: 'status' }, notice) : null,
           active && !archive ? [ownsDraft ? draft : null, failedDraftRead && (!ownsDraft || key(failedDraftRead) !== key(draft)) ? failedDraftRead : null]
             .filter(value => value?.documentId === documentId && value.targetId === targetId && cacheWarnings.has(key(value)))
@@ -3540,7 +3540,7 @@
             h('aside', { className: 'kg-target-catalogue', 'aria-label': '靶图目标目录' },
               h('form', { onSubmit: event => { event.preventDefault(); setSearch(query); setOffset(0) } },
                 h('input', { type: 'search', 'aria-label': '搜索靶图目标', placeholder: catalogSearchIn === 'content' ? '已保存正文中的文字' : '目标或最近保存标题', value: query, onChange: event => setQuery(event.target.value), maxLength: 256 }),
-                h('select', { 'aria-label': '靶图目录检索范围', value: catalogSearchIn, onChange: event => { if (['metadata', 'content'].includes(event.target.value)) { setCatalogSearchIn(event.target.value); setOffset(0) } } },
+                h('select', { 'aria-label': '靶图目录查找范围', value: catalogSearchIn, onChange: event => { if (['metadata', 'content'].includes(event.target.value)) { setCatalogSearchIn(event.target.value); setOffset(0) } } },
                   h('option', { value: 'metadata' }, '目标与最近标题'), h('option', { value: 'content' }, '已保存正文 · 全部修订')),
                 h('select', { 'aria-label': '靶图类型', value: mode, onChange: event => { setMode(event.target.value); setOffset(0) } },
                   h('option', { value: 'all' }, '全部目标'), h('option', { value: 'connection' }, '联结靶图'), h('option', { value: 'discrimination' }, '概念靶图')),
@@ -3550,7 +3550,7 @@
               button('刷新靶图目录', () => setCatalogReload(value => value + 1), saving),
               catalogError ? h('div', { role: 'alert' }, catalogError.message || String(catalogError),
                 button('重试读取靶图目录', () => setCatalogReload(value => value + 1), saving || catalogError.code === 'revision_conflict')) :
-                catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, catalogSearchIn === 'content' && !search ? '输入正文检索词' :
+                catalog ? h('p', { role: 'status', className: 'kg-model-meta' }, catalogSearchIn === 'content' && !search ? '输入正文关键词' :
                   (catalogSearchIn === 'content' ? '正文命中目标 ' : '全图目标 ') + catalog.total + ' 个 · 当前 ' + catalog.items.length + ' 个') : h('p', { role: 'status' }, '正在读取目标…'),
               h('ul', { ref: directoryRef, className: 'kg-target-directory', 'aria-label': '靶图目标列表', tabIndex: 0, onScroll: rememberDirectory },
                 (catalog?.items || []).map(item => h('li', { key: item.id, 'data-target-catalogue-row': item.id }, button(item.text, () => openCatalogTarget(item), saving,
@@ -3571,7 +3571,7 @@
                 visibleLocalDrafts ? h(React.Fragment, null,
                   h('label', null, '本地标题或目标 ID', h('input', { type: 'search', 'aria-label': '搜索本地草稿', maxLength: 256, value: localDraftQuery,
                     onChange: event => { if (localDraftReady() && event.target.value.length <= 256) { setLocalDraftQuery(event.target.value); setLocalDraftOffset(0); setCacheRecoveryOffset(0) } } })),
-                  visibleLocalDrafts.storageError ? h('p', { role: 'alert' }, '本地存储目录无法完整读取；只显示已读到的草稿，不能据此认定其他草稿不存在。') : null,
+                  visibleLocalDrafts.storageError ? h('p', { role: 'alert' }, '部分本地草稿无法读取。列表仅显示已读取的内容，请先备份原始缓存。') : null,
                   visibleLocalDrafts.unreadable ? h('p', { role: 'alert' }, visibleLocalDrafts.unreadable + ' 份本地草稿无法读取或格式不兼容，原存储未修改。') : null,
                   visibleLocalDrafts.error ? h('p', { role: 'alert' }, visibleLocalDrafts.error) : null,
                   visibleLocalDrafts.backup ? h('p', { role: 'status', style: { overflowWrap: 'anywhere' } }, visibleLocalDrafts.backup) : null,
@@ -3592,7 +3592,7 @@
                       { title: '本地草稿下一页', 'aria-label': '本地草稿下一页', className: 'kg-secondary kg-target-icon' })),
                   visibleLocalDrafts.recovery.length ? h('section', { 'aria-label': '不可解析的原始缓存' },
                     h('h4', null, '原始缓存 · 待修复'),
-                    h('p', { className: 'kg-model-meta' }, '存储键身份，未经内容核对 · 不可直接导入为草稿'),
+                    h('p', { className: 'kg-model-meta' }, '这些缓存尚未通过格式检查，请先下载备份。'),
                     h('p', { role: 'status' }, '原始缓存 ' + cacheRecoveryMatches.length + ' / ' + visibleLocalDrafts.recovery.length + ' 份 · 第 ' + (cacheRecoveryOffset / 20 + 1) + ' 页'),
                     h('ul', { className: 'kg-target-directory', 'aria-label': '原始缓存列表' }, cacheRecoveryMatches.slice(cacheRecoveryOffset, cacheRecoveryOffset + 20).map(item => h('li', {
                       key: JSON.stringify([item.id, item.baseRevision]), 'data-target-cache-recovery': JSON.stringify([item.id, item.baseRevision]) },
@@ -3637,7 +3637,7 @@
               stale ? h('div', { role: 'alert' }, '草稿属于知识图第 ' + draft.baseRevision + ' 版，不能保存到第 ' + revision + ' 版。',
                 detail ? button('开启当前版本靶图', () => install(readDraft(targetId, revision) || { documentId, targetId, baseRevision: revision, parentId: detail.current?.id || '', reason: '', map: copy(detail.current?.map || detail.template) }), saving) : null) : null,
               archive ? h('div', { className: 'kg-target-archive', role: 'status', 'data-target-record-view': 'archive', tabIndex: -1 }, '历史快照 · ' + (archive.startsRound ? '新一轮起点 · ' : '') + '知识图第 ' + archive.baseRevision + ' 版 · ' + archive.reason,
-                archiveHit?.record === archive ? h('p', { style: { overflowWrap: 'anywhere' } }, '字面检索：', archiveHit.query) : null,
+                archiveHit?.record === archive ? h('p', { style: { overflowWrap: 'anywhere' } }, '按文字查找：', archiveHit.query) : null,
                 historyHitControls(false),
                 archiveHit?.record === archive && archiveHit.unavailable ? h('p', { role: 'alert' }, '未找到唯一可见的命中字段；快照仍为只读。') : null,
                 archive.startsRound && archive.parentId ? button('查看上一轮末版', () => openRecord(archive.parentId), saving || loading) : null,
@@ -3682,7 +3682,7 @@
                 visibleEditError && !visibleEditError.field ? editAlert() : null,
                 field('靶图标题', map.title, value => edit(map => { map.title = value }), frozen, true, undefined, undefined, ['title']),
                 h('p', { className: 'kg-model-meta' }, map.mode === 'connection' ? '联结靶图 · 输入到输出' : '概念靶图 · 万物到 A 或非 A'),
-                h('h4', { 'data-target-record-view': 'draft', tabIndex: -1 }, '上层 · 我的模型表述', undoControl('slots')),
+                h('h4', { 'data-target-record-view': 'draft', tabIndex: -1 }, '我的规律与概念表述', undoControl('slots')),
                 h('div', { className: 'kg-target-upper' },
                   h('section', null, h('h4', null, '输入概念与内涵'), slotFields('input'), button('+', () => addSlot('input'), frozen || locked.size > 0 || map.slots.filter(slot => slot.role === 'input').length >= 8,
                     { className: 'kg-secondary kg-target-icon', title: '增加必要输入', 'aria-label': '增加必要输入' })),
@@ -3708,7 +3708,7 @@
                         value => edit(map => { map.outcomes.find(item => item.id === out.id).detail = value }), frozen || used, true, '取值的完整说明', undefined, ['outcomes', out.id, 'detail'])))
                   })), button('增加输出取值', () => edit(map => { map.outcomes.push({ id: crypto.randomUUID(), slotId: map.slots.find(slot => slot.role === 'output').id, label: '未命名取值', detail: '' }) }), frozen || map.outcomes.length >= 80)),
                 h('section', { 'aria-label': '靶图具体推测' }, h('h4', { 'data-target-example-list': 'heading', tabIndex: -1 },
-                  h('span', { 'data-target-gap-field': JSON.stringify(['examples']), tabIndex: -1 }, '下层 · 具体情境与推测 (' + map.examples.length + ')'), undoControl('examples')),
+                  h('span', { 'data-target-gap-field': JSON.stringify(['examples']), tabIndex: -1 }, '具体情境与预测 (' + map.examples.length + ')'), undoControl('examples')),
                   h('details', { key: exampleScope, 'aria-label': '两个例子字段对照' }, h('summary', null, '对照两个例子'),
                     h('p', { className: 'kg-model-meta' }, (archive ? '历史快照 ' + archive.id : '未保存草稿 · 基线 ' + (draft.parentId || '尚未保存')) +
                       ' · 知识图第 ' + (archive?.baseRevision || draft.baseRevision) + ' 版'),
@@ -3850,17 +3850,17 @@
               detail ? h('details', { key: historyScope, 'aria-label': '个人靶图修订记录', open: historyIntent?.open || false, onToggle: toggleHistory },
                 h('summary', { 'data-target-record-view': 'history', tabIndex: 0 }, '个人修订记录 · ' + (historyNeedsRead ? '第 ' + (historyOffset / 20 + 1) + ' 页待读取' : (historyOffset ? '第 ' + (historyOffset + 1) + '-' + (historyOffset + historyItems.length) : '最近 ' + historyItems.length) + ' / ' + historyTotal + ' 版')),
                 h('div', { className: 'kg-target-toolbar', style: { alignItems: 'end' } },
-                  h('label', { style: { display: 'grid', gap: 4, flex: '1 1 180px', margin: 0 } }, '检索范围', h('select', { 'aria-label': '修订检索范围', value: historyQueryIn, disabled: saving || loading || historyLoading,
+                  h('label', { style: { display: 'grid', gap: 4, flex: '1 1 180px', margin: 0 } }, '查找范围', h('select', { 'aria-label': '修订查找范围', value: historyQueryIn, disabled: saving || loading || historyLoading,
                     onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && ['metadata', 'content'].includes(event.target.value)) setHistoryInput({ scope: historyScope, value: historyQuery, searchIn: event.target.value }) } },
                     h('option', { value: 'metadata' }, '标题、理由与记录 ID'), h('option', { value: 'content' }, '靶图正文'))),
-                  h('label', { style: { display: 'grid', gap: 4, flex: '2 1 220px', margin: 0 } }, '检索词', h('input', { type: 'search', 'aria-label': '搜索个人修订记录', maxLength: 256, value: historyQuery, disabled: saving || loading || historyLoading,
+                  h('label', { style: { display: 'grid', gap: 4, flex: '2 1 220px', margin: 0 } }, '关键词', h('input', { type: 'search', 'aria-label': '搜索个人修订记录', maxLength: 256, value: historyQuery, disabled: saving || loading || historyLoading,
                     onChange: event => { if (alive.current && current.current.active && historyContext.current === historyToken && event.target.value.length <= 256) setHistoryInput({ scope: historyScope, value: event.target.value, searchIn: historyQueryIn }) },
                     onKeyDown: event => { if (event.key === 'Enter' && !event.isComposing && !event.nativeEvent?.isComposing) { event.preventDefault(); loadHistory(0, historyHead, historyQuery, historyQueryIn) } } })),
-                  button('检索修订记录', () => loadHistory(0, historyHead, historyQuery, historyQueryIn), saving || loading || historyLoading || error?.code === 'revision_conflict'),
-                  button('清除修订检索', () => { if (historyContext.current !== historyToken) return; setHistoryInput({ scope: historyScope, value: '', searchIn: historyQueryIn }); loadHistory(0, historyHead, '', historyQueryIn) },
+                  button('查找修订记录', () => loadHistory(0, historyHead, historyQuery, historyQueryIn), saving || loading || historyLoading || error?.code === 'revision_conflict'),
+                  button('清除修订查找', () => { if (historyContext.current !== historyToken) return; setHistoryInput({ scope: historyScope, value: '', searchIn: historyQueryIn }); loadHistory(0, historyHead, '', historyQueryIn) },
                     saving || loading || historyLoading || !historyQuery && !historySearch || error?.code === 'revision_conflict')),
                 historySearch && !historyNeedsRead && !historyError ? h('p', { role: 'status', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
-                  (historySearchIn === 'content' ? '正文检索：' : '检索：') + historySearch + ' · 命中 ' + historyTotal + ' / 全部 ' + (visibleHistory?.historyRecordTotal ?? detail.historyTotal) + ' 版') : null,
+                  (historySearchIn === 'content' ? '正文查找：' : '查找：') + historySearch + ' · 命中 ' + historyTotal + ' / 全部 ' + (visibleHistory?.historyRecordTotal ?? detail.historyTotal) + ' 版') : null,
                 historyLoading ? h('p', { role: 'status' }, '正在读取修订记录…') : null,
                 historyError ? h('div', { role: 'alert' }, historyError.message || String(historyError),
                   historyError.code !== 'history_conflict' && historyError.code !== 'revision_conflict' ? button('重试读取修订记录', () => loadHistory(historyRetry.current.offset, historyRetry.current.head, historyRetry.current.query, historyRetry.current.searchIn), saving || loading || historyLoading) : null) :
@@ -4184,7 +4184,7 @@
               onChange: event => { setImportText(event.target.value); setImportPreview(null); setImportError('') }, style: { width: '100%' } }),
             importError ? h('p', { role: 'alert' }, importError) : null,
             importPreview ? h('div', { role: 'status' },
-              h('p', null, '校验通过：新增 ' + importPreview.models + ' 个模型、' + importPreview.nodes + ' 个节点、' + importPreview.edges + ' 条关系。全部以待审校状态保存。'),
+              h('p', null, '校验通过：新增 ' + importPreview.models + ' 个模型、' + importPreview.nodes + ' 个节点、' + importPreview.edges + ' 条关系。全部以待检查状态保存。'),
               importPreview.titles.map((text, index) => h('p', { key: index }, text))) : null,
             h('button', { type: 'button', className: 'kg-secondary', disabled: !importText.trim() || importBusy || busy,
               onClick: () => importModels(false) }, '校验并预览'),
@@ -4204,7 +4204,7 @@
               page?.items.map(model => h('div', { key: model.nodeId, 'data-model-catalogue-row': model.nodeId }, h('button', { type: 'button', className: 'kg-model-list-item', 'aria-current': modelId === model.nodeId,
                 onClick: () => select(model.nodeId) }, h('strong', null, title(model)), h('small', null, model.sectionTitle),
                 h('small', null, model.warnings.join(' · ') || '角色已记录 · 结论待核对')),
-                fieldHits(model).length ? h('div', { className: 'kg-model-field-hits', 'aria-label': '模型检索命中 ' + model.nodeId },
+                fieldHits(model).length ? h('div', { className: 'kg-model-field-hits', 'aria-label': '模型查找命中 ' + model.nodeId },
                   h('small', { className: 'kg-model-meta' }, '记录文字命中，非适用性验证'),
                   fieldHits(model).map((item, index) => h('button', { key: index, type: 'button', className: 'kg-model-field-link', disabled: saving,
                     'aria-label': '查看' + fieldLabels[item.field] + '命中：' + model.nodeId + ' / ' + item.branchId,
@@ -4264,16 +4264,16 @@
                     h('p', null, '图谱角色：' + ({ input: '输入', output: '输出', unknown: '待核对或异常' }[item.role]) + ' · ' + item.node.type +
                       (item.role === 'unknown' && item.storedRole ? ' · 原记录值：' + item.storedRole : '')),
                     evidence(item))), !detail.legacyPorts.length ? h('p', null, '尚无 maps_between 端点记录') : null) : null) : h('h3', null, detail.model.text),
-                h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '模型详情页签' },
-                  [['materials', '下上对照'], ['source', '原文依据'], ['understanding', '我的理解'], ['gaps', '结构缺口'], ['compare', '模型比较'], ['chain', '两步推测'], ['learn', '情境预测'], ['history', '学习记录'], ['review', '核对方向'], ['structure', '核对结构']].map(([id, label]) => h('button', {
+                h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '联结模型详情' },
+                  [['materials', '下上对照'], ['source', '原文依据'], ['understanding', '我的理解'], ['gaps', '待补充内容'], ['compare', '模型比较'], ['chain', '两步推测'], ['learn', '情境预测'], ['history', '学习记录'], ['review', '核对方向'], ['structure', '核对结构']].map(([id, label]) => h('button', {
                     key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': tab === id,
                     disabled: id === 'structure' && detail.modelStructureVersion !== 1 || id === 'gaps' && detail.modelDiagnosticsVersion !== 1 ||
                       id === 'understanding' && detail.modelUnderstandingVersion !== 1 || id === 'history' && detail.modelLearningHistoryVersion !== 1 || id === 'chain' && detail.modelChainVersion !== 1, onClick: () => setTab(id) }, label))),
-                detail.modelUnderstandingVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '个人表述版本尚未就绪：当前 Host 不支持保存我的理解；现有阅读与练习仍可使用。') : null,
-                detail.modelLearningHistoryVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '学习记录统计版本尚未就绪；当前 Host 未支持可追溯统计，现有预测和结果记录仍可使用。') : null,
-                detail.modelChainVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '两步推测版本尚未就绪；当前 Host 不支持槽位承接检查，现有阅读与比较仍可使用。') : null,
-                detail.modelStructureVersion !== 1 ? h('p', { className: 'kg-model-warning', role: 'status' }, '结构核对版本尚未就绪：当前 Host 与前端版本不匹配。') : null,
-                detail.modelStructureVersion === 1 && detail.modelDiagnosticsVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '结构缺口与原文选取版本尚未就绪；现有阅读和手工核对仍可使用。') : null,
+                detail.modelUnderstandingVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '个人表述版本尚未就绪：当前服务不支持保存我的理解；现有阅读与练习仍可使用。') : null,
+                detail.modelLearningHistoryVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '学习记录统计版本尚未就绪；当前服务未支持可追溯统计，现有预测和结果记录仍可使用。') : null,
+                detail.modelChainVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '两步推测版本尚未就绪；当前服务不支持槽位承接检查，现有阅读与比较仍可使用。') : null,
+                detail.modelStructureVersion !== 1 ? h('p', { className: 'kg-model-warning', role: 'status' }, '结构核对版本尚未就绪：当前服务与前端版本不匹配。') : null,
+                detail.modelStructureVersion === 1 && detail.modelDiagnosticsVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '待补充内容与原文选取版本尚未就绪；现有阅读和手工核对仍可使用。') : null,
                 h(ModelGapPanel, { documentId, revision, modelId, active: tab === 'gaps', load, busy: busy || saving,
                   onLocate: reference => act(() => api.current.onLocate(reference)), onEdit: target => {
                     if (busy || saving) return
@@ -4310,12 +4310,12 @@
                   detail.structure ? h(ModelPairedExamples, { documentId, revision, structure: detail.structure, selectedSlot, selectedExample,
                     onSlot: (slotId, exampleId) => { setSelectedSlot(slotId); setSelectedExample(exampleId) },
                     onLocate: reference => act(() => api.current.onLocate(reference)), onPage: setExampleOffset }) : null,
-                  h('h4', null, '上层 · 规律与关系材料'), rules.length ? rules.map(material) : h('p', { className: 'kg-model-meta' }, '本页暂无独立规律材料'),
-                  h('h4', null, '下层 · 具体情境与验证材料'), examples.length ? examples.map(material) : h('p', { className: 'kg-model-meta' }, '本页尚未找到与该模型或其规律相连的实例'),
+                  h('h4', null, '规律与关系材料'), rules.length ? rules.map(material) : h('p', { className: 'kg-model-meta' }, '本页暂无独立规律材料'),
+                  h('h4', null, '例子与验证材料'), examples.length ? examples.map(material) : h('p', { className: 'kg-model-meta' }, '本页尚未找到与该模型或其规律相连的实例'),
                   others.length ? h('details', null, h('summary', null, '因素、判别及其他关联材料 (' + others.length + ')'), others.map(material)) : null,
                   h('div', { className: 'kg-model-toolbar' }, h('span', null, '关联材料 ' + (detail.relatedTotal ? materialOffset + 1 : 0) + '–' + (materialOffset + detail.related.length) + ' / ' + detail.relatedTotal),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset === 0, onClick: () => setMaterialOffset(Math.max(0, materialOffset - 20)) }, '前页材料'),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset + detail.related.length >= detail.relatedTotal, onClick: () => setMaterialOffset(materialOffset + 20) }, '后页材料'))) : null,
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset === 0, onClick: () => setMaterialOffset(Math.max(0, materialOffset - 20)) }, '上一页材料'),
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset + detail.related.length >= detail.relatedTotal, onClick: () => setMaterialOffset(materialOffset + 20) }, '下一页材料'))) : null,
                 tab === 'source' ? h('div', { className: 'kg-model-source' },
                   h('h4', null, '模型引用'), evidence(detail.model),
                   selectedMaterial ? evidence(detail.related.find(item => item.nodeId === selectedMaterial) || { citations: [] }) : null,
@@ -4427,21 +4427,21 @@
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取模型比较', title: '重新读取模型比较', disabled: loading || comparing, onClick: () => setReload(value => value + 1) }, '↻')),
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取全图比较目录…') : null,
-          page ? h('div', null, h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表联结等价'),
+          page ? h('div', null, h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表规律等价'),
             h('div', { className: 'kg-model-compare-choices' }, page.items.filter(item => item.nodeId !== modelId).map(item => h('button', {
               key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => setPeerId(item.nodeId) },
               h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
             !page.total && sharedOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSharedOnly(false); setOffset(0) } }, '查看全部模型') : null,
             h('div', { className: 'kg-model-toolbar' },
-              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '前页比较模型'),
-              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '后页比较模型'))) : null,
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页比较模型'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页比较模型'))) : null,
           pairError ? h('p', { role: 'alert' }, pairError) : null,
           comparing ? h('p', { role: 'status' }, '正在对照两个模型…') : null,
           pair ? h('div', null,
             h('div', { className: 'kg-model-compare-grid' }, [pair.left, pair.right].map((detail, index) => h('div', { key: detail.model.nodeId },
               h('h4', null, '模型 ' + (index ? 'B' : 'A') + ' · ' + detail.model.nodeId), h('p', { className: 'kg-model-meta' }, detail.model.sectionTitle),
-              h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[detail.model.state] || '待审核') +
-                ' · ' + ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[detail.model.entailmentStatus] || '原文语义未核验')),
+              h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[detail.model.state] || '待确认') +
+                ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[detail.model.entailmentStatus] || '未核对原文支持')),
               detail.model.warnings.length ? h('p', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
               onOpen ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onOpen(detail.model.nodeId) }, '查看模型 ' + (index ? 'B' : 'A')) : null,
               onChallenge ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onChallenge(detail.model.nodeId) }, '挑战模型 ' + (index ? 'B' : 'A')) : null))),
@@ -4522,7 +4522,7 @@
             chainOf: candidatesOnly ? modelId : '' }, abort.signal).then(value => {
             if (id !== catalogSequence.current || abort.signal.aborted) return
             if (value?.error) throw new Error(value.error.message)
-            if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || !Array.isArray(value.items)) throw new Error('两步推测目录版本或身份不一致，请等待同版本 Host 部署')
+            if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || !Array.isArray(value.items)) throw new Error('两步推测目录版本或身份不一致，请等待同版本服务部署')
             setPage({ ...value, scope: catalogKey })
           }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogError(reason.message || '模型目录读取失败') })
           return () => { abort.abort(); catalogSequence.current++ }
@@ -4576,7 +4576,7 @@
             if (models?.error) throw new Error(models.error.message)
             if (models.modelChainVersion !== 1 || models.documentId !== documentId || models.revision !== revision
               || models.left?.model?.nodeId !== modelId || models.right?.model?.nodeId !== value.peerId
-              || typeof models.left.model.text !== 'string' || typeof models.right.model.text !== 'string') throw new Error('导入模型的当前身份或 Host 版本不一致')
+              || typeof models.left.model.text !== 'string' || typeof models.right.model.text !== 'string') throw new Error('导入模型的当前身份或服务版本不一致')
             setIncoming({ ...value, titles: [models.left.model.text, models.right.model.text] })
           } catch (reason) { if (id === importSequence.current && !abort.signal.aborted) setImportError((reason.message || '草稿未能导入') + '；当前草稿未覆盖') }
           finally { if (id === importSequence.current && !abort.signal.aborted) setImporting(false) }
@@ -4628,8 +4628,8 @@
             ...step.outputs.filter(item => !slots.some(slot => slot.id === item.slotId && slot.role === 'output'))]
           return h('section', { key: detail.model.nodeId, className: 'kg-chain-step', 'aria-label': '第 ' + number + ' 步' },
             h('h4', null, '第 ' + number + ' 步 · ' + detail.model.nodeId), h('p', null, detail.model.text),
-            h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[detail.model.state] || detail.model.state) +
-              ' · ' + ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[detail.model.entailmentStatus] || '原文语义未核验')),
+            h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[detail.model.state] || detail.model.state) +
+              ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[detail.model.entailmentStatus] || '未核对原文支持')),
             detail.model.warnings.length ? h('p', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
             h('div', { className: 'kg-model-toolbar' },
               onOpen ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onOpen(detail.model.nodeId) }, '查看第 ' + number + ' 步模型') : null,
@@ -4708,8 +4708,8 @@
             h('div', { className: 'kg-model-compare-choices' }, page.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
               'aria-pressed': peerId === item.nodeId, onClick: () => selectPeer(item.nodeId) }, h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
             !page.total && candidatesOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setCandidatesOnly(false); setOffset(0) } }, '查看全部第 2 步模型') : null,
-            h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '前页第 2 步模型'),
-              h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '后页第 2 步模型'))) : null,
+            h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页第 2 步模型'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页第 2 步模型'))) : null,
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
           pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
@@ -4725,7 +4725,7 @@
 
       const MODEL_FEEDBACK_TYPES = { observation: '真实观察（自述）', reference: '参考资料', derivation: '公式或规则推导', ai_suggestion: 'AI 建议', reflection: '个人复盘' }
       const MODEL_FEEDBACK_COMPARISONS = { consistent: '自述与预测一致', different: '自述与预测不同', inconclusive: '依据不足，无法比较', not_compared: '尚未比较' }
-      const MODEL_FEEDBACK_DIAGNOSES = { input: '输入判别需核对', mapping: '联结或推理需核对', condition: '条件漏判或边界需核对', calculation: '计算需核对',
+      const MODEL_FEEDBACK_DIAGNOSES = { input: '输入判别需核对', mapping: '映射或推理需核对', condition: '条件漏判或边界需核对', calculation: '计算需核对',
         output: '输出判别需核对', evidence: '依据不足', no_change: '暂未发现需修改之处', unsure: '仍无法判断' }
 
       function ModelLearningHistoryPanel({ documentId, revision, modelId, active = true, onOpen,
@@ -4834,8 +4834,8 @@
                 ({ source: '原文摘录', user: '用户解释', ai: 'AI 建议', unknown: '来源未定' }[branch.provenance?.[key]] || '来源未定'))))) : null,
             references.map(item => h('div', { key: item.nodeId, className: 'kg-model-record-result' },
               h('strong', null, item.text), h('p', { className: 'kg-model-meta' }, item.type + ' · 当时状态：' +
-                ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[item.state] || '待审核') + ' · ' +
-                ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[item.entailmentStatus] || '原文语义未核验')),
+                ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[item.state] || '待确认') + ' · ' +
+                ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[item.entailmentStatus] || '未核对原文支持')),
               item.citations.map((citation, index) => h('div', { key: index }, h('p', null, '当时原文 P' + (citation.paragraph + 1) + '：' + citation.quote),
                 h('button', { type: 'button', className: 'kg-secondary', disabled: prediction.baseRevision !== revision || !onLocate,
                   onClick: () => locate({ nodeId: item.nodeId, paragraph: citation.paragraph }) }, '对照材料原文'))))),
@@ -4905,7 +4905,7 @@
                 target.attempt.attemptId !== practiceRequest.attemptId || (target.attempt.task.exercise || 'prediction') !== practiceRequest.exercise)) {
               throw new Error('待关联的预测身份不一致；个人草稿保留。')
             }
-            if (result?.modelUnderstandingVersion !== 1 || history?.modelUnderstandingVersion !== 1) throw new Error('个人表述版本尚未就绪；当前 Host 不支持保存。')
+            if (result?.modelUnderstandingVersion !== 1 || history?.modelUnderstandingVersion !== 1) throw new Error('个人表述版本尚未就绪；当前服务不支持保存。')
             if (result.documentId !== documentId || result.modelId !== modelId || result.revision !== revision ||
                 !Array.isArray(result.tasks) || result.tasks.length !== 1 || result.tasks[0].kind !== 'model_understanding' ||
                 result.tasks[0].modelId !== modelId || result.tasks[0].model?.nodeId !== modelId || result.tasks[0].exercise !== 'understanding' ||
@@ -4986,7 +4986,7 @@
             if (readDraft(storageKey)?.attemptId === submitted.attemptId) remember(storageKey, null)
             if (scope.current !== capturedScope || token !== operation.current) return
             setDraft(null); setOpened(record); setRecords(current => [record, ...current.filter(item => item.attemptId !== record.attemptId)].slice(0, 100))
-            setMessage('个人表述已保存 · 未改写正式图谱或原练习 · 未判定掌握')
+            setMessage('个人表述已保存 · 未改写已保存的知识图或原练习 · 未判定掌握')
           } catch (reason) { if (scope.current === capturedScope && token === operation.current) setError(reason.message || '保存失败；草稿保留，可重试。') }
           finally { if (token === operation.current) { locked.current = false; setBusy(false) } }
         }
@@ -5001,7 +5001,7 @@
         if (!active) return null
         return h('section', { className: 'kg-learning-mode kg-model-understanding', 'aria-label': '我的理解记录' },
           h('div', { className: 'kg-model-toolbar' }, h('strong', null, '我的理解'),
-            h('span', { className: 'kg-model-meta' }, '个人表述 · 不写入正式图谱 · 非掌握认证'),
+            h('span', { className: 'kg-model-meta' }, '个人表述 · 不写入已保存的知识图 · 非掌握认证'),
             h('button', { type: 'button', className: 'kg-secondary', title: '重新读取个人表述', 'aria-label': '重新读取个人表述',
               disabled: busy || loading, onClick: () => { setError(''); setReload(value => value + 1) } }, '↻')),
           loading ? h('p', { role: 'status' }, '正在读取个人表述与练习…') : null,
@@ -5064,10 +5064,10 @@
             h('div', null, h('h4', null, draft ? '当前原文模型 · 图谱第 ' + revision + ' 版' : '当时原文模型 · 图谱第 ' + (snapshotRevision || '') + ' 版'),
               snapshot ? h(React.Fragment, null, h('p', null, snapshot.model.text),
                 h('p', { className: 'kg-model-meta' }, snapshot.source?.title || ''),
-                h('p', { className: 'kg-model-meta' }, '内容身份：' + (MODEL_IDENTITY_LABELS[snapshot.model.identity] || '尚未判定')),
+                h('p', { className: 'kg-model-meta' }, '内容性质：' + (MODEL_IDENTITY_LABELS[snapshot.model.identity] || '尚未判定')),
                 snapshot.model.warnings.map((warning, index) => h('p', { key: index, className: 'kg-model-warning' }, warning)),
-                h('p', { className: 'kg-model-meta' }, '图谱表述 · ' + ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[snapshot.model.state] || '待审核') +
-                  ' · ' + ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[snapshot.model.entailmentStatus] || '原文语义未核验')),
+                h('p', { className: 'kg-model-meta' }, '图谱表述 · ' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[snapshot.model.state] || '待确认') +
+                  ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[snapshot.model.entailmentStatus] || '未核对原文支持')),
                 h('p', null, '输入：' + (snapshot.model.inputs.map(item => [item.text, item.state, item.unit].filter(Boolean).join(' / ')).join('；') || '尚未明确')),
                 h('p', null, '输出：' + (snapshot.model.outputs.map(item => [item.text, item.state, item.unit].filter(Boolean).join(' / ')).join('；') || '尚未明确')),
                 (snapshot.model.branches || []).map(branch => h('div', { key: branch.id, className: 'kg-model-branch' }, h('strong', null, branch.label),
@@ -5155,7 +5155,7 @@
           ]).then(([result, confirmed, focused, parent]) => {
             if (id !== sequence.current || abort.signal.aborted) return
             if (result?.error) throw new Error(result.error.message)
-            if (result?.modelFeedbackVersion !== 1) throw new Error('结果记录版本尚未就绪；当前 Host 不支持保存。')
+            if (result?.modelFeedbackVersion !== 1) throw new Error('结果记录版本尚未就绪；当前服务不支持保存。')
             if (result.predictionId !== prediction.attemptId || !Number.isSafeInteger(result.total) || result.total < 0 ||
                 !Array.isArray(result.attempts) || result.attempts.some(item => !matches(item))) throw new Error('结果记录与当前预测身份不一致')
             if (confirmed?.error && confirmed.error.code !== 'not_found') throw new Error(confirmed.error.message)
@@ -5265,7 +5265,7 @@
               onClick: () => setReload(value => value + 1) }, '↻') : null,
             !draft && ready ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => begin() }, '记录新结果') : null),
           h('p', { className: 'kg-model-meta' }, '资料、推导、AI 建议与自述观察分开记录；一致性与诊断由你报告，不证明模型成立或已经掌握。'),
-          !supported ? h('p', { role: 'status' }, '结果记录版本尚未就绪：当前 Host 不支持保存验证结果；预测和复盘仍可使用。') : null,
+          !supported ? h('p', { role: 'status' }, '结果记录版本尚未就绪：当前服务不支持保存验证结果；预测和复盘仍可使用。') : null,
           loading ? h('p', { role: 'status' }, '正在读取这次预测的结果…') : null,
           error ? h('p', { role: 'alert' }, error) : null, message ? h('p', { role: 'status' }, message) : null,
           prediction.baseRevision !== revision ? h('p', { role: 'status' }, '此处补记的是图谱第 ' + prediction.baseRevision + ' 版的预测结果，不作为当前第 ' + revision + ' 版的验证。') : null,
@@ -5354,10 +5354,10 @@
         const challenge = exercise === 'counterexample'
         const labels = { inputs: '输入', mapping: '联结与推理', outputs: '输出', boundary: '适用条件与失效边界',
           scenario: challenge ? '改变后的情境' : '具体的新情境', prediction: challenge ? '改变后的预测' : '我的预测', check: '可观察的验证依据',
-          ...(challenge ? { baseline: '基准情境', baselinePrediction: '基准预测', changedVariable: '只改变的一项与保持不变的条件', falsifier: '什么观察结果会反驳这个联结' } : {}) }
+          ...(challenge ? { baseline: '基准情境', baselinePrediction: '基准预测', changedVariable: '只改变的一项与保持不变的条件', falsifier: '什么观察结果会反驳这条规律' } : {}) }
         const limits = { inputs: 1000, mapping: 2000, outputs: 1000, boundary: 1500, scenario: 2000, prediction: 2000, check: 2000,
           ...(challenge ? { baseline: 2000, baselinePrediction: 2000, changedVariable: 1500, falsifier: 2000 } : {}) }
-        const diagnoses = { input: '输入不充分', mapping: '联结或推理需修改', output: '输出需修改', boundary: '边界需修改',
+        const diagnoses = { input: '输入不充分', mapping: '映射或推理需修改', output: '输出需修改', boundary: '边界需修改',
           evidence: '依据不足', no_change: '暂未发现需要修改之处', unsure: '仍无法判断' }
         const exposure = { not_seen: '自述未看过对应例子', seen: '自述已看过对应例子', unsure: '不确定是否看过' }
         const ratings = { needs_work: '还需练习', uncertain: '部分理解', confident: '有把握，未外部核验' }
@@ -5506,15 +5506,15 @@
           'aria-label': labels[name], disabled: busy, onChange: event => change(name, event.target.value) }))
         const reference = ref => h('article', { key: ref.nodeId, className: 'kg-model-material' },
           h('strong', null, (ref.label || TYPE_META[ref.type]?.label || ref.type) + ' · ' + ref.text),
-          h('p', { className: 'kg-model-meta' }, '当时状态：' + ({ candidate: '待审核', accepted: '已接受', rejected: '已驳回' }[ref.state] || '待审核') +
-            ' · ' + ({ verified: '原文语义已核验', unsupported: '原文语义不支持', uncertain: '原文语义不确定' }[ref.entailmentStatus] || '原文语义未核验')),
+          h('p', { className: 'kg-model-meta' }, '当时状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[ref.state] || '待确认') +
+            ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[ref.entailmentStatus] || '未核对原文支持')),
           ref.citations.map((citation, index) => h('div', { key: index }, h('p', null, '当时原文 P' + (citation.paragraph + 1) + '：' + citation.quote),
             h('button', { type: 'button', className: 'kg-secondary', disabled: opened.stale || opened.baseRevision !== revision,
               onClick: () => Promise.resolve().then(() => onLocate?.({ nodeId: ref.nodeId, paragraph: citation.paragraph })).catch(reason => setError(reason.message)) }, '定位原文'))))
         if (!active) return null
         return h('section', { className: 'kg-learning-mode kg-model-learning', 'aria-label': challenge ? '联结模型反例挑战' : '联结模型情境预测' },
           h('div', { className: 'kg-model-toolbar' }, h('strong', null, challenge ? '反例挑战' : '情境预测'),
-            h('span', { className: 'kg-model-meta' }, '个人理解与练习 · 不写入正式图谱'),
+            h('span', { className: 'kg-model-meta' }, '个人理解与练习 · 不写入已保存的知识图'),
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取学习记录', title: '重新读取学习记录', disabled: busy || loading, onClick: refresh }, '↻'),
             opened ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: start }, '另开一次预测') : null,
             opened && draft && (draft.submitted || Object.values(draft.fields).some(value => value.trim())) ?
@@ -5636,9 +5636,9 @@
         const switchKind = next => {
           setKind(next); setAnswer(''); setScenario(''); setOpenedAttempt(null); setLastSaved(''); setMessage(''); requestId.current = null
         }
-        return h('section', { className: 'kg-learning-mode', 'aria-label': '学习模式' },
-          h('div', { className: 'kg-reading-head' }, h('strong', null, '学习模式'),
-            h('span', { className: 'kg-hint' }, '图派生练习，非原文 · 自我评估，不自动判对错')),
+        return h('section', { className: 'kg-learning-mode', 'aria-label': '学习练习' },
+          h('div', { className: 'kg-reading-head' }, h('strong', null, '学习练习'),
+            h('span', { className: 'kg-hint' }, '根据知识图生成的练习，非原文 · 自我评估，不自动判对错')),
           !plan && !message ? h('p', { role: 'status', className: 'kg-hint' }, '正在准备有原文依据的练习…') : null,
           plan ? h(React.Fragment, null,
             h('div', { className: 'kg-consume-tabs', role: 'tablist', 'aria-label': '学习任务类型' },
@@ -5666,7 +5666,7 @@
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !answer.trim() ||
                 kind === 'transfer' && !scenario.trim() || answerKey === lastSaved, onClick: save },
               busy ? '保存中…' : answerKey === lastSaved ? '已保存' : '保存练习与自评'))
-              : h('p', { className: 'kg-hint' }, '当前图缺少此任务所需的可回链概念或关系；不会编造练习依据。'),
+              : h('p', { className: 'kg-hint' }, '当前图缺少此任务所需的可定位原文概念或关系；不会编造练习依据。'),
             h('div', { className: 'kg-learning-history' }, h('strong', null, '学习记录 · ' + attempts.length),
               attempts.map(item => h('button', { key: item.attemptId, type: 'button', className: 'kg-secondary',
                 onClick: () => setOpenedAttempt(item) }, labels[item.kind] + ' · ' +
@@ -5709,23 +5709,23 @@
           setFailure('')
           loadPage({ documentId, expectedRevision: revision, topicId, themeId, themeOffset, offset, limit: 20 }).then((result) => {
             if (!live) return
-            if (!result || result.error) throw new Error(result?.error?.message || '无法载入阅读地图')
-            if (result.documentId !== documentId || result.revision !== revision) throw new Error('阅读地图已过期，请重新载入知识图')
+            if (!result || result.error) throw new Error(result?.error?.message || '无法载入阅读导航')
+            if (result.documentId !== documentId || result.revision !== revision) throw new Error('阅读导航已过期，请重新载入知识图')
             setPage(result)
             setPageDraft(String(Math.floor(result.offset / result.limit) + 1))
           }).catch((error) => {
-            if (live) { setPage(null); setFailure(error?.message || '无法载入阅读地图') }
+            if (live) { setPage(null); setFailure(error?.message || '无法载入阅读导航') }
           }).finally(() => { if (live) setLoading(false) })
           return () => { live = false }
         }, [documentId, revision, topicId, themeId, themeOffset, offset])
-        return h('section', { className: 'kg-reading-map', 'aria-label': '分层阅读地图' },
+        return h('section', { className: 'kg-reading-map', 'aria-label': '阅读导航' },
           h('div', { className: 'kg-reading-head' },
-            h('strong', null, page?.title || '阅读地图'),
-            h('span', { className: 'kg-hint' }, '来源章节 → 知识条目 → 原文引文 · 派生视图')),
+            h('strong', null, page?.title || '阅读导航'),
+            h('span', { className: 'kg-hint' }, '选择章节，查看知识条目和对应原文。')),
           failure ? h('p', { role: 'alert', className: 'kg-error' }, failure) : null,
           loading ? h('p', { role: 'status', className: 'kg-hint' }, '正在读取章节与条目…') : null,
           page ? h(React.Fragment, null,
-            h('nav', { className: 'kg-reading-topics', 'aria-label': '来源章节' }, page.topics.map((topic) => h('button', {
+            h('nav', { className: 'kg-reading-topics', 'aria-label': '章节' }, page.topics.map((topic) => h('button', {
               key: topic.id, type: 'button', className: topic.id === page.topicId ? 'on' : '',
               'aria-current': topic.id === page.topicId ? 'true' : undefined,
               onClick: () => { setTopicId(topic.id); setThemeId(''); setThemeOffset(0); setOffset(0); setPageDraft('1') },
@@ -5733,7 +5733,7 @@
             page.themesTotal > 0 ? h(React.Fragment, null,
               h('div', { className: 'kg-reading-theme-head' },
                 h('strong', null, '图中概念线索'),
-                h('span', { className: 'kg-hint' }, '同章直接关系 · 候选主题，非原文标题')),
+                h('span', { className: 'kg-hint' }, '同章相关概念 · 由知识图整理，非原文标题')),
               h('nav', { className: 'kg-reading-topics kg-reading-themes', 'aria-label': '图中概念线索' },
                 h('button', { type: 'button', className: page.themeId ? '' : 'on',
                   'aria-current': page.themeId ? undefined : 'true', onClick: () => { setThemeId(''); setOffset(0); setPageDraft('1') } }, '全部条目'),
@@ -5751,9 +5751,9 @@
                   onClick: () => { setThemeOffset(themeOffset + 12); setThemeId(''); setOffset(0) } }, '下一组')) : null,
               page.themeId ? h('p', { className: 'kg-hint' }, '仅显示这一概念节点和本章直接关联的知识条目；关系不代表结论已获证实。') : null,
             ) : null,
-            page.featuredItems?.length ? h('section', { className: 'kg-reading-highlights', 'aria-label': '证据锚定的阅读起点' },
+            page.featuredItems?.length ? h('section', { className: 'kg-reading-highlights', 'aria-label': '从原文开始阅读' },
               h('div', { className: 'kg-reading-theme-head' },
-                h('strong', null, '证据锚定的阅读起点'),
+                h('strong', null, '从原文开始阅读'),
                 h('span', { className: 'kg-hint' }, '按类型与直接关系筛选 · 非作者标注的核心论点')),
               h('div', { className: 'kg-reading-highlights-list' }, page.featuredItems.map((item) => h('button', {
                 key: item.nodeId, type: 'button',
@@ -5761,11 +5761,11 @@
                   .catch((error) => toastStore.show(error?.message || '定位失败')),
               }, item.text.slice(0, 160),
               h('span', null, (TYPE_META[item.type]?.label || item.type || '条目') + ' · ' + item.nodeId + ' · P' + (item.citations[0].paragraph + 1)
-                + ' · ' + ({ verified: '语义已验证', uncertain: '语义不确定' }[item.entailmentStatus] || '语义未验证')))))) : null,
+                + ' · ' + ({ verified: '原文支持已核对', uncertain: '原文支持不确定' }[item.entailmentStatus] || '原文支持未核对')))))) : null,
             h('div', { className: 'kg-reading-items' }, page.items.map((item) => h('article', { key: item.nodeId, className: 'kg-reading-item' },
               h('div', { className: 'kg-reading-item-head' },
                 h('span', null, (TYPE_META[item.type]?.label || item.type || '条目') + ' · ' + item.nodeId
-                  + ' · ' + ({ verified: '语义已验证', unsupported: '语义不支持', uncertain: '语义不确定' }[item.entailmentStatus] || '语义未验证')),
+                  + ' · ' + ({ verified: '原文支持已核对', unsupported: '原文不支持', uncertain: '原文支持不确定' }[item.entailmentStatus] || '原文支持未核对')),
                 h('button', { type: 'button', className: 'kg-secondary', onClick: () => Promise.resolve(onLocate({ nodeId: item.nodeId, paragraph: item.paragraph, sectionId: item.sectionId }))
                   .catch((error) => toastStore.show(error?.message || '定位失败')) }, '在图中定位')),
               h('p', null, item.text + (item.textTruncated ? '…' : '')),
@@ -5780,7 +5780,7 @@
               h('span', null, page.total ? (page.offset + 1) + '–' + Math.min(page.total, page.offset + page.items.length) + ' / ' + page.total : '0 条'),
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页'),
               h('input', { type: 'number', min: 1, max: Math.max(1, Math.ceil(page.total / 20)), value: pageDraft,
-                'aria-label': '阅读地图页码', onChange: (event) => setPageDraft(event.target.value),
+                'aria-label': '阅读导航页码', onChange: (event) => setPageDraft(event.target.value),
                 onKeyDown: (event) => { if (event.key === 'Enter') { event.preventDefault(); const number = Number(pageDraft); if (Number.isInteger(number) && number >= 1 && number <= Math.ceil(page.total / 20)) setOffset((number - 1) * 20) } } }),
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !Number.isInteger(Number(pageDraft)) || Number(pageDraft) < 1 || Number(pageDraft) > Math.ceil(page.total / 20),
                 onClick: () => setOffset((Number(pageDraft) - 1) * 20) }, '跳转'),
@@ -6145,11 +6145,11 @@
             const truncated = graph && graph.view && graph.view.truncated === true
             if (truncated) {
               if (!documentId || typeof loadCanonical !== 'function') {
-                throw new Error('无法读取完整 canonical graph，已取消导出以避免生成不完整备份')
+                throw new Error('无法读取完整知识图，导出已取消。请重新加载后再试。')
               }
               const loaded = await loadCanonical(documentId)
               if (!loaded || loaded.error || !loaded.graph || !Array.isArray(loaded.graph.nodes)) {
-                throw new Error(loaded && loaded.error && loaded.error.message ? loaded.error.message : '无法读取完整 canonical graph')
+                throw new Error(loaded && loaded.error && loaded.error.message ? loaded.error.message : '无法读取完整知识图，请重新加载后再试。')
               }
               exportGraph = loaded.graph
             }
@@ -6162,7 +6162,7 @@
         }
         return h('span', { className: 'kg-export-actions', title: '导出完整知识图，不受章节筛选影响' },
           h('span', { className: 'kg-export-label' }, '导出'),
-          h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('json'), title: '导出完整知识图 JSON（保留 provenance、验证与审计信息）' }, 'JSON'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('json'), title: '下载完整知识图 JSON，包含来源、检查结果和修改记录' }, 'JSON'),
           h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('nodes'), title: '导出节点表 CSV' }, '节点 CSV'),
           h('button', { type: 'button', className: 'kg-secondary', onClick: () => runExport('edges'), title: '导出关系表 CSV' }, '关系 CSV'),
         )
@@ -6659,7 +6659,7 @@
         const nodeTypes = Array.isArray(record.nodeTypes) ? record.nodeTypes.length : 0
         const relationTypes = Array.isArray(record.relationTypes) ? record.relationTypes.length : 0
         const diagnostics = Array.isArray(record.diagnostics) ? record.diagnostics.length : 0
-        return h('div', { className: 'kg-ontology-badge', role: 'status', 'aria-label': '当前知识图模式：' + record.label },
+        return h('div', { className: 'kg-ontology-badge', role: 'status', 'aria-label': '知识分类方案：' + record.label },
           h('span', { className: 'kg-ontology-badge-label' }, record.label),
           h('span', { className: 'kg-ontology-badge-counts' },
             nodeTypes + ' 类节点 · ' + relationTypes + ' 类关系' + (diagnostics > 0 ? ' · ' + diagnostics + ' 项诊断' : '')),
@@ -6740,7 +6740,7 @@
         if (knowledge.length > 0) cells.push({ id: 'knowledge', label: '知识', typeIds: [], members: knowledgeMembers })
         const materialTotal = cells.reduce((sum, cell) => sum + (cell.id === 'knowledge' ? 0 : cell.members.length), 0)
         return h('div', { className: 'kg-coordinates', role: 'status', 'aria-label': '《学习观》材料坐标分布' },
-          h('span', { className: 'kg-coordinates-title', title: '按图 34-2 的两个正交坐标统计材料：判别/联结 × 上料/下料' },
+          h('span', { className: 'kg-coordinates-title', title: '按《学习观》的判别/联结 × 上料/下料分组统计材料。' },
             '材料坐标 ' + materialTotal),
           cells.map((cell) => {
             const byType = new Map()
@@ -7078,7 +7078,7 @@
           failed: valid.filter(row => row.error).length }
       }
       async function reviewSignatureHash(signature) {
-        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验核实结果的图版本')
+        if (typeof signature !== 'string' || !globalThis.crypto?.subtle) throw new Error('当前浏览器无法校验复核结果的图版本')
         const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(signature))
         return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('')
       }
@@ -7111,7 +7111,7 @@
                 batchReview: { verdict: row.verdict, answer: row.answer || '', evidence: row.evidence || [],
                   model: row.model || null, reviewedAt: row.reviewedAt || Date.now() } } : item) }
           if (row.verdict === 'false_positive') {
-            nextReport = updateIssueStatus(nextReport, issue.id, 'rejected', '批量 AI 核实认为原问题不成立：' + String(row.answer || '').slice(0, 300))
+            nextReport = updateIssueStatus(nextReport, issue.id, 'rejected', '批量 AI 复核认为原问题不成立：' + String(row.answer || '').slice(0, 300))
             counts.falsePositive++
             outcomes.push({ issueId: row.issueId, kind: 'false_positive', reason: '标记原问题为误报，不修改知识图' })
           } else if (row.verdict === 'confirmed' && batchSafeFix(issue, row.proposedFix, row.evidence, current)
@@ -7120,9 +7120,9 @@
             if (patched !== current || patchAlreadySatisfied(current, { ...issue, proposedFix: row.proposedFix })) {
               current = patched
               modifiedNodes.add(issue.targetId)
-              nextReport = updateIssueStatus(nextReport, issue.id, 'applied', '批量 AI 核实确认：' + String(row.answer || '').slice(0, 300))
+              nextReport = updateIssueStatus(nextReport, issue.id, 'applied', '批量 AI 复核确认：' + String(row.answer || '').slice(0, 300))
               counts.applied++
-              outcomes.push({ issueId: row.issueId, kind: 'applied', reason: '应用已核实的节点文字或原文摘录修复' })
+              outcomes.push({ issueId: row.issueId, kind: 'applied', reason: '应用已复核的节点文字或原文摘录修复' })
             } else { counts.conflicts++; outcomes.push({ issueId: row.issueId, kind: 'conflict', reason: '补丁无法安全应用' }) }
           } else {
             counts.manual++
@@ -9637,7 +9637,7 @@
 
       async function prepareGraphScene(nodes, edges, mode, signal, report) {
         const sizes = new Map()
-        report({ stage: 0, title: '测量节点', detail: '0/' + nodes.length + ' 个节点' })
+        report({ stage: 0, title: '准备节点', detail: '0/' + nodes.length + ' 个节点' })
         await graphPaint(signal)
         let lastYield = performance.now()
         // Count once for all text batches. Scanning the entire relation array
@@ -9649,7 +9649,7 @@
           degree.set(edge.fromNodeId, (degree.get(edge.fromNodeId) || 0) + 1)
           degree.set(edge.toNodeId, (degree.get(edge.toNodeId) || 0) + 1)
           if (((index + 1) % 1000 === 0 || index === edges.length - 1) && performance.now() - lastYield >= 8) {
-            report({ stage: 0, title: '测量节点', detail: '已统计 ' + (index + 1) + '/' + edges.length + ' 条关系' })
+            report({ stage: 0, title: '准备节点', detail: '已统计 ' + (index + 1) + '/' + edges.length + ' 条关系' })
             await graphYield(signal)
             lastYield = performance.now()
           }
@@ -9657,7 +9657,7 @@
         for (let index = 0; index < nodes.length; index += 100) {
           for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges, degree)) sizes.set(id, size)
           if (performance.now() - lastYield >= 8 || index + 100 >= nodes.length) {
-            report({ stage: 0, title: '测量节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
+            report({ stage: 0, title: '准备节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
             await graphYield(signal)
             lastYield = performance.now()
           }
@@ -9745,7 +9745,7 @@
             h('div', { className: 'kg-load-heading' }, !error ? h('span', { className: 'kg-graph-spinner', 'aria-hidden': true }) : null,
               error ? '知识图加载失败' : ((progress && progress.title) || '读取知识图')),
             h('div', { className: 'kg-load-detail' }, error || (progress && progress.detail) || '正在等待数据'),
-            !error ? h('progress', { className: 'kg-load-progress', max: 4, value: stage === null ? undefined : stage, 'aria-label': '知识图绘制阶段', 'aria-valuetext': stage === null ? '正在读取数据' : '已完成 ' + stage + '/4 个绘制阶段' }) : null,
+            !error ? h('progress', { className: 'kg-load-progress', max: 4, value: stage === null ? undefined : stage, 'aria-label': '知识图加载进度', 'aria-valuetext': stage === null ? '正在读取数据' : '已完成 ' + stage + '/4 个绘制阶段' }) : null,
             !error ? h('div', { className: 'kg-load-detail' }, (stage === null ? '' : '阶段 ' + (stage + 1) + '/4 · ') + '已用 ' + elapsed + ' 秒') : null,
             error && onRetry ? h('button', { type: 'button', className: 'kg-secondary', onClick: onRetry }, '重新加载') : null))
       }
@@ -9759,13 +9759,13 @@
             !Number.isSafeInteger(page.hops) || page.hops < 1 || page.hops > 5 ||
             !Number.isSafeInteger(page.neighborsTotal) || !Number.isSafeInteger(page.visibleTotal) ||
             page.visibleTotal > page.neighborsTotal || !Number.isSafeInteger(page.offset) || !Number.isSafeInteger(page.nextOffset) ||
-            page.offset < 0 || page.nextOffset < page.offset || page.visibleTotal < page.nextOffset) throw new Error('关系聚拢返回的数据不完整')
+            page.offset < 0 || page.nextOffset < page.offset || page.visibleTotal < page.nextOffset) throw new Error('相关节点浏览返回的数据不完整')
         if (previous && (page.documentId !== previous.documentId || page.revision !== previous.revision ||
             page.centerId !== previous.centerId || page.direction !== previous.direction || page.relation !== previous.relation || page.hops !== previous.hops ||
             page.neighborsTotal !== previous.neighborsTotal || page.visibleTotal !== previous.visibleTotal || page.offset !== previous.nextOffset)) {
-          throw new Error('关系聚拢分页已失效，请重新载入')
+          throw new Error('相关节点浏览分页已失效，请重新载入')
         }
-        if (!previous && page.offset !== 0) throw new Error('关系聚拢缺少第一页')
+        if (!previous && page.offset !== 0) throw new Error('相关节点浏览缺少第一页')
         const nodes = new Map((previous?.nodes || []).map(n => [n.id, n]))
         const edges = new Map((previous?.edges || []).map(e => [neighborhoodEdgeKey(e), e]))
         for (const node of page.nodes) nodes.set(node.id, node)
@@ -9773,7 +9773,7 @@
         if ([...edges.values()].some(e => !nodes.has(e.fromNodeId) || !nodes.has(e.toNodeId)) || nodes.size - 1 !== page.nextOffset ||
             page.truncated !== (page.visibleTotal < page.neighborsTotal) || page.hasMore !== (page.nextOffset < page.visibleTotal) ||
             (previous && page.hasMore && page.nextOffset <= previous.nextOffset)) {
-          throw new Error('关系聚拢分页不完整，请重新载入')
+          throw new Error('相关节点浏览分页不完整，请重新载入')
         }
         return { ...page, nodes: [...nodes.values()], edges: [...edges.values()] }
       }
@@ -9856,14 +9856,14 @@
               if (page && !page.error && page.hops == null) throw new Error('服务尚未更新，暂不能查询多层关系；请重启知识图服务')
               if (page?.error) throw new Error(page.error.message || '无法读取相关节点')
               if (page.documentId !== p.documentId || page.revision !== p.revision || page.centerId !== request.centerId ||
-                  page.direction !== request.direction || page.relation !== request.relation || page.hops !== request.hops) throw new Error('关系聚拢结果与当前查询不一致')
+                  page.direction !== request.direction || page.relation !== request.relation || page.hops !== request.hops) throw new Error('相关节点浏览结果与当前查询不一致')
               const next = mergeNeighborhoodPage(previous, page)
               next.anchors = neighborhoodAnchors(next.nodes, p.sourceText, previous ? { ...p.anchors, ...previous.anchors } : p.anchors)
               setResult(next); setStatus(null)
               p.onGatherProjection?.(next)
               if (!previous) setSelection({ node: next.centerId, edge: null })
             })
-            .catch(error => { if (updateAllowed()) setStatus({ error: error.message || '关系聚拢查询失败' }) })
+            .catch(error => { if (updateAllowed()) setStatus({ error: error.message || '相关节点浏览查询失败' }) })
           return () => controller.abort()
         }, [request])
         useEffect(() => {
@@ -9873,7 +9873,7 @@
           // A new graph/window must never leave an old projection actionable.
           if (previous && identity.some((value, index) => value !== previous[index])) {
             exit(false)
-            if (request) setNotice('知识图已更新，已退出关系聚拢。')
+            if (request) setNotice('知识图已更新，已退出相关节点浏览。')
           }
         }, [props.documentId, props.revision, props.nodes, props.edges])
         useEffect(() => () => { sequence.current++; active.current?.abort() }, [])
@@ -9894,25 +9894,25 @@
         return h('div', { className: 'kg-gather-shell', ref: shell, style: { height: (props.height || 560) + 'px' } },
           h('div', { style: focused ? { visibility: 'hidden', pointerEvents: 'none' } : undefined, 'aria-hidden': focused || undefined, inert: focused ? '' : undefined },
             baseElement),
-          focused ? h('div', { className: 'kg-gather-layer', 'aria-label': '关系聚拢视图' },
+          focused ? h('div', { className: 'kg-gather-layer', 'aria-label': '相关节点' },
             h('div', { className: 'kg-gather-bar' },
               h('button', { type: 'button', className: 'kg-secondary', disabled: !history.length, title: '返回上个中心', 'aria-label': '返回上个中心',
                 onClick: () => { const last = history[history.length - 1]; setHistory(value => value.slice(0, -1)); setResult(null); latest.current.onGatherProjection?.(null); latest.current.onGatherRequestChange?.(last); setRequest({ ...last, offset: 0, nonce: ++sequence.current }) } }, '←'),
-              h('strong', null, '关系聚拢 · ' + (result?.centerId || request.centerId)),
+              h('strong', null, '相关节点 · ' + (result?.centerId || request.centerId)),
               result ? h('span', { role: 'status' }, '已显示 ' + (result.nodes.length - 1) + '/' + result.neighborsTotal + ' 个 ' + request.hops + ' 层内节点 · ' + result.edges.length + ' 条关系' + (result.truncated ? ' · 最多显示 ' + result.visibleTotal + ' 个' : '')) : null,
-              h('label', { className: 'kg-gather-depth' }, '层数 ', h('select', { value: request.hops, 'aria-label': '聚拢层数', onChange: event => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: Number(event.target.value) }) },
+              h('label', { className: 'kg-gather-depth' }, '层数 ', h('select', { value: request.hops, 'aria-label': '关联层数', onChange: event => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: Number(event.target.value) }) },
                 [1, 2, 3, 4, 5].map(value => h('option', { key: value, value }, value + ' 层')))),
               h('div', { className: 'kg-gather-directions', role: 'group', 'aria-label': '关系方向' },
                 [['both', '全部'], ['in', '指向它'], ['out', '由它指向']].map(([value, label]) => h('button', {
                   key: value, type: 'button', className: 'kg-secondary', 'aria-pressed': request.direction === value,
                   onClick: () => gather(request.centerId, { direction: value, relation: request.relation }),
                 }, label))),
-              h('select', { value: request.relation, 'aria-label': '聚拢关系类型', onChange: event => gather(request.centerId, { direction: request.direction, relation: event.target.value }) },
+              h('select', { value: request.relation, 'aria-label': '关联关系类型', onChange: event => gather(request.centerId, { direction: request.direction, relation: event.target.value }) },
                 h('option', { value: '' }, '全部关系类型'), [...new Set([...(result?.relationTypes || []), ...(request.relation ? [request.relation] : [])])].map(value => h('option', { key: value, value }, REL_LABEL[value] || value))),
               result?.hasMore ? h('button', { type: 'button', className: 'kg-secondary', disabled: !!status || result.centerId !== request.centerId || result.direction !== request.direction || result.relation !== request.relation || result.hops !== request.hops,
                 onClick: () => setRequest({ ...request, offset: result.nextOffset, nonce: ++sequence.current }) }, '继续展开') : null,
               h('button', { type: 'button', className: 'kg-secondary', title: '重新读取相关节点', 'aria-label': '重新读取相关节点', onClick: () => gather(request.centerId, { direction: request.direction, relation: request.relation, hops: request.hops }) }, '↻'),
-              h('button', { type: 'button', className: 'kg-secondary', title: '退出聚拢', 'aria-label': '退出聚拢', onClick: () => exit() }, '×')),
+              h('button', { type: 'button', className: 'kg-secondary', title: '返回原图', 'aria-label': '返回原图', onClick: () => exit() }, '×')),
             status ? h('div', { className: 'kg-gather-notice', role: status.error ? 'alert' : 'status' },
               status.error || ('正在查询相关节点：' + request.centerId),
               status.error ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => setRequest({ ...request, nonce: ++sequence.current }) }, '重试') : h('progress', { 'aria-label': '查询相关节点' })) : null,
@@ -9941,7 +9941,7 @@
           const controller = new AbortController()
           const identity = { nodes, edges, layoutMode, attempt }
           const update = patch => { if (!controller.signal.aborted) setState(previous => ({ ...(matches(previous) ? previous : identity), ...patch })) }
-          update({ progress: { stage: 0, title: '测量节点' }, prepared: null, done: false, error: null })
+          update({ progress: { stage: 0, title: '准备节点' }, prepared: null, done: false, error: null })
           prepareGraphScene(nodes, edges, layoutMode || 'layered', controller.signal, progress => update({ progress }))
             .then(prepared => { if (!controller.signal.aborted) { props.onPrepared?.(prepared); update({ prepared }) } })
             .catch(error => { if (error.name !== 'AbortError') update({ error: error.message || '无法绘制知识图' }) })
@@ -10779,7 +10779,7 @@
           const off = anchors[node.id]
           const transcriptImage = visualTranscriptImageAt(visualSource, node.paragraph)
           const sourceImage = sourceImageForNode(visualSource, node)
-          const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法回链来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
+          const aria = meta.label + '节点：' + node.text + (sourceImage ? '，保留原图' : (off == null ? '，无法定位来源' : '，' + (transcriptImage ? 'AI 视觉转写摘录，非原书文字：' : '原文摘录：') + (node.quote || '')))
           return [node.id, { s, meta, x, y, issueSev, issueCount, hub, sourceImage, aria }]
         })), [visibleNodes, layout, sizes, issueMaps, nodeDegree, anchors, visualSource])
         // A parent may replace its callbacks on every selection. Cached SVG
@@ -10856,7 +10856,7 @@
                 (TYPE_META[tooltip.node.type] || { label: '未知' }).label),
               h('div', null, tooltip.node.text),
               h('div', { className: 'kg-tooltip-quote' },
-                tooltip.node.type === 'image' ? '保留原图' : (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '（无摘录）') + (anchors[tooltip.node.id] == null ? '（无法回链来源）' : '')),
+                tooltip.node.type === 'image' ? '保留原图' : (visualTranscriptImageAt(visualSource, tooltip.node.paragraph) ? 'AI 视觉转写摘录（非原书文字）：' : '原文摘录：') + (tooltip.node.quote || '暂无摘录') + (anchors[tooltip.node.id] == null ? '（无法定位来源）' : '')),
             )
           : null
 
@@ -10880,12 +10880,12 @@
                 : null,
               h('div', { className: 'kg-node-detail-actions' },
                 onGather ? h('button', { type: 'button', className: 'kg-secondary',
-                  onClick: () => { setDetail(null); onGather(detail.id) } }, layoutMode === 'neighborhood' ? '以此为中心' : '聚拢相关') : null,
+                  onClick: () => { setDetail(null); onGather(detail.id) } }, layoutMode === 'neighborhood' ? '以此节点为中心' : '查看相关节点') : null,
                 h('button', {
                   type: 'button', className: 'kg-secondary kg-node-detail-locate',
                   disabled: anchors[detail.id] == null,
                   onClick: () => onSelectNode(detail.id),
-                }, anchors[detail.id] == null ? '无法回链来源' :
+                }, anchors[detail.id] == null ? '无法定位来源' :
                   (visualTranscriptImageAt(visualSource, detail.paragraph) ? '定位视觉转写' : '定位原文')),
                 typeof onOpenNodeIssues === 'function' && issueMaps.nodeMap.has(detail.id) && openIssuesOf(issueMaps.nodeMap.get(detail.id)).length > 0
                   ? h('button', {
@@ -10947,17 +10947,17 @@
             h('button', { type: 'button', ref: searchButton, title: '查找当前视图节点', 'aria-label': '查找节点', 'aria-expanded': searchOpen,
               onClick: () => setSearchOpen(value => !value) }, '⌕'),
             h('button', { type: 'button', title: '返回上一位置', 'aria-label': '返回上一位置', disabled: !navigation.length, onClick: goBack }, '←'),
-            onGather ? h('button', { type: 'button', title: '聚拢选中节点的关系', 'aria-label': '聚拢选中节点的关系',
+            onGather ? h('button', { type: 'button', title: '查看选中节点的相关节点', 'aria-label': '查看选中节点的相关节点',
               disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
             layoutMode !== 'neighborhood' && !overview ? h('select', {
               className: 'kg-layout-select',
               value: layoutMode || 'layered',
-              'aria-label': '布局形态',
-              title: '切换布局形态',
+              'aria-label': '节点布局',
+              title: '选择节点布局',
               onChange: (e) => onLayoutModeChange(e.target.value),
             }, LAYOUT_MODES.map((m) => h('option', { key: m.id, value: m.id }, m.label))) : null,
             !overview ? h('button', { type: 'button', 'aria-label': '导出知识图 PNG 图片', title: '导出当前知识图为 PNG 图片', onClick: exportImage }, 'PNG') : null,
-            h('button', { type: 'button', 'aria-label': '适合画布', title: '显示当前视图全部节点', onClick: () => { rememberPosition(); setDetail(null); fitView(true) } }, '⛶'),
+            h('button', { type: 'button', 'aria-label': '显示全部', title: '显示当前视图全部节点', onClick: () => { rememberPosition(); setDetail(null); fitView(true) } }, '⛶'),
             h('button', { type: 'button', 'aria-label': '缩小（10%）', title: '缩小', onClick: () => zoomBy(-0.1) }, '−'),
             h('button', { type: 'button', className: 'kg-graph-zoom', 'aria-label': '重置缩放为 100%', title: '重置缩放为 100%', onClick: zoomReset }, Math.round(view.k * 100) + '%'),
             h('button', { type: 'button', 'aria-label': '放大（10%）', title: '放大', onClick: () => zoomBy(0.1) }, '+'),
@@ -11040,9 +11040,9 @@
           const status = reviews && REVIEW_STATUS_ORDER.includes(reviews[reviewKeyFor(graph, node)]) ? reviews[reviewKeyFor(graph, node)] : 'candidate'
           return statusFilter === 'all' || status === statusFilter
         })
-        return h('section', { className: 'kg-card', 'aria-label': '候选实体与声明审核' },
+        return h('section', { className: 'kg-card', 'aria-label': '确认候选知识' },
           h('div', { className: 'kg-panel-head' },
-            h('h3', { className: 'kg-section-title' }, '章节与候选审核'),
+            h('h3', { className: 'kg-section-title' }, '章节筛选与候选确认'),
             h('span', { className: 'kg-section-meta' }, candidates.length + ' 个候选'),
           ),
           h('div', { className: 'kg-section-filter' },
@@ -11061,9 +11061,9 @@
             activeSection ? h('span', { className: 'kg-section-meta' }, '当前仅显示「' + (activeSection.title || activeSection.id) + '」') : null,
           ),
           h('div', { className: 'kg-candidate-counts' },
-            h('span', null, '待审核 ' + counts.candidate),
+            h('span', null, '待确认 ' + counts.candidate),
             h('span', null, '已接受 ' + counts.accepted),
-            h('span', null, '已驳回 ' + counts.rejected),
+            h('span', null, '已拒绝 ' + counts.rejected),
           ),
           h('div', { className: 'kg-candidate-toolbar' },
             ['all', ...REVIEW_STATUS_ORDER].map((status) => h('button', {
@@ -11085,10 +11085,10 @@
                 },
                   h('div', { className: 'kg-candidate-top' },
                     h('span', { className: 'knowledge-type-badge', style: badgeStyle(meta.color) }, meta.label),
-                    h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选实体' : '候选声明'),
+                    h('span', { className: 'kg-candidate-kind' }, kind === 'entity' ? '候选概念' : '候选观点'),
                     Number.isInteger(Number(node.paragraph)) ? h('span', { className: 'kg-candidate-kind' }, 'P' + (Number(node.paragraph) + 1)) : null,
                   ),
-                  h('div', { className: 'kg-candidate-text' }, node.text || '（无文本）'),
+                  h('div', { className: 'kg-candidate-text' }, node.text || '暂无内容'),
                   candidateEvidenceText(node) ? h('div', { className: 'kg-candidate-evidence' }, '证据：' + candidateEvidenceText(node).slice(0, 220)) : null,
                   h('div', { className: 'kg-candidate-actions' },
                     REVIEW_STATUS_ORDER.map((nextStatus) => h('button', {
@@ -11337,20 +11337,20 @@
               disabled: questionPhase === 'running' || actionsDisabled,
               onChange: (e) => setQuestionDraft(e.target.value),
               onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !actionsDisabled && questionPhase !== 'running') { e.preventDefault(); onSubmitQuestion() } },
-              'aria-label': '质疑或提问输入框',
+              'aria-label': '问题或质疑',
             }),
             h('button', {
               type: 'button', className: 'kg-primary',
               disabled: questionPhase === 'running' || actionsDisabled || !questionDraft.trim(),
               onClick: onSubmitQuestion,
-            }, questionPhase === 'running' ? '提问中…' : '提问 / 质疑'),
+            }, questionPhase === 'running' ? '提问中…' : '提交问题'),
           ),
           targetLabel ? h('p', { className: 'kg-question-target' }, targetLabel,
             h('button', { type: 'button', className: 'kg-filter-chip', style: { marginLeft: 8 }, disabled: questionPhase === 'running' || reviewSaving, onClick: clearQuestionTarget }, '清除目标')) : null,
           questionPhase === 'running' || reviewSaving
             ? h('p', { className: 'kg-question-progress', role: 'status', 'aria-live': 'polite' },
                 h('span', { className: 'kg-verify-spinner', 'aria-hidden': 'true' }),
-                ' ', reviewSaving ? '正在核对当前知识图并保存核实结果…' : progress?.stage || '正在提交质疑…')
+                ' ', reviewSaving ? '正在核对当前知识图并保存复核结果…' : progress?.stage || '正在提交质疑…')
             : null,
           questionError
             ? h('p', { className: 'kg-question-error', role: 'alert', ref: questionFeedbackRef }, questionError)
@@ -11362,7 +11362,7 @@
                   h('span', { className: 'kg-verdict kg-verdict-' + (issueReview
                     ? ({ confirmed: 'contradicted', false_positive: 'supported', uncertain: 'insufficient' }[qVerdict] || 'out_of_scope')
                     : questionResult.verdict) }, issueReview
-                    ? ({ confirmed: 'AI 核实：问题成立', false_positive: 'AI 核实：疑似误报', uncertain: 'AI 核实：证据不足，暂不能判断' }[qVerdict] || 'AI 核实未完成')
+                    ? ({ confirmed: 'AI 复核：问题成立', false_positive: 'AI 复核：疑似误报', uncertain: 'AI 复核：证据不足，暂不能判断' }[qVerdict] || 'AI 复核未完成')
                     : VERDICT_LABEL[questionResult.verdict] || questionResult.verdict),
                   questionResult.answer ? ' ' + questionResult.answer : ''),
                 (Array.isArray(questionResult.evidence) && questionResult.evidence.length > 0)
@@ -11397,7 +11397,7 @@
                         ? h('p', { className: 'kg-question-error', role: 'alert' }, qRetainedCitationWarning) : null,
                       pendingDestructiveFix === confirmationKey(questionTarget?.sourceIssueId || 'qfix', qFix)
                         ? h('p', { className: 'kg-question-error', role: 'alert' }, '将修改已保存的知识图且没有一键撤销；再次点击确认。') : null,
-                      reviewGraphChanged ? h('p', { className: 'kg-question-error' }, '知识图已变化，这项复核不能用于当前图；请重新核实。') : null,
+                      reviewGraphChanged ? h('p', { className: 'kg-question-error' }, '知识图已变化，这项复核不能用于当前图；请重新复核。') : null,
                       qFixConflicts.length > 0 ? h('p', { className: 'kg-question-error' },
                         '暂不可采纳：节点类型或关联关系不符合本体约束（' + qFixConflicts.slice(0, 3).join('、') + '）。请先协同复核。') : null,
                       h('div', { className: 'kg-issue-actions' },
@@ -11419,30 +11419,30 @@
                 qNeedsManualRepair
                   ? h('p', { className: 'kg-hint' }, issueReview
                     ? questionResult.repairStatus === 'context_limit'
-                      ? '问题成立，但完整上下文加上修复说明超过单次 AI 上限，未调用追加模型；核实结论已保留，知识图未改变。请拆分问题或人工修改。'
+                      ? '问题成立，但完整上下文加上修复说明超过单次 AI 上限，未调用追加模型；复核结论已保留，知识图未改变。请拆分问题或人工修改。'
                       : questionResult.repairStatus === 'not_generated'
                       ? '问题成立，但追加生成仍未获得通过结构校验的补丁；知识图未改变。可重试或人工修改。'
-                      : '问题已由 AI 核实，但没有可安全单步执行的修复；知识图未改变，请根据上方证据人工处理。'
+                      : '问题已由 AI 复核，但没有可安全单步执行的修复；知识图未改变，请根据上方证据人工处理。'
                     : qVerdict === 'contradicted'
                     ? '质疑成立，但当前没有可安全单步应用的修复。可能需要协同修改节点与关系；原图保持不变，请根据上方证据分步复核。'
                     : '原文证据不足，AI 未返回可自动应用的结构化修复；为避免误删节点，未提供删除兜底操作。请补充证据或重新复核。')
                   : null,
                 issueReview && qNeedsManualRepair && questionResult.repairStatus !== 'context_limit' && !reviewGraphChanged && recheckedIssue
-                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: () => onRecheckIssue(recheckedIssue) }, '重新核实并生成修复')
+                  ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: () => onRecheckIssue(recheckedIssue) }, '重新复核并生成修复')
                   : null,
               )
             : null,
         )
-        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '审校结果与处理', tabIndex: -1 },
+        return h('section', { id: panelId || 'kg-verify-panel', className: 'kg-card', 'aria-label': '检查结果与修正', tabIndex: -1 },
           h('div', { className: 'kg-verify-head' },
             h('div', { className: 'kg-verify-head-text' },
-              h('h3', { className: 'kg-verify-title' }, '审校结果与处理'),
+              h('h3', { className: 'kg-verify-title' }, '检查结果与修正'),
               report ? h('div', { className: 'kg-review-overview', role: 'status' },
-                h('strong', null, reportStale ? '旧版审校报告' : report.mode === 'quick' ? '规则检查已完成' : '全图审校已完成'),
-                h('span', null, '发现 ' + issues.length + ' 条审校线索，' + pendingIssueCount + ' 条尚待处理。扫描完成不代表逐条问题已经核实；知识图不会因这份报告自动修改。' +
+                h('strong', null, reportStale ? '旧版检查报告' : report.mode === 'quick' ? '规则检查已完成' : '全图检查已完成'),
+                h('span', null, '发现 ' + issues.length + ' 条检查线索，' + pendingIssueCount + ' 条尚待处理。扫描完成不代表逐条问题已经复核；知识图不会因这份报告自动修改。' +
                   (manualFixCount ? ' 其中 ' + manualFixCount + ' 项拟议修改需逐条复核。' : ''))) : null,
               report && reportStale
-                ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原审校结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 核实，确认后依据当前图修复；无需重新跑完整审校。旧补丁不能直接采纳。')
+                ? h('p', { className: 'kg-verify-stale' }, '图已修改：全图覆盖率与原检查结论属于旧版本。仍可继续处理 ' + openIssues.length + ' 项待处理问题（已修复 ' + resolvedIssues + ' 项）：可批量或逐项 AI 复核，确认后依据当前图修复；无需重新跑完整检查。旧补丁不能直接采纳。')
                 : null,
             ),
             typeof onApplyAll === 'function' && fixableCount > 0
@@ -11451,7 +11451,7 @@
                   style: { flex: 'none', marginLeft: 'auto' },
                   disabled: verifying || actionsDisabled,
                   onClick: onApplyAll,
-                  title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 审校问题',
+                  title: '只应用本地规则确认的确定性修复（' + fixableCount + ' 项），不会自动采纳 AI 检查问题',
                 }, '修复本地规则 ' + fixableCount + ' 项')
               : null,
             verifying
@@ -11471,33 +11471,33 @@
           ),
           report
             ? h('details', { className: 'kg-review-details' },
-              h('summary', null, '审校范围与质量指标'),
+              h('summary', null, '检查范围与质量指标'),
               typeof report.summary === 'string' ? h('p', { className: 'kg-verify-summary' }, report.summary) : null,
               Array.isArray(report.modelsUsed) && report.modelsUsed.length > 1
-                ? h('p', { className: 'kg-verify-summary' }, '审校模型：' + report.modelsUsed.map(item =>
+                ? h('p', { className: 'kg-verify-summary' }, '检查模型：' + report.modelsUsed.map(item =>
                   item.provider + ' · ' + item.model + '（' + item.batches + ' 批）').join('；')) : null,
-              report.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '增量审校：复用 ' + report.reuse.reusedBatches +
-                ' 批 · 本次新审校 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
+              report.reuse?.version === 1 ? h('p', { className: 'kg-verify-summary' }, '核对变化部分：复用 ' + report.reuse.reusedBatches +
+                ' 批 · 本次新检查 ' + report.reuse.reviewedBatches + ' 批 · 保留处理状态 ' + (report.reuse.retainedDecisions || 0) + ' 项 · 本地规则已重新检查') : null,
               h('div', { className: 'kg-verify-metrics' },
                 report.coverage ? h('span', null, '全图批次覆盖 ' + report.coverage.completedNodes + '/' + report.coverage.nodeCount + ' 节点 · ' +
                   report.coverage.completedEdges + '/' + report.coverage.edgeCount + ' 关系 · ' +
                   report.coverage.completedSourceUnits + '/' + report.coverage.sourceUnitCount + ' 原文单元' +
-                  (Number.isInteger(report.coverage.revision) ? ' · 基于 revision ' + report.coverage.revision : '')) : null,
+                  (Number.isInteger(report.coverage.revision) ? ' · 版本 ' + report.coverage.revision : '')) : null,
                 h('span', null, '已检查 ' + (report.metrics && report.metrics.checkedNodes != null ? report.metrics.checkedNodes : '?') + ' 节点 / ' + (report.metrics && report.metrics.checkedEdges != null ? report.metrics.checkedEdges : '?') + ' 关系'),
                 report.metrics && report.metrics.connectedComponents != null ? h('span', null, '连通分量 ' + report.metrics.connectedComponents + ' · 孤立节点 ' + (report.metrics.isolatedNodes || 0)) : null,
-                h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '确定性错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
+                h('span', { style: { color: (report.metrics && report.metrics.errorCount) > 0 ? '#dc2626' : undefined } }, (report.mode === 'quick' ? '格式与引用错误 ' : '错误 ') + (report.metrics && report.metrics.errorCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.warningCount) > 0 ? '#d97706' : undefined } }, (report.mode === 'quick' ? '质量警告 ' : '警告 ') + (report.metrics && report.metrics.warningCount || 0)),
                 h('span', { style: { color: (report.metrics && report.metrics.suggestionCount) > 0 ? '#2563eb' : undefined } }, '建议 ' + (report.metrics && report.metrics.suggestionCount || 0)),
                 report.metrics && report.metrics.anchorCoverage != null ? h('span', null, '锚点覆盖 ' + report.metrics.anchorCoverage + '%') : null,
                 h('span', { className: (report.metrics && report.metrics.evidenceCoverage) >= 90 ? 'kg-ok' : undefined }, '证据覆盖 ' + (report.metrics && report.metrics.evidenceCoverage != null ? report.metrics.evidenceCoverage : '?') + '%'),
-                report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '语义已验证 ' + report.metrics.entailmentCoverage + '%') : null,
+                report.metrics && report.metrics.entailmentCoverage != null ? h('span', null, '原文支持已核对 ' + report.metrics.entailmentCoverage + '%') : null,
                 h('span', null, '段落覆盖 ' + (report.metrics && report.metrics.paragraphCoverage != null ? report.metrics.paragraphCoverage : '?') + '%'),
               ))
             : null,
           typeof onStartBulkReview === 'function' && report
             ? h('div', { className: 'kg-bulk-review' },
-                h('h4', { className: 'kg-review-subtitle' }, '批量二次核实'),
-                h('p', { className: 'kg-verify-summary' }, '可跨问题组顺序核实；每条独立判断。批量修改仅限原文逐字支持的安全修复，其他结论留待单独处理。'),
+                h('h4', { className: 'kg-review-subtitle' }, '批量复核问题'),
+                h('p', { className: 'kg-verify-summary' }, '可跨问题组顺序复核；每条独立判断。批量修改仅限原文逐字支持的安全修复，其他结论留待单独处理。'),
                 h('div', { className: 'kg-issue-actions kg-work-package-controls' },
                   h('label', null, '归类方式',
                   h('select', { value: workPackageMode, disabled: bulkRunning, 'aria-label': '问题分组方式',
@@ -11508,41 +11508,41 @@
                     'aria-label': '选择问题组', title: workPackage?.label || '全部问题', onChange: event => setWorkPackageKey(event.target.value) },
                     h('option', { value: 'all' }, '显示全部问题（' + severityIssues.length + ' 项）'),
                     workPackages.map(group => h('option', { key: group.key, value: group.key },
-                      group.label + '（待二次核实 ' + group.remaining + '/' + group.issues.length + ' 项）')))),
-                  h('span', { className: 'kg-meta' }, '当前筛选：' + workPackages.length + ' 组，' + bulkCandidates.length + ' 项可二次核实')),
+                      group.label + '（待复核 ' + group.remaining + '/' + group.issues.length + ' 项）')))),
+                  h('span', { className: 'kg-meta' }, '当前筛选：' + workPackages.length + ' 组，' + bulkCandidates.length + ' 项可复核')),
                 !bulkReview && bulkCandidates.length > 0
                   ? h('div', { className: 'kg-issue-actions' },
                       h('select', { value: bulkLimit, disabled: verifying || questionPhase === 'running',
-                        onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组核实问题数' },
+                        onChange: event => setBulkLimit(Number(event.target.value)), 'aria-label': '每组复核问题数' },
                         [10, 25, 50, 100].map(count => h('option', { key: count, value: count }, '每次最多 ' + count + ' 项'))),
                       h('button', { type: 'button', className: 'kg-primary',
                         disabled: readOnly || verifying || questionPhase === 'running' || !(workPackage ? workPackage.remaining : bulkCandidates.length),
                         onClick: () => onStartBulkReview(bulkLimit, issueFilter, workPackage?.key || 'all', workPackageMode) },
-                        workPackage ? '逐项 AI 核实本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
-                          : '逐项 AI 核实当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
+                        workPackage ? '逐项 AI 复核本组下一批（' + Math.min(bulkLimit, workPackage.remaining) + ' 项）'
+                          : '逐项 AI 复核当前筛选下一批（' + Math.min(bulkLimit, bulkCandidates.length) + ' 项）'))
                   : null,
                 bulkReview
                   ? h('div', null,
-                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '核实范围：' + bulkReview.workPackage.label) : null,
+                      bulkReview.workPackage ? h('p', { className: 'kg-verify-summary' }, '复核范围：' + bulkReview.workPackage.label) : null,
                       h('p', { className: 'kg-verify-summary', role: 'status' },
-                        '批量核实 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
+                        '批量复核 ' + (bulkReview.rows?.length || 0) + '/' + bulkReview.issueIds.length + ' 项' +
                         (bulkReview.phase === 'running' ? ' · 正在处理 ' + (bulkReview.currentIssueId || '')
                           : bulkReview.phase === 'applying' ? ' · 正在保存' : bulkReview.phase === 'ready' ? ' · 等待确认' : ' · 已暂停')),
                       bulkReview.error ? h('p', { className: 'kg-question-error' }, bulkReview.error) : null,
                       bulkReview.phase === 'ready'
-                        ? h('p', { className: 'kg-verify-summary' }, '核实结果：拟修复 ' + bulkCounts.safe + ' · 疑似误报 ' + bulkCounts.falsePositive +
+                        ? h('p', { className: 'kg-verify-summary' }, '复核结果：拟修复 ' + bulkCounts.safe + ' · 疑似误报 ' + bulkCounts.falsePositive +
                             ' · 成立但需单独处理 ' + bulkCounts.confirmedManual + ' · 证据不足 ' + bulkCounts.uncertain +
-                            ' · 失败 ' + bulkCounts.failed + '。请先检查基于当前 canonical graph 的冲突和修改预览。') : null,
+                            ' · 失败 ' + bulkCounts.failed + '。请先检查基于当前知识图的冲突和修改预览。') : null,
                       bulkReview.phase === 'ready' && bulkReviewPreview?.createdAt === bulkReview.createdAt
                         && bulkReviewPreview.documentId === bulkReview.documentId
                         ? h('section', { className: 'kg-bulk-preview', 'aria-label': '逐项处理预览' },
-                            h('strong', null, '逐项处理预览 · revision ' + bulkReviewPreview.revision),
+                            h('strong', null, '逐项处理预览 · 版本 ' + bulkReviewPreview.revision),
                             h('p', { className: 'kg-verify-summary' }, '实际计划：修复 ' + bulkReviewPreview.counts.applied +
                               ' · 误报 ' + bulkReviewPreview.counts.falsePositive + ' · 待单独处理 ' + bulkReviewPreview.counts.manual +
                               ' · 冲突 ' + bulkReviewPreview.counts.conflicts + ' · 失败 ' + bulkReviewPreview.counts.failed),
                             h('div', { className: 'kg-bulk-preview-list' }, bulkReviewPreview.outcomes.map(item =>
                               h('p', { key: item.issueId, className: 'kg-issue-detail' },
-                                item.issueId + ' · ' + ({ applied: '修复', false_positive: '误报', manual: '单独处理', conflict: '冲突跳过', failed: '核实失败' }[item.kind] || item.kind) + ' · ' + item.reason))),
+                                item.issueId + ' · ' + ({ applied: '修复', false_positive: '误报', manual: '单独处理', conflict: '冲突跳过', failed: '复核失败' }[item.kind] || item.kind) + ' · ' + item.reason))),
                             h('strong', null, '修改前后'),
                             bulkReviewPreview.diff.lines.length
                               ? h('div', { className: 'kg-bulk-preview-list' }, bulkReviewPreview.diff.lines.map((line, index) =>
@@ -11550,7 +11550,7 @@
                                   bulkReviewPreview.diff.more ? h('p', { className: 'kg-meta' }, '另有 ' + bulkReviewPreview.diff.more + ' 处修改') : null)
                               : h('p', { className: 'kg-meta' }, '本组只更新问题状态，不修改节点或关系。')) : null,
                       bulkReview.phase === 'ready' && bulkReview.rows?.length
-                        ? h('details', null, h('summary', null, '查看逐项核实结果'),
+                        ? h('details', null, h('summary', null, '查看逐项复核结果'),
                             h('div', { className: 'kg-issue-list' }, bulkReview.rows.map(row => {
                               const issue = issues.find(item => item.id === row.issueId)
                               return h('div', { key: row.issueId, className: 'kg-issue' },
@@ -11564,9 +11564,9 @@
                             }))) : null,
                       h('div', { className: 'kg-issue-actions' },
                         bulkReview.phase === 'running'
-                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onStopBulkReview }, '暂停批量核实') : null,
+                          ? h('button', { type: 'button', className: 'kg-secondary', onClick: onStopBulkReview }, '暂停批量复核') : null,
                         bulkReview.phase === 'paused'
-                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly, onClick: onContinueBulkReview }, '继续批量核实') : null,
+                          ? h('button', { type: 'button', className: 'kg-primary', disabled: readOnly, onClick: onContinueBulkReview }, '继续批量复核') : null,
                         bulkReview.phase === 'ready'
                           ? h('button', { type: 'button', className: 'kg-secondary', disabled: readOnly || verifying || questionPhase === 'running', onClick: onPreviewBulkReview },
                               '检查冲突与修改') : null,
@@ -11586,7 +11586,7 @@
                   onClick: onUndoBulkReview, title: '仅当上次批量保存后没有其他修改时，恢复保存前的图和问题状态' }, '撤销上次批量修改')) : null,
           h('details', { className: 'kg-review-question',
             open: !!(questionTarget || questionResult || questionError || questionDraft || questionPhase === 'running' || reviewSaving) },
-            h('summary', null, targetLabel ? '核实与提问 · ' + targetLabel : '对知识图提问'),
+            h('summary', null, targetLabel ? '复核与提问 · ' + targetLabel : '对知识图提问'),
             questionContent),
           sourcePeerError ? h('p', { className: 'kg-question-error', role: 'alert' }, sourcePeerError) : null,
           h('div', { className: 'kg-review-list-head' },
@@ -11602,7 +11602,7 @@
             }, s === 'all' ? '全部 ' + issues.length : (SEVERITY_META[s].label + ' ' + issues.filter((it) => it.severity === s).length))),
           ),
           shown.length === 0
-            ? h('p', { className: 'kg-hint' }, verifying ? '正在审校…' : '没有符合筛选条件的问题。')
+            ? h('p', { className: 'kg-hint' }, verifying ? '正在检查…' : '没有符合筛选条件的问题。')
             : h('div', { className: 'kg-issue-list' },
                 shown.slice(0, issueLimit).map((it) => {
                   const nodeTarget = it.targetKind === 'node' && graph ? graph.nodes.find((n) => n.id === it.targetId) : null
@@ -11630,15 +11630,15 @@
                       nodeTarget ? h('span', { className: 'kg-issue-cat' }, it.targetId) : null,
                       edgeTarget ? h('span', { className: 'kg-issue-cat' }, '关系 ' + it.targetId) : null,
                       typeof it.confidence === 'number' ? h('span', { className: 'kg-issue-cat',
-                        title: '审校器给出的置信分数，不代表问题已被独立核实，也不是实际正确率' },
-                        '审校置信 ' + Math.round(it.confidence * 100) + '%') : null,
+                        title: '检查器给出的置信分数，不代表问题已被独立复核，也不是实际正确率' },
+                        '检查置信 ' + Math.round(it.confidence * 100) + '%') : null,
                       it.source === 'local' ? h('span', { className: 'kg-issue-cat' }, '本地规则') : null,
-                      it.batchReview ? h('span', { className: 'kg-issue-cat' }, '批量核实：' +
+                      it.batchReview ? h('span', { className: 'kg-issue-cat' }, '批量复核：' +
                         ({ confirmed: '问题成立', false_positive: '疑似误报', uncertain: '证据不足' }[it.batchReview.verdict] || '待人工')) : null,
                     ),
                     h('div', { className: 'kg-issue-title' }, it.title),
                     it.detail ? h('div', { className: 'kg-issue-detail' }, it.detail) : null,
-                    it.batchReview?.answer ? h('div', { className: 'kg-issue-detail' }, '批量核实：' + it.batchReview.answer) : null,
+                    it.batchReview?.answer ? h('div', { className: 'kg-issue-detail' }, '批量复核：' + it.batchReview.answer) : null,
                     it.userNote ? h('div', { className: 'kg-issue-detail' }, '处理说明：' + it.userNote) : null,
                     (Array.isArray(it.evidence) && it.evidence.length > 0)
                       ? h('div', { className: 'kg-issue-ev' },
@@ -11647,7 +11647,7 @@
                             return h('div', { key: k }, '原文第 ' + (pi == null ? '?' : pi + 1) + ' 段' + (ev.quote ? '：' + ev.quote.slice(0, 180) : ''))
                           }))
                       : null,
-                    hasFix ? h('p', { className: 'kg-fix-preview' }, (reportStale ? '旧版拟议修改（需重新核实）：' : '拟议修改：') + fixLabel(it.proposedFix)) : null,
+                    hasFix ? h('p', { className: 'kg-fix-preview' }, (reportStale ? '旧版拟议修改（需重新复核）：' : '拟议修改：') + fixLabel(it.proposedFix)) : null,
                     hasFix && sourcePeers.length > 0 ? h('p', { className: 'kg-question-error' },
                       '拟议修改将与当前图窗口中的节点 ' + sourcePeers.join('、') + ' 使用同一段原文摘录；请核对是否重复，系统不会自动合并。') : null,
                     hasFix && sourcePeerCheck?.key === confirmationKey(it.id, it.proposedFix)
@@ -11672,21 +11672,21 @@
                       onLocateIssue ? h('button', { type: 'button', className: 'kg-secondary',
                         onClick: e => { e.stopPropagation(); onLocateIssue(it) } }, '查看图文') : null,
                       it.status === 'open' && relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新复核' : '把源节点类型改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」，保留当前关系', onClick: (e) => { e.stopPropagation(); onApplyIssue(relationTypeFix) } }, '将源节点改为「' + ((TYPE_META[relationRequiredSource] || {}).label || relationRequiredSource) + '」')
                         : null,
                       it.status === 'open' && relationTypeFix && typeof onDeleteTarget === 'function'
                         ? h('button', { type: 'button', className: 'kg-secondary kg-danger', disabled: actionsDisabled || reportStale,
-                            title: reportStale ? '旧报告的关系问题需先对当前图重新核实' : undefined,
+                            title: reportStale ? '旧报告的关系问题需先对当前图重新复核' : undefined,
                             onClick: (e) => { e.stopPropagation(); onDeleteTarget({ kind: 'edge', id: it.targetId }) } }, '删除这条关系')
                         : null,
                       it.status === 'open' && hasFix && !relationTypeFix
-                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新核实' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
+                        ? h('button', { type: 'button', className: 'kg-primary', disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0, title: reportStale ? '旧报告的修复需先对当前图重新复核' : undefined, onClick: (e) => { e.stopPropagation(); applyReviewedIssue(it) } }, pendingDestructiveFix === confirmationKey(it.id, it.proposedFix) ? '确认执行修复' : '采纳修复')
                         : null,
                       it.status === 'open'
                         ? h('button', { type: 'button', className: 'kg-secondary', disabled: actionsDisabled, onClick: (e) => { e.stopPropagation(); onRejectIssue(it) } }, '忽略')
                         : null,
                       it.status === 'open'
-                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || actionsDisabled, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 核实问题')
+                        ? h('button', { type: 'button', className: 'kg-secondary', disabled: questionPhase === 'running' || actionsDisabled, onClick: (e) => { e.stopPropagation(); onRecheckIssue(it) } }, 'AI 复核问题')
                         : null,
                       h('span', { className: 'kg-issue-status' }, it.status === 'applied' ? '已应用' : it.status === 'rejected' ? '已忽略' : it.status === 'accepted' ? '已确认' : ''),
                     ),
@@ -11729,7 +11729,7 @@
               h('h3', { className: 'kg-fact-title' }, '外部事实核查'),
               report && typeof report.summary === 'string' ? h('p', { className: 'kg-fact-summary' }, report.summary) : null,
               report && report.stale ? h('p', { className: 'kg-fact-stale' }, '⚠ 图已追加更新，本报告只覆盖旧版本，建议重新核查。') : null,
-              h('p', { className: 'kg-fact-note' }, report && report.mode === 'quick' ? '快速模式：仅基于模型知识，结论仅供提示。' : '深度模式：结论均绑定检索证据，可点击链接核对。'),
+              h('p', { className: 'kg-fact-note' }, report && report.mode === 'quick' ? '模型知识核查：结论仅供参考，请核对来源。' : '联网核查：点击来源链接，核对引文与结论。'),
             ),
             verifying
               ? h('div', { style: { flex: 'none', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },

@@ -144,11 +144,11 @@ assert(panel.includes('disabled: actionsDisabled || sourcePeerChecking || review
 assert(panel.includes("qVerdict === 'false_positive' && recheckedIssue")
   && panel.includes("'标记原问题为误报'") && panel.includes("'处理说明：' + it.userNote"),
   'a recheck disproving an issue must offer a traceable dismissal rather than leaving it open')
-assert(panel.includes("'AI 核实：问题成立'") && panel.includes("'确认修复并保存'")
-  && panel.includes("'AI 核实问题'") && panel.includes('questionResult.reviewedIssueId === questionTarget?.sourceIssueId'),
+assert(panel.includes("'AI 复核：问题成立'") && panel.includes("'确认修复并保存'")
+  && panel.includes("'AI 复核问题'") && panel.includes('questionResult.reviewedIssueId === questionTarget?.sourceIssueId'),
   'issue review must distinguish the AI verdict from a user-confirmed graph repair')
 assert(panel.includes("questionResult.repairStatus === 'context_limit'")
-  && panel.includes('未调用追加模型；核实结论已保留，知识图未改变')
+  && panel.includes('未调用追加模型；复核结论已保留，知识图未改变')
   && panel.includes("qNeedsManualRepair && questionResult.repairStatus !== 'context_limit'"),
   'an oversized follow-up preserves the verdict and explains the limit without suggesting an unchanged costly retry')
 assert(panel.includes("id: questionTarget?.sourceIssueId || 'qfix-' + Date.now()"),
@@ -159,12 +159,12 @@ assert(panel.includes('shown.slice(0, issueLimit).map((it) => {') && panel.inclu
   'a large verification report must not render every issue card on each interaction')
 assert(panel.includes('shown.findIndex(issue => issue.id === activeIssueId)'),
   'jumping to a selected issue must reveal it even when it is beyond the initial page')
-assert(panel.includes('无需重新跑完整审校') && panel.includes('可批量或逐项 AI 核实')
+assert(panel.includes('无需重新跑完整检查') && panel.includes('可批量或逐项 AI 复核')
   && panel.includes('旧补丁不能直接采纳'),
   'a stale full-graph report must remain an actionable issue queue without implying a full rerun')
 assert(panel.includes('const reportStale = verificationReportStale(report, graph)')
   && panel.includes('disabled: actionsDisabled || sourcePeerChecking || reportStale || nodeTypeFixConflicts(graph, it.proposedFix).length > 0')
-  && panel.includes("disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新核实'"),
+  && panel.includes("disabled: actionsDisabled || reportStale, title: reportStale ? '旧报告的修复需先对当前图重新复核'"),
   'archived AI and deterministic proposals must not be directly applied to a changed graph')
 const staleStart = client.indexOf('      function verificationReportStale(')
 const staleEnd = client.indexOf('      function paragraphTypeNodes(', staleStart)
@@ -364,7 +364,7 @@ assert.equal(changedVerdict.counts.conflicts, 1,
 const outdated = planBulkReviewedFixes(batchBase, batchReport, batchRows, { a: false, b: true, c: true, d: true })
 assert.equal(outdated.counts.applied, 1)
 assert.equal(outdated.counts.conflicts, 1, 'a changed review context cannot be batch-applied')
-assert(panel.includes('逐项 AI 核实本组') && panel.includes('查看逐项核实结果')
+assert(panel.includes('逐项 AI 复核本组') && panel.includes('查看逐项复核结果')
   && panel.includes('检查冲突与修改') && panel.includes('确认保存本组处理') && client.includes('activeContextHash')
   && client.includes("persistGraph(next, baseline, loaded.revision, 'bulk_review')")
   && client.includes('localStorage.getItem(bulkReviewStorageKey(documentId))'),

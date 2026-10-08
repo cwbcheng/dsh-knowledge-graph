@@ -51,7 +51,7 @@ const clientSource = readFileSync(new URL('../src/index.client.js', import.meta.
 const hostSource = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 assert(!clientSource.includes('j-space') && !clientSource.includes('JSpaceToggle'), 'J-space client integration is still present')
 assert(!hostSource.includes('j-space') && !hostSource.includes('skillContextFor'), 'J-space Host integration is still present')
-assert(clientSource.includes("'AI 核实问题'") && clientSource.includes("'确认修复并保存'"),
+assert(clientSource.includes("'AI 复核问题'") && clientSource.includes("'确认修复并保存'"),
   'review must separate an AI verdict from the user-confirmed graph commit')
 assert(clientSource.includes('submitQuestion(draft.slice(0, 600), target, issue)'),
   'recheck handler does not submit the structured candidate issue')
@@ -68,5 +68,5 @@ assert(hostSource.includes('不得删除仍有原文依据的节点'), 'question
 assert(hostSource.includes('question_fix_dropped:verdict_'), 'question result does not enforce verdict/fix consistency')
 assert(clientSource.includes('rememberLocalGraph'), 'graph commits persist local history before canonical acceptance')
 assert(clientSource.includes('restoreAfterCommitFailure'), 'graph commit rejection does not restore the previous local graph')
-assert(clientSource.includes('确定性验收未通过，未更新 canonical graph'), 'graph commit rejection does not explain canonical rollback')
+assert(clientSource.includes('数据检查未通过，知识图尚未更新，已恢复未提交状态'), 'graph commit rejection does not explain canonical rollback')
 console.log(JSON.stringify({ ok: true, issue: issue.id, target: issue.targetId, client: 'safe-question-repair-and-transactional-commit' }))

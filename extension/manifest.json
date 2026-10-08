@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "DSH 划线拆图",
+  "name": "DSH 知识图",
   "version": "1.0.1",
-  "description": "在任意网页上选中文字，一键调用本地 DSH 服务拆成 AI 知识图（需本机运行 dsh web）。",
+  "description": "选中网页文字或粘贴资料，生成可定位原文的知识图。需要本机运行 DSH Web 服务。",
   "permissions": [
     "storage",
     "notifications"
@@ -13,7 +13,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "DSH 划线拆图"
+    "default_title": "DSH 知识图"
   },
   "content_scripts": [
     {

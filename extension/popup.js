@@ -135,17 +135,17 @@ function App() {
       if (res && res.status === 'failed') {
         setPhase('idle'); setTaskId(null)
         const err = res.error || {}
-        setError({ message: err.message || 'AI 拆分失败，请稍后重试' })
+        setError({ message: err.message || '知识图生成失败，请稍后重试' })
         return
       }
       if (res && res.status === 'not_found') {
         setPhase('idle'); setTaskId(null)
-        setError({ message: '拆分任务已过期（服务可能已重启），请重新提交' })
+        setError({ message: '生成任务已过期（服务可能已重启），请重新提交' })
         return
       }
       if (Date.now() - start > 45 * 60 * 1000) {
         setPhase('idle'); setTaskId(null)
-        setError({ message: '等待超时，任务仍在后台运行，请重新提交' })
+        setError({ message: '等待时间较长，任务仍在后台运行。请检查 DSH 服务连接。' })
         return
       }
       if (Date.now() - start > 60 * 1000) delay = Math.min(delay * 1.5, 15000)
@@ -157,7 +157,7 @@ function App() {
 
   const submit = async () => {
     const t = text.trim()
-    if (!t) { setError({ message: '请先粘贴或选中要拆分的文字' }); return }
+    if (!t) { setError({ message: '请粘贴资料，或在网页上选中文字。' }); return }
     if (t.length > 20000) { setError({ message: '文字不能超过 20000 字' }); return }
     if (busyRef.current) return
     busyRef.current = true
@@ -175,7 +175,7 @@ function App() {
       })
       if (res && res.error) { setPhase('idle'); setError(res.error); return }
       if (res && res.taskId) setTaskId(res.taskId)
-      else { setPhase('idle'); setError({ message: '无法提交拆分任务，请重试' }) }
+      else { setPhase('idle'); setError({ message: '无法提交生成任务，请重试' }) }
     } catch (e) {
       setPhase('idle')
       setError({ message: '无法连接 DSH 服务（' + BASE + '），请确认 dsh web 已启动' })
@@ -254,11 +254,11 @@ function App() {
         const graph = view.graph
         const resolvedCount = graph.nodes.length - view.unresolved.length
         return h('div', { className: 'kg-result' },
-          h('p', { className: 'kg-summary' }, h('strong', null, '一句话总结：'), ' ', graph.summary || '（无）'),
+          h('p', { className: 'kg-summary' }, h('strong', null, '一句话总结：'), ' ', graph.summary || '暂无'),
           h('div', { className: 'kg-stats' },
             h('span', null, graph.nodes.length + ' 个节点'),
             h('span', null, graph.edges.length + ' 条关系'),
-            h('span', null, '可回链 ' + resolvedCount + '/' + graph.nodes.length),
+            h('span', null, '可定位原文 ' + resolvedCount + '/' + graph.nodes.length),
           ),
           h('p', { className: 'kg-hint' }, '点击原文段落 → 图中聚焦节点；点击图中节点 → 查看完整内容并定位原文。'),
           h('div', { className: 'kg-cols' },
@@ -287,7 +287,7 @@ function App() {
     h('div', { className: 'kg-win' },
       h('div', { className: 'kg-win-bar' },
         h('span', { className: 'kg-win-dot' }),
-        h('span', { className: 'kg-win-title' }, 'DSH 划线拆图'),
+        h('span', { className: 'kg-win-title' }, 'DSH 知识图'),
         IS_WINDOW ? null : h('button', {
           type: 'button', className: 'kg-win-max', 'aria-label': '在新窗口打开（可调整大小）',
           title: '在新窗口打开（可调整大小）',
@@ -298,25 +298,25 @@ function App() {
       h('div', { className: 'kg-win-body' },
         error
           ? h('div', { className: 'kg-banner', role: 'alert' },
-              h('span', null, error.message || '出错了，请重试'),
+              h('span', null, error.message || '操作未完成，请重试。'),
               h('button', { type: 'button', 'aria-label': '关闭提示', onClick: () => setError(null) }, '×'))
           : null,
         phase === 'extracting'
           ? h('div', { className: 'kg-empty' },
               h('div', { className: 'kg-spinner', 'aria-hidden': 'true' }),
-              h('p', null, '正在用 AI 拆分（约 15-40 秒）...'),
+              h('p', null, '正在生成知识图…'),
               h('p', { className: 'kg-empty-sub' }, '调用本机 DSH 服务：' + BASE),
             )
           : h(React.Fragment, null,
               h('input', {
-                className: 'kg-input-title', placeholder: '标题（可选）', value: title, maxLength: 200,
-                onChange: (e) => setTitle(e.target.value), 'aria-label': '标题（可选）',
+                className: 'kg-input-title', placeholder: '资料标题（可选）', value: title, maxLength: 200,
+                onChange: (e) => setTitle(e.target.value), 'aria-label': '资料标题（可选）',
               }),
               h('textarea', {
                 className: 'kg-textarea',
-                placeholder: '在任意网页选中文字后点「拆成知识图」，或直接粘贴文本…',
+                placeholder: '粘贴资料，或在网页上选中文字后点击「生成知识图」…',
                 value: text, maxLength: 20000,
-                onChange: (e) => setText(e.target.value), 'aria-label': '要拆分的文字',
+                onChange: (e) => setText(e.target.value), 'aria-label': '资料正文',
               }),
               h('div', { className: 'kg-actions' },
                 h('span', { className: 'kg-counter' }, '已输入 ' + text.length + ' / 20000 字'),
@@ -324,7 +324,7 @@ function App() {
                   type: 'button', className: 'kg-primary',
                   disabled: text.trim().length === 0,
                   onClick: () => submit(),
-                }, 'AI 拆分'),
+                }, '生成知识图'),
               ),
               resultPanel,
               h('div', { className: 'kg-ext-settings' },
@@ -334,7 +334,7 @@ function App() {
                   onChange: (e) => setBaseInput(e.target.value),
                   'aria-label': 'DSH 服务地址',
                 }),
-                h('button', { type: 'button', className: 'kg-secondary', onClick: saveBase }, baseSaved ? '已保存 ✓' : '保存'),
+                h('button', { type: 'button', className: 'kg-secondary', onClick: saveBase }, baseSaved ? '地址已保存' : '保存地址'),
               ),
             ),
       ),

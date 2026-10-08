@@ -26,7 +26,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         type: 'basic',
         iconUrl: 'icons/icon48.png',
         title: '已选中文本',
-        message: '请点击浏览器工具栏的「DSH 划线拆图」图标查看知识图。',
+        message: '请点击浏览器工具栏的「DSH 知识图」图标查看知识图。',
       })
     } catch (e) { /* last resort: silent; text stays in storage.session */ }
   })

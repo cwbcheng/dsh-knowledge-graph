@@ -18,7 +18,7 @@
   const showBtn = (rect, text) => {
     hideBtn()
     btn = document.createElement('div')
-    btn.textContent = '拆成知识图'
+    btn.textContent = '生成知识图'
     Object.assign(btn.style, {
       position: 'fixed',
       zIndex: 2147483646,

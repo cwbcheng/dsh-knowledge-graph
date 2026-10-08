@@ -64,7 +64,7 @@ for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/cl
     ui.render('completed')
     await new Promise(resolve => setImmediate(resolve))
     const tree = ui.render('completed')
-    assert(find(tree, n => n.attrs['aria-label'] === '轨迹 ⇄ 知识图结果'), file + ': restored result must render')
+    assert(find(tree, n => n.attrs['aria-label'] === '会话事件与知识图'), file + ': restored result must render')
     const viewer = find(tree, n => n.tag?.name === 'GraphViewer')
     assert.equal(viewer.attrs.nodes[0].id, 'n0')
     assert.equal(viewer.attrs.revision, 4)
