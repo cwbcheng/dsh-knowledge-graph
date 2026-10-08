@@ -8732,12 +8732,12 @@ export default function clientPlugin() {
         if (lines.length > 4) { lines.length = 4; lines[3] = lines[3].slice(0, 36) + '…' }
         return lines.length > 0 ? lines : ['']
       }
-      function computeNodeSizes(nodes, edges) {
+      function computeNodeSizes(nodes, edges, preparedDegree) {
         const canvas = document.createElement('canvas')
         const g = canvas.getContext('2d')
         g.font = '600 13px system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
-        const degree = new Map(nodes.map((node) => [node.id, 0]))
-        for (const edge of edges || []) {
+        const degree = preparedDegree || new Map(nodes.map((node) => [node.id, 0]))
+        if (!preparedDegree) for (const edge of edges || []) {
           if (degree.has(edge.fromNodeId)) degree.set(edge.fromNodeId, degree.get(edge.fromNodeId) + 1)
           if (degree.has(edge.toNodeId)) degree.set(edge.toNodeId, degree.get(edge.toNodeId) + 1)
         }
@@ -10785,8 +10785,22 @@ export default function clientPlugin() {
         report({ stage: 0, title: '测量节点', detail: '0/' + nodes.length + ' 个节点' })
         await graphPaint(signal)
         let lastYield = performance.now()
+        // Count once for all text batches. Scanning the entire relation array
+        // per 100 nodes turns loading into O(ceil(nodes / 100) * edges).
+        // Keep this pass cooperative too, before starting text or the worker.
+        const degree = new Map()
+        for (let index = 0; index < edges.length; index++) {
+          const edge = edges[index]
+          degree.set(edge.fromNodeId, (degree.get(edge.fromNodeId) || 0) + 1)
+          degree.set(edge.toNodeId, (degree.get(edge.toNodeId) || 0) + 1)
+          if (((index + 1) % 1000 === 0 || index === edges.length - 1) && performance.now() - lastYield >= 8) {
+            report({ stage: 0, title: '测量节点', detail: '已统计 ' + (index + 1) + '/' + edges.length + ' 条关系' })
+            await graphYield(signal)
+            lastYield = performance.now()
+          }
+        }
         for (let index = 0; index < nodes.length; index += 100) {
-          for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges)) sizes.set(id, size)
+          for (const [id, size] of computeNodeSizes(nodes.slice(index, index + 100), edges, degree)) sizes.set(id, size)
           if (performance.now() - lastYield >= 8 || index + 100 >= nodes.length) {
             report({ stage: 0, title: '测量节点', detail: sizes.size + '/' + nodes.length + ' 个节点' })
             await graphYield(signal)
