@@ -23,7 +23,8 @@ const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
-const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode
+const legacyTokenMode = process.argv.includes('--legacy-token-lookup')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -71,6 +72,16 @@ const graph = {
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
 }
+if (legacyTokenMode) for (const node of graph.nodes.slice(-200)) {
+  // Isolate the existing legacy fallback: neither the quote nor display text
+  // can match directly, but the original token score picks the numbered unit.
+  const index = Number(node.id.slice(1))
+  delete node.paragraph
+  node.text = node.quote = 'ZZZ observation ' + index + ' recorded QQQ'
+  node.evidence = []
+  node.groundingStatus = 'unverified'
+}
+const legacyNodeIds = new Set(legacyTokenMode ? graph.nodes.slice(-200).map(node => node.id) : [])
 if (trajectoryEventMode) {
   // The first event spans three content units; later event sequences deliberately
   // differ from paragraph numbers so an accidental 1:1 mapping is observable.
@@ -202,6 +213,7 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
     detail: 'Check the restriction to adults.', evidence: [{ paragraph: i, quote: repairQualification }] })
 }
 store.saveGraph(graph, { sourceText })
+const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 if (documentQueueMode) {
   const second = structuredClone(graph), id = 'verification-second'
   second.source = { ...second.source, id, documentId: id, title: 'Second verification fixture' }
@@ -365,6 +377,11 @@ const server = createServer(async (req, res) => {
         nodeCount: saved.nodes.length, edgeCount: saved.edges.length,
         ...(trajectoryEventMode ? { trajectoryEventFixture: true, eventCount: saved.traceEvents.length,
           eventMetadataUnchanged: JSON.stringify(saved.traceEvents) === JSON.stringify(graph.traceEvents) } : {}),
+        ...(legacyTokenMode ? (() => { const legacyNodes = saved.nodes.filter(node => legacyNodeIds.has(node.id)); return {
+          legacyTokenFixture: true, legacyNodes: legacyNodes.length,
+          missingParagraphMetadata: legacyNodes.filter(node => !Number.isInteger(node.paragraph)).length,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalLegacyNodeContent,
+        } })() : {}),
       } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),

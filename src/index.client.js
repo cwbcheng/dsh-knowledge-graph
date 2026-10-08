@@ -7981,6 +7981,10 @@ export default function clientPlugin() {
         // Normalize this document at most once per mode, not once per node.
         // Keep the cache local so switching documents cannot reuse stale offsets.
         const sourceForms = new Map()
+        // Legacy token fallback can scan every paragraph for several nodes.
+        // Tokenize each paragraph lazily once in this view, preserving query
+        // token multiplicity, first-score ties and the existing match threshold.
+        const paragraphTokens = []
         const anchors = {}
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
@@ -8010,7 +8014,7 @@ export default function clientPlugin() {
               let bestPi = -1
               let bestScore = 0
               for (let i = 0; i < paragraphs.length; i++) {
-                const tokens = new Set(tokenize(paragraphs[i].text))
+                const tokens = paragraphTokens[i] || (paragraphTokens[i] = new Set(tokenize(paragraphs[i].text)))
                 let score = 0
                 for (const t of qt) {
                   if (t.length >= 2 && tokens.has(t)) score += 1
