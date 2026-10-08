@@ -2,6 +2,13 @@
 // there is no model, DSH profile, database, or graph-writing endpoint.
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+
+// Optional baseline bundle for identical before/after browser measurements:
+// node scripts/kg-graph-browsing-fixture.mjs [baseline-git-revision]
+const revision = process.argv[2]
+if (revision?.startsWith('-')) throw new Error('Expected a git revision, not an option')
+const baselineViewer = revision ? execFileSync('git', ['show', revision + ':extension/viewer.js'], { maxBuffer: 8 * 1024 * 1024 }) : null
 
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Graph browsing fixture</title>
@@ -14,7 +21,20 @@ h1{font-size:18px;margin:0}header label{display:flex;align-items:center;gap:6px}
 .kg-original{overflow:auto;padding:12px}.fixture-source{padding:10px 0;border-bottom:1px solid #d8dde3}
 .fixture-source p{margin:4px 0}#status{font-size:12px;margin-top:12px;overflow-wrap:anywhere}
 @media(max-width:600px){.kg-root{padding:8px}.kg-cols{grid-template-columns:1fr;height:auto;gap:8px}.kg-original{max-height:110px}.kg-graph-col{min-width:0}}
-</style><script src="/react.js"></script><script src="/react-dom.js"></script><script src="/viewer.js"></script>
+</style><script src="/react.js"></script><script src="/react-dom.js"></script><script>
+// Optional synthetic-data counter, installed before the viewer captures h().
+if(new URLSearchParams(location.search).has('selectionTelemetry')){
+ const createElement=React.createElement;let total=0,before=0,output=null;
+ React.createElement=function(type,props,...children){if(props?.className==='kg-node')total++;return createElement(type,props,...children)};
+ document.addEventListener('click',()=>{before=total},true);
+ document.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){before=total}},true);
+ addEventListener('DOMContentLoaded',()=>{
+  output=document.createElement('output');output.id='selection-telemetry';output.style.cssText='display:block;max-width:1288px;margin:8px auto;font:12px system-ui';document.body.append(output);
+  const observer=new MutationObserver(()=>{output.textContent='本次操作：重建节点外框 '+(total-before)+' 个'});
+  observer.observe(document.getElementById('root'),{subtree:true,childList:true,attributes:true});
+ });
+}
+</script><script src="/viewer.js"></script>
 </head><body><div id="root"></div><script>
 const h=React.createElement, timers={timeout(fn,ms){const id=setTimeout(fn,ms);return ()=>clearTimeout(id)}};
 const names=['学习目标','检索练习','间隔复习','迁移能力','先验知识','概念边界','反例检验','反馈质量'];
@@ -51,6 +71,7 @@ const server = createServer((req, res) => {
   if (path === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
   if (!assets[path]) { res.writeHead(404); res.end(); return }
   res.setHeader('content-type', path.endsWith('.css') ? 'text/css' : 'text/javascript')
+  if (path === '/viewer.js' && baselineViewer) { res.end(baselineViewer); return }
   res.end(readFileSync(new URL('../' + assets[path], import.meta.url)))
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
