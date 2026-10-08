@@ -26,7 +26,8 @@ const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
 const legacyFragmentMode = process.argv.includes('--legacy-fragment-lookup')
 const legacyTokenMode = process.argv.includes('--legacy-token-lookup') || legacyFragmentMode
 const normalizedAnchorMode = process.argv.includes('--normalized-anchor-lookup')
-const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode || normalizedAnchorMode
+const sourceTableLookupMode = process.argv.includes('--source-table-lookup')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode || normalizedAnchorMode || sourceTableLookupMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -53,6 +54,12 @@ if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.l
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
+}
+if (sourceTableLookupMode) for (let i = 0; i < paragraphs.length; i += 30) {
+  paragraphs[i] = '<table><caption>来源表格 ' + i + '</caption><tr><th>阶段</th><th>原文内容</th></tr>'
+  paragraphs[i + 1] = '<tr><td>样本 ' + i + '</td><td><b>📚 保留原文 ' + i + '</b></td></tr></table>'
+  paragraphs[i + 2] = '代码示例 `<table><tr><td>inline literal ' + i + '</td></tr></table>`'
+  paragraphs[i + 3] = '    <table><tr><td>indented literal ' + i + '</td></tr></table>'
 }
 if (relationSemanticMode) paragraphs[0] = 'The two outcomes were correlated, but no causal direction was established.'
 if (textSemanticMode) paragraphs[0] = 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.'
@@ -232,6 +239,7 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
 store.saveGraph(graph, { sourceText })
 const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 const originalNormalizedNodeContent = normalizedAnchorMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
+const originalTableNodeContent = sourceTableLookupMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 if (documentQueueMode) {
   const second = structuredClone(graph), id = 'verification-second'
   second.source = { ...second.source, id, documentId: id, title: 'Second verification fixture' }
@@ -393,6 +401,8 @@ const server = createServer(async (req, res) => {
       ...(paragraphWindowMode ? (() => { const saved = store.getDocument(documentId); return {
         paragraphWindowFixture: true, sourceUnchanged: saved.sourceText === sourceText,
         nodeCount: saved.nodes.length, edgeCount: saved.edges.length,
+        ...(sourceTableLookupMode ? { sourceTableLookupFixture: true,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalTableNodeContent } : {}),
         ...(trajectoryEventMode ? { trajectoryEventFixture: true, eventCount: saved.traceEvents.length,
           eventMetadataUnchanged: JSON.stringify(saved.traceEvents) === JSON.stringify(graph.traceEvents) } : {}),
         ...(legacyTokenMode ? (() => { const legacyNodes = saved.nodes.filter(node => legacyNodeIds.has(node.id)); return {

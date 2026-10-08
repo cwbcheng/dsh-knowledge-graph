@@ -7802,15 +7802,33 @@ export default function clientPlugin() {
 
       function sourceTableGroups(source, paragraphs) {
         const byParagraph = new Map()
-        const codeRanges = sourceCodeRanges(source)
+        let codeRanges = null, orderedParagraphs = null, tableLookups = 0
         // Paragraphs are evidence anchors, so only change their presentation.
         // The complete source span is parsed before any row is rendered.
         for (const match of source.matchAll(/<table\b[^>]*>[\s\S]*?<\/table\s*>/gi)) {
           if (match[0].length > 100000) continue
           const start = match.index
           const end = start + match[0].length
+          if (!codeRanges) codeRanges = sourceCodeRanges(source)
           if (codeRanges.some(([from, to]) => from <= start && start < to)) continue
-          const first = paragraphs.findIndex((p) => p.start < end && p.end > start)
+          // A single table keeps the original lookup without checking every
+          // paragraph. A second lookup can amortize one range validation.
+          if (orderedParagraphs === null && ++tableLookups > 1) {
+            orderedParagraphs = true
+            let previousEnd = -Infinity
+            for (const paragraph of paragraphs) {
+              const from = paragraph?.start, to = paragraph?.end
+              if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || from < previousEnd) {
+                orderedParagraphs = false
+                break
+              }
+              previousEnd = to
+            }
+          }
+          // Source units are normally ordered and disjoint. Keep the original
+          // first-overlap behavior for malformed or imported range lists.
+          const first = orderedParagraphs ? sourceSpanIndexAtOffset(paragraphs, start)
+            : paragraphs.findIndex((p) => p.start < end && p.end > start)
           if (first < 0 || byParagraph.has(first)) continue
           let last = first
           while (last + 1 < paragraphs.length && paragraphs[last + 1].start < end) last++

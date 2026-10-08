@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const client = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
-const start = client.indexOf('      function sourceCodeRanges(source) {')
+const start = client.indexOf('      function sourceSpanIndexAtOffset(')
 const end = client.indexOf('      // Build the view model:', start)
 assert(start >= 0 && end > start)
 
