@@ -6562,18 +6562,18 @@
         return out
       }
 
-      function paragraphIndexAtOffset(paragraphs, offset) {
-        // splitParagraphs emits ordered, non-overlapping source spans. Find the
-        // first span ending after the anchor, then check its start so blank
-        // lines stay unassigned and the exclusive end keeps its exact meaning.
-        let low = 0, high = paragraphs.length
+      function sourceSpanIndexAtOffset(spans, offset) {
+        // For ordered, non-overlapping source spans, find the first span ending
+        // after the anchor. Check its start too so gaps stay unassigned and the
+        // exclusive end keeps its exact meaning.
+        let low = 0, high = spans.length
         while (low < high) {
           const mid = Math.floor((low + high) / 2)
-          if (paragraphs[mid].end <= offset) low = mid + 1
+          if (spans[mid].end <= offset) low = mid + 1
           else high = mid
         }
-        const paragraph = paragraphs[low]
-        return paragraph && offset >= paragraph.start && offset < paragraph.end ? low : -1
+        const span = spans[low]
+        return span && offset >= span.start && offset < span.end ? low : -1
       }
 
       function sourceCodeRanges(source) {
@@ -6850,7 +6850,7 @@
         for (const n of graph.nodes) {
           const off = anchors[n.id]
           if (off == null) continue
-          const pi = paragraphIndexAtOffset(paragraphs, off)
+          const pi = sourceSpanIndexAtOffset(paragraphs, off)
           if (pi < 0) continue
           if (paraTypes[pi].indexOf(n.type) < 0) paraTypes[pi].push(n.type)
           paraNodes[pi].push(n.id)

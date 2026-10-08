@@ -22,7 +22,8 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
-const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup')
+const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -69,6 +70,16 @@ const graph = {
   edges: [],
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
+}
+if (trajectoryEventMode) {
+  // The first event spans three content units; later event sequences deliberately
+  // differ from paragraph numbers so an accidental 1:1 mapping is observable.
+  let offset = 0
+  graph.traceEvents = [paragraphs.slice(0, 3).join('\n\n'), ...paragraphs.slice(3)].map((line, index) => {
+    const event = { line, seq: 1000 + index, type: index % 2 ? 'user/message' : 'tool/result', start: offset, end: offset + line.length }
+    offset = event.end + 2
+    return event
+  })
 }
 if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
   images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
@@ -352,6 +363,8 @@ const server = createServer(async (req, res) => {
       ...(paragraphWindowMode ? (() => { const saved = store.getDocument(documentId); return {
         paragraphWindowFixture: true, sourceUnchanged: saved.sourceText === sourceText,
         nodeCount: saved.nodes.length, edgeCount: saved.edges.length,
+        ...(trajectoryEventMode ? { trajectoryEventFixture: true, eventCount: saved.traceEvents.length,
+          eventMetadataUnchanged: JSON.stringify(saved.traceEvents) === JSON.stringify(graph.traceEvents) } : {}),
       } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),

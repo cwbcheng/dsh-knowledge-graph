@@ -7738,18 +7738,18 @@ export default function clientPlugin() {
         return out
       }
 
-      function paragraphIndexAtOffset(paragraphs, offset) {
-        // splitParagraphs emits ordered, non-overlapping source spans. Find the
-        // first span ending after the anchor, then check its start so blank
-        // lines stay unassigned and the exclusive end keeps its exact meaning.
-        let low = 0, high = paragraphs.length
+      function sourceSpanIndexAtOffset(spans, offset) {
+        // For ordered, non-overlapping source spans, find the first span ending
+        // after the anchor. Check its start too so gaps stay unassigned and the
+        // exclusive end keeps its exact meaning.
+        let low = 0, high = spans.length
         while (low < high) {
           const mid = Math.floor((low + high) / 2)
-          if (paragraphs[mid].end <= offset) low = mid + 1
+          if (spans[mid].end <= offset) low = mid + 1
           else high = mid
         }
-        const paragraph = paragraphs[low]
-        return paragraph && offset >= paragraph.start && offset < paragraph.end ? low : -1
+        const span = spans[low]
+        return span && offset >= span.start && offset < span.end ? low : -1
       }
 
       function sourceCodeRanges(source) {
@@ -8026,7 +8026,7 @@ export default function clientPlugin() {
         for (const n of graph.nodes) {
           const off = anchors[n.id]
           if (off == null) continue
-          const pi = paragraphIndexAtOffset(paragraphs, off)
+          const pi = sourceSpanIndexAtOffset(paragraphs, off)
           if (pi < 0) continue
           if (paraTypes[pi].indexOf(n.type) < 0) paraTypes[pi].push(n.type)
           paraNodes[pi].push(n.id)
@@ -18718,6 +18718,31 @@ export default function clientPlugin() {
         })
       }
 
+      function createTraceEventLookup(events) {
+        const spans = []
+        let ordered = true, previousEnd = -Infinity
+        for (const event of Array.isArray(events) ? events : []) {
+          // Zero-width, reversed, NaN and nonnumeric spans cannot match the old
+          // range predicate. Keep their index fallback, but skip range probes.
+          if (!event || typeof event.start !== 'number' || typeof event.end !== 'number' || !(event.start < event.end)) continue
+          if (event.start < previousEnd) ordered = false
+          previousEnd = event.end
+          spans.push(event)
+        }
+        return {
+          eventAt(offset, paragraph) {
+            let event = null
+            if (typeof offset === 'number') {
+              // Canonical and reconstructed legacy traces have disjoint spans.
+              // Imported irregular ranges retain first-match source-list order.
+              event = ordered ? spans[sourceSpanIndexAtOffset(spans, offset)]
+                : events.find(e => e && typeof e.start === 'number' && typeof e.end === 'number' && offset >= e.start && offset < e.end)
+            }
+            return event || events?.[paragraph] || null
+          },
+        }
+      }
+
       function TrajectoryTab({ sessionId }) {
         const [phase, setPhase] = useState('idle') // idle | extracting | done
         const [documentLoading, loadGraphDocument] = useGraphDocumentLoading()
@@ -20033,16 +20058,13 @@ export default function clientPlugin() {
           splitKey: LS_TRAJ_SPLIT, heightKey: LS_TRAJ_HEIGHT,
         })
 
+        const traceEventLookup = useMemo(() => createTraceEventLookup(traceEvents), [traceEvents])
         const paraEl = (p, i) => {
           const badges = view ? (view.paraTypes[i] || []) : []
           // New trace data records event offsets in traceText; one long event
           // may span several content units, so map by [start, end) and only
           // fall back to the 1:1 index for older cached results.
-          let ev = traceEvents[i] || null
-          if (p && typeof p.start === 'number' && Array.isArray(traceEvents)) {
-            const ranged = traceEvents.find((e) => e && typeof e.start === 'number' && typeof e.end === 'number' && p.start >= e.start && p.start < e.end)
-            if (ranged) ev = ranged
-          }
+          const ev = traceEventLookup.eventAt(p && p.start, i)
           const evLabel = ev ? (TRACE_TYPE_LABEL[ev.type] || ev.type) : ''
           return h('div', {
             key: i, id: 'kg-traj-para-' + i,

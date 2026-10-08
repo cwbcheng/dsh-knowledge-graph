@@ -77,7 +77,7 @@
     "test:kg-identity": "node scripts/kg-identity-smoke.mjs && node scripts/kg-native-hash-smoke.mjs",
     "test:kg-append-revision": "node scripts/kg-append-revision-smoke.mjs",
     "test:kg-append-recovery": "node scripts/kg-append-recovery-smoke.mjs && node scripts/kg-run-delete-smoke.mjs",
-    "test:kg-trajectory": "node scripts/kg-trajectory-persistence-smoke.mjs && node scripts/kg-trajectory-client-smoke.mjs",
+    "test:kg-trajectory": "node scripts/kg-trajectory-persistence-smoke.mjs && node scripts/kg-trajectory-client-smoke.mjs && node scripts/kg-trajectory-event-lookup-smoke.mjs && node scripts/kg-trajectory-event-performance.mjs --smoke",
     "test:kg-entry": "node scripts/kg-workbench-entry-smoke.mjs && node scripts/kg-workbench-draft-smoke.mjs && node scripts/kg-workbench-ui-smoke.mjs && node scripts/kg-generation-browsing-smoke.mjs",
     "test:kg-evidence": "node scripts/kg-evidence-provenance-smoke.mjs && node scripts/kg-anchor-location-smoke.mjs && node scripts/kg-paragraph-window-lookup-smoke.mjs && node scripts/kg-source-table-smoke.mjs",
     "test:kg-typographic-evidence": "node scripts/kg-typographic-evidence-smoke.mjs",

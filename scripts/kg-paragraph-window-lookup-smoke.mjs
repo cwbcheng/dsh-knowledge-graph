@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
-const lookup = 'const pi = paragraphIndexAtOffset(paragraphs, off)'
+const lookup = 'const pi = sourceSpanIndexAtOffset(paragraphs, off)'
 assert(viewer.includes(lookup), 'the production view must use the bounded lookup')
 function load(code, observe) {
   const sandbox = { window: { React: {} }, console, track: paragraphs => paragraphs.map(paragraph => ({ ...paragraph,
@@ -11,7 +11,7 @@ function load(code, observe) {
     get end() { observe(); return paragraph.end },
   })) }
   if (observe) code = code.replace('const paragraphs = splitParagraphs(sourceText)', 'const paragraphs = track(splitParagraphs(sourceText))')
-  runInNewContext(code.replace('window.KGViewer = {', 'window.KGViewer = { paragraphIndexAtOffset,'), sandbox)
+  runInNewContext(code.replace('window.KGViewer = {', 'window.KGViewer = { sourceSpanIndexAtOffset,'), sandbox)
   return sandbox.window.KGViewer
 }
 const api = load(viewer)
@@ -40,7 +40,7 @@ for (const source of sources) {
   const offsets = [NaN, Infinity, -Infinity, -1, source.length + 1]
   for (let offset = 0; offset <= source.length; offset += 0.5) offsets.push(offset)
   for (const offset of offsets) {
-    assert.equal(api.paragraphIndexAtOffset(paragraphs, offset),
+    assert.equal(api.sourceSpanIndexAtOffset(paragraphs, offset),
       paragraphs.findIndex(p => offset >= p.start && offset < p.end), 'exclusive ends and whitespace gaps: ' + offset)
     offsetsChecked++
   }
