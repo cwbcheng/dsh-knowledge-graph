@@ -726,6 +726,8 @@ export async function openSqliteStore(filePath = defaultStorePath()) {
 }
 
 export class SqliteKnowledgeStore {
+  #windowStructureCache = null
+
   constructor(db, filename) {
     this.db = db
     this.filename = filename
@@ -825,6 +827,7 @@ export class SqliteKnowledgeStore {
   }
 
   close() {
+    this.#windowStructureCache = null
     if (this.db && typeof this.db.close === 'function') this.db.close()
   }
 
@@ -2365,11 +2368,47 @@ export class SqliteKnowledgeStore {
    * @returns {object|null} The window and diagnostics from the same SQLite snapshot.
    */
   getDocumentWindow(documentId, options = {}, inspectStructure) {
-    return this.#readDocumentSnapshot(() => {
-      const window = this.#getDocumentWindow(documentId, options)
-      if (window && inspectStructure) window.graphStructureQuality = inspectStructure(this.getDocument(documentId))
-      return window
-    })
+    // Cache only an independent read: an enclosing transaction may later roll
+    // back, or retain a historical WAL snapshot. Older runtimes without an
+    // explicit transaction flag safely keep the uncached path.
+    const cacheable = !!inspectStructure && this.db.isTransaction === false
+    let pending = null
+    try {
+      const result = this.#readDocumentSnapshot(() => {
+        // data_version starts the SQLite read snapshot BEFORE the document
+        // query. It fences other connections; total_changes fences this one,
+        // including raw SQL, failed writes and delete/recreate at revision 1.
+        const stamp = cacheable ? {
+          dataVersion: this.db.prepare('PRAGMA data_version').get().data_version,
+          localChanges: this.db.prepare('SELECT total_changes() AS changes').get().changes,
+        } : null
+        const window = this.#getDocumentWindow(documentId, options)
+        if (window && inspectStructure) {
+          const cached = this.#windowStructureCache
+          if (stamp && cached && cached.documentId === documentId && cached.inspector === inspectStructure &&
+              cached.revision === window.revision && cached.dataVersion === stamp.dataVersion && cached.localChanges === stamp.localChanges) {
+            window.graphStructureQuality = structuredClone(cached.quality)
+            pending = cached
+          } else {
+            const quality = inspectStructure(this.getDocument(documentId))
+            window.graphStructureQuality = quality
+            if (stamp) {
+              // Callers own their returned result. Retain only one detached
+              // diagnostic, never the canonical graph or a mutable response.
+              try { pending = { documentId, inspector: inspectStructure, revision: window.revision, ...stamp, quality: structuredClone(quality) } }
+              catch { /* Non-cloneable custom inspectors remain uncached. */ }
+            }
+          }
+        }
+        return window
+      })
+      // Publish only after the savepoint has successfully released.
+      if (cacheable) this.#windowStructureCache = pending
+      return result
+    } catch (error) {
+      this.#windowStructureCache = null
+      throw error
+    }
   }
 
   #getDocumentWindow(documentId, options) {

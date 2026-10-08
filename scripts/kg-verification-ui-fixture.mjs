@@ -8,6 +8,8 @@ import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as plugin from '../lib/index.js'
+import { SqliteKnowledgeStore } from '../lib/kg-store.mjs'
+import { diagnosticFixture, countHydration } from './kg-document-window-diagnostics-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -22,6 +24,7 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
+const windowDiagnosticsMode = process.argv.includes('--window-diagnostics')
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -40,7 +43,7 @@ const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: sourceImagePerformanceMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const paragraphs = Array.from({ length: sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
@@ -68,6 +71,14 @@ const graph = {
   edges: [],
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
+}
+if (windowDiagnosticsMode) {
+  const diagnostic = diagnosticFixture().graph
+  graph.source.sections = diagnostic.source.sections
+  graph.generation = diagnostic.generation
+  graph.nodes = graph.nodes.map((node, i) => ({ ...node, type: diagnostic.nodes[i].type, sectionId: diagnostic.nodes[i].sectionId }))
+  graph.edges = diagnostic.edges.map(edge => ({ ...edge,
+    evidence: [{ paragraph: edge.evidence[0].paragraph, quote: paragraphs[edge.evidence[0].paragraph] }] }))
 }
 if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
   images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
@@ -199,6 +210,7 @@ if (documentQueueMode) {
 }
 const routes = new Map(), ctx = new Context(), pending = new Set()
 const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0, questionRequests: 0, snapshotExports: 0 }
+const diagnosticMeter = windowDiagnosticsMode ? countHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -321,6 +333,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewp
 <button onclick="control('next')">Finish one batch</button><button onclick="control('complete')">Complete fixture task</button>
 <button onclick="control('offline')">Drop two status requests</button><button onclick="control('reject-save')">Reject next report save</button></nav>
 ${snapshotMode ? '<nav><button onclick="control(\'advance-revision\')">Advance fixture revision</button></nav>' : ''}
+${windowDiagnosticsMode ? '<nav><button onclick="control(\'advance-diagnostics\')">Advance fixture diagnostics</button></nav>' : ''}
 ${reviewSaveMode ? '<nav><button onclick="control(\'change-hidden\')">Change hidden dependency</button><button onclick="control(\'change-unrelated\')">Change unrelated node</button></nav>' : ''}
 ${heldSaveMode ? '<nav><button onclick="control(\'hold-next-save\')">Hold next graph save</button><button onclick="control(\'reject-held-save\')">Reject held graph save</button></nav>' : ''}
 ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">Hold next quick report</button><button onclick="control(\'release-verification\')">Release quick report</button></nav>' : ''}
@@ -348,6 +361,10 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
+      ...(windowDiagnosticsMode ? { windowHydration: diagnosticMeter.counts,
+        sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
+        canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
+        canonicalEdges: store.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId).count } : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),
         originalNodeContentPreserved: JSON.stringify(nodeContent(store.getDocument(documentId).nodes.filter(node => /^n\d+$/.test(node.id)))) === JSON.stringify(nodeContent(graph.nodes)),
@@ -385,6 +402,12 @@ const server = createServer(async (req, res) => {
         store.saveGraph(current, { sourceText, expectedRevision: current.revision })
       }
       if (snapshotMode && url.pathname.endsWith('/advance-revision')) store.saveGraph(store.getDocument(documentId), { sourceText })
+      if (windowDiagnosticsMode && url.pathname.endsWith('/advance-diagnostics')) {
+        const current = store.getDocument(documentId)
+        current.source.sections[0].title = '来源说明'
+        current.generation.relationDiscovery = { status: 'complete', totalTargets: 12000, searchedTargets: 12000, remainingTargets: 0 }
+        store.saveGraph(current, { sourceText, expectedRevision: current.revision })
+      }
       if (reviewSaveMode && ['/fixture/change-hidden', '/fixture/change-unrelated'].includes(url.pathname)) {
         const next = store.getDocument(documentId), id = url.pathname.endsWith('/change-hidden') ? 'n801' : 'n700'
         next.nodes.find(node => node.id === id).text += ' Revised by another fixture session.'
@@ -453,6 +476,7 @@ const server = createServer(async (req, res) => {
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 async function stop() {
+  diagnosticMeter?.stop()
   for (const stream of pending) stream.return()
   await ctx.fiber.dispose(); store.close(); server.closeAllConnections(); server.close()
   rmSync(directory, { recursive: true, force: true })
