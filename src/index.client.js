@@ -11126,6 +11126,26 @@ export default function clientPlugin() {
           node.id === 'image:' + encodeURIComponent(image.id)) || null : null
       }
 
+      function createGraphNodeSearch(nodes) {
+        const normalizedText = new Map()
+        return (rawQuery, type) => {
+          const query = rawQuery.trim().normalize('NFKC').toLocaleLowerCase()
+          if (!query && !type) return nodes
+          return nodes.filter(node => {
+            if (type && node.type !== type) return false
+            if (!query) return true
+            let text = normalizedText.get(node)
+            if (text === undefined) {
+              // Quotes can be much longer than SVG labels. Normalize only
+              // when a text query needs this node, once per immutable graph.
+              text = [node.id, node.text, node.quote].join('\n').normalize('NFKC').toLocaleLowerCase()
+              normalizedText.set(node, text)
+            }
+            return text.includes(query)
+          })
+        }
+      }
+
       function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
@@ -11155,13 +11175,10 @@ export default function clientPlugin() {
         const searchInput = useRef(null), searchButton = useRef(null), detailElement = useRef(null)
         const focusDetail = useRef(false), previousSelection = useRef(null)
         const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
-        const searchIndex = useMemo(() => nodes.map(node => ({ node,
-          text: [node.id, node.text, node.quote].join('\n').normalize('NFKC').toLocaleLowerCase() })), [nodes])
+        const searchNodes = useMemo(() => createGraphNodeSearch(nodes), [nodes])
         const searchTypes = useMemo(() => [...new Set(nodes.map(node => node.type))], [nodes])
-        const searchMatches = useMemo(() => {
-          const query = searchQuery.trim().normalize('NFKC').toLocaleLowerCase()
-          return searchIndex.filter(item => (!searchType || item.node.type === searchType) && (!query || item.text.includes(query)))
-        }, [searchIndex, searchQuery, searchType])
+        const searchMatches = useMemo(() => searchOpen ? searchNodes(searchQuery, searchType) : [],
+          [searchNodes, searchOpen, searchQuery, searchType])
         const searchPages = Math.max(1, Math.ceil(searchMatches.length / 20))
         const activeSearchPage = Math.min(searchPage, searchPages - 1)
         const shownMatches = searchMatches.slice(activeSearchPage * 20, (activeSearchPage + 1) * 20)
@@ -12073,12 +12090,12 @@ export default function clientPlugin() {
               h('input', { ref: searchInput, type: 'search', value: searchQuery, placeholder: '名称、ID 或原文摘录', 'aria-label': '查找当前视图节点',
                 onChange: event => { setSearchQuery(event.target.value); setSearchPage(0) },
                 onKeyDown: event => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing && !event.isComposing && shownMatches.length) {
-                  event.preventDefault(); navigateNode(shownMatches[0].node.id)
+                  event.preventDefault(); navigateNode(shownMatches[0].id)
                 } } }),
               h('select', { value: searchType, 'aria-label': '查找节点类型', onChange: event => { setSearchType(event.target.value); setSearchPage(0) } },
                 h('option', { value: '' }, '全部类型'), searchTypes.map(type => h('option', { key: type, value: type }, TYPE_META[type]?.label || type)))),
             h('div', { className: 'kg-node-search-count', role: 'status' }, searchMatches.length + ' 个匹配 · 当前视图 ' + nodes.length + ' 个节点'),
-            h('div', { className: 'kg-node-search-list' }, shownMatches.length ? shownMatches.map(({ node }) => h('button', {
+            h('div', { className: 'kg-node-search-list' }, shownMatches.length ? shownMatches.map(node => h('button', {
               key: node.id, type: 'button', className: 'kg-node-search-result', 'data-node-id': node.id, onClick: () => navigateNode(node.id),
             }, h('span', null, node.text || node.id), h('small', null, (TYPE_META[node.type]?.label || node.type) + ' · ' + node.id)))
               : h('p', null, '当前视图没有匹配节点')),
