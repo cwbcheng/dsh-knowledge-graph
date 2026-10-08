@@ -1615,9 +1615,91 @@ function createHostPlugin(graphContractOnly) {
           "example",
           "counter_example",
           "rule"
-        ]
+        ],
+        "manualModels": {
+          "nodeTypes": [
+            {
+              "id": "connection_model",
+              "zh": "联结模型",
+              "label": "联结模型",
+              "color": "#3b82f6",
+              "fill": "rgba(59,130,246,0.15)",
+              "layer": "none",
+              "modelKind": "connection",
+              "aliases": [
+                "联结模型",
+                "联模"
+              ],
+              "hint": "已划分出的类别之间的映射。"
+            }
+          ],
+          "relationTypes": [
+            {
+              "id": "maps_between",
+              "zh": "联结映射",
+              "family": "directional",
+              "weight": 6,
+              "aliases": [
+                "联结映射",
+                "映射",
+                "联结"
+              ],
+              "from": [
+                "connection_model"
+              ],
+              "to": [
+                "concept"
+              ],
+              "hint": "联结模型在输入概念与输出概念之间映射；边的 role 取 input / output。"
+            },
+            {
+              "id": "has_rule",
+              "zh": "规律",
+              "family": "backbone",
+              "weight": 8,
+              "aliases": [
+                "规律",
+                "依赖规律"
+              ],
+              "from": [
+                "concept",
+                "connection_model"
+              ],
+              "to": [
+                "rule"
+              ],
+              "hint": "概念或联结模型所依赖的映射规律。"
+            }
+          ],
+          "edgeAttributes": [
+            "role"
+          ],
+          "edgeAttributeLabels": {
+            "role": {
+              "input": "入",
+              "output": "出"
+            }
+          }
+        }
       },
       })
+      const ONT_WITH_MANUAL_MODELS = function withManualModels(profile) {
+        const extension = profile.manualModels
+        if (!extension) return profile
+        const ids = extension.nodeTypes.map(type => type.id)
+        return {
+          ...profile,
+          nodeTypes: [...profile.nodeTypes, ...extension.nodeTypes],
+          relationTypes: [...profile.relationTypes, ...extension.relationTypes],
+          renderOrder: [...profile.renderOrder, ...ids],
+          evidenceRequiredTypes: [...profile.evidenceRequiredTypes, ...ids],
+          consumptionTypes: [...profile.consumptionTypes, ...ids],
+          edgeAttributes: extension.edgeAttributes,
+          edgeAttributeLabels: extension.edgeAttributeLabels,
+          materialCoordinates: false,
+        }
+      }
+      const ONTOLOGY_GRAPH_PROFILES = Object.fromEntries(Object.entries(ONTOLOGY_PROFILES).map(([id, profile]) => [id, ONT_WITH_MANUAL_MODELS(profile)]))
 
       // Also generated from src/kg-ontology.mjs. Docs: diagnoseLearningView.
       const ONT_DIAGNOSE_LEARNING_VIEW = function diagnoseLearningView(graph, profile) {
@@ -1873,7 +1955,8 @@ function createHostPlugin(graphContractOnly) {
 
        /** The profile record for a carrier. */
        function ontProfile(carrier) {
-         return ONTOLOGY_PROFILES[ontIdOf(carrier)]
+         const profile = ONTOLOGY_PROFILES[ontIdOf(carrier)]
+         return carrier && typeof carrier === 'object' ? ONTOLOGY_GRAPH_PROFILES[profile.id] : profile
        }
 
        // Derived tables are built once per (ontology, table) pair: several of
@@ -1882,10 +1965,11 @@ function createHostPlugin(graphContractOnly) {
        const ONT_CACHE = new Map()
        function ontCached(carrier, key, build) {
          const id = ontIdOf(carrier)
-         const cacheKey = id + '\u0000' + key
+         const manual = carrier && typeof carrier === 'object' && ONTOLOGY_PROFILES[id].manualModels
+         const cacheKey = id + (manual ? ':manual' : '') + '\u0000' + key
          let value = ONT_CACHE.get(cacheKey)
          if (value === undefined) {
-           value = build(ONTOLOGY_PROFILES[id], id)
+           value = build(ontProfile(carrier), id)
            ONT_CACHE.set(cacheKey, value)
          }
          return value
@@ -1970,7 +2054,7 @@ function createHostPlugin(graphContractOnly) {
              // It is not the same thing as "requires evidence": in the
              // proposition profile that set holds claim/rule and excludes
              // example, so emitting `kind` there would mislabel every type.
-             ...(profile.nodeTypes.some((item) => (item.layer && item.layer !== 'none') || (item.modelKind && item.modelKind !== 'none'))
+             ...(profile.materialCoordinates !== false && profile.nodeTypes.some((item) => (item.layer && item.layer !== 'none') || (item.modelKind && item.modelKind !== 'none'))
                ? { kind: ontEvidenceRequired(profile.id).has(type.id) ? 'material' : 'knowledge' }
                : {}),
            })),
@@ -1981,8 +2065,8 @@ function createHostPlugin(graphContractOnly) {
            // Which edge attributes carry meaning, and how to read their values.
            // Absent for an ontology that declares none, so the client draws no
            // attribute suffix for proposition graphs.
-           ...(ontEdgeAttributes(profile.id).size > 0 ? {
-             edgeAttributes: [...ontEdgeAttributes(profile.id)],
+           ...(ontEdgeAttributes(carrier).size > 0 ? {
+             edgeAttributes: [...ontEdgeAttributes(carrier)],
              edgeAttributeLabels: profile.edgeAttributeLabels || {},
            } : {}),
          }

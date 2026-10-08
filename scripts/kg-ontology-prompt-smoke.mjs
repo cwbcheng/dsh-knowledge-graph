@@ -152,7 +152,7 @@ assert(prompts['proposition-v1'].includes('fact 事实'), 'proposition prompt mu
 // Granularity may differ; evidence gates, vocabulary and rendering must not.
 const aggregate = getOntology('aggregate-v1')
 assert.equal(aggregate.id, 'aggregate-v1')
-assert.deepEqual(Object.keys(aggregate).sort(), Object.keys(proposition).sort())
+assert.deepEqual(Object.keys(aggregate).filter(key => key !== 'manualModels').sort(), Object.keys(proposition).sort())
 for (const [key, value] of Object.entries(proposition)) {
   if (['id', 'label', 'summary'].includes(key)) continue
   assert.deepEqual(aggregate[key], value, 'aggregate must preserve proposition contract: ' + key)
