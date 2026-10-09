@@ -9970,33 +9970,38 @@ export default function clientPlugin() {
         return pos
       }
 
-      function packDisconnectedComponents(nodes, edges, sizes, pos, gap) {
+      function packDisconnectedComponents(nodes, edges, sizes, pos, gap, knownComponents) {
         if (!Array.isArray(nodes) || nodes.length < 2) return pos
         const order = new Map(nodes.map((node, index) => [node.id, index]))
-        const ids = new Set(nodes.map((node) => node.id))
-        const adj = new Map(nodes.map((node) => [node.id, new Set()]))
-        for (const edge of edges || []) {
-          if (!edge || !ids.has(edge.fromNodeId) || !ids.has(edge.toNodeId) || edge.fromNodeId === edge.toNodeId) continue
-          adj.get(edge.fromNodeId).add(edge.toNodeId)
-          adj.get(edge.toNodeId).add(edge.fromNodeId)
-        }
-        const seen = new Set()
-        const components = []
-        for (const node of nodes) {
-          if (seen.has(node.id)) continue
-          const component = []
-          const queue = [node.id]
-          seen.add(node.id)
-          while (queue.length > 0) {
-            const id = queue.shift()
-            component.push(id)
-            for (const neighbor of adj.get(id) || []) {
-              if (seen.has(neighbor)) continue
-              seen.add(neighbor)
-              queue.push(neighbor)
-            }
+        // Layered layout already discovered these components in this call.
+        // Force layout still discovers its own; packing never mutates the groups.
+        let components = knownComponents
+        if (!components) {
+          const ids = new Set(nodes.map((node) => node.id))
+          const adj = new Map(nodes.map((node) => [node.id, new Set()]))
+          for (const edge of edges || []) {
+            if (!edge || !ids.has(edge.fromNodeId) || !ids.has(edge.toNodeId) || edge.fromNodeId === edge.toNodeId) continue
+            adj.get(edge.fromNodeId).add(edge.toNodeId)
+            adj.get(edge.toNodeId).add(edge.fromNodeId)
           }
-          components.push(component)
+          const seen = new Set()
+          components = []
+          for (const node of nodes) {
+            if (seen.has(node.id)) continue
+            const component = []
+            const queue = [node.id]
+            seen.add(node.id)
+            while (queue.length > 0) {
+              const id = queue.shift()
+              component.push(id)
+              for (const neighbor of adj.get(id) || []) {
+                if (seen.has(neighbor)) continue
+                seen.add(neighbor)
+                queue.push(neighbor)
+              }
+            }
+            components.push(component)
+          }
         }
         if (components.length <= 1) return pos
         const boxes = components.map((component) => {
@@ -10115,7 +10120,11 @@ export default function clientPlugin() {
           for (const [id, point] of local) merged.set(id, point)
           if (onProgress) onProgress({ detail: '已布局 ' + merged.size + '/' + nodes.length + ' 个节点', completed: merged.size, total: nodes.length })
         }
-        const pos = packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38)
+        // One component needs no packing, ID copy or packing order table.
+        const pos = components.length > 1
+          ? packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38,
+            components.map(component => component.map(node => node.id)))
+          : merged
         return { pos, componentNodesById, componentKeyById }
       }
 
