@@ -14,6 +14,8 @@ const bundle = revision ? execFileSync('git', ['show', revision + ':extension/vi
   : readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const usesEntries = bundle.includes('for (const peerEntry of rows.get(r) || [])')
 const usesPool = bundle.includes('intervalPool.push(interval)')
+const distantRowGuard = 'if (Math.abs(r * LAYER_Y_GAP - y) >= (size.h + maxHeight) / 2 + 18) continue'
+const skipsDistantRows = bundle.includes(distantRowGuard)
 assert(usesEntries || bundle.includes('const peer = placed.get(peerId), ps = sizes.get(peerId)'))
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const phaseFields = ['calls','passes','nodeVisits','rowCandidates','rowRequests','linkRowChecks','blockedSamples','blockedEntries','peerVisits','moves']
@@ -22,12 +24,13 @@ function engine(instrument = true) {
   const intervalHashes = { raw: createHash('sha256'), merged: createHash('sha256') }
   const work = { calls: 0, passes: 0, nodeVisits: 0, rowCandidates: 0, rowRequests: 0, linkRowChecks: 0,
     blockedSamples: 0, blockedEntries: 0, peerVisits: 0, moves: [], mapReads: {},
-    intervalObjects: 0, mergedCopies: 0, scratchArrays: 0, poolReuses: 0, poolPeak: 0 }
+    intervalObjects: 0, mergedCopies: 0, scratchArrays: 0, poolReuses: 0, poolPeak: 0,
+    neighbourRows: 0, prunedRows: 0, rowGridChecks: 0 }
   if (instrument) {
     const start = source.indexOf('const compactRows = () => {'), end = source.indexOf('\n        compactRows()', start)
     assert(start >= 0 && end > start)
     let block = source.slice(start, end)
-      .replace('const compactRows = () => {', 'const compactRows = () => { work.calls++;')
+      .replace('const compactRows = () => {', 'const compactRows = () => { work.calls++; for (const point of placed.values()) assertGrid(point.y, Math.round(point.y / LAYER_Y_GAP) * LAYER_Y_GAP);')
       .replace('let moved = false', 'work.passes++; let moved = false')
       .replace('for (const node of ordered) {', 'for (const node of ordered) { work.nodeVisits++;')
       .replace('const y = row * LAYER_Y_GAP', 'work.rowCandidates++; const y = row * LAYER_Y_GAP')
@@ -36,7 +39,9 @@ function engine(instrument = true) {
         'links.some((link) => (work.linkRowChecks++, row === rowOf(link.id) && before.get(id).y !== before.get(link.id).y))')
       .replace('for (const peerId of rows.get(r) || []) {', 'for (const peerId of rows.get(r) || []) { work.peerVisits++;')
       .replace('for (const peerEntry of rows.get(r) || []) {', 'for (const peerEntry of rows.get(r) || []) { work.peerVisits++;')
-      .replace('moved = true', 'work.moves.push([id,p.x,p.y]); moved = true')
+      .replace('for (let r = row - reach; r <= row + reach; r++) {', 'for (let r = row - reach; r <= row + reach; r++) { work.neighbourRows++;')
+      .replace(distantRowGuard, 'if (Math.abs(r * LAYER_Y_GAP - y) >= (size.h + maxHeight) / 2 + 18) { work.prunedRows++; continue }')
+      .replace('moved = true', 'assertGrid(p.y, Math.round(p.y / LAYER_Y_GAP) * LAYER_Y_GAP); work.moves.push([id,p.x,p.y]); moved = true')
       .replace('blocked.sort(', 'work.blockedSamples++; work.blockedEntries += blocked.length; recordIntervals("raw", blocked); blocked.sort(')
       .replace('const preferred = backboneLane.has(id)', 'recordIntervals("merged", merged); const preferred = backboneLane.has(id)')
       .replace(/\b(placed|sizes|weightedAdj|lower|upper|rows|backboneLane|before|compact)\.get\(/g, 'readMap($1, "$1", ')
@@ -52,6 +57,7 @@ function engine(instrument = true) {
     source = source.slice(0, start) + block + source.slice(end)
   }
   const context = { window: { React: {} }, console, work, setTimeout, clearTimeout, setInterval, clearInterval,
+    assertGrid: (y, expected) => { assert.equal(y, expected); work.rowGridChecks++ },
     recordIntervals: (label, values) => intervalHashes[label].update(JSON.stringify(values)),
     readMap: (map, label, id) => { work.mapReads[label] = (work.mapReads[label] || 0) + 1; return map.get(id) } }
   runInNewContext(source.replace('window.KGViewer = {', 'window.KGViewer = { layoutLayered, graphLayoutWorkerSource,'), context)
@@ -123,15 +129,36 @@ const frozenIntervals = {
   "cycle/12000": [97503,97502,195018,2,3,97501,2,"c018a3a9ce409b9752f684d203770bcbd7efb6ba50bf4f8392720623455a21e9","bb70ab2fda028d85d72ee5ae5a5ec2c8ec2126c631549357f7246e350006dc89"],
   "groups/12000": [255030,84009,150018,7500,4500,247530,5,"e729cd8c56255edec3303da51ad0fd0995cfe2b34d94cc898d5f38b06be315bb","8f4f357f5ab5459b0d16e4735ac0d6b42e1c9319f974ef593b91c0dfed0b5f8e"],
 }
+// 2582f32/current: pruned Map total, old/new peer visits, neighbour rows,
+// skipped rows and the complete new phase digest. All other work stays frozen.
+const frozenRowScans = {
+  "wide/80": [8855,66399,31837,5690,3228,"89d7e9d14908450ebfbb4235aaf9de9a5b570477b6fff036deb6f2bc3e0f169a"],
+  "chain/80": [1211,0,0,0,0,"d893031be5495f014d658d9793993ddf47ac6f4e9d0b7d9f52b9f4451a7ad953"],
+  "cycle/80": [9529,4329,1773,2219,1318,"fc5cc077d8e90d852524c7abd2691e92d1adae834e66710ec964bcdf9d91a994"],
+  "groups/80": [6440,3929,2587,1833,1018,"6cb2e9616a8fdacb330a6b7f111eb2aa3ee0f36f960059cf69e7b7cdb0ff0678"],
+  "tree/80": [15295,43620,20207,5615,3118,"bc465e3995f6611bbc0164d901ce0acbc54786db50927ae4836c081b103c5d5a"],
+  "wide/800": [313797,14286594,6312458,329905,188206,"0c6b00fb7a64ac1033d62c7143037c91b08fbe47156133a4e5ce7bb6b8300c01"],
+  "chain/800": [12011,0,0,0,0,"f4f63165a215cce925fa27f416ebd2cc4d7cde5ef49afaae5dabc95f9d7976e7"],
+  "cycle/800": [94309,43389,17433,21749,13018,"38be12a08fec87d57015c4e119eb00cc7709c67e98597915f056597cb9b366d6"],
+  "groups/800": [63320,38669,25447,18033,10018,"781e4c64ebbe18ea7a4def14b3d4a7414e693fe7603c2afec8dd150dd3e8eec3"],
+  "tree/800": [169814,798640,363583,68957,37858,"929d5e5d0782efa7e0538e1dd98e9250825f6257ea6c74271de2c9f25d90f020"],
+  "chain/12000": [180011,0,0,0,0,"de7a4bb95a0e9ee424382122e4fa3fd8a69e4bc1a3d02363fcc319df55c034af"],
+  "cycle/12000": [1413109,650989,261033,325549,195018,"1ee7e16461bc0a1e90db05e116dc12d016cd4d5ab181fda743ab1231015e3f7c"],
+  "groups/12000": [948120,579069,381047,270033,150018,"77c1700ffd95ed9ffd40e9c5882899344b5da81333e3339b6466af7463bd474d"],
+}
 for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chain','cycle','groups','tree']) {
   const count = smoke ? 80 : large ? 12000 : 800, data = fixture(count, shape), run = engine(), progress = []
   const readonly = JSON.stringify({ ...data, sizes: [...data.sizes] })
   const result = snapshot(run.layoutGraph(data.nodes, data.edges, data.sizes, 'layered', p => progress.push(p)), progress, data.nodes)
   const expected = frozen[shape + '/' + count], mapReads = Object.values(run.work.mapReads).reduce((a, b) => a + b, 0)
+  const scans = frozenRowScans[shape + '/' + count]
   const phase = phaseFields.map(field => [field, field === 'moves' ? run.work.moves.length : run.work[field]])
   assert.equal(JSON.stringify({ ...data, sizes: [...data.sizes] }), readonly)
-  assert.equal(mapReads, expected[usesEntries ? 1 : 0])
-  assert.equal(digest(result), expected[2]); assert.equal(digest(run.work.moves), expected[3]); assert.equal(digest(phase), expected[4])
+  assert.equal(mapReads, skipsDistantRows ? scans[0] : expected[usesEntries ? 1 : 0])
+  assert.equal(digest(result), expected[2]); assert.equal(digest(run.work.moves), expected[3]); assert.equal(digest(phase), skipsDistantRows ? scans[5] : expected[4])
+  assert.equal(run.work.peerVisits, scans[skipsDistantRows ? 2 : 1])
+  assert.equal(run.work.neighbourRows, scans[3]); assert.equal(run.work.prunedRows, skipsDistantRows ? scans[4] : 0)
+  assert(run.work.rowGridChecks >= count)
   const intervals = frozenIntervals[shape + '/' + count]
   const allocations = [run.work.intervalObjects, run.work.mergedCopies, run.work.scratchArrays, run.work.poolReuses, run.work.poolPeak]
   assert.deepEqual(allocations, usesPool ? [intervals[3],0,intervals[4],intervals[5],intervals[6]] : [intervals[0],intervals[1],intervals[2],0,0])
@@ -140,8 +167,9 @@ for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chai
   assert.equal(run.work.intervalObjects + run.work.poolReuses, run.work.blockedEntries)
   console.log(JSON.stringify({ baseline: revision || 'current', shape, nodes: count, mapReads, mapReadsByName: run.work.mapReads,
     result: digest(result), moveTrace: digest(run.work.moves), phase: digest(phase), peerVisits: run.work.peerVisits, blockedEntries: run.work.blockedEntries,
+    neighbourRows: run.work.neighbourRows, prunedRows: run.work.prunedRows, rowGridChecks: run.work.rowGridChecks,
     allocations: { intervalObjects: allocations[0], mergedCopies: allocations[1], scratchArrays: allocations[2], poolReuses: allocations[3], poolPeak: allocations[4] }, rawIntervals, mergedIntervals,
-    scope: 'All Map reads and collision scratch allocations in actual compactRows, including preparation. Candidate rows, neighbour scans, interval bounds and every live-coordinate update remain; no full-layout or browser timing claim.' }))
+    scope: 'All Map reads, row member visits and collision scratch allocations in actual compactRows, including preparation. Only impossible distant rows are skipped; candidate order, colliding intervals and every live-coordinate update remain. No full-layout or browser timing claim.' }))
 }
 const sample = (ids, links) => ({ nodes: ids.map(id => ({ id, text: 'Node ' + id, type: 'fact' })),
   edges: links.map(([fromNodeId, toNodeId, relation = 'supports']) => ({ fromNodeId, toNodeId, relation })),
@@ -158,11 +186,30 @@ const cases = [
 ]
 const missing = sample(['n0','n1','n2'], [['n0','n1'],['n0','n2']]); missing.sizes = new Map([['n0',{w:210,h:190}]])
 cases.push(['missing-sizes', missing, 'c31ca29421c7f790d7509a941e6326a0ed784489573731de3eb50f488efa60f2'])
+// Strict collision boundaries at one and two row gaps, including tall peers.
+const boundaryCases = [
+  [222-1e-9,'aaf09593da5c14bc72eaf6a1a01e254d32ab7aa026cc15c3f7d75ac7fd61b0ff','415167b74b1874ad8024c246b9280e31b0640b13a32e4d383710c42f4c3e09f6','0e828e12d18a42d6ce3222f4864713d664152f96ba0b1169a4f36bff390c1a37','e997e5fe55ba5030363ef0b991b9cb90b8589963c5a553d6e1621a9823de3885'],
+  [222,'9c108454fe1516076f2316d65f3b6b69e277834fed385da1c1df5018d5eb49fd','415167b74b1874ad8024c246b9280e31b0640b13a32e4d383710c42f4c3e09f6','0e828e12d18a42d6ce3222f4864713d664152f96ba0b1169a4f36bff390c1a37','e997e5fe55ba5030363ef0b991b9cb90b8589963c5a553d6e1621a9823de3885'],
+  [222+1e-9,'d408b67f40902537a78adb828cd7e0619df4854f0129b9f2c380b75aa18debcc','64e10d693ddc496d7014afaf4e51ba2e35592136846bcf4da3d023fac2a11a9c','344505fc5f2439f590bdc345839add150d1b5f7831a4c940829fae78d44db66a','a5a9d40c030fbafc3d9e5a0ce63868be4e8df2d489bd683bc12a7ec0e349eca7'],
+  [462-1e-9,'d408b67f40902537a78adb828cd7e0619df4854f0129b9f2c380b75aa18debcc','64e10d693ddc496d7014afaf4e51ba2e35592136846bcf4da3d023fac2a11a9c','344505fc5f2439f590bdc345839add150d1b5f7831a4c940829fae78d44db66a','a5a9d40c030fbafc3d9e5a0ce63868be4e8df2d489bd683bc12a7ec0e349eca7'],
+  [462,'59348f19c2cf5a43c1bd75a8c8829d5627ffabfa5e826db3a473a4065b3e1d9b','64e10d693ddc496d7014afaf4e51ba2e35592136846bcf4da3d023fac2a11a9c','344505fc5f2439f590bdc345839add150d1b5f7831a4c940829fae78d44db66a','a5a9d40c030fbafc3d9e5a0ce63868be4e8df2d489bd683bc12a7ec0e349eca7'],
+  [462+1e-9,'f2f08331f5c84b0fa95bdc114050e931edfbb4326b2041f131aad5028db3918a','c50a9db6593e8aabbb6d921a8c155013042443df5750c15cd19e9a5eee53924a','1b5f1db1c3389b110e9ce48637affe60e797cca5efb780ac745ad38bb3aa6989','d7f3b67cb3d602ae29ad9b9c262ec810213c3cc58949e5042f7479f6f1bcdab7'],
+]
+for (const [height, result, moves, raw, merged] of boundaryCases) {
+  const data = fixture(80, 'wide')
+  for (const size of data.sizes.values()) size.h = height
+  cases.push(['strict-row-distance-' + height, data, result, { moves, raw, merged }])
+}
 const workerSource = engine(false).graphLayoutWorkerSource()
-for (const [name, data, expected] of cases) {
+for (const [name, data, expected, intervals] of cases) {
   const run = engine(), progress = [], readonly = JSON.stringify({ ...data, sizes: [...data.sizes] })
   const result = snapshot(run.layoutGraph(data.nodes, data.edges, data.sizes, 'layered', p => progress.push(p)), progress, data.nodes)
   assert.equal(digest(result), expected, name); assert.equal(JSON.stringify({ ...data, sizes: [...data.sizes] }), readonly)
+  if (intervals) {
+    assert.equal(digest(run.work.moves), intervals.moves)
+    assert.equal(run.intervalHashes.raw.copy().digest('hex'), intervals.raw)
+    assert.equal(run.intervalHashes.merged.copy().digest('hex'), intervals.merged)
+  }
   const worker = new Worker('const {parentPort,workerData}=require("node:worker_threads"); require("node:vm").runInNewContext(workerData.source+"; self.onmessage({data:input})",{self:{postMessage:data=>parentPort.postMessage(data)},input:workerData.input,setTimeout,clearTimeout,setInterval,clearInterval});',
     { eval: true, workerData: { source: workerSource, input: { ...data, mode: 'layered' } } })
   const workerProgress = []
@@ -201,5 +248,6 @@ assert.equal(digest(snapshot(reconnected, [], dynamic.nodes)), digest(snapshot(f
 console.log(JSON.stringify({ baseline: revision || 'current', controls: { originalRankConstraintsAndRowOrder: true, allLiveRelocationsFrozen: true,
   numericStringAndFalseyIds: true, reasoningDagAndCycleFallback: true, duplicateIdRowMembership: true, emptySingletonAndMissingSizes: true,
   readonlyInputsAndSharedCanonicalMembers: true, actualWorkerMetadataAndThrottledCompletion: true, cancellationPropagates: true,
-  newTopologyAndMeasurements: true, rawAndMergedIntervalsFrozenBeforeReuse: true, lazyScratchAndComponentScope: true },
+  newTopologyAndMeasurements: true, rawAndMergedIntervalsFrozenBeforeReuse: true, lazyScratchAndComponentScope: true,
+  initialAndMovedCoordinatesStayOnRowGrid: true, strictRowDistanceAndTallPeerBounds: true },
   scope: 'Row geometry and collision scratch are scoped to one compactRows invocation. Existing viewer-loading regressions also cover UI worker fallback and stale results.' }))
