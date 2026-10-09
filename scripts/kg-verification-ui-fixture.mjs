@@ -39,6 +39,7 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
+const edgeGeometryPerformanceMode = process.argv.includes('--edge-geometry-performance')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
 const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
@@ -76,7 +77,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode ? 800 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -282,6 +283,11 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
   Object.assign(graph.verification.lastReport.issues[i], { title: 'Conclusion omits its population restriction',
     detail: 'Check the restriction to adults.', evidence: [{ paragraph: i, quote: repairQualification }] })
 }
+if (edgeGeometryPerformanceMode) {
+  graph.edges = graph.nodes.slice(1).map(node => ({ fromNodeId: 'n0', toNodeId: node.id, relation: 'supports' }))
+  for (let i = 1; i < graph.nodes.length - 1; i += 4) graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + (i + 1), relation: 'example' })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
+}
 store.saveGraph(graph, { sourceText })
 const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 const originalNormalizedNodeContent = normalizedAnchorMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
@@ -432,6 +438,11 @@ ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">
 ${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
 ${paragraphLocationMode ? '<nav><button onclick="control(\'delay-paragraph\')">Delay next source location</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
+${edgeGeometryPerformanceMode ? `<nav aria-label="Routing diagnostics"><button onclick="fixtureRouteWork.radialCalls=fixtureRouteWork.nodeVisits=fixtureRouteWork.bezierCalls=0">Reset routing counters</button>
+<output id="routing-telemetry"></output></nav><script>
+window.fixtureRouteWork={radialCalls:0,nodeVisits:0,bezierCalls:0};
+setInterval(()=>document.getElementById('routing-telemetry').textContent=JSON.stringify(fixtureRouteWork),100);
+</script>` : ''}
 ${windowResponsePerformanceMode ? `<output id="window-response-telemetry" style="display:block;white-space:pre-wrap;overflow-wrap:anywhere"></output>
 <script>
 // Synthetic-data DOM timing only; wait for the actual GraphCanvas ready state.
@@ -627,7 +638,18 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) { await routes.get('/api/dsh-knowledge-graph').handler(req, res); return }
     if (url.pathname === '/client.js') {
-      const source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      let source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      if (edgeGeometryPerformanceMode) {
+        const signature = 'function radialFreeAngle(base, rFrom, rTo, excludeA, excludeB, nodes, sizes, pos) {'
+        const start = source.indexOf(signature), end = source.indexOf('\n      function ', start + signature.length)
+        if (start < 0 || end < 0) throw new Error('routing diagnostic marker not found')
+        const radial = source.slice(start, end)
+        if (radial.split('for (const n of nodes) {').length !== 2) throw new Error('routing diagnostic loop not found')
+        source = source.slice(0, start) + radial.replace(signature, signature + ' window.fixtureRouteWork.radialCalls++;')
+          .replace('for (const n of nodes) {', 'for (const n of nodes) { window.fixtureRouteWork.nodeVisits++;') + source.slice(end)
+        source = source.replace('function bezierGeometry(a, b, sa, sb, rawBend) {',
+          'function bezierGeometry(a, b, sa, sb, rawBend) { window.fixtureRouteWork.bezierCalls++;')
+      }
       const marker = '      // --------------------------- slot registration'
       if (!source.includes(marker)) throw new Error('client exposure marker not found')
       res.setHeader('content-type', 'text/javascript')
