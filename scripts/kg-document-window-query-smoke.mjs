@@ -96,7 +96,7 @@ try {
   const boundaries = [
     { query: '%_', limit: 1, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT COUNT') },
     { query: '%_', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
-    { query: '%_', limit: 20, boundary: sql => sql.startsWith('SELECT * FROM graph_edges') && sql.includes('OR to_node_id IN') },
+    { query: '%_', limit: 20, boundary: sql => sql.startsWith('SELECT * FROM graph_edges') && sql.includes('from_node_id IN (') && sql.includes('to_node_id IN (') && !sql.includes('json_each') },
     { query: 'never_%', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
   ]
   for (const { boundary, query, limit } of boundaries) {

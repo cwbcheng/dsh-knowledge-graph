@@ -2457,7 +2457,24 @@ export class SqliteKnowledgeStore {
         const part = unique.slice(start, start + 300)
         const marks = part.map(() => '?').join(',')
         const remaining = maxRows - result.size
-        const rows = this.db.prepare(
+        // Small sparse selections otherwise scan the document's ordered edge
+        // index. Probe only narrow endpoint indexes, capped at 65 matches each.
+        // Large batches, small graphs and high-degree nodes keep the original
+        // ordered LIMIT path; never materialize their entire incident set.
+        let indexed = false
+        if (totalEdges >= 4096 && part.length <= 64) {
+          const budget = Math.min(64, remaining)
+          const candidates = this.db.prepare(
+            'SELECT COUNT(*) AS count FROM (SELECT 1 FROM (SELECT 1 FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') LIMIT ?) ' +
+            'UNION ALL SELECT 1 FROM (SELECT 1 FROM graph_edges WHERE document_id = ? AND to_node_id IN (' + marks + ') LIMIT ?))'
+          ).get(documentId, ...part, budget + 1, documentId, ...part, budget + 1)
+          // Shared endpoints count twice: a conservative bound, not a total.
+          indexed = candidates.count <= budget
+        }
+        const rows = indexed ? this.db.prepare(
+          'SELECT * FROM graph_edges WHERE rowid IN (SELECT rowid FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') ' +
+          'UNION SELECT rowid FROM graph_edges WHERE document_id = ? AND to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
+        ).all(documentId, ...part, documentId, ...part, remaining) : this.db.prepare(
           'SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN (' + marks + ') OR to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
         ).all(documentId, ...part, ...part, remaining)
         for (const item of rows) result.set(item.edge_key || (item.from_node_id + '>' + item.to_node_id + ':' + item.relation), item)
