@@ -36,13 +36,21 @@ export function diagnosticFixture(size = 12000) {
 
 export function countHydration(Store, database) {
   const original = Store.prototype.getDocumentWindow
-  const counts = { nodes: 0, edges: 0, fullNodeReads: 0, fullEdgeReads: 0, requests: 0 }
+  const counts = { nodes: 0, edges: 0, fullNodeReads: 0, fullEdgeReads: 0, requests: 0, totalNodeCounts: 0, totalEdgeCounts: 0 }
   Store.prototype.getDocumentWindow = function (...args) {
     if (this.filename !== database) return original.apply(this, args)
     counts.requests++
     const prepare = this.db.prepare
     this.db.prepare = function (sql) {
       const statement = prepare.call(this, sql)
+      const totalTable = /^SELECT COUNT\(\*\) AS count FROM graph_(nodes|edges) WHERE document_id = \?$/.exec(sql)?.[1]
+      if (totalTable) {
+        const get = statement.get
+        statement.get = function (...params) {
+          counts[totalTable === 'nodes' ? 'totalNodeCounts' : 'totalEdgeCounts']++
+          return get.apply(this, params)
+        }
+      }
       const table = /^SELECT \* FROM graph_(nodes|edges)\b/.exec(sql)?.[1]
       if (table) {
         const all = statement.all
