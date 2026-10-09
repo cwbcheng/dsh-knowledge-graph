@@ -40,6 +40,7 @@ if (windowQueryCountMode) {
   for (const node of literalFixture.graph.nodes) if (node.sectionId === 'body') node.sectionTitle = 'Common_% section'
 }
 const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode || windowQueryLiteralMode
+const paragraphLocationMode = process.argv.includes('--paragraph-location')
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -59,7 +60,8 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
@@ -82,7 +84,7 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: 'n' + i, type: 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
@@ -239,6 +241,8 @@ const queryMeter = windowQueryLiteralMode ? countWindowQueryWork(SqliteKnowledge
 const neighborMeter = windowQueryLiteralMode ? countWindowNeighborNodes(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const incidentMeter = windowQueryLiteralMode ? countWindowIncidentWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const edgeMeter = windowEdgeProbeMode ? countWindowEdgeWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+if (paragraphLocationMode) Object.assign(stats, { paragraphLocations: [], sourceUnchanged: true })
+let delayNextParagraphLocation = false
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -366,6 +370,7 @@ ${reviewSaveMode ? '<nav><button onclick="control(\'change-hidden\')">Change hid
 ${heldSaveMode ? '<nav><button onclick="control(\'hold-next-save\')">Hold next graph save</button><button onclick="control(\'reject-held-save\')">Reject held graph save</button></nav>' : ''}
 ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">Hold next quick report</button><button onclick="control(\'release-verification\')">Release quick report</button></nav>' : ''}
 ${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
+${paragraphLocationMode ? '<nav><button onclick="control(\'delay-paragraph\')">Delay next source location</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
 <script>
 window.fixtureErrors=[];window.addEventListener('error',event=>fixtureErrors.push(event.message));
@@ -419,6 +424,7 @@ const server = createServer(async (req, res) => {
       issueStatuses: store.getDocument(documentId).verification?.lastReport?.issues?.map(issue => issue.status) }); return }
     if (url.pathname.startsWith('/fixture/') && req.method === 'POST') {
       if (url.pathname.endsWith('/offline')) dropStatus = 2
+      if (paragraphLocationMode && url.pathname.endsWith('/delay-paragraph')) delayNextParagraphLocation = true
       if (url.pathname.endsWith('/reject-save')) rejectSave = true
       if (visualInspectorMode && url.pathname.endsWith('/hold-visual')) holdVisual = true
       if (visualInspectorMode && url.pathname.endsWith('/malformed-visual')) malformedVisual = true
@@ -473,6 +479,25 @@ const server = createServer(async (req, res) => {
           stats.cachedSourceResponses++
         }
         return end(JSON.stringify(payload), ...args)
+      }
+    }
+    if (paragraphLocationMode && url.pathname.endsWith('/document-load')) {
+      let raw = '', args = {}
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => { args = JSON.parse(raw || '{}') })
+      const end = res.end.bind(res)
+      res.end = (body, ...rest) => {
+        const response = JSON.parse(body)
+        if (args.focusParagraph !== undefined) {
+          const delayed = delayNextParagraphLocation
+          delayNextParagraphLocation = false
+          stats.paragraphLocations.push({ paragraph: args.focusParagraph, expectedRevision: args.expectedRevision,
+            nodeLimit: args.nodeLimit, includeSourceText: args.includeSourceText, delayed,
+            visibleNodes: response.graph?.nodes?.length, focusNodeId: response.graph?.view?.focusNodeId, revision: response.revision })
+          stats.sourceUnchanged = store.getDocument(documentId).sourceText === sourceText
+          if (delayed) { setTimeout(() => { if (!res.destroyed) end(body, ...rest) }, 1500); return res }
+        }
+        return end(body, ...rest)
       }
     }
     if (url.pathname.endsWith('/document-export')) stats.snapshotExports++

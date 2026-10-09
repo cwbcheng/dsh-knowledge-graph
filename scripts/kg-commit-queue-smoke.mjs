@@ -39,6 +39,7 @@ function makeFixture(kind, replyForCall) {
     graphRevisionRef: { current: 1 },
     graphCommitQueueRef: { current: Promise.resolve() },
     graphCommitEpochRef: { current: 0 },
+    paragraphLocateSeqRef: { current: 0 },
     currentResultRef: { current: { graph: base, sourceText: 'source' } },
     mountedSessionRef: { current: 'session' },
     verifyGenRef: { current: 0 }, factGenRef: { current: 0 }, questionAdmissionRef: { current: null },
@@ -261,7 +262,12 @@ const racing = makeFixture('document', () => { throw new Error('no graph edit ex
 const olderGraph = { ...racing.base, source: { documentId: 'older-book' }, revision: 2 }
 const newerGraph = { ...racing.base, source: { documentId: 'newer-book' }, revision: 3,
   nodes: [{ id: 'target', type: 'concept', text: 'new source' }] }
+const pendingParagraphOwner = racing.refs.paragraphLocateSeqRef.current
 const olderLoad = racing.navigate(olderGraph, false, async () => olderHistory)
+assert.notEqual(racing.refs.paragraphLocateSeqRef.current, pendingParagraphOwner,
+  'history navigation must cancel old paragraph ownership before its response arrives')
+assert.equal(racing.refs.currentResultRef.current.graph.source.documentId, 'queue-fixture',
+  'the cancellation must take effect while the previous graph is still displayed')
 const newerLoad = racing.navigate(newerGraph, false, async options => {
   assert.equal(options.query, 'target', 'dossier navigation must request the actual source node')
   return { graph: newerGraph, revision: 3, sourceText: 'new source' }
@@ -295,4 +301,4 @@ assert(messages.some(message => message.includes('任务状态已变化')))
 console.log(JSON.stringify({ ok: true, workbenches: ['document', 'trajectory'], rejectedChainStopped: true,
   freshEditAllowed: true, successfulChainSerialized: true, unconfirmedWritesStopQueue: true,
   navigationQueueIsolation: true, sameDocumentReloadFenced: true, failedNavigationPreservesOwnership: true,
-  historyRaceFenced: true, lateTaskBlocksDossierNavigation: true }))
+  historyRaceFenced: true, pendingParagraphNavigationCanceled: true, lateTaskBlocksDossierNavigation: true }))
