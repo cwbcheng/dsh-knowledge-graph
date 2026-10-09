@@ -8674,17 +8674,17 @@
         const localMoved = new Set()
         const localGap = 22
         const localRadius = 260
-        const rowPeers = (id) => {
-          const p = placed.get(id)
-          if (!p) return []
-          return nodes.filter((node) => node.id !== id && placed.has(node.id) && placed.get(node.id).y === p.y)
-        }
         const slotFree = (id, x) => {
           const s = sizes.get(id)
           const half = (s ? s.w : 170) / 2
-          return rowPeers(id).every((peer) => {
-            const pp = placed.get(peer.id)
-            const ps = sizes.get(peer.id)
+          const p = placed.get(id)
+          if (!p || p.y !== p.y) return true
+          // This pass only changes x. Reuse the row's original node order,
+          // reading live positions after each move; NaN has no strict-equal row.
+          return (rowIds.get(p.y) || []).every((peerId) => {
+            if (peerId === id) return true
+            const pp = placed.get(peerId)
+            const ps = sizes.get(peerId)
             const peerHalf = (ps ? ps.w : 170) / 2
             return x + half + localGap <= pp.x - peerHalf || x - half - localGap >= pp.x + peerHalf
           })
