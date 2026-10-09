@@ -2,6 +2,7 @@
 // by an owned temporary SQLite database and a manually controlled model.
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +17,14 @@ import { countWindowNeighborNodes } from './kg-document-window-neighbor-nodes-be
 import { countWindowIncidentWork } from './kg-document-window-incident-benchmark.mjs'
 import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
 import { countWindowEdgeWork } from './kg-document-window-edge-reads.mjs'
+
+// Compare real clients without changing the worktree or the fixture's host/data.
+const clientRef = process.argv.find(arg => arg.startsWith('--client-ref='))?.slice('--client-ref='.length)
+const clientCommit = clientRef ? execFileSync('git', ['rev-parse', '--verify', clientRef + '^{commit}'], { encoding: 'utf8' }).trim() : null
+const clientSnapshot = clientCommit ? execFileSync('git', ['show', clientCommit + ':lib/client.js'], {
+  encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+}) : null
+if (clientCommit) console.log('CLIENT_REF=' + clientCommit)
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -518,7 +527,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) { await routes.get('/api/dsh-knowledge-graph').handler(req, res); return }
     if (url.pathname === '/client.js') {
-      const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      const source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
       const marker = '      // --------------------------- slot registration'
       if (!source.includes(marker)) throw new Error('client exposure marker not found')
       res.setHeader('content-type', 'text/javascript')

@@ -33,18 +33,25 @@ for (const [name, fixture] of channelRegressionFixtures()) {
     const stats = {}, prepared = await prepareChannelFixture(engine, fixture, { mode, stats })
     assert.equal(sha(prepared), frozen[name][mode === 'layered' ? 0 : 1], name + '/' + mode + ': frozen complete geometry')
     assert.deepEqual([...new Set(prepared.progress.map(item => item.stage))], [0, 1, 2, 3])
-    if (mode !== 'layered') assert.equal(stats.bandCalls || 0, 0, 'Other layout modes must not calculate channel bands')
+    if (mode !== 'layered') {
+      assert.equal(stats.bandCalls || 0, 0, 'Other layout modes must not calculate channel bands')
+      assert.equal(stats.indexNodeVisits || 0, 0, 'Other layout modes must not build a channel index')
+    }
     if (name === 'components' && mode === 'layered') componentStats = stats
     assert.equal(fixtureJSON(fixture), original, 'Preparation must not mutate graph data, dimensions or layout')
     cases++
   }
 }
 assert.equal(componentStats.caches.size, 3, 'Same rounded rows in three components need separate bands')
-assert(componentStats.bandNodeVisits < componentStats.bandCalls * 17 / 3, 'Repeated channels must avoid repeated component scans')
+assert.equal(componentStats.bandNodeVisits || 0, 0, 'Component channels must use indexed row bounds')
 const largeStats = {}
 await prepareChannelFixture(engine, channelFixture(2000), { stats: largeStats })
-assert.equal(largeStats.bandNodeVisits, 998000, '2000-node preparation must scan each requested channel only once')
+assert.equal(largeStats.indexNodeVisits, 2000, 'Row bounds and highest row share one actual component scan')
+assert.equal(largeStats.bandNodeVisits || 0, 0, 'Indexed channel lookup must not rescan nodes')
+assert.equal(largeStats.maxRowNodeVisits || 0, 0, 'Same-row edges must not rescan the highest row')
 assert.equal([...largeStats.caches][0].size, 499, 'Only requested rows may occupy channel entries')
+assert.equal([...largeStats.indexes][0].rows.size, 500, 'Only actual rows may occupy the bounds index')
+assert.equal(componentStats.indexNodeVisits, 51, 'Every exact component must be scanned once')
 
 // Reuse the very same graph, positions and component arrays for a subsequent
 // prepare: there must be no channel maps surviving the prior preparation.
@@ -65,18 +72,34 @@ for (const cancelAtRoute of [1, 45]) {
 // Explicit band bounds keep empty rows, missing dimensions and inverted bands
 // readable beside the full-scene golden hashes.
 const nodes = [{ id: 'a' }, { id: 'b' }], pos = new Map([['a', { x: 0, y: 0 }], ['b', { x: 0, y: 240 }]])
-assert.deepEqual(engine.channelBand(0, [], new Map(), new Map(), new Map()), [124, 356])
-assert.deepEqual(engine.channelBand(0, nodes, new Map(), pos, new Map()), [44, 196])
-assert.deepEqual(engine.channelBand(0, nodes, new Map([['a', { h: 520 }], ['b', { h: 70 }]]), pos, new Map()), [232.5, 232.5])
-const cache = new Map(), broken = new Map(pos); broken.delete('b')
-assert.throws(() => engine.channelBand(0, nodes, new Map(), broken, cache), TypeError)
-assert.equal(cache.size, 0, 'A failed channel calculation cannot leave a partial cache entry')
-assert.deepEqual(engine.channelBand(0, nodes, new Map(), pos, cache), [44, 196])
+const indexedBand = (row, group, dimensions, points) => engine.channelBand(row, group, dimensions, points,
+  engine.buildLayeredChannelIndex(group, dimensions, points))
+assert.deepEqual(indexedBand(0, [], new Map(), new Map()), [124, 356])
+assert.deepEqual(indexedBand(0, nodes, new Map(), pos), [44, 196])
+assert.deepEqual(indexedBand(0, nodes, new Map([['a', { h: 520 }], ['b', { h: 70 }]]), pos), [232.5, 232.5])
+const broken = new Map(pos); broken.delete('b')
+assert.throws(() => engine.buildLayeredChannelIndex(nodes, new Map(), broken), TypeError)
+assert.deepEqual(indexedBand(0, nodes, new Map(), pos), [44, 196], 'A failed index must not affect a subsequent calculation')
+// Preserve strict-row and non-finite fallback behavior, including NaN row
+// keys (Map uses a different equality rule than the original comparisons).
+for (const y of [NaN, Infinity, -Infinity, -0, -240.25, 119.9, 120.1]) {
+  const unusual = new Map(pos); unusual.set('b', { x: 0, y })
+  for (const h of [NaN, Infinity, -Infinity, undefined, 0, 520]) {
+    const dimensions = new Map([['b', { h }]])
+    for (const row of [NaN, Infinity, -Infinity, -2, -1, 0, 1, 4]) {
+      assert.deepEqual(indexedBand(row, nodes, dimensions, unusual), engine.channelBand(row, nodes, dimensions, unusual), 'Exact non-finite and missing-row band fallback')
+    }
+    const edge = { fromNodeId: 'a', toNodeId: 'a' }
+    assert.deepEqual(engine.layeredOrthoPath(edge, pos.get('a'), pos.get('a'), dimensions, unusual, nodes, 0,
+      engine.buildLayeredChannelIndex(nodes, dimensions, unusual)), engine.layeredOrthoPath(edge, pos.get('a'), pos.get('a'), dimensions, unusual, nodes, 0), 'Exact highest-row fallback')
+  }
+}
 for (const path of ['src/index.client.js', 'lib/client.js']) {
   const source = readFileSync(new URL('../' + path, import.meta.url), 'utf8')
-  for (const name of ['prepareGraphScene', 'channelBand', 'layeredOrthoPath']) assert(source.includes(engine[name].toString()), path + ': generated ' + name + ' parity')
+  for (const name of ['prepareGraphScene', 'buildLayeredChannelIndex', 'channelBand', 'layeredOrthoPath']) assert(source.includes(engine[name].toString()), path + ': generated ' + name + ' parity')
 }
 console.log(JSON.stringify({ ok: true, frozenScenes: cases, sameRowComponentIsolation: true,
-  bandCalls: componentStats.bandCalls, bandNodeVisits: componentStats.bandNodeVisits,
-  largeNodes: 2000, largeBandNodeVisits: largeStats.bandNodeVisits,
+  bandCalls: componentStats.bandCalls, bandNodeVisits: componentStats.bandNodeVisits || 0,
+  largeNodes: 2000, largeIndexNodeVisits: largeStats.indexNodeVisits, largeBandNodeVisits: largeStats.bandNodeVisits || 0,
+  largeMaxRowNodeVisits: largeStats.maxRowNodeVisits || 0, nonFiniteFallback: true,
   freshPreparationMaps: true, changedDimensions: true, cancelledRetry: true, generatedParity: true }))

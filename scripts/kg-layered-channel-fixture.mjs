@@ -13,11 +13,12 @@ export function loadChannelEngine(viewer) {
   const environment = { window: { React: {} }, console }
   const marker = 'window.KGViewer = {'
   assert(viewer.includes(marker), 'Generated viewer export marker')
-  runInNewContext(viewer.replace(marker, marker + names.join(',') + ','), environment)
+  const exported = [...names, ...(viewer.includes('function buildLayeredChannelIndex(') ? ['buildLayeredChannelIndex'] : [])]
+  runInNewContext(viewer.replace(marker, marker + exported.join(',') + ','), environment)
   const engine = environment.window.KGViewer
   // Compile both comparison engines into this same realm. VM Math/global
   // lookup overhead must not masquerade as a channel optimization.
-  for (const name of ['channelBand', 'corridorFree', 'findCorridor', 'buildLayeredEdgeLanes']) {
+  for (const name of ['channelBand', 'corridorFree', 'findCorridor', 'buildLayeredEdgeLanes', ...(engine.buildLayeredChannelIndex ? ['buildLayeredChannelIndex'] : [])]) {
     engine[name] = new Function('LAYER_Y_GAP', 'return (' + engine[name].toString() + ')')(engine.LAYER_Y_GAP)
   }
   for (const name of ['clamp', 'placeLayeredEdgeLabel', 'computeBBox']) {
@@ -25,9 +26,16 @@ export function loadChannelEngine(viewer) {
   }
   engine.edgeRelationLabel = new Function('REL_LABEL', 'EDGE_ATTRIBUTE_LABELS',
     'return (' + engine.edgeRelationLabel.toString() + ')')(engine.REL_LABEL, engine.EDGE_ATTRIBUTE_LABELS)
-  engine.routeWith = band => new Function('channelBand', 'clamp', 'corridorFree', 'findCorridor', 'LAYER_Y_GAP',
-    'return (' + engine.layeredOrthoPath.toString() + ')')(
-    band, engine.clamp, engine.corridorFree, engine.findCorridor, engine.LAYER_Y_GAP)
+  engine.routeWith = (band, stats) => {
+    let source = engine.layeredOrthoPath.toString()
+    // Count the actual old same-row loop only outside benchmark timing.
+    if (stats) source = source.replace(
+      'for (const n of nodes) maxRow = Math.max(maxRow, Math.round(pos.get(n.id).y / LAYER_Y_GAP))',
+      'for (const n of nodes) { stats.maxRowNodeVisits = (stats.maxRowNodeVisits || 0) + 1; maxRow = Math.max(maxRow, Math.round(pos.get(n.id).y / LAYER_Y_GAP)) }')
+    return new Function('channelBand', 'clamp', 'corridorFree', 'findCorridor', 'LAYER_Y_GAP', 'stats',
+      'return (' + source + ')')(
+      band, engine.clamp, engine.corridorFree, engine.findCorridor, engine.LAYER_Y_GAP, stats)
+  }
   engine.layeredOrthoPath = engine.routeWith(engine.channelBand)
   return engine
 }
@@ -74,7 +82,9 @@ export async function prepareChannelFixture(engine, fixture, { mode = 'layered',
   const band = stats ? (row, group, dimensions, points, cache) => {
     stats.bandCalls = (stats.bandCalls || 0) + 1
     if (cache) {
-      stats.caches ||= new Set(); stats.caches.add(cache)
+      const bands = cache.bands || cache
+      stats.caches ||= new Set(); stats.caches.add(bands)
+      stats.indexes ||= new Set(); if (cache.rows) stats.indexes.add(cache)
       stats.cacheGroups ||= new Map()
       if (stats.cacheGroups.has(cache)) assert.equal(stats.cacheGroups.get(cache), group, 'Channel cache must belong to one component')
       stats.cacheGroups.set(cache, group)
@@ -92,7 +102,7 @@ export async function prepareChannelFixture(engine, fixture, { mode = 'layered',
     })
     return engine.channelBand(row, countedNodes, dimensions, points, cache)
   } : engine.channelBand
-  const route = engine.routeWith(band)
+  const route = engine.routeWith(band, stats)
   const deps = {
     performance: cancelAtRoute === null ? performance : { now: () => routes * 9 },
     async graphPaint(signal) { signal.throwIfAborted() },
@@ -106,6 +116,15 @@ export async function prepareChannelFixture(engine, fixture, { mode = 'layered',
       return layout
     },
     buildLayeredEdgeLanes: engine.buildLayeredEdgeLanes,
+    buildLayeredChannelIndex(group, dimensions, points) {
+      const counted = stats ? new Proxy(group, { get(target, key, receiver) {
+        if (key === Symbol.iterator) return function* () {
+          for (const node of target) { stats.indexNodeVisits = (stats.indexNodeVisits || 0) + 1; yield node }
+        }
+        return Reflect.get(target, key, receiver)
+      } }) : group
+      return engine.buildLayeredChannelIndex(counted, dimensions, points)
+    },
     layeredOrthoPath(...args) { routes++; return route(...args) },
     measureLabel: text => String(text).length * 8,
     edgeRelationLabel: engine.edgeRelationLabel,

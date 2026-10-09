@@ -28,7 +28,10 @@ export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly =
         && fixture.sizes.has(edge.fromNodeId) && fixture.sizes.has(edge.toNodeId)).map(edge => {
         const group = fixture.layout.componentNodesById?.get(edge.fromNodeId) || fixture.nodes
         let bands = byNodes?.get(group)
-        if (byNodes && !bands) { bands = new Map(); byNodes.set(group, bands) }
+        if (byNodes && !bands) {
+          bands = engine.buildLayeredChannelIndex ? engine.buildLayeredChannelIndex(group, fixture.sizes, fixture.layout.pos) : new Map()
+          byNodes.set(group, bands)
+        }
         return engine.layeredOrthoPath(edge, fixture.layout.pos.get(edge.fromNodeId), fixture.layout.pos.get(edge.toNodeId),
           fixture.sizes, fixture.layout.pos, group, lanes.get(edge) || 0, bands)
       })
@@ -49,13 +52,15 @@ export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly =
     const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? null
     samples.push({ name, mode, nodes: fixture.nodes.length, edges: fixture.edges.length,
       beforeBandNodeVisits: stats[0].bandNodeVisits || 0, currentBandNodeVisits: stats[1].bandNodeVisits || 0,
+      beforeMaxRowNodeVisits: stats[0].maxRowNodeVisits || 0, currentMaxRowNodeVisits: stats[1].maxRowNodeVisits || 0,
+      beforeIndexNodeVisits: stats[0].indexNodeVisits || 0, currentIndexNodeVisits: stats[1].indexNodeVisits || 0,
       currentBandEntries: [...(stats[1].caches || [])].reduce((sum, cache) => sum + cache.size, 0),
       beforeRouteMs: median(routeTimes[0]), currentRouteMs: median(routeTimes[1]),
       beforeRoutingStageMs: median(routingStageTimes[0]), currentRoutingStageMs: median(routingStageTimes[1]),
       routeTimes, routingStageTimes, exactPreparedGeometry: true, exactRouteAnchors: true })
   }
   return { ok: true, baseline, validateOnly, warmups: validateOnly ? 0 : 3, trials: validateOnly ? 0 : 9, samples,
-    scope: 'Both real generated routing engines compiled in one realm. Route-only time excludes lane building and label collision placement; actual prepare stage 2 time includes lanes, routes, fixed-width label measurement and actual label collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh channel maps per run; band work counted outside timing. Scopes are not added. No CI timing threshold.' }
+    scope: 'Both real generated routing engines compiled in one realm. Route-only time includes index allocation and excludes lane building and label collision placement; actual prepare stage 2 time includes lanes, routes, fixed-width label measurement and actual label collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh channel indexes/maps per run; actual index, band and same-row iterations counted outside timing. Scopes are not added. No CI timing threshold.' }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
