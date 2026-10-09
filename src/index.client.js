@@ -8996,8 +8996,10 @@ export default function clientPlugin() {
       // by a margin. `bendAware` adds fan-rank clearance for curved modes.
       function applyEdgeNodeRepulsion(nodes, edges, sizes, pos, segmentsOf, bendAware) {
         const n = nodes.length
-        if (n < 2) return
-        const ids = nodes.map((x) => x.id)
+        if (n < 2 || edges.length === 0) return
+        // Point and measurement identities stay fixed during this phase.
+        // Recompute paths and read current x/y on every iteration as before.
+        const bodies = nodes.map(node => ({ id: node.id, point: pos.get(node.id), size: sizes.get(node.id) }))
         const bendRank = new Map()
         if (bendAware) {
           const bySrc = new Map()
@@ -9020,7 +9022,7 @@ export default function clientPlugin() {
         for (let iter = 0; iter < 40; iter++) {
           const pushX = new Map()
           const pushY = new Map()
-          for (const id of ids) { pushX.set(id, 0); pushY.set(id, 0) }
+          for (const body of bodies) { pushX.set(body.id, 0); pushY.set(body.id, 0) }
           let moved = 0
           for (const e of edges) {
             const segs = segmentsOf(e, sizes, pos)
@@ -9037,10 +9039,10 @@ export default function clientPlugin() {
               if (len2 < 1) continue
               const nx = -aby / Math.sqrt(len2)
               const ny = abx / Math.sqrt(len2)
-              for (const node of nodes) {
-                if (node.id === e.fromNodeId || node.id === e.toNodeId) continue
-                const p = pos.get(node.id)
-                const s = sizes.get(node.id)
+              for (const body of bodies) {
+                if (body.id === e.fromNodeId || body.id === e.toNodeId) continue
+                const p = body.point
+                const s = body.size
                 let t = ((p.x - x1) * abx + (p.y - y1) * aby) / len2
                 t = Math.max(0, Math.min(1, t))
                 const cx = x1 + abx * t
@@ -9051,16 +9053,17 @@ export default function clientPlugin() {
                 if (d < minDist) {
                   const push = minDist - d
                   const sgn = (p.x - cx) * nx + (p.y - cy) * ny >= 0 ? 1 : -1
-                  pushX.set(node.id, pushX.get(node.id) + nx * push * sgn)
-                  pushY.set(node.id, pushY.get(node.id) + ny * push * sgn)
+                  pushX.set(body.id, pushX.get(body.id) + nx * push * sgn)
+                  pushY.set(body.id, pushY.get(body.id) + ny * push * sgn)
                   moved += 1
                 }
               }
             }
           }
           if (moved === 0) break
-          for (const id of ids) {
-            const p = pos.get(id)
+          for (const body of bodies) {
+            const id = body.id
+            const p = body.point
             const px = clamp(pushX.get(id), -60, 60)
             const py = clamp(pushY.get(id), -60, 60)
             p.x += px
@@ -9176,16 +9179,18 @@ export default function clientPlugin() {
         // pairs apart ALONG their center line (axis-only separation can
         // oscillate on closed topologies).
         if (n > 1) {
-          const ids = nodes.map((x) => x.id)
+          // Refresh references after edge repulsion; every pair still reads
+          // the coordinates produced by preceding pushes in this pass.
+          const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
           for (let iter = 0; iter < 120; iter++) {
             if (onProgress && iter % 10 === 0) onProgress({ detail: '消除残余重叠，第 ' + (iter + 1) + ' 轮' })
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
-                const a = pos.get(ids[i])
-                const b = pos.get(ids[j])
-                const sa = sizes.get(ids[i])
-                const sb = sizes.get(ids[j])
+                const a = bodies[i].point
+                const b = bodies[j].point
+                const sa = bodies[i].size
+                const sb = bodies[j].size
                 if (!sa || !sb) continue
                 let dx = b.x - a.x
                 let dy = b.y - a.y
@@ -10118,15 +10123,17 @@ export default function clientPlugin() {
       function resolveNodeOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed for this invocation;
+        // x/y remain mutable and are read anew for every pair.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 120; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               let dx = b.x - a.x
               let dy = b.y - a.y

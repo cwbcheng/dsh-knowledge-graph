@@ -42,6 +42,7 @@ const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const edgeGeometryPerformanceMode = process.argv.includes('--edge-geometry-performance')
 const radialWidthsMode = process.argv.includes('--radial-widths')
+const forceOverlapsMode = process.argv.includes('--force-overlaps')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
 const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
@@ -79,7 +80,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode ? 800 : snapshotMode || layeredLocalMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -297,6 +298,9 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
 if (edgeGeometryPerformanceMode || radialWidthsMode) {
   graph.edges = graph.nodes.slice(1).map(node => ({ fromNodeId: 'n0', toNodeId: node.id, relation: 'supports' }))
   if (edgeGeometryPerformanceMode) for (let i = 1; i < graph.nodes.length - 1; i += 4) graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + (i + 1), relation: 'example' })
+}
+if (forceOverlapsMode) {
+  graph.edges = graph.nodes.slice(1, 1 + Math.floor(graph.nodes.length / 8)).map((node, i) => ({ fromNodeId: 'n' + i, toNodeId: node.id, relation: 'supports' }))
   graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }
 store.saveGraph(graph, { sourceText })
