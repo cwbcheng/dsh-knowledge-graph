@@ -599,6 +599,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 
 ### 关键设计
 
+- **普通节点选择复用**：工作台更新时创建新的图片渲染回调，只有实际显示原图预览的节点依赖它；普通文字节点和总览中隐藏的预览复用视觉状态未变的外框。显示或更新预览仍使用最新回调，节点操作也使用当前回调，缓存仍限于当前视口。`node scripts/kg-graph-node-selection-benchmark.mjs f710ff5 --replace-image-renderer` 与省略提交参数的当前版本对照：12,000 个文字节点连续四次选择，实际外框重建 48,000 → 16；保留完整证据。这是生产场景的确定性构造计数，脚本中的模拟 hooks 耗时不代表浏览器延迟或绘制收益。
+
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
 - **Evidence 自带 provenance，且关系证据必须证明关系本身**：节点与关系的 canonical evidence 统一为 `evidence[{ documentId, sourceId, chunkId, paragraph, quote }]`。Host 在写入门重新验证 quote 确实存在于对应 source unit，并按 paragraph 对应的 source-version/chunk 补齐 provenance；无法认证的 quote 不会被包装成 evidence。相同 Node/Edge 在后续 source-version 再次出现时会合并 evidence，而不是丢掉后来的证据。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等 relation。

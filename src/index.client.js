@@ -12053,13 +12053,16 @@ export default function clientPlugin() {
             if (!presentation) return null
             const { s, meta, x, y, issueSev, issueCount, hub, sourceImage, aria } = presentation
             const labels = nodeLabels.get(node.id)
+            // Only rendered image previews depend on this callback. Ordinary
+            // nodes and hidden overview details keep their cached SVG elements.
+            const imageRenderer = sourceImage && showNodeDetails ? renderSourceImage : null
             const sel = selectedNodeId === node.id, flash = flashId === node.id
             const inFocus = focus ? related.ids.has(node.id) : true
             const dim = !!focus && !inFocus, neighbor = !!focus && inFocus && !sel
             const state = (sel ? 1 : 0) | (flash ? 2 : 0) | (dim ? 4 : 0) | (neighbor ? 8 : 0)
             const cached = nodeCache.current.get(node.id)
             if (cached?.presentation === presentation && cached.labels === labels && cached.state === state &&
-                cached.renderSourceImage === renderSourceImage && cached.showNodeDetails === showNodeDetails) {
+                cached.renderSourceImage === imageRenderer && cached.showNodeDetails === showNodeDetails) {
               next.set(node.id, cached)
               return cached.element
             }
@@ -12102,7 +12105,7 @@ export default function clientPlugin() {
                 : null,
               labels,
             )
-            next.set(node.id, { presentation, labels, state, renderSourceImage, showNodeDetails, element })
+            next.set(node.id, { presentation, labels, state, renderSourceImage: imageRenderer, showNodeDetails, element })
             return element
           })
           // Keep only the current viewport; panning never accumulates old nodes.
