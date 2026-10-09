@@ -1,4 +1,5 @@
-// Count all Map reads in the actual compactRows phase, including preparation.
+// Count Map reads and collision scratch allocations in actual compactRows,
+// including preparation; freeze every raw and merged candidate interval.
 // node scripts/kg-layered-row-benchmark.mjs [ce6c56a] [--smoke | --large]
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -12,17 +13,20 @@ if (revision?.startsWith('-')) throw new Error('Expected a git revision')
 const bundle = revision ? execFileSync('git', ['show', revision + ':extension/viewer.js'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   : readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const usesEntries = bundle.includes('for (const peerEntry of rows.get(r) || [])')
+const usesPool = bundle.includes('intervalPool.push(interval)')
 assert(usesEntries || bundle.includes('const peer = placed.get(peerId), ps = sizes.get(peerId)'))
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const phaseFields = ['calls','passes','nodeVisits','rowCandidates','rowRequests','linkRowChecks','blockedSamples','blockedEntries','peerVisits','moves']
 function engine(instrument = true) {
   let source = bundle
+  const intervalHashes = { raw: createHash('sha256'), merged: createHash('sha256') }
   const work = { calls: 0, passes: 0, nodeVisits: 0, rowCandidates: 0, rowRequests: 0, linkRowChecks: 0,
-    blockedSamples: 0, blockedEntries: 0, peerVisits: 0, moves: [], mapReads: {} }
+    blockedSamples: 0, blockedEntries: 0, peerVisits: 0, moves: [], mapReads: {},
+    intervalObjects: 0, mergedCopies: 0, scratchArrays: 0, poolReuses: 0, poolPeak: 0 }
   if (instrument) {
     const start = source.indexOf('const compactRows = () => {'), end = source.indexOf('\n        compactRows()', start)
     assert(start >= 0 && end > start)
-    const block = source.slice(start, end)
+    let block = source.slice(start, end)
       .replace('const compactRows = () => {', 'const compactRows = () => { work.calls++;')
       .replace('let moved = false', 'work.passes++; let moved = false')
       .replace('for (const node of ordered) {', 'for (const node of ordered) { work.nodeVisits++;')
@@ -33,14 +37,25 @@ function engine(instrument = true) {
       .replace('for (const peerId of rows.get(r) || []) {', 'for (const peerId of rows.get(r) || []) { work.peerVisits++;')
       .replace('for (const peerEntry of rows.get(r) || []) {', 'for (const peerEntry of rows.get(r) || []) { work.peerVisits++;')
       .replace('moved = true', 'work.moves.push([id,p.x,p.y]); moved = true')
-      .replace('blocked.sort(', 'work.blockedSamples++; work.blockedEntries += blocked.length; blocked.sort(')
+      .replace('blocked.sort(', 'work.blockedSamples++; work.blockedEntries += blocked.length; recordIntervals("raw", blocked); blocked.sort(')
+      .replace('const preferred = backboneLane.has(id)', 'recordIntervals("merged", merged); const preferred = backboneLane.has(id)')
       .replace(/\b(placed|sizes|weightedAdj|lower|upper|rows|backboneLane|before|compact)\.get\(/g, 'readMap($1, "$1", ')
+    if (usesPool) block = block
+      .replace('if (!blocked) { blocked = []; merged = []; intervalPool = [] }', 'if (!blocked) { work.scratchArrays += 3; blocked = []; merged = []; intervalPool = [] }')
+      .replace('intervalPool.push(interval)', 'work.intervalObjects++; intervalPool.push(interval); work.poolPeak = Math.max(work.poolPeak, intervalPool.length)')
+      .replace('interval.left = peer.x - half;', 'work.poolReuses++; interval.left = peer.x - half;')
+    else block = block
+      .replace('const blocked = []', 'work.scratchArrays++; const blocked = []')
+      .replace('const merged = []', 'work.scratchArrays++; const merged = []')
+      .replace('blocked.push({', 'work.intervalObjects++; blocked.push({')
+      .replace('else merged.push({ ...interval })', 'else { work.mergedCopies++; merged.push({ ...interval }) }')
     source = source.slice(0, start) + block + source.slice(end)
   }
   const context = { window: { React: {} }, console, work, setTimeout, clearTimeout, setInterval, clearInterval,
+    recordIntervals: (label, values) => intervalHashes[label].update(JSON.stringify(values)),
     readMap: (map, label, id) => { work.mapReads[label] = (work.mapReads[label] || 0) + 1; return map.get(id) } }
   runInNewContext(source.replace('window.KGViewer = {', 'window.KGViewer = { layoutLayered, graphLayoutWorkerSource,'), context)
-  return { ...context.window.KGViewer, work }
+  return { ...context.window.KGViewer, work, intervalHashes }
 }
 function fixture(count, shape) {
   const nodes = Array.from({ length: count }, (_, i) => ({ id: 'n' + i, text: 'Node ' + i, type: i % 3 === 0 ? 'claim' : 'fact' }))
@@ -91,6 +106,23 @@ const frozen = {
   "cycle/12000": [2923556,1608127,"aa756201e4e481a4bca0c798518f8b84f1a989dfa8e6772b9d20586a80a3749e","84453d488c4af75a17dfefe15d692bb62c8300c0e22af591dfd498ed8ff035f9","65b93dce8baabc76af9f0d5bde3a72fb2dac34df3054d43e6cc982f47303c6b6"],
   "groups/12000": [2193268,1098138,"7670ebef704f51e34dca069a1314eca1b1248b4abf14327e807106466475837e","9603aa319c8ffed64594a785ff98b586d925f73203704c750c30df997c1eaf58","9f343697314bc9e9b47f18ef2b40ddc85598e43aed924206ddb8c01ebc65a95b"],
 }
+// 60642a3: old objects/copies/arrays, pooled objects/arrays/reuses/peak,
+// and every candidate's complete raw/merged bounds before scratch is reused.
+const frozenIntervals = {
+  "wide/80": [23958,1865,3228,27,3,23931,27,"fc9c00e10e6d2bd04975b2ac2643d30352b21757b39d0c371f419c70ad006984","ac081e8784918a92b49802fd0d5eb996afc53bf18c0d8a6c2e5f99b6c41b8be0"],
+  "chain/80": [0,0,0,0,0,0,0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+  "cycle/80": [653,652,1318,2,3,651,2,"7080dff0e81b2abc852780baa72b0e8a87202a5fd99ca158eea6145f67898b58","9d634b65d0b11c574fa461fcbb0fb5ad05792f66ce89c9327766c1db57796b84"],
+  "groups/80": [1730,569,1018,50,30,1680,5,"a7fb21c4ee56b288524289443f34cc87d0b0e0ad34e17416972fa2c30aea4d01","6f2d4c912a7c8b5c62fbf7399628991b419b8c7b1a1a6a16895f1c71c6abdd1a"],
+  "tree/80": [13942,2634,3118,18,3,13924,18,"273907aaaaa276fe67316c41e75e5eb784d75716adfbd7baf1743bee6676b8be","2178390e37163eae57b8a8f028a419ae14eba53ef4656bcaa7f04af1152e19b1"],
+  "wide/800": [4729161,100207,188206,94,3,4729067,94,"175aba3fff2a149d1d790b52bca77bcb5fb267be6fb2dd56175884d542568212","0ad6741d64d49c0c1c7e6d35712dd800f1517f5d91648cb6bf3430291b149522"],
+  "chain/800": [0,0,0,0,0,0,0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+  "cycle/800": [6503,6502,13018,2,3,6501,2,"85abbdbc818be07dabcbda9e914525aac50e5b3821b9ffebacba402c0c30ad88","a1dd5a6e4c82ec610db5c56638c99fbae44b5a743c3d41b19b8f9275a6dd9d0f"],
+  "groups/800": [17030,5609,10018,500,300,16530,5,"2876a6a8bbf9d7afd9a2a5438b399010356e70f58d4b3b31b3a83c97f12efeb1","f6f14d7727d9fa4fb6dc9a6d00c917d41e972e246045fc39468e5fe9c61291af"],
+  "tree/800": [249746,38430,37858,34,3,249712,34,"2b1663ffae5e60cd4e45fa8ade2afdeedf0702d847cce46100b5397900feb712","647ab650d1bdbc5470db5b0834458bf5b379de107890417bd3a76b57db597a83"],
+  "chain/12000": [0,0,0,0,0,0,0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+  "cycle/12000": [97503,97502,195018,2,3,97501,2,"c018a3a9ce409b9752f684d203770bcbd7efb6ba50bf4f8392720623455a21e9","bb70ab2fda028d85d72ee5ae5a5ec2c8ec2126c631549357f7246e350006dc89"],
+  "groups/12000": [255030,84009,150018,7500,4500,247530,5,"e729cd8c56255edec3303da51ad0fd0995cfe2b34d94cc898d5f38b06be315bb","8f4f357f5ab5459b0d16e4735ac0d6b42e1c9319f974ef593b91c0dfed0b5f8e"],
+}
 for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chain','cycle','groups','tree']) {
   const count = smoke ? 80 : large ? 12000 : 800, data = fixture(count, shape), run = engine(), progress = []
   const readonly = JSON.stringify({ ...data, sizes: [...data.sizes] })
@@ -100,9 +132,16 @@ for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chai
   assert.equal(JSON.stringify({ ...data, sizes: [...data.sizes] }), readonly)
   assert.equal(mapReads, expected[usesEntries ? 1 : 0])
   assert.equal(digest(result), expected[2]); assert.equal(digest(run.work.moves), expected[3]); assert.equal(digest(phase), expected[4])
+  const intervals = frozenIntervals[shape + '/' + count]
+  const allocations = [run.work.intervalObjects, run.work.mergedCopies, run.work.scratchArrays, run.work.poolReuses, run.work.poolPeak]
+  assert.deepEqual(allocations, usesPool ? [intervals[3],0,intervals[4],intervals[5],intervals[6]] : [intervals[0],intervals[1],intervals[2],0,0])
+  const rawIntervals = run.intervalHashes.raw.digest('hex'), mergedIntervals = run.intervalHashes.merged.digest('hex')
+  assert.equal(rawIntervals, intervals[7]); assert.equal(mergedIntervals, intervals[8])
+  assert.equal(run.work.intervalObjects + run.work.poolReuses, run.work.blockedEntries)
   console.log(JSON.stringify({ baseline: revision || 'current', shape, nodes: count, mapReads, mapReadsByName: run.work.mapReads,
     result: digest(result), moveTrace: digest(run.work.moves), phase: digest(phase), peerVisits: run.work.peerVisits, blockedEntries: run.work.blockedEntries,
-    scope: 'All Map reads in the actual compactRows phase, including preparation. Original candidate rows, neighbour scans, interval construction and every live-coordinate update remain; no full-layout or browser timing claim.' }))
+    allocations: { intervalObjects: allocations[0], mergedCopies: allocations[1], scratchArrays: allocations[2], poolReuses: allocations[3], poolPeak: allocations[4] }, rawIntervals, mergedIntervals,
+    scope: 'All Map reads and collision scratch allocations in actual compactRows, including preparation. Candidate rows, neighbour scans, interval bounds and every live-coordinate update remain; no full-layout or browser timing claim.' }))
 }
 const sample = (ids, links) => ({ nodes: ids.map(id => ({ id, text: 'Node ' + id, type: 'fact' })),
   edges: links.map(([fromNodeId, toNodeId, relation = 'supports']) => ({ fromNodeId, toNodeId, relation })),
@@ -162,4 +201,5 @@ assert.equal(digest(snapshot(reconnected, [], dynamic.nodes)), digest(snapshot(f
 console.log(JSON.stringify({ baseline: revision || 'current', controls: { originalRankConstraintsAndRowOrder: true, allLiveRelocationsFrozen: true,
   numericStringAndFalseyIds: true, reasoningDagAndCycleFallback: true, duplicateIdRowMembership: true, emptySingletonAndMissingSizes: true,
   readonlyInputsAndSharedCanonicalMembers: true, actualWorkerMetadataAndThrottledCompletion: true, cancellationPropagates: true,
-  newTopologyAndMeasurements: true }, scope: 'Row geometry is scoped to one compactRows invocation. Existing viewer-loading regressions also cover UI worker fallback and stale results.' }))
+  newTopologyAndMeasurements: true, rawAndMergedIntervalsFrozenBeforeReuse: true, lazyScratchAndComponentScope: true },
+  scope: 'Row geometry and collision scratch are scoped to one compactRows invocation. Existing viewer-loading regressions also cover UI worker fallback and stale results.' }))

@@ -8516,6 +8516,9 @@
           for (const entry of before.values()) addRow(entry)
           const maxRow = Math.max(...rows.keys())
           const maxHeight = Math.max(...Array.from(before.values(), (entry) => entry.size.h))
+          // Each candidate consumes its intervals immediately. Reuse scratch
+          // storage, rewriting both bounds before every use; it never escapes.
+          let blocked, merged, intervalPool
           for (let pass = 0; pass < 12; pass++) {
             let moved = false
             const ordered = pass % 2 === 0 ? nodes : nodes.slice().reverse()
@@ -8550,7 +8553,8 @@
                 // Preserve inter-row channels: a new same-row edge would need
                 // outer routing space not included in the component rectangle.
                 if (links.some((link) => row === rowOf(link.id) && before.get(id).y !== before.get(link.id).y)) continue
-                const blocked = []
+                if (!blocked) { blocked = []; merged = []; intervalPool = [] }
+                blocked.length = 0
                 const reach = Math.ceil((size.h + maxHeight + 36) / (2 * LAYER_Y_GAP))
                 for (let r = row - reach; r <= row + reach; r++) {
                   for (const peerEntry of rows.get(r) || []) {
@@ -8558,15 +8562,22 @@
                     const peer = peerEntry.point, ps = peerEntry.size
                     if (Math.abs(peer.y - y) >= (size.h + ps.h) / 2 + 18) continue
                     const half = (size.w + ps.w) / 2 + 18
-                    blocked.push({ left: peer.x - half, right: peer.x + half })
+                    let interval = intervalPool[blocked.length]
+                    if (!interval) {
+                      interval = { left: peer.x - half, right: peer.x + half }
+                      intervalPool.push(interval)
+                    } else {
+                      interval.left = peer.x - half; interval.right = peer.x + half
+                    }
+                    blocked.push(interval)
                   }
                 }
                 blocked.sort((a, b) => a.left - b.left)
-                const merged = []
+                merged.length = 0
                 for (const interval of blocked) {
                   const last = merged[merged.length - 1]
                   if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
-                  else merged.push({ ...interval })
+                  else merged.push(interval)
                 }
                 const preferred = backboneLane.has(id) ? backboneLane.get(id) : meanX
                 const occupied = merged.find((interval) => preferred > interval.left && preferred < interval.right)
