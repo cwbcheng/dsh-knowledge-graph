@@ -7820,8 +7820,10 @@
       // by a margin. `bendAware` adds fan-rank clearance for curved modes.
       function applyEdgeNodeRepulsion(nodes, edges, sizes, pos, segmentsOf, bendAware) {
         const n = nodes.length
-        if (n < 2) return
-        const ids = nodes.map((x) => x.id)
+        if (n < 2 || edges.length === 0) return
+        // Point and measurement identities stay fixed during this phase.
+        // Recompute paths and read current x/y on every iteration as before.
+        const bodies = nodes.map(node => ({ id: node.id, point: pos.get(node.id), size: sizes.get(node.id) }))
         const bendRank = new Map()
         if (bendAware) {
           const bySrc = new Map()
@@ -7844,7 +7846,7 @@
         for (let iter = 0; iter < 40; iter++) {
           const pushX = new Map()
           const pushY = new Map()
-          for (const id of ids) { pushX.set(id, 0); pushY.set(id, 0) }
+          for (const body of bodies) { pushX.set(body.id, 0); pushY.set(body.id, 0) }
           let moved = 0
           for (const e of edges) {
             const segs = segmentsOf(e, sizes, pos)
@@ -7861,10 +7863,10 @@
               if (len2 < 1) continue
               const nx = -aby / Math.sqrt(len2)
               const ny = abx / Math.sqrt(len2)
-              for (const node of nodes) {
-                if (node.id === e.fromNodeId || node.id === e.toNodeId) continue
-                const p = pos.get(node.id)
-                const s = sizes.get(node.id)
+              for (const body of bodies) {
+                if (body.id === e.fromNodeId || body.id === e.toNodeId) continue
+                const p = body.point
+                const s = body.size
                 let t = ((p.x - x1) * abx + (p.y - y1) * aby) / len2
                 t = Math.max(0, Math.min(1, t))
                 const cx = x1 + abx * t
@@ -7875,16 +7877,17 @@
                 if (d < minDist) {
                   const push = minDist - d
                   const sgn = (p.x - cx) * nx + (p.y - cy) * ny >= 0 ? 1 : -1
-                  pushX.set(node.id, pushX.get(node.id) + nx * push * sgn)
-                  pushY.set(node.id, pushY.get(node.id) + ny * push * sgn)
+                  pushX.set(body.id, pushX.get(body.id) + nx * push * sgn)
+                  pushY.set(body.id, pushY.get(body.id) + ny * push * sgn)
                   moved += 1
                 }
               }
             }
           }
           if (moved === 0) break
-          for (const id of ids) {
-            const p = pos.get(id)
+          for (const body of bodies) {
+            const id = body.id
+            const p = body.point
             const px = clamp(pushX.get(id), -60, 60)
             const py = clamp(pushY.get(id), -60, 60)
             p.x += px
@@ -8000,16 +8003,18 @@
         // pairs apart ALONG their center line (axis-only separation can
         // oscillate on closed topologies).
         if (n > 1) {
-          const ids = nodes.map((x) => x.id)
+          // Refresh references after edge repulsion; every pair still reads
+          // the coordinates produced by preceding pushes in this pass.
+          const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
           for (let iter = 0; iter < 120; iter++) {
             if (onProgress && iter % 10 === 0) onProgress({ detail: '消除残余重叠，第 ' + (iter + 1) + ' 轮' })
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
-                const a = pos.get(ids[i])
-                const b = pos.get(ids[j])
-                const sa = sizes.get(ids[i])
-                const sb = sizes.get(ids[j])
+                const a = bodies[i].point
+                const b = bodies[j].point
+                const sa = bodies[i].size
+                const sb = bodies[j].size
                 if (!sa || !sb) continue
                 let dx = b.x - a.x
                 let dy = b.y - a.y
@@ -8129,7 +8134,7 @@
           // Radius from the ring's ACTUAL node widths (circumference must fit
           // every node plus a gap), so rings never overlap and stay circular.
           let sumW = 0
-          for (const id of list) sumW += sizes.get(id) ? sizes.get(id).w : 150
+          for (const node of list) sumW += sizes.get(node.id) ? sizes.get(node.id).w : 150
           const need = (sumW + list.length * 24) / (2 * Math.PI)
           const R = l === 0 ? 0 : Math.max(prevR + 240, need)
           prevR = R
@@ -8272,13 +8277,13 @@
             }
           }
           if (local.size === 0) {
-            let hub = nodes.find((node) => node.id === component[0])
+            // Degrees already use IDs. Keep BFS order for equal-degree ties.
+            let hubId = component[0]
             for (const id of component) {
-              const node = nodes.find((candidate) => candidate.id === id)
-              if (node && deg.get(node.id) > deg.get(hub.id)) hub = node
+              if (deg.get(id) > deg.get(hubId)) hubId = id
             }
-            const bfs = [hub.id]
-            local.set(hub.id, 0)
+            const bfs = [hubId]
+            local.set(hubId, 0)
             while (bfs.length > 0) {
               const id = bfs.shift()
               for (const nb of adj.get(id) || []) {
@@ -8429,7 +8434,12 @@
         }
         const sortByNeighbours = (list, filter) => {
           const idx = new Map(list.map((node, i) => [node.id, i]))
+          // Positions and the direction filter stay fixed during this sort.
+          // Small layers have little reuse; retain their original mean path.
+          const reuseMeans = list.length >= 4
           const meanOf = (node) => {
+            const cached = reuseMeans ? idx.get(node.id) : null
+            if (cached && typeof cached === 'object') return cached.mean
             const id = node.id
             let weightedSum = 0
             let totalWeight = 0
@@ -8438,13 +8448,15 @@
               const p = pos.get(link.id)
               if (p) { weightedSum += p.x * link.weight; totalWeight += link.weight }
             }
-            return totalWeight > 0 ? weightedSum / totalWeight : Infinity
+            const mean = totalWeight > 0 ? weightedSum / totalWeight : Infinity
+            if (reuseMeans) idx.set(id, { index: cached, mean })
+            return mean
           }
           list.sort((a, b) => {
             const ma = meanOf(a)
             const mb = meanOf(b)
             if (ma !== mb) return ma - mb
-            return idx.get(a.id) - idx.get(b.id)
+            return reuseMeans ? idx.get(a.id).index - idx.get(b.id).index : idx.get(a.id) - idx.get(b.id)
           })
         }
 
@@ -8485,7 +8497,12 @@
         // actual two-dimensional edge length on the router's row grid; otherwise
         // a wide level can strand a direct neighbour dozens of visual rows away.
         const compactRows = () => {
-          const before = new Map(nodes.map((node) => [node.id, { ...placed.get(node.id) }]))
+          // Keep the original coordinates for rank constraints and live geometry
+          // for row collisions. Dimensions stay fixed during this invocation.
+          const before = new Map(nodes.map((node) => {
+            const point = placed.get(node.id)
+            return [node.id, { ...point, id: node.id, point, size: sizes.get(node.id) || { w: 200, h: 120 } }]
+          }))
           const lower = new Map(nodes.map((node) => [node.id, []]))
           const upper = new Map(nodes.map((node) => [node.id, []]))
           for (const edge of edges) {
@@ -8503,22 +8520,41 @@
           }
           const rows = new Map()
           const rowOf = (id) => Math.round(placed.get(id).y / LAYER_Y_GAP)
-          const addRow = (id) => {
-            const row = rowOf(id)
+          const addRow = (entry) => {
+            const row = Math.round(entry.point.y / LAYER_Y_GAP)
             if (!rows.has(row)) rows.set(row, new Set())
-            rows.get(row).add(id)
+            rows.get(row).add(entry)
           }
-          for (const node of nodes) addRow(node.id)
+          for (const entry of before.values()) addRow(entry)
           const maxRow = Math.max(...rows.keys())
-          const maxHeight = Math.max(...nodes.map((node) => (sizes.get(node.id) || { h: 120 }).h))
+          const maxHeight = Math.max(...Array.from(before.values(), (entry) => entry.size.h))
+          // Each candidate consumes its intervals immediately. Reuse scratch
+          // storage, rewriting both bounds before every use; it never escapes.
+          // Strictly overlapping prefixes prove a single union without sorting.
+          // Keep the first equal left endpoint, including its signed zero.
+          const mergeConnected = (blocked, merged) => {
+            let left = blocked[0].left, right = blocked[0].right
+            if (!(left < right)) return false
+            for (let i = 1; i < blocked.length; i++) {
+              const interval = blocked[i]
+              if (!(interval.left < right && interval.right > left)) return false
+              if (interval.left < left) left = interval.left
+              right = Math.max(right, interval.right)
+            }
+            const interval = blocked[0]
+            interval.left = left; interval.right = right
+            merged.push(interval)
+            return true
+          }
+          let blocked, merged, intervalPool
           for (let pass = 0; pass < 12; pass++) {
             let moved = false
             const ordered = pass % 2 === 0 ? nodes : nodes.slice().reverse()
             for (const node of ordered) {
-              const id = node.id, p = placed.get(id)
+              const id = node.id, entry = before.get(id), p = entry.point
               const links = weightedAdj.get(id)
               if (!links || links.length === 0) continue
-              const size = sizes.get(id) || { w: 200, h: 120 }
+              const size = entry.size
               let total = 0, meanX = 0, meanY = 0
               for (const link of links) {
                 const peer = placed.get(link.id)
@@ -8545,23 +8581,36 @@
                 // Preserve inter-row channels: a new same-row edge would need
                 // outer routing space not included in the component rectangle.
                 if (links.some((link) => row === rowOf(link.id) && before.get(id).y !== before.get(link.id).y)) continue
-                const blocked = []
+                if (!blocked) { blocked = []; merged = []; intervalPool = [] }
+                blocked.length = 0
                 const reach = Math.ceil((size.h + maxHeight + 36) / (2 * LAYER_Y_GAP))
                 for (let r = row - reach; r <= row + reach; r++) {
-                  for (const peerId of rows.get(r) || []) {
-                    if (peerId === id) continue
-                    const peer = placed.get(peerId), ps = sizes.get(peerId) || { w: 200, h: 120 }
+                  // Members start and move on the row grid. Even the tallest
+                  // peer in a distant row cannot pass the strict vertical test.
+                  if (Math.abs(r * LAYER_Y_GAP - y) >= (size.h + maxHeight) / 2 + 18) continue
+                  for (const peerEntry of rows.get(r) || []) {
+                    if (peerEntry.id === id) continue
+                    const peer = peerEntry.point, ps = peerEntry.size
                     if (Math.abs(peer.y - y) >= (size.h + ps.h) / 2 + 18) continue
                     const half = (size.w + ps.w) / 2 + 18
-                    blocked.push({ left: peer.x - half, right: peer.x + half })
+                    let interval = intervalPool[blocked.length]
+                    if (!interval) {
+                      interval = { left: peer.x - half, right: peer.x + half }
+                      intervalPool.push(interval)
+                    } else {
+                      interval.left = peer.x - half; interval.right = peer.x + half
+                    }
+                    blocked.push(interval)
                   }
                 }
-                blocked.sort((a, b) => a.left - b.left)
-                const merged = []
-                for (const interval of blocked) {
-                  const last = merged[merged.length - 1]
-                  if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
-                  else merged.push({ ...interval })
+                merged.length = 0
+                if (blocked.length < 32 || !mergeConnected(blocked, merged)) {
+                  blocked.sort((a, b) => a.left - b.left)
+                  for (const interval of blocked) {
+                    const last = merged[merged.length - 1]
+                    if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
+                    else merged.push(interval)
+                  }
                 }
                 const preferred = backboneLane.has(id) ? backboneLane.get(id) : meanX
                 const occupied = merged.find((interval) => preferred > interval.left && preferred < interval.right)
@@ -8573,9 +8622,9 @@
                 }
               }
               if (best.x !== p.x || best.y !== p.y) {
-                rows.get(rowOf(id)).delete(id)
+                rows.get(rowOf(id)).delete(entry)
                 p.x = best.x; p.y = best.y
-                addRow(id)
+                addRow(entry)
                 moved = true
               }
             }
@@ -8674,17 +8723,17 @@
         const localMoved = new Set()
         const localGap = 22
         const localRadius = 260
-        const rowPeers = (id) => {
-          const p = placed.get(id)
-          if (!p) return []
-          return nodes.filter((node) => node.id !== id && placed.has(node.id) && placed.get(node.id).y === p.y)
-        }
         const slotFree = (id, x) => {
           const s = sizes.get(id)
           const half = (s ? s.w : 170) / 2
-          return rowPeers(id).every((peer) => {
-            const pp = placed.get(peer.id)
-            const ps = sizes.get(peer.id)
+          const p = placed.get(id)
+          if (!p || p.y !== p.y) return true
+          // This pass only changes x. Reuse the row's original node order,
+          // reading live positions after each move; NaN has no strict-equal row.
+          return (rowIds.get(p.y) || []).every((peerId) => {
+            if (peerId === id) return true
+            const pp = placed.get(peerId)
+            const ps = sizes.get(peerId)
             const peerHalf = (ps ? ps.w : 170) / 2
             return x + half + localGap <= pp.x - peerHalf || x - half - localGap >= pp.x + peerHalf
           })
@@ -8789,33 +8838,38 @@
         return pos
       }
 
-      function packDisconnectedComponents(nodes, edges, sizes, pos, gap) {
+      function packDisconnectedComponents(nodes, edges, sizes, pos, gap, knownComponents) {
         if (!Array.isArray(nodes) || nodes.length < 2) return pos
         const order = new Map(nodes.map((node, index) => [node.id, index]))
-        const ids = new Set(nodes.map((node) => node.id))
-        const adj = new Map(nodes.map((node) => [node.id, new Set()]))
-        for (const edge of edges || []) {
-          if (!edge || !ids.has(edge.fromNodeId) || !ids.has(edge.toNodeId) || edge.fromNodeId === edge.toNodeId) continue
-          adj.get(edge.fromNodeId).add(edge.toNodeId)
-          adj.get(edge.toNodeId).add(edge.fromNodeId)
-        }
-        const seen = new Set()
-        const components = []
-        for (const node of nodes) {
-          if (seen.has(node.id)) continue
-          const component = []
-          const queue = [node.id]
-          seen.add(node.id)
-          while (queue.length > 0) {
-            const id = queue.shift()
-            component.push(id)
-            for (const neighbor of adj.get(id) || []) {
-              if (seen.has(neighbor)) continue
-              seen.add(neighbor)
-              queue.push(neighbor)
-            }
+        // Layered layout already discovered these components in this call.
+        // Force layout still discovers its own; packing never mutates the groups.
+        let components = knownComponents
+        if (!components) {
+          const ids = new Set(nodes.map((node) => node.id))
+          const adj = new Map(nodes.map((node) => [node.id, new Set()]))
+          for (const edge of edges || []) {
+            if (!edge || !ids.has(edge.fromNodeId) || !ids.has(edge.toNodeId) || edge.fromNodeId === edge.toNodeId) continue
+            adj.get(edge.fromNodeId).add(edge.toNodeId)
+            adj.get(edge.toNodeId).add(edge.fromNodeId)
           }
-          components.push(component)
+          const seen = new Set()
+          components = []
+          for (const node of nodes) {
+            if (seen.has(node.id)) continue
+            const component = []
+            const queue = [node.id]
+            seen.add(node.id)
+            while (queue.length > 0) {
+              const id = queue.shift()
+              component.push(id)
+              for (const neighbor of adj.get(id) || []) {
+                if (seen.has(neighbor)) continue
+                seen.add(neighbor)
+                queue.push(neighbor)
+              }
+            }
+            components.push(component)
+          }
         }
         if (components.length <= 1) return pos
         const boxes = components.map((component) => {
@@ -8934,7 +8988,11 @@
           for (const [id, point] of local) merged.set(id, point)
           if (onProgress) onProgress({ detail: '已布局 ' + merged.size + '/' + nodes.length + ' 个节点', completed: merged.size, total: nodes.length })
         }
-        const pos = packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38)
+        // One component needs no packing, ID copy or packing order table.
+        const pos = components.length > 1
+          ? packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38,
+            components.map(component => component.map(node => node.id)))
+          : merged
         return { pos, componentNodesById, componentKeyById }
       }
 
@@ -8942,15 +9000,17 @@
       function resolveNodeOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed for this invocation;
+        // x/y remain mutable and are read anew for every pair.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 120; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               let dx = b.x - a.x
               let dy = b.y - a.y
@@ -8986,15 +9046,17 @@
       function resolveAngleOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed during this call;
+        // keep reading the current x/y after each angular adjustment.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 160; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               const ra = Math.hypot(a.x, a.y)
               const rb = Math.hypot(b.x, b.y)
@@ -10843,6 +10905,11 @@
         const edgeDetail = selectedEdgeId != null ? (edges || [])[selectedEdgeId] : null
 
         const markerId = markerIdRef.current
+        // Selection and current callbacks change presentation, not routing.
+        // Populate lazily for overview's incident edges; replacing the graph or
+        // geometry inputs releases the previous graph's bounded cache.
+        const edgeGeometryCache = useMemo(() => new Map(),
+          [edges, nodes, layout, sizes, layoutMode, layeredEdgeGeometry, edgeLanes, edgeFan])
         // ---- bundle parallel relations between the same ordered node pair ----
         // When two nodes are joined by several edges (e.g. supports/aims_at/
         // example), drawing one line per edge floods the layout with near-
@@ -10871,103 +10938,112 @@
           const dim = focus ? !inFocus : false
           const rel = edgeRelationLabel(edge)
           const issueSev = issueSeverityForEdge(edge)
-          // Radial mode: polylines — each edge leaves its source radially,
-          // sweeps along an arc just OUTSIDE the outer ring of its two
-          // endpoints, then enters the target radially. Hub edges stay
-          // straight spokes. Other modes keep the fanned quadratic bezier.
-          let d
-          let lblX
-          let lblY
-          let labelW = layoutMode === 'layered' ? 0 : measureLabel(rel) + 10
-          let labelH = 15
-          let labelHidden = false
-          if (edge.fromNodeId === edge.toNodeId) {
-            const x = a.x + sa.w / 2, y = a.y
-            d = 'M ' + x + ' ' + (y - 12) + ' C ' + (x + 70) + ' ' + (y - 65) + ' ' + (x + 70) + ' ' + (y + 65) + ' ' + x + ' ' + (y + 12)
-            lblX = x + 55; lblY = y
-          } else if (layoutMode === 'layered') {
-            const geometry = layeredEdgeGeometry.get(edge)
+          let geometry = edgeGeometryCache.get(edge)
+          if (!geometry) {
+            geometry = (() => {
+              // Radial mode: polylines — each edge leaves its source radially,
+              // sweeps along an arc just OUTSIDE the outer ring of its two
+              // endpoints, then enters the target radially. Hub edges stay
+              // straight spokes. Other modes keep the fanned quadratic bezier.
+              let d
+              let lblX
+              let lblY
+              let labelW = layoutMode === 'layered' ? 0 : measureLabel(rel) + 10
+              let labelH = 15
+              let labelHidden = false
+              if (edge.fromNodeId === edge.toNodeId) {
+                const x = a.x + sa.w / 2, y = a.y
+                d = 'M ' + x + ' ' + (y - 12) + ' C ' + (x + 70) + ' ' + (y - 65) + ' ' + (x + 70) + ' ' + (y + 65) + ' ' + x + ' ' + (y + 12)
+                lblX = x + 55; lblY = y
+              } else if (layoutMode === 'layered') {
+                const geometry = layeredEdgeGeometry.get(edge)
+                if (!geometry) return null
+                d = geometry.d
+                lblX = geometry.lblX
+                lblY = geometry.lblY
+                labelW = geometry.labelW
+                labelH = geometry.labelH
+                labelHidden = geometry.labelHidden
+              } else if (layoutMode === 'radial') {
+                const ra = Math.hypot(a.x, a.y)
+                const rb = Math.hypot(b.x, b.y)
+                if (ra < 1 || rb < 1) {
+                  // hub spokes: straight, border to border, but dodge ring nodes
+                  // that sit on the same angle
+                  const target = ra < 1 ? b : a
+                  const tR = ra < 1 ? rb : ra
+                  const tA = ra < 1 ? a : b
+                  const tBase = Math.atan2(target.y, target.x)
+                  const tFree = radialFreeAngle(tBase, 0, tR, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const exu = Math.cos(tFree)
+                  const eyu = Math.sin(tFree)
+                  const sT = sizes.get(edge.toNodeId)
+                  const sF = sizes.get(edge.fromNodeId)
+                  const tOut = sF ? intersectDist(sF, exu, eyu) : 0
+                  const tIn = sT ? intersectDist(sT, exu, eyu) : 0
+                  const pxA = tA.x + exu * tOut
+                  const pyA = tA.y + eyu * tOut
+                  const pxB = target.x - exu * tIn
+                  const pyB = target.y - eyu * tIn
+                  d = 'M ' + pxA + ' ' + pyA + ' L ' + pxB + ' ' + pyB
+                  const llen = Math.max(Math.hypot(pxA + pxB, pyA + pyB), 0.001)
+                  lblX = (pxA + pxB) / 2 + ((pxA + pxB) / 2) / llen * 14
+                  lblY = (pyA + pyB) / 2 + ((pyA + pyB) / 2) / llen * 14
+                } else {
+                  // The arc sweeps in the EMPTY BAND just OUTSIDE the outer of the
+                  // two endpoint rings (ring radii grow by 240px, nodes extend
+                  // ~60px, so band = ring+60..ring+180): every edge stays local
+                  // instead of looping around the whole graph. Lane offsets spread
+                  // parallel arcs within the band (clamped so they never enter a
+                  // ring's node zone).
+                  const lane = edgeLanes.get(edge) || 0
+                  const R = Math.max(ra, rb) + 90 + Math.min(Math.abs(lane) * 16, 90)
+                  const ta = Math.atan2(a.y, a.x)
+                  const tb = Math.atan2(b.y, b.x)
+                  const sA = sizes.get(edge.fromNodeId)
+                  const sB = sizes.get(edge.toNodeId)
+                  const tae = radialFreeAngle(ta, ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const tbe = radialFreeAngle(tb, rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const exu = Math.cos(tae)
+                  const eyu = Math.sin(tae)
+                  const exv = Math.cos(tbe)
+                  const eyv = Math.sin(tbe)
+                  const tA = sA ? intersectDist(sA, exu, eyu) : 0
+                  const tB = sB ? intersectDist(sB, exv, eyv) : 0
+                  const pxA = a.x + exu * tA
+                  const pyA = a.y + eyu * tA
+                  const pxB = b.x + exv * tB
+                  const pyB = b.y + eyv * tB
+                  const arc = arcSegments(tae, tbe, R)
+                  const parts = ['M ' + pxA + ' ' + pyA]
+                  for (const ap of arc) parts.push('L ' + ap[0] + ' ' + ap[1])
+                  parts.push('L ' + pxB + ' ' + pyB)
+                  d = parts.join(' ')
+                  let diff = tbe - tae
+                  while (diff > Math.PI) diff -= 2 * Math.PI
+                  while (diff < -Math.PI) diff += 2 * Math.PI
+                  const midAng = tae + diff / 2
+                  lblX = Math.cos(midAng) * (R + 14)
+                  lblY = Math.sin(midAng) * (R + 14)
+                }
+              } else {
+                // Quadratic bezier with a signed perpendicular bend: same-source
+                // edges fan out symmetrically by rank. Endpoints are clipped along
+                // the curve tangents so the line and arrowhead touch node borders.
+                const geometry = bezierGeometry(a, b, sa, sb, edgeFan.get(edge) || 0)
+                d = 'M ' + geometry.x1 + ' ' + geometry.y1 + ' Q ' + geometry.cx + ' ' + geometry.cy + ' ' + geometry.x2 + ' ' + geometry.y2
+                const bx = (geometry.x1 + 2 * geometry.cx + geometry.x2) / 4
+                const by = (geometry.y1 + 2 * geometry.cy + geometry.y2) / 4
+                lblX = bx - geometry.ey * 11
+                lblY = by + geometry.ex * 11
+              }
+              if ((layoutMode === 'neighborhood' && edges.length > 12) || overview) labelHidden = true
+              return { d, lblX, lblY, labelW, labelH, labelHidden }
+            })()
             if (!geometry) return null
-            d = geometry.d
-            lblX = geometry.lblX
-            lblY = geometry.lblY
-            labelW = geometry.labelW
-            labelH = geometry.labelH
-            labelHidden = geometry.labelHidden
-          } else if (layoutMode === 'radial') {
-            const ra = Math.hypot(a.x, a.y)
-            const rb = Math.hypot(b.x, b.y)
-            if (ra < 1 || rb < 1) {
-              // hub spokes: straight, border to border, but dodge ring nodes
-              // that sit on the same angle
-              const target = ra < 1 ? b : a
-              const tR = ra < 1 ? rb : ra
-              const tA = ra < 1 ? a : b
-              const tBase = Math.atan2(target.y, target.x)
-              const tFree = radialFreeAngle(tBase, 0, tR, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const exu = Math.cos(tFree)
-              const eyu = Math.sin(tFree)
-              const sT = sizes.get(edge.toNodeId)
-              const sF = sizes.get(edge.fromNodeId)
-              const tOut = sF ? intersectDist(sF, exu, eyu) : 0
-              const tIn = sT ? intersectDist(sT, exu, eyu) : 0
-              const pxA = tA.x + exu * tOut
-              const pyA = tA.y + eyu * tOut
-              const pxB = target.x - exu * tIn
-              const pyB = target.y - eyu * tIn
-              d = 'M ' + pxA + ' ' + pyA + ' L ' + pxB + ' ' + pyB
-              const llen = Math.max(Math.hypot(pxA + pxB, pyA + pyB), 0.001)
-              lblX = (pxA + pxB) / 2 + ((pxA + pxB) / 2) / llen * 14
-              lblY = (pyA + pyB) / 2 + ((pyA + pyB) / 2) / llen * 14
-            } else {
-              // The arc sweeps in the EMPTY BAND just OUTSIDE the outer of the
-              // two endpoint rings (ring radii grow by 240px, nodes extend
-              // ~60px, so band = ring+60..ring+180): every edge stays local
-              // instead of looping around the whole graph. Lane offsets spread
-              // parallel arcs within the band (clamped so they never enter a
-              // ring's node zone).
-              const lane = edgeLanes.get(edge) || 0
-              const R = Math.max(ra, rb) + 90 + Math.min(Math.abs(lane) * 16, 90)
-              const ta = Math.atan2(a.y, a.x)
-              const tb = Math.atan2(b.y, b.x)
-              const sA = sizes.get(edge.fromNodeId)
-              const sB = sizes.get(edge.toNodeId)
-              const tae = radialFreeAngle(ta, ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const tbe = radialFreeAngle(tb, rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const exu = Math.cos(tae)
-              const eyu = Math.sin(tae)
-              const exv = Math.cos(tbe)
-              const eyv = Math.sin(tbe)
-              const tA = sA ? intersectDist(sA, exu, eyu) : 0
-              const tB = sB ? intersectDist(sB, exv, eyv) : 0
-              const pxA = a.x + exu * tA
-              const pyA = a.y + eyu * tA
-              const pxB = b.x + exv * tB
-              const pyB = b.y + eyv * tB
-              const arc = arcSegments(tae, tbe, R)
-              const parts = ['M ' + pxA + ' ' + pyA]
-              for (const ap of arc) parts.push('L ' + ap[0] + ' ' + ap[1])
-              parts.push('L ' + pxB + ' ' + pyB)
-              d = parts.join(' ')
-              let diff = tbe - tae
-              while (diff > Math.PI) diff -= 2 * Math.PI
-              while (diff < -Math.PI) diff += 2 * Math.PI
-              const midAng = tae + diff / 2
-              lblX = Math.cos(midAng) * (R + 14)
-              lblY = Math.sin(midAng) * (R + 14)
-            }
-          } else {
-            // Quadratic bezier with a signed perpendicular bend: same-source
-            // edges fan out symmetrically by rank. Endpoints are clipped along
-            // the curve tangents so the line and arrowhead touch node borders.
-            const geometry = bezierGeometry(a, b, sa, sb, edgeFan.get(edge) || 0)
-            d = 'M ' + geometry.x1 + ' ' + geometry.y1 + ' Q ' + geometry.cx + ' ' + geometry.cy + ' ' + geometry.x2 + ' ' + geometry.y2
-            const bx = (geometry.x1 + 2 * geometry.cx + geometry.x2) / 4
-            const by = (geometry.y1 + 2 * geometry.cy + geometry.y2) / 4
-            lblX = bx - geometry.ey * 11
-            lblY = by + geometry.ex * 11
+            edgeGeometryCache.set(edge, geometry)
           }
-          if ((layoutMode === 'neighborhood' && edges.length > 12) || overview) labelHidden = true
+          const { d, lblX, lblY, labelW, labelH, labelHidden } = geometry
           return h(GraphEdgeInteraction, { key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i, render: (hover, interaction) => h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: parallelGroup.get(edge)?.length > 1 ? 'group' : 'button', tabIndex: 0,
@@ -11043,7 +11119,7 @@
               )
             })() : null,
           ) })
-        }), [sceneEdges, edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, selectedRelation, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
+        }), [sceneEdges, edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, selectedRelation, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, edgeGeometryCache, onSelectEdge, markerId])
 
         // Selection changes borders/opacity, not thousands of text/tspan
         // subtrees. Reuse those elements so React also skips reconciling them.

@@ -32,6 +32,12 @@ const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
 const workPackagesMode = process.argv.includes('--work-packages')
 const snapshotMode = process.argv.includes('--snapshot')
+const layeredLocalMode = process.argv.includes('--layered-local')
+const layoutConnectedMode = process.argv.includes('--layout-connected')
+const layoutComponentsMode = process.argv.includes('--layout-components') || layoutConnectedMode
+const layeredHubMode = process.argv.includes('--layered-hub')
+const layeredRowsMode = process.argv.includes('--layered-rows')
+const layeredSweepMode = process.argv.includes('--layered-sweeps')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
@@ -39,6 +45,9 @@ const graphReviewMode = process.argv.includes('--graph-review')
 const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
+const edgeGeometryPerformanceMode = process.argv.includes('--edge-geometry-performance')
+const radialWidthsMode = process.argv.includes('--radial-widths')
+const forceOverlapsMode = process.argv.includes('--force-overlaps')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
 const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
@@ -76,7 +85,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: layoutComponentsMode || layeredHubMode || layeredRowsMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || layeredSweepMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -110,11 +119,39 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: layeredLocalMode ? i === 0 ? 'concept' : ['example', 'definition', 'concept', 'concept', 'counter_example'][i % 5] : (layeredHubMode || layeredRowsMode || layeredSweepMode) && i % 3 === 0 ? 'claim' : paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
+}
+if (layeredLocalMode) {
+  const relations = ['example', 'defines', 'analogy', 'contains', 'counter_example']
+  graph.edges = graph.nodes.slice(1).map((node, i) => {
+    const anchor = graph.nodes[Math.floor(i / 3)], relation = relations[(i + 1) % relations.length]
+    return { fromNodeId: relation === 'contains' ? anchor.id : node.id,
+      toNodeId: relation === 'contains' ? node.id : anchor.id, relation }
+  })
+  graph.edges.push({ fromNodeId: 'n1', toNodeId: 'n0', relation: 'supports' })
+}
+if (layoutComponentsMode) {
+  for (let i = 1; i < graph.nodes.length; i++) if (layoutConnectedMode || i % 8 !== 0) graph.edges.push({
+    fromNodeId: 'n' + (layoutConnectedMode ? 0 : i - i % 8), toNodeId: 'n' + i, relation: 'supports',
+    evidence: [{ paragraph: layoutConnectedMode ? 0 : i - i % 8, quote: paragraphs[layoutConnectedMode ? 0 : i - i % 8] }],
+  })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
+}
+if (layeredHubMode || layeredRowsMode) {
+  for (let i = 1; i < graph.nodes.length; i++) graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n' + i, relation: 'supports',
+    evidence: [{ paragraph: 0, quote: paragraphs[0] }] })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
+}
+if (layeredSweepMode) {
+  graph.edges = graph.nodes.slice(1).map((node, i) => ({
+    fromNodeId: graph.nodes[Math.floor(i / 3)].id, toNodeId: node.id,
+    relation: (i + 1) % 5 === 0 ? 'causes' : 'supports',
+  }))
+  graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n1', relation: 'analogy' })
 }
 if (windowDiagnosticsMode) {
   const diagnostic = diagnosticFixture().graph
@@ -282,6 +319,15 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
   Object.assign(graph.verification.lastReport.issues[i], { title: 'Conclusion omits its population restriction',
     detail: 'Check the restriction to adults.', evidence: [{ paragraph: i, quote: repairQualification }] })
 }
+if (edgeGeometryPerformanceMode || radialWidthsMode) {
+  graph.edges = graph.nodes.slice(1).map(node => ({ fromNodeId: 'n0', toNodeId: node.id, relation: 'supports' }))
+  if (edgeGeometryPerformanceMode) for (let i = 1; i < graph.nodes.length - 1; i += 4) graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + (i + 1), relation: 'example' })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
+}
+if (forceOverlapsMode) {
+  graph.edges = graph.nodes.slice(1, 1 + Math.floor(graph.nodes.length / 8)).map((node, i) => ({ fromNodeId: 'n' + i, toNodeId: node.id, relation: 'supports' }))
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
+}
 store.saveGraph(graph, { sourceText })
 const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 const originalNormalizedNodeContent = normalizedAnchorMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
@@ -432,6 +478,11 @@ ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">
 ${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
 ${paragraphLocationMode ? '<nav><button onclick="control(\'delay-paragraph\')">Delay next source location</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
+${edgeGeometryPerformanceMode ? `<nav aria-label="Routing diagnostics"><button onclick="fixtureRouteWork.radialCalls=fixtureRouteWork.nodeVisits=fixtureRouteWork.bezierCalls=0">Reset routing counters</button>
+<output id="routing-telemetry"></output></nav><script>
+window.fixtureRouteWork={radialCalls:0,nodeVisits:0,bezierCalls:0};
+setInterval(()=>document.getElementById('routing-telemetry').textContent=JSON.stringify(fixtureRouteWork),100);
+</script>` : ''}
 ${windowResponsePerformanceMode ? `<output id="window-response-telemetry" style="display:block;white-space:pre-wrap;overflow-wrap:anywhere"></output>
 <script>
 // Synthetic-data DOM timing only; wait for the actual GraphCanvas ready state.
@@ -627,7 +678,18 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) { await routes.get('/api/dsh-knowledge-graph').handler(req, res); return }
     if (url.pathname === '/client.js') {
-      const source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      let source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      if (edgeGeometryPerformanceMode) {
+        const signature = 'function radialFreeAngle(base, rFrom, rTo, excludeA, excludeB, nodes, sizes, pos) {'
+        const start = source.indexOf(signature), end = source.indexOf('\n      function ', start + signature.length)
+        if (start < 0 || end < 0) throw new Error('routing diagnostic marker not found')
+        const radial = source.slice(start, end)
+        if (radial.split('for (const n of nodes) {').length !== 2) throw new Error('routing diagnostic loop not found')
+        source = source.slice(0, start) + radial.replace(signature, signature + ' window.fixtureRouteWork.radialCalls++;')
+          .replace('for (const n of nodes) {', 'for (const n of nodes) { window.fixtureRouteWork.nodeVisits++;') + source.slice(end)
+        source = source.replace('function bezierGeometry(a, b, sa, sb, rawBend) {',
+          'function bezierGeometry(a, b, sa, sb, rawBend) { window.fixtureRouteWork.bezierCalls++;')
+      }
       const marker = '      // --------------------------- slot registration'
       if (!source.includes(marker)) throw new Error('client exposure marker not found')
       res.setHeader('content-type', 'text/javascript')
