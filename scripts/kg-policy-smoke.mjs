@@ -44,6 +44,7 @@ assert(store.includes('getDocumentWindow(documentId, options = {}, inspectStruct
   && packageJson.scripts['test:kg'].includes('kg-store-smoke.mjs')
   && packageJson.scripts['test:kg'].includes('kg-document-window-nodes-smoke.mjs')
   && packageJson.scripts.test.split('&&').some(command => command.trim() === 'npm run test:kg'), 'SQLite document-load must run bounded-window membership and hydration regressions')
+assert(packageJson.scripts['test:kg'].includes('kg-document-window-fold-smoke.mjs'), 'SQLite search must run native coercion, connection-mode and WAL snapshot regressions')
 assert(buildLib.includes('store.getDocumentWindow(documentId'), 'persistent HTTP document-load still materializes the full graph')
 assert(buildLib.includes('expectedRevision: task.baseRevision'), 'append persistence does not carry the base revision fence')
 assert(host.includes('baseRevision: Number.isInteger(task.baseRevision)') && host.includes('baseStaging'), 'append checkpoint does not preserve base revision/staging metadata')
