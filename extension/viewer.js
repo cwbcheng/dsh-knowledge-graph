@@ -6194,32 +6194,26 @@
 
       // --------------------- anchor resolution ---------------------
       // Quote normalization modes for fuzzy matching.
-      const PUNCT_CHARS = (function () {
-        const set = new Set()
-        const add = (s) => { for (const ch of s) set.add(ch) }
-        add('，。！？、；：…—（）,.!?;:()·～')
-        add(String.fromCharCode(8220) + String.fromCharCode(8221) + String.fromCharCode(8216) + String.fromCharCode(8217))
-        add(String.fromCharCode(12300) + String.fromCharCode(12301) + String.fromCharCode(12302) + String.fromCharCode(12303))
-        return set
-      })()
       function normalizeFor(s, mode) {
-        const out = []
-        const map = []
-        let pendingWS = false
-        for (let i = 0; i < s.length; i++) {
-          const ch = s[i]
-          const ws = isWS(ch)
-          const punct = PUNCT_CHARS.has(ch)
-          if (mode === 'ws' && ws) {
-            if (out.length > 0 && !pendingWS) { out.push(' '); map.push(i); pendingWS = true }
-          } else if (mode === 'punct' && punct) {
-            pendingWS = false
-          } else if (mode === 'both' && (ws || punct)) {
-            if (out.length > 0 && !pendingWS) { out.push(' '); map.push(i); pendingWS = true }
-          } else {
-            out.push(ch); map.push(i); pendingWS = false
+        // Keep the original four whitespace characters and punctuation set.
+        // Copy retained runs as slices; map every emitted UTF-16 unit back to
+        // its source offset, including the first separator in collapsed runs.
+        const pattern = mode === 'ws' ? /[ \n\t\u3000]+/g
+          : mode === 'punct' ? /[，。！？、；：…—（）,.!?;:()·～\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+/g
+          : mode === 'both' ? /[ \n\t\u3000，。！？、；：…—（）,.!?;:()·～\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+/g : null
+        const out = [], map = new Array(s.length)
+        let cursor = 0, used = 0, match
+        while (pattern && (match = pattern.exec(s))) {
+          if (match.index > cursor) {
+            out.push(s.slice(cursor, match.index))
+            for (let i = cursor; i < match.index; i++) map[used++] = i
           }
+          if (mode !== 'punct' && used > 0) { out.push(' '); map[used++] = match.index }
+          cursor = pattern.lastIndex
         }
+        out.push(s.slice(cursor))
+        for (let i = cursor; i < s.length; i++) map[used++] = i
+        map.length = used
         return { text: out.join(''), map }
       }
       function fuzzyMatch(needle, source, maxSkips) {
@@ -6269,14 +6263,29 @@
         if (exactOnly) return null
         const minLen = 3
         const maxLen = Math.min(q.length, 24)
-        for (let len = maxLen; len >= minLen; len--) {
-          const idx2 = source.indexOf(q.slice(0, len))
-          if (idx2 >= 0) return idx2
+        const partialHit = suffix => {
+          if (maxLen < minLen) return null
+          const fragment = len => suffix ? q.slice(q.length - len) : q.slice(0, len)
+          const longestHit = source.indexOf(fragment(maxLen))
+          if (longestHit >= 0) return longestHit
+          if (maxLen === minLen) return null
+          let bestHit = source.indexOf(fragment(minLen))
+          if (bestHit < 0) return null
+          // Nested prefixes/suffixes have monotone existence: a missing short
+          // fragment rules out every longer one. Find the longest surviving
+          // fragment, keeping its first source offset and prefix precedence.
+          let low = minLen, high = maxLen - 1
+          while (low < high) {
+            const len = Math.ceil((low + high) / 2)
+            const hit = source.indexOf(fragment(len))
+            if (hit >= 0) { low = len; bestHit = hit } else high = len - 1
+          }
+          return bestHit
         }
-        for (let len = maxLen; len >= minLen; len--) {
-          const idx2 = source.indexOf(q.slice(q.length - len))
-          if (idx2 >= 0) return idx2
-        }
+        const prefixHit = partialHit(false)
+        if (prefixHit != null) return prefixHit
+        const suffixHit = partialHit(true)
+        if (suffixHit != null) return suffixHit
         const rawHit = fuzzyMatch(q, source, 3)
         if (rawHit != null) return rawHit
         const pn = normalizeFor(q, 'punct')
@@ -6562,6 +6571,20 @@
         return out
       }
 
+      function sourceSpanIndexAtOffset(spans, offset) {
+        // For ordered, non-overlapping source spans, find the first span ending
+        // after the anchor. Check its start too so gaps stay unassigned and the
+        // exclusive end keeps its exact meaning.
+        let low = 0, high = spans.length
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2)
+          if (spans[mid].end <= offset) low = mid + 1
+          else high = mid
+        }
+        const span = spans[low]
+        return span && offset >= span.start && offset < span.end ? low : -1
+      }
+
       function sourceCodeRanges(source) {
         const ranges = []
         let fence = null
@@ -6603,15 +6626,33 @@
 
       function sourceTableGroups(source, paragraphs) {
         const byParagraph = new Map()
-        const codeRanges = sourceCodeRanges(source)
+        let codeRanges = null, orderedParagraphs = null, tableLookups = 0
         // Paragraphs are evidence anchors, so only change their presentation.
         // The complete source span is parsed before any row is rendered.
         for (const match of source.matchAll(/<table\b[^>]*>[\s\S]*?<\/table\s*>/gi)) {
           if (match[0].length > 100000) continue
           const start = match.index
           const end = start + match[0].length
+          if (!codeRanges) codeRanges = sourceCodeRanges(source)
           if (codeRanges.some(([from, to]) => from <= start && start < to)) continue
-          const first = paragraphs.findIndex((p) => p.start < end && p.end > start)
+          // A single table keeps the original lookup without checking every
+          // paragraph. A second lookup can amortize one range validation.
+          if (orderedParagraphs === null && ++tableLookups > 1) {
+            orderedParagraphs = true
+            let previousEnd = -Infinity
+            for (const paragraph of paragraphs) {
+              const from = paragraph?.start, to = paragraph?.end
+              if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || from < previousEnd) {
+                orderedParagraphs = false
+                break
+              }
+              previousEnd = to
+            }
+          }
+          // Source units are normally ordered and disjoint. Keep the original
+          // first-overlap behavior for malformed or imported range lists.
+          const first = orderedParagraphs ? sourceSpanIndexAtOffset(paragraphs, start)
+            : paragraphs.findIndex((p) => p.start < end && p.end > start)
           if (first < 0 || byParagraph.has(first)) continue
           let last = first
           while (last + 1 < paragraphs.length && paragraphs[last + 1].start < end) last++
@@ -6778,6 +6819,57 @@
         return resolveAnchor(node.quote, sourceText, node.text, sourceForms)
       }
 
+      function createParagraphTokenLookup(paragraphs) {
+        let paragraphTokens = null, postings = null, scores = null
+        return quote => {
+          const qt = tokenize(quote)
+          if (!qt.length) return null
+          let bestPi = -1, bestScore = 0
+          if (!paragraphTokens && !postings) {
+            // Keep a single legacy query on the original scan. A later query
+            // converts these sets without tokenizing the source again.
+            paragraphTokens = paragraphs.map(p => new Set(tokenize(p.text)))
+            for (let i = 0; i < paragraphs.length; i++) {
+              const tokens = paragraphTokens[i]
+              let score = 0
+              for (const t of qt) if (t.length >= 2 && tokens.has(t)) score += 1
+              if (score > bestScore) { bestScore = score; bestPi = i }
+            }
+          } else {
+            if (!postings) {
+              postings = new Map()
+              for (let i = 0; i < paragraphs.length; i++) {
+                for (const t of paragraphTokens[i]) {
+                  if (t.length < 2) continue
+                  const previous = postings.get(t)
+                  // Single-paragraph words need no separate posting array.
+                  if (previous === undefined) postings.set(t, i)
+                  else if (typeof previous === 'number') postings.set(t, [previous, i])
+                  else previous.push(i)
+                }
+                paragraphTokens[i] = null
+              }
+              paragraphTokens = null
+              scores = new Uint32Array(paragraphs.length)
+            }
+            scores.fill(0)
+            const weights = new Map()
+            for (const t of qt) if (t.length >= 2) weights.set(t, (weights.get(t) || 0) + 1)
+            for (const [t, weight] of weights) {
+              const matches = postings.get(t)
+              if (matches === undefined) continue
+              for (const i of typeof matches === 'number' ? [matches] : matches) {
+                const score = scores[i] + weight
+                scores[i] = score
+                // Query-word order cannot change the first-paragraph tie rule.
+                if (score > bestScore || (score === bestScore && i < bestPi)) { bestScore = score; bestPi = i }
+              }
+            }
+          }
+          return bestScore >= 2 ? paragraphs[bestPi].start : null
+        }
+      }
+
       function makeView(graph, sourceText) {
         // Every graph payload passes through here, so this is where the document's
         // ontology is installed for the render sites that read the tables above.
@@ -6791,6 +6883,9 @@
         // Normalize this document at most once per mode, not once per node.
         // Keep the cache local so switching documents cannot reuse stale offsets.
         const sourceForms = new Map()
+        // The legacy matcher and its lazy token/index state live only in this
+        // call. Direct anchors never build source tokens or score buffers.
+        const resolveTokenAnchor = createParagraphTokenLookup(paragraphs)
         const anchors = {}
         const unresolved = []
         const paraTypes = paragraphs.map(() => [])
@@ -6814,29 +6909,14 @@
         for (const n of graph.nodes) {
           // Legacy nodes without a paragraph retain quote/token fallbacks.
           let off = resolveNodeAnchor(n, sourceText, paragraphs, sourceForms)
-          if (off == null && n.quote) {
-            const qt = tokenize(n.quote)
-            if (qt.length > 0) {
-              let bestPi = -1
-              let bestScore = 0
-              for (let i = 0; i < paragraphs.length; i++) {
-                const tokens = new Set(tokenize(paragraphs[i].text))
-                let score = 0
-                for (const t of qt) {
-                  if (t.length >= 2 && tokens.has(t)) score += 1
-                }
-                if (score > bestScore) { bestScore = score; bestPi = i }
-              }
-              if (bestScore >= 2) off = paragraphs[bestPi].start
-            }
-          }
+          if (off == null && n.quote) off = resolveTokenAnchor(n.quote)
           anchors[n.id] = off
           if (off == null) unresolved.push({ id: n.id, quote: (n.quote || '').slice(0, 30) })
         }
         for (const n of graph.nodes) {
           const off = anchors[n.id]
           if (off == null) continue
-          const pi = paragraphs.findIndex((p) => off >= p.start && off < p.end)
+          const pi = sourceSpanIndexAtOffset(paragraphs, off)
           if (pi < 0) continue
           if (paraTypes[pi].indexOf(n.type) < 0) paraTypes[pi].push(n.type)
           paraNodes[pi].push(n.id)

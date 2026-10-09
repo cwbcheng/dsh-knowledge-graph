@@ -21,6 +21,18 @@ fixture.graph.nodes.push({ id: 'legacy-null', type: 'fact', text: paragraphs[42]
 const harness = await modelLearningHarness({ fixture })
 const { store, handler } = harness
 const baseline = store.getDocument(documentId)
+// Combining paragraph navigation with cached canonical diagnostics must not
+// hydrate the full graph for rejected location requests.
+let diagnosticInspections = 0
+const inspectLocation = graph => { diagnosticInspections++; return { canonicalNodeCount: graph.nodes.length } }
+const inspectedWindow = store.getDocumentWindow(documentId, { limit: 200, includeSourceText: false }, inspectLocation)
+assert.equal(inspectedWindow.graphStructureQuality.canonicalNodeCount, fixture.graph.nodes.length)
+for (const [options, code] of [
+  [{ focusParagraph: -1, expectedRevision: 1 }, 'invalid_input'],
+  [{ focusParagraph: 11999, expectedRevision: 2 }, 'revision_conflict'],
+  [{ focusParagraph: 11999, expectedRevision: 1, query: 'other' }, 'invalid_input'],
+]) assert.equal(store.getDocumentWindow(documentId, options, inspectLocation).error.code, code)
+assert.equal(diagnosticInspections, 1, 'Rejected locations must skip canonical diagnostic hydration')
 const server = createServer((req, res) => handler(req, res))
 const originalDocument = SqliteKnowledgeStore.prototype.getDocument
 const originalWindow = SqliteKnowledgeStore.prototype.getDocumentWindow
