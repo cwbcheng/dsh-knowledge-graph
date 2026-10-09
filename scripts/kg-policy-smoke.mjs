@@ -39,8 +39,10 @@ assert(host.includes('function applyGraphOperationsHost') && host.includes("raw.
 assert(host.includes('function sha256HexHost') && host.includes('randomDocumentIdHost') && !host.includes("String(text || '').slice(0, 4000)"), 'document/source identity still relies on weak/prefix hashing')
 assert(store.includes('PRIMARY KEY (document_id, source_id, chunk_id)'), 'chunk identity is not scoped by document/source/chunk')
 assert(store.includes('migrateChunkIdentitySchema()'), 'legacy chunk primary-key migration is missing')
+// Real WAL regressions enforce window/count coherence; private-call argument
+// text does not establish snapshot safety or prove those regressions run.
 assert(store.includes('getDocumentWindow(documentId, options = {}, inspectStructure)')
-  && store.includes('const window = this.#getDocumentWindow(documentId, options)')
+  && packageJson.scripts['test:kg'].includes('kg-document-window-totals-smoke.mjs')
   && packageJson.scripts['test:kg'].includes('kg-store-smoke.mjs')
   && packageJson.scripts['test:kg'].includes('kg-document-window-nodes-smoke.mjs')
   && packageJson.scripts.test.split('&&').some(command => command.trim() === 'npm run test:kg'), 'SQLite document-load must run bounded-window membership and hydration regressions')

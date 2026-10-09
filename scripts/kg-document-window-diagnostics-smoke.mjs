@@ -25,6 +25,8 @@ try {
   assert.deepEqual(opened.graph.graphStructureQuality, expected)
   assert.equal(meter.counts.fullNodeReads, 1)
   assert.equal(meter.counts.fullEdgeReads, 1)
+  assert.equal(meter.counts.totalNodeCounts, 1)
+  assert.equal(meter.counts.totalEdgeCounts, 1)
   meter.reset()
   for (const args of [{ nodeOffset: 800 }, { nodeOffset: 11200 }, { query: 'observation 1800.' }, { query: 'observation 11999.' }, { query: 'not-in-this-document' }]) {
     const response = await host.post({ documentId: large.documentId, nodeLimit: 800, includeSourceText: false, ...args })
@@ -36,6 +38,8 @@ try {
   }
   assert.equal(meter.counts.fullNodeReads, 0)
   assert.equal(meter.counts.fullEdgeReads, 0)
+  assert.equal(meter.counts.totalNodeCounts, 0)
+  assert.equal(meter.counts.totalEdgeCounts, 0)
   const warmHttp = { ...meter.counts }
   assert.deepEqual(writer.getCanonicalDocument(large.documentId), before)
   assert.equal(writer.listRevisions(large.documentId).length, 1)
@@ -144,10 +148,13 @@ try {
   }
   const boundaries = [sql => sql === 'PRAGMA data_version', sql => sql.startsWith('SELECT total_changes()'),
     sql => sql === 'SELECT * FROM documents WHERE document_id = ?',
-    sql => sql.startsWith('SELECT COUNT(*) AS count FROM graph_nodes'),
     sql => sql.startsWith('SELECT * FROM graph_nodes') && /LIMIT/.test(sql),
     sql => sql.startsWith('SELECT * FROM chunks')]
   for (const boundary of boundaries) { read(); interleave(boundary, () => read()) }
+  for (const table of ['nodes', 'edges']) {
+    const coldInspector = graph => inspect(graph)
+    interleave(sql => sql === 'SELECT COUNT(*) AS count FROM graph_' + table + ' WHERE document_id = ?', () => read(coldInspector))
+  }
   for (const table of ['nodes', 'edges']) {
     const coldInspector = graph => inspect(graph)
     interleave(sql => sql.startsWith('SELECT * FROM graph_' + table) && !/LIMIT/.test(sql), () => read(coldInspector))
