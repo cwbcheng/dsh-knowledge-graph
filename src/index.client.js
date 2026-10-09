@@ -9305,7 +9305,7 @@ export default function clientPlugin() {
           // Radius from the ring's ACTUAL node widths (circumference must fit
           // every node plus a gap), so rings never overlap and stay circular.
           let sumW = 0
-          for (const id of list) sumW += sizes.get(id) ? sizes.get(id).w : 150
+          for (const node of list) sumW += sizes.get(node.id) ? sizes.get(node.id).w : 150
           const need = (sumW + list.length * 24) / (2 * Math.PI)
           const R = l === 0 ? 0 : Math.max(prevR + 240, need)
           prevR = R
@@ -10162,15 +10162,17 @@ export default function clientPlugin() {
       function resolveAngleOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed during this call;
+        // keep reading the current x/y after each angular adjustment.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 160; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               const ra = Math.hypot(a.x, a.y)
               const rb = Math.hypot(b.x, b.y)
