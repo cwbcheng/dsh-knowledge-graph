@@ -72,12 +72,53 @@ assert.equal(largeStats.overflow || 0, 0)
 assert.equal((largeStats.nodeChecks || 0) + (largeStats.occupiedChecks || 0), 0, 'Prepared labels use the actual index')
 assert(largeStats.indexChecks < 200000, 'Local checks must avoid the old 84,382,598 full-array comparisons')
 assert(largeStats.references <= largeStats.rectangles * 64, 'At most 64 bucket references per rectangle')
+assert.equal(largeStats.candidateBuilds, 2, 'Repeated conflicts reuse the two actual spacing/axis/direction templates')
+assert.equal(largeStats.candidateObjects, 286, 'Candidate object allocation stays independent of 5994 edges')
+assert(largeStats.candidateComparisons > 0 && largeStats.candidateComparisons < 2000, 'Sort only new candidate lists')
+const largeIndex = [...largeStats.indexes][0]
+assert.equal(largeIndex.candidates.size, 2)
+assert.equal([...largeIndex.candidates.values()].reduce((sum, list) => sum + list.length, 0), 286)
 const boundedStats = {}, bounded = countedLabelFunctions(engine, boundedStats).buildLayeredLabelIndex([])
 for (const rect of unusual) bounded.add(rect)
 assert.equal(boundedStats.rectangles, unusual.length)
 assert(boundedStats.overflow > 0, 'Large, non-finite, inverted and unsafe-coordinate rectangles use bounded overflow')
 assert(boundedStats.references <= (boundedStats.rectangles - boundedStats.overflow) * 64)
 check(bounded, unusual, [...queries, ...unusual])
+
+// Offsets are translation-independent; actual rectangles and occupancy still
+// decide placement. Exercise keys, normalized spacing, saturation and no-cache
+// fallbacks against the preserved direct ordinary-array caller.
+let templatePlacements = 0
+const blockers = [box(-5000, -5000, 5000, 5000)], rawOccupied = [], indexedOccupied = []
+const templates = engine.buildLayeredLabelIndex(blockers)
+const compareTemplate = (x, y, width, height, edge, axis) => {
+  const old = engine.placeLayeredEdgeLabel(x, y, width, height, rawOccupied, blockers, edge, axis)
+  const actual = engine.placeLayeredEdgeLabel(x, y, width, height, indexedOccupied, blockers, edge, axis, templates)
+  assert.deepEqual(actual, old, 'Spacing, axis, parity, translation and cache saturation preserve exact placement')
+  assert.deepEqual(indexedOccupied, rawOccupied)
+  templatePlacements++
+}
+for (let entry = 0; entry < 24; entry++) compareTemplate(entry * 3.25, -entry * 2.5, 26 + entry, 15, entry, entry % 3 ? 'x' : 'y')
+assert.equal(templates.candidates.size, 16, 'Unique configurations cannot grow the per-layout cache beyond 16 lists')
+for (const list of templates.candidates.values()) assert(list.length <= 256)
+assert([...templates.candidates.values()].reduce((sum, list) => sum + list.length, 0) <= 4096)
+const savedTemplates = [...templates.candidates], savedTemplateJSON = JSON.stringify(savedTemplates)
+for (let repeat = 0; repeat < 3; repeat++) {
+  for (let entry = 0; entry < 24; entry++) compareTemplate(-entry * 7.5, entry * 1.25, 26 + entry, 15, entry, entry % 3 ? 'x' : 'y')
+}
+assert.equal(JSON.stringify([...templates.candidates]), savedTemplateJSON, 'Hits and full-cache misses must not mutate or evict stored offsets')
+for (const [key, list] of savedTemplates) assert.equal(templates.candidates.get(key), list, 'Reuse actual stored list identity')
+for (const width of [0, 10, 22, 128.0001, Infinity]) {
+  for (const height of [0, 15, '15', Infinity]) for (const axis of ['x', 'y', undefined, 'other']) {
+    compareTemplate(-128.25, 0, width, height, templatePlacements % 2, axis)
+  }
+}
+const oversizedTemplates = engine.buildLayeredLabelIndex(blockers)
+engine.placeLayeredEdgeLabel(0, 0, 26, 0, [], blockers, 0, 'x', oversizedTemplates)
+assert.equal(oversizedTemplates.candidates.size, 0, 'A candidate list over 256 records must not be retained')
+const clearTemplates = engine.buildLayeredLabelIndex([])
+engine.placeLayeredEdgeLabel(128, 128, 26, 15, [], [], 0, 'x', clearTemplates)
+assert.equal(clearTemplates.candidates.size, 0, 'Available origins must not construct or retain candidate templates')
 
 const components = channelFixture(17, { components: 3, varied: true }), firstStats = {}, nextStats = {}
 await prepareChannelFixture(engine, components, { labelStats: firstStats })
@@ -86,6 +127,7 @@ for (const point of components.layout.pos.values()) { point.x += 83.25; point.y 
 for (const size of components.sizes.values()) size.h += 27
 const changed = await prepareChannelFixture(engine, components, { labelStats: nextStats })
 for (const next of nextStats.indexes) assert(!firstStats.indexes.has(next), 'Changed dimensions/positions rebuild the label index')
+for (const next of nextStats.indexes) for (const old of firstStats.indexes) assert.notEqual(next.candidates, old.candidates, 'Template maps must belong to one preparation')
 for (const cancelAtRoute of [1, 45]) {
   const cancelledStats = {}, retryStats = {}
   await assert.rejects(prepareChannelFixture(engine, components, { labelStats: cancelledStats, cancelAtRoute }), { name: 'AbortError' })
@@ -105,8 +147,10 @@ for (const path of ['src/index.client.js', 'lib/client.js']) {
   const source = readFileSync(new URL('../' + path, import.meta.url), 'utf8')
   for (const name of ['buildLayeredLabelIndex', 'placeLayeredEdgeLabel', 'prepareGraphScene']) assert(source.includes(engine[name].toString()), path + ': generated parity')
 }
-console.log(JSON.stringify({ ok: true, differentialQueries, placements, hidden,
+console.log(JSON.stringify({ ok: true, differentialQueries, placements, hidden, templatePlacements,
   largeNodes: 2000, largeEdges: 5994, actualLabelChecks: largeStats.indexChecks,
   actualRectangles: largeStats.rectangles, actualBucketReferences: largeStats.references,
+  actualCandidateBuilds: largeStats.candidateBuilds, actualCandidateObjects: largeStats.candidateObjects,
+  actualCandidateComparisons: largeStats.candidateComparisons, boundedTemplateStorage: true,
   boundedOverflow: true, strictBoundaryParity: true, fullSceneIndex: true,
   freshLayoutIndex: true, cancelledRetry: true, otherModeControls: true, generatedParity: true }))

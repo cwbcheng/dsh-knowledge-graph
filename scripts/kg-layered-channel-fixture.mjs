@@ -101,11 +101,18 @@ export function countedLabelFunctions(engine, stats) {
       return index
     }
   }
+  const labelSource = engine.placeLayeredEdgeLabel.toString()
+  const push = 'candidates.push({ dx, dy, distance, score: distance + perpendicular * 0.45 + sidePenalty })'
+  const sort = 'candidates.sort((a, b) => a.score - b.score || a.distance - b.distance || a.dy - b.dy || a.dx - b.dx)'
+  assert(labelSource.includes(push) && labelSource.includes(sort), 'Count actual candidate construction and sorting')
+  const place = new Function('stats', 'return (' + labelSource
+    .replace(push, 'stats.candidateObjects = (stats.candidateObjects || 0) + 1; ' + push)
+    .replace(sort, 'stats.candidateBuilds = (stats.candidateBuilds || 0) + 1; candidates.sort((a, b) => { stats.candidateComparisons = (stats.candidateComparisons || 0) + 1; return a.score - b.score || a.distance - b.distance || a.dy - b.dy || a.dx - b.dx })') + ')')(stats)
   return {
     buildLayeredLabelIndex,
     placeLayeredEdgeLabel(x, y, w, h, occupied, nodes, index, axis, collisions) {
       stats.calls = (stats.calls || 0) + 1
-      return engine.placeLayeredEdgeLabel(x, y, w, h, wrap(occupied, 'occupiedChecks'), wrap(nodes, 'nodeChecks'), index, axis, collisions)
+      return place(x, y, w, h, wrap(occupied, 'occupiedChecks'), wrap(nodes, 'nodeChecks'), index, axis, collisions)
     },
   }
 }

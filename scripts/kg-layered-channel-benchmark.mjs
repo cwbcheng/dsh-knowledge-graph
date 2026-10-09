@@ -68,12 +68,17 @@ export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly =
       currentLabelRectangles: labelStats[1].rectangles || 0,
       currentLabelBucketReferences: labelStats[1].references || 0,
       currentLabelOverflow: labelStats[1].overflow || 0,
+      beforeCandidateBuilds: labelStats[0].candidateBuilds || 0, currentCandidateBuilds: labelStats[1].candidateBuilds || 0,
+      beforeCandidateObjects: labelStats[0].candidateObjects || 0, currentCandidateObjects: labelStats[1].candidateObjects || 0,
+      beforeCandidateComparisons: labelStats[0].candidateComparisons || 0, currentCandidateComparisons: labelStats[1].candidateComparisons || 0,
+      currentCandidateEntries: [...(labelStats[1].indexes || [])].reduce((sum, index) => sum + (index.candidates?.size || 0), 0),
+      currentCachedCandidates: [...(labelStats[1].indexes || [])].reduce((sum, index) => sum + [...(index.candidates?.values() || [])].reduce((count, list) => count + list.length, 0), 0),
       beforeRouteMs: median(routeTimes[0]), currentRouteMs: median(routeTimes[1]),
       beforeRoutingStageMs: median(routingStageTimes[0]), currentRoutingStageMs: median(routingStageTimes[1]),
       routeTimes, routingStageTimes, exactPreparedGeometry: true, exactRouteAnchors: true })
   }
   return { ok: true, baseline, validateOnly, warmups: validateOnly ? 0 : 3, trials: validateOnly ? 0 : 9, samples,
-    scope: 'Both real generated engines compiled in one realm. Separate fresh engine instances for timing never receive counter proxies or instrumentation. Route-only time includes channel index allocation and excludes lanes and label collision placement; actual prepare stage 2 includes lanes, channels, routes, label index allocation, fixed-width label measurement and actual collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh indexes per run; actual node iterations, label intersection calls and bucket references counted outside timing. Scopes are not added. No CI timing threshold.' }
+    scope: 'Both real generated engines compiled in one realm. Separate fresh engine instances for timing never receive counter proxies or instrumentation. Route-only time includes channel index allocation and excludes lanes and label collision placement; actual prepare stage 2 includes lanes, channels, routes, label index allocation, candidate construction and sorting, fixed-width label measurement and actual collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh indexes per run; actual node iterations, label intersection calls, bucket references, candidate allocations and sort comparator calls counted outside timing. Scopes are not added. No CI timing threshold.' }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

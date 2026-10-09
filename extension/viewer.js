@@ -7631,7 +7631,7 @@
           return false
         }
         for (const rect of rects) add(rect)
-        return { add, intersects }
+        return { add, intersects, candidates: new Map() }
       }
       // Keep relation chips readable when several nearby edge tracks put their
       // labels at almost the same point. Prefer a short stagger along the route
@@ -7663,22 +7663,31 @@
         const stepX = Math.max(width + 8, 30)
         const stepY = height + 6
         const direction = edgeIndex % 2 === 0 ? 1 : -1
-        const candidates = []
-        const maxXRank = Math.floor(maxDistance / stepX)
-        const maxYRank = Math.floor(maxDistance / stepY)
-        for (let xRank = -maxXRank; xRank <= maxXRank; xRank++) {
-          for (let yRank = -maxYRank; yRank <= maxYRank; yRank++) {
-            const dx = xRank * stepX
-            const dy = yRank * stepY
-            const distance = Math.hypot(dx, dy)
-            if (distance > maxDistance + 0.001) continue
-            const perpendicular = axis === 'y' ? Math.abs(dx) : Math.abs(dy)
-            const primary = axis === 'y' ? dy : dx
-            const sidePenalty = primary === 0 || Math.sign(primary) === direction ? 0 : 0.01
-            candidates.push({ dx, dy, distance, score: distance + perpendicular * 0.45 + sidePenalty })
+        // Offsets depend on spacing, axis and tie direction, never position or
+        // occupancy. Reuse only within this layout index, with bounded storage.
+        const cache = collisions && collisions.candidates
+        const key = cache && Number.isFinite(stepX) && Number.isFinite(stepY) && stepY > 0
+          ? stepX + ':' + stepY + ':' + (axis === 'y' ? 'y' : 'x') + ':' + direction : null
+        let candidates = key === null ? undefined : cache.get(key)
+        if (!candidates) {
+          candidates = []
+          const maxXRank = Math.floor(maxDistance / stepX)
+          const maxYRank = Math.floor(maxDistance / stepY)
+          for (let xRank = -maxXRank; xRank <= maxXRank; xRank++) {
+            for (let yRank = -maxYRank; yRank <= maxYRank; yRank++) {
+              const dx = xRank * stepX
+              const dy = yRank * stepY
+              const distance = Math.hypot(dx, dy)
+              if (distance > maxDistance + 0.001) continue
+              const perpendicular = axis === 'y' ? Math.abs(dx) : Math.abs(dy)
+              const primary = axis === 'y' ? dy : dx
+              const sidePenalty = primary === 0 || Math.sign(primary) === direction ? 0 : 0.01
+              candidates.push({ dx, dy, distance, score: distance + perpendicular * 0.45 + sidePenalty })
+            }
           }
+          candidates.sort((a, b) => a.score - b.score || a.distance - b.distance || a.dy - b.dy || a.dx - b.dx)
+          if (key !== null && cache.size < 16 && candidates.length <= 256) cache.set(key, candidates)
         }
-        candidates.sort((a, b) => a.score - b.score || a.distance - b.distance || a.dy - b.dy || a.dx - b.dx)
         for (const candidate of candidates) {
           const cx = x + candidate.dx
           const cy = y + candidate.dy
