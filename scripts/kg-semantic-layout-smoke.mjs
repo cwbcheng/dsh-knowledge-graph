@@ -24,6 +24,7 @@ const mirroredFunctions = [
   'packDisconnectedComponents',
   'layoutLayeredComponents',
   'buildLayeredEdgeLanes',
+  'buildLayeredLabelIndex',
   'placeLayeredEdgeLabel',
   'corridorFree',
   'findCorridor',
@@ -33,7 +34,7 @@ const mirroredFunctions = [
 const mirroredSnippets = [
   'return layoutLayeredComponents(nodes, edges, sizes, onProgress)',
   'buildLayeredEdgeLanes(edges, layout.pos, layout.componentKeyById, layout.componentNodesById)',
-  "placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x')",
+  "placeLayeredEdgeLabel(route.lblX, route.lblY, labelW, labelH, occupied, nodeRects, index, route.labelAxis || 'x', labelCollisions)",
   'const layeredEdgeGeometry = new Map()',
   'const { sizes, layout, bbox, layeredEdgeGeometry } = prepared',
   'layout.componentNodesById.get(edge.fromNodeId) || nodes',
