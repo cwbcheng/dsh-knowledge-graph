@@ -8,6 +8,7 @@ import {pathToFileURL} from 'node:url'
 import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
 import {literalWindowFixture,countWindowQueryWork,isWindowQuerySql} from './kg-document-window-query-benchmark.mjs'
+import {isWindowIncidentSql,isWindowIncidentProbeSql} from './kg-document-window-incident-benchmark.mjs'
 
 export function ordinaryWindowFixture(size,documentId){
   const fixture=literalWindowFixture(size,documentId)
@@ -28,8 +29,8 @@ function timePair(runs){for(let i=0;i<3;i++){runs[0]();runs[1]()}const times=[[]
   for(let i=0;i<9;i++)for(const index of i%2?[1,0]:[0,1]){const start=performance.now();runs[index]();times[index].push(performance.now()-start)}
   return{beforeMedianMs:median(times[0]),currentMedianMs:median(times[1])}}
 async function benchmark(){
-  const revision=process.argv[2]||'942ca9a'
-  if(process.argv.length>3)throw new Error('Expected at most one baseline revision')
+  const validateOnly=process.argv.includes('--validate-only'),args=process.argv.slice(2).filter(arg=>arg!=='--validate-only'),revision=args[0]||'942ca9a'
+  if(args.length>1)throw new Error('Expected at most one baseline revision')
   const baseline=(await baselineModules(revision)).store,directory=mkdtempSync(join(tmpdir(),'kg-window-ordinary-query-')),database=join(directory,'graph.sqlite')
   const current=await openSqliteStore(database)
   let previous,meter,oldMeter
@@ -51,7 +52,12 @@ async function benchmark(){
       meter.reset();oldMeter.reset()
       const before=capture(previous,fixture.id,options),after=capture(current,fixture.id,options)
       assert.deepEqual(after.window,before.window)
-      assert.deepEqual(after.calls.filter(call=>!isWindowQuerySql(call.sql)),before.calls.filter(call=>!isWindowQuerySql(call.sql)))
+      const unrelated=call=>!isWindowQuerySql(call.sql)&&!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)
+      assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
+      const incidents=capture=>capture.calls.filter(call=>isWindowIncidentSql(call.sql)).map(call=>{
+        const length=(call.params.length-(call.sql.includes('UNION SELECT rowid')?3:2))/2
+        return{ids:call.params.slice(1,length+1),remaining:call.params.at(-1),rows:call.value}})
+      assert.deepEqual(incidents(after),incidents(before))
       const oldCalls=before.calls.filter(call=>isWindowQuerySql(call.sql)),nextCalls=after.calls.filter(call=>isWindowQuerySql(call.sql))
       const direct=oldCalls.find(call=>call.method==='all'),count=oldCalls.find(call=>call.method==='get')
       if(direct){
@@ -68,6 +74,7 @@ async function benchmark(){
       samples.push({...fixture,query,limit,options,before,after,beforeWork:{...oldMeter.counts},currentWork:{...meter.counts}})
     }
     meter.stop();meter=null;oldMeter.stop();oldMeter=null
+    if(validateOnly){console.log(JSON.stringify({ok:true,baseline:revision,cases:samples.length,validationOnly:true}));return}
     const results=[]
     for(const sample of samples){
       const whole=timePair([()=>previous.getDocumentWindow(sample.id,sample.options),()=>current.getDocumentWindow(sample.id,sample.options)])
@@ -78,7 +85,7 @@ async function benchmark(){
         returnedNodes:sample.after.window.nodes.length,beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,matching})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows and all non-matching SQL, parameters, Native values and order; matching SQL/params/complete direct records unchanged, ordinary COUNT omitted only on underfilled direct rows; literal query sequence unchanged; prepared matching COUNT/get plus direct SELECT/all measured separately; Native instrumentation outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
+      scope:'Identical complete production Store windows and complete Native incident batches; matching SQL/params/complete direct records unchanged, ordinary COUNT omitted only on underfilled direct rows; literal query sequence unchanged; all unrelated SQL, parameters, Native values and order identical; prepared matching COUNT/get plus direct SELECT/all measured separately; historical baselines include later incident changes, use the original measured revision to isolate matching savings; Native instrumentation outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()

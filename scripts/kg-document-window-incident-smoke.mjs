@@ -7,14 +7,17 @@ import {incidentShapeFixture,isWindowIncidentSql,isWindowIncidentProbeSql} from 
 const directory=mkdtempSync(join(tmpdir(),'kg-window-incident-')),database=join(directory,'graph.sqlite')
 const writer=await openSqliteStore(database);writer.db.exec('PRAGMA journal_mode = WAL')
 const reader=await openSqliteStore(database),prepare=reader.db.prepare
-let reads=0,probes=0,indexed=0,fallback=0,maxProbeCandidates=0,multiBatch=0,interleavings=0,measuring=false,calls=[]
+let reads=0,probes=0,indexed=0,fallback=0,maxProbeCandidates=0,multiBatch=0,interleavings=0,measuring=false,calls=[],probeCalls=[]
 reader.db.prepare=function(sql){const statement=prepare.call(this,sql)
   if(isWindowIncidentProbeSql(sql)){const get=statement.get;statement.get=function(...args){const value=get.apply(this,args)
-    assert(value.count<=2*args.at(-1));assert(value.count<=130)
+    const length=(args.length-5)/2,cap=args.at(-1)
+    assert(Number.isInteger(length)&&length>0&&length<=300)
+    assert(cap<=(length<=64?65:2049));assert(value.count<=cap)
+    assert.equal(args[length+1],cap);assert.equal(args.at(-2),cap)
     const plan=prepare.call(reader.db,'EXPLAIN QUERY PLAN '+sql).all(...args)
     assert(plan.some(row=>/COVERING INDEX.*document_id=\? AND from_node_id=\?/.test(row.detail)))
     assert(plan.some(row=>/COVERING INDEX.*document_id=\? AND to_node_id=\?/.test(row.detail)))
-    if(measuring){probes++;maxProbeCandidates=Math.max(maxProbeCandidates,value.count)}return value}}
+    if(measuring){probes++;maxProbeCandidates=Math.max(maxProbeCandidates,value.count);probeCalls.push({ids:length,cap,count:value.count})}return value}}
   if(isWindowIncidentSql(sql)){const all=statement.all;statement.all=function(...args){
     const rows=all.apply(this,args),fast=sql.includes('UNION SELECT rowid'),length=(args.length-(fast?3:2))/2
     assert(Number.isInteger(length)&&length>0&&length<=300)
@@ -22,7 +25,7 @@ reader.db.prepare=function(sql){const statement=prepare.call(this,sql)
     const old='SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN ('+marks+') OR to_node_id IN ('+marks+')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
     assert.deepEqual(rows,prepare.call(reader.db,old).all(args[0],...ids,...ids,cap))
     assert(rows.length<=cap);assert(rows.every(row=>row.document_id===args[0]&&!Object.hasOwn(row,'rowid')))
-    if(fast){assert(rows.length<=64);assert.equal(args[1+length],args[0])
+    if(fast){assert(rows.length<=(length<=64?64:2048));assert.equal(args[1+length],args[0])
       const plan=prepare.call(reader.db,'EXPLAIN QUERY PLAN '+sql).all(...args)
       assert(plan.some(row=>/SEARCH graph_edges USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(row.detail)))
     }else{assert.equal(sql,old);assert.deepEqual(args,[args[0],...ids,...ids,cap])}
@@ -51,7 +54,7 @@ function reference(full,options){
   return{nodes:[...selected.values()],edges:edges.filter(edge=>selected.has(edge.fromNodeId)&&selected.has(edge.toNodeId)).slice(0,cap),matched:matches.length}
 }
 function check(id,options,full=writer.getDocument(id)){
-  const expected=reference(full,options),beforeProbes=probes;calls=[];measuring=true
+  const expected=reference(full,options),beforeProbes=probes;calls=[];probeCalls=[];measuring=true
   let actual;try{actual=reader.getDocumentWindow(id,options)}finally{measuring=false}
   assert.deepEqual(actual.nodes,expected.nodes);assert.deepEqual(actual.edges,expected.edges)
   assert.deepEqual(actual.source,full.source);assert.deepEqual(actual.staging,full.staging);assert.deepEqual(actual.custom,full.custom)
@@ -69,6 +72,8 @@ try{
     const fixture=incidentShapeFixture(shape,size,id)
     if(id==='incident-sparse'){
       const nodes=fixture.graph.nodes
+      for(const node of nodes.slice(0,200))node.text+=' windowexact'
+      for(const node of nodes.slice(400,599))node.text+=' windowunder'
       nodes[40].text+=' self_rare_%'
       for(const [index,count]of[[5180,64],[5181,65]]){
         nodes[index].text+=' threshold'+count+'_%'
@@ -92,15 +97,38 @@ try{
   for(const [query,fast]of[['threshold64_%',true],['threshold65_%',false],['self_rare_%',true]]){
     check(id,{...options,query});assert.equal(calls[0].fast,fast)
   }
+  for(const query of['windowunder','windowexact'])for(const limit of[200,800,2000])for(const includeSourceText of[false,true]){
+    const actual=check(id,{query,limit,includeSourceText})
+    if(actual.view.matchedNodes<limit){assert(calls.every(call=>call.fast));assert(calls[0].ids.length>64)}
+    else assert.equal(calls.length,0)
+  }
   const mixed=structuredClone(fixtures.find(f=>f.documentId==='incident-batch'))
   for(const node of mixed.graph.nodes.slice(340,420))node.text=node.text.replace(' common_%','')
   const directIds=new Set(mixed.graph.nodes.slice(0,420).map(node=>node.id))
   mixed.graph.edges=mixed.graph.edges.filter(edge=>!directIds.has(edge.fromNodeId)&&!directIds.has(edge.toNodeId))
   mixed.graph.edges.push({fromNodeId:'node_17',toNodeId:'n350',relation:'relates_to'},
-    {fromNodeId:'n310',toNodeId:'n450',relation:'relates_to'})
+    {fromNodeId:'n310',toNodeId:'n450',relation:'relates_to'},
+    {fromNodeId:'n250',toNodeId:'n320',relation:'relates_to'})
+  for(let i=1000;i<3049;i++)mixed.graph.edges.push({fromNodeId:'node_17',toNodeId:'n'+i,relation:'supports'})
   writer.saveGraph(mixed.graph,{sourceText:mixed.sourceText,sourceUnits:mixed.sourceUnits})
   check(mixed.documentId,{query:'common_%',limit:800,includeSourceText:false})
   assert(calls.some(call=>call.fast)&&calls.some(call=>!call.fast));assert(calls.length>1)
+  assert(calls[0].rows>2048);assert(calls[1].rows>0)
+  const boundaryFixture=structuredClone(fixtures.find(f=>f.documentId==='incident-batch'))
+  const boundaryIds=new Set(boundaryFixture.graph.nodes.slice(0,65).map(node=>node.id))
+  for(const node of boundaryFixture.graph.nodes.slice(0,65))node.text+=' large_threshold_%'
+  boundaryFixture.graph.edges=boundaryFixture.graph.edges.filter(edge=>!boundaryIds.has(edge.fromNodeId)&&!boundaryIds.has(edge.toNodeId))
+  for(let i=2000;i<4048;i++)boundaryFixture.graph.edges.push({fromNodeId:'node_17',toNodeId:'n'+i,relation:'supports',
+    evidence:[{paragraph:0,quote:'Complete large boundary evidence '+i}],custom:{ordinal:i}})
+  const largeOptions={query:'large_threshold_%',limit:800,includeSourceText:false}
+  for(const extra of[false,true]){
+    const fixture=structuredClone(boundaryFixture)
+    if(extra)fixture.graph.edges.push({fromNodeId:'node_17',toNodeId:'n4048',relation:'supports'})
+    writer.saveGraph(fixture.graph,{sourceText:fixture.sourceText,sourceUnits:fixture.sourceUnits})
+    check(fixture.documentId,largeOptions)
+    assert.equal(probeCalls[0].ids,65);assert.equal(probeCalls[0].count,extra?2049:2048)
+    assert.equal(calls[0].fast,!extra);assert.equal(calls[0].rows,extra?2049:2048)
+  }
   for(const command of['ANALYZE','PRAGMA automatic_index = OFF','VACUUM']){const full=writer.getDocument(id)
     writer.db.exec(command);assert.deepEqual(writer.getDocument(id),full);check(id,options,full)}
   // Independent writes cross both bounded selectivity and incident hydration.
@@ -121,11 +149,30 @@ try{
     const next=check(id,options);assert.equal(next.revision,before.revision+1);assert(calls.every(call=>!call.fast))
     assert.equal(reader.getDocumentWindow(id,options,inspect).graphStructureQuality.source,writer.getDocument(id).sourceText)
   }
+  for(const boundary of[isWindowIncidentProbeSql,isWindowIncidentSql])for(const afterRead of[false,true]){
+    const fixture=boundaryFixture,largeId=fixture.documentId
+    writer.saveGraph(fixture.graph,{sourceText:fixture.sourceText,sourceUnits:fixture.sourceUnits})
+    const before=reader.getDocumentWindow(largeId,largeOptions,inspect),full=writer.getDocument(largeId),changed=structuredClone(full)
+    changed.edges.push({fromNodeId:'node_17',toNodeId:'n4048',relation:'supports',evidence:[{paragraph:0,quote:'New large boundary relation'}]})
+    changed.staging.chunks[0].summary+=' large new';let fired=false
+    const observed=reader.db.prepare
+    reader.db.prepare=function(sql){const statement=observed.call(this,sql)
+      if(boundary(sql))for(const method of['get','all']){const execute=statement[method];statement[method]=function(...args){
+        const commit=()=>{fired=true;assert.throws(()=>reader.db.exec('BEGIN'),/within a transaction/)
+          writer.saveGraph(changed,{expectedRevision:full.revision,sourceText:full.sourceText+'\n\nNew large source.'});interleavings++}
+        if(!fired&&!afterRead)commit();const value=execute.apply(this,args);if(!fired&&afterRead)commit();return value}}
+      return statement}
+    try{assert.deepEqual(reader.getDocumentWindow(largeId,largeOptions,inspect),before);assert(fired)}finally{reader.db.prepare=observed}
+    const next=check(largeId,largeOptions);assert.equal(next.revision,before.revision+1);assert(calls.every(call=>!call.fast))
+    assert.equal(probeCalls[0].count,2049)
+    assert.equal(reader.getDocumentWindow(largeId,largeOptions,inspect).graphStructureQuality.source,writer.getDocument(largeId).sourceText)
+  }
   const savedPrepare=reader.db.prepare
   reader.db.prepare=function(sql){if(isWindowIncidentProbeSql(sql))throw new Error('Synthetic bounded probe failure');return savedPrepare.call(this,sql)}
   try{assert.throws(()=>reader.getDocumentWindow(id,options,inspect),/Synthetic bounded probe failure/)}finally{reader.db.prepare=savedPrepare}
   reader.db.exec('BEGIN; ROLLBACK');check(id,options)
   console.log(JSON.stringify({ok:true,documents:5,reads,probes,indexed,fallback,maxProbeCandidates,multiBatch,interleavings,
     frozenNativeRecordsAndOrder:true,independentPublicWindowReference:true,threshold64And65:true,parallelAndSelfRelations:true,
-    internal64BitRowIds:true,smallGraphAndLargeBatchControls:true,independentWalSnapshotAndBranchChange:true,probeFailureRecovery:true}))
+    internal64BitRowIds:true,large2048And2049Boundary:true,combinedProbeBound:true,smallGraphAndLargeBatchControls:true,
+    mixedBatchDeduplication:true,independentWalSnapshotAndBranchChange:true,probeFailureRecovery:true}))
 }finally{reader.close();writer.close();rmSync(directory,{recursive:true,force:true})}

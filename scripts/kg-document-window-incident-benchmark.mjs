@@ -91,9 +91,10 @@ async function benchmark(){
       meter.reset();oldMeter.reset()
       const before=capture(previous,fixture.documentId,options),after=capture(current,fixture.documentId,options)
       assert.deepEqual(after.window,before.window);assert.equal(after.incident.length,before.incident.length)
-      assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=130)
+      assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=2049)
       assertWindowQueryCallParity(before.calls,after.calls,after.window)
-      assert.deepEqual(after.calls.filter(call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)),before.calls.filter(call=>!isWindowIncidentSql(call.sql)&&!isWindowQuerySql(call.sql)))
+      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)
+      assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
       for(let i=0;i<after.incident.length;i++)assert.deepEqual(after.incident[i].rows,before.incident[i].rows)
       samples.push({...fixture,kind,limit,options,before,after,beforeWork:{...oldMeter.counts},currentWork:{...meter.counts}})
     }
