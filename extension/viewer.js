@@ -8277,13 +8277,13 @@
             }
           }
           if (local.size === 0) {
-            let hub = nodes.find((node) => node.id === component[0])
+            // Degrees already use IDs. Keep BFS order for equal-degree ties.
+            let hubId = component[0]
             for (const id of component) {
-              const node = nodes.find((candidate) => candidate.id === id)
-              if (node && deg.get(node.id) > deg.get(hub.id)) hub = node
+              if (deg.get(id) > deg.get(hubId)) hubId = id
             }
-            const bfs = [hub.id]
-            local.set(hub.id, 0)
+            const bfs = [hubId]
+            local.set(hubId, 0)
             while (bfs.length > 0) {
               const id = bfs.shift()
               for (const nb of adj.get(id) || []) {
