@@ -32,6 +32,7 @@ const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
 const workPackagesMode = process.argv.includes('--work-packages')
 const snapshotMode = process.argv.includes('--snapshot')
+const layoutComponentsMode = process.argv.includes('--layout-components')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
@@ -76,7 +77,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: layoutComponentsMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -115,6 +116,13 @@ const graph = {
   edges: [],
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
+}
+if (layoutComponentsMode) {
+  for (let i = 1; i < graph.nodes.length; i++) if (i % 8 !== 0) graph.edges.push({
+    fromNodeId: 'n' + (i - i % 8), toNodeId: 'n' + i, relation: 'supports',
+    evidence: [{ paragraph: i - i % 8, quote: paragraphs[i - i % 8] }],
+  })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }
 if (windowDiagnosticsMode) {
   const diagnostic = diagnosticFixture().graph
