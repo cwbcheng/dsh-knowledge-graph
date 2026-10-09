@@ -322,6 +322,7 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
 if (edgeGeometryPerformanceMode || radialWidthsMode) {
   graph.edges = graph.nodes.slice(1).map(node => ({ fromNodeId: 'n0', toNodeId: node.id, relation: 'supports' }))
   if (edgeGeometryPerformanceMode) for (let i = 1; i < graph.nodes.length - 1; i += 4) graph.edges.push({ fromNodeId: 'n' + i, toNodeId: 'n' + (i + 1), relation: 'example' })
+  graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }
 if (forceOverlapsMode) {
   graph.edges = graph.nodes.slice(1, 1 + Math.floor(graph.nodes.length / 8)).map((node, i) => ({ fromNodeId: 'n' + i, toNodeId: node.id, relation: 'supports' }))

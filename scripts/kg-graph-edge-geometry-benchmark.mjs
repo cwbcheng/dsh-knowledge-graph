@@ -87,7 +87,9 @@ for (let trial = 0; trial < trials; trial++) {
   movedPos.set('n1', { x: point.x + 110, y: point.y + 70 })
   assert.notEqual(compareFresh({ prepared: { ...props.prepared, layout: { pos: movedPos } } }, 'New positions'), geometry)
   const changedSizes = new Map(sizes)
-  changedSizes.set('n1', { ...sizes.get('n1'), w: 360 })
+  // A correctly sized radial ring leaves this spoke vertical. Change its
+  // height as well so clipping must change even without angular avoidance.
+  changedSizes.set('n1', { ...sizes.get('n1'), w: 360, h: 180 })
   assert.notEqual(compareFresh({ prepared: { ...props.prepared, sizes: changedSizes } }, 'New sizes'), geometry)
   const obstacle = { id: 'blocker', type: 'fact', text: 'Routing obstacle' }
   // A separate sparse spoke leaves a free alternative angle even at the
