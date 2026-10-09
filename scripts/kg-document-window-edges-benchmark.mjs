@@ -10,6 +10,7 @@ import { baselineModules } from './kg-document-window-diagnostics-benchmark.mjs'
 import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
 import { incidentShapeFixture } from './kg-document-window-incident-benchmark.mjs'
 import { isWindowEdgeSql, isWindowEdgeProbeSql, assertWindowEdgeCallParity, countWindowEdgeWork } from './kg-document-window-edge-reads.mjs'
+import { isWindowQuerySql, isWindowQueryFoldSql, assertWindowQueryCallParity } from './kg-document-window-query-benchmark.mjs'
 
 function capture(store, id, options) {
   const prepare = store.db.prepare, calls = []
@@ -83,7 +84,8 @@ async function benchmark() {
           meter.reset(); oldMeter.reset()
           const before = capture(previous, fixture.id, options), after = capture(current, fixture.id, options)
           assert.deepEqual(after.window, before.window); assertWindowEdgeCallParity(before.calls, after.calls)
-          const unrelated = call => !isWindowEdgeSql(call.sql) && !isWindowEdgeProbeSql(call.sql)
+          assertWindowQueryCallParity(before.calls, after.calls, after.window)
+          const unrelated = call => !isWindowEdgeSql(call.sql) && !isWindowEdgeProbeSql(call.sql) && !isWindowQuerySql(call.sql) && !isWindowQueryFoldSql(call.sql)
           assert.deepEqual(after.calls.filter(unrelated), before.calls.filter(unrelated), 'All unrelated SQL, params, Native values and execution order must be identical')
           assert.equal(meter.counts.edgeRows, oldMeter.counts.edgeRows)
           const n = after.window.nodes.length, needed = n >= 64 && after.window.view.totalEdges >= n * n
@@ -116,7 +118,7 @@ async function benchmark() {
     current.db.exec('ANALYZE')
     await phase(true)
     console.log(JSON.stringify({ ok: true, baseline: revision, cases: results.length, validationOnly: validateOnly, repeats: validateOnly ? 0 : 9, samples: results,
-      scope: 'Identical complete production Store windows; window edge SQL may only switch boolean membership vs direct IN, preserving document/selected IDs/budget and every complete Native edge in order; all unrelated SQL, parameters, Native values and execution sequence strictly identical; prepared bounded aggregate plus edge reads timed separately, not added to whole Store; ANALYZE performed only after the first phase is fully measured; equivalence/counters/plans outside timing; excludes inspector, HTTP, browser rendering and CI performance gates' }))
+      scope: 'Identical complete production Store windows; window edge SQL may only switch boolean membership vs direct IN, preserving document/selected IDs/budget and every complete Native edge in order; later six-field connection-guarded LIKE coercions verified separately with identical parameters/Native records/counts; all other SQL, parameters, Native values and execution sequence strictly identical; prepared bounded aggregate plus edge reads timed separately, not added to whole Store; historical whole-window timing can include later matching changes; ANALYZE performed only after the first phase is fully measured; equivalence/counters/plans outside timing; excludes inspector, HTTP, browser rendering and CI performance gates' }))
   } finally { meter?.stop(); oldMeter?.stop(); previous?.close(); current.close(); rmSync(directory, { recursive: true, force: true }) }
 }
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) await benchmark()

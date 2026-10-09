@@ -2552,9 +2552,18 @@ export class SqliteKnowledgeStore {
       // behavior (including its existing case folding) for all other inputs.
       const literal = /[%_]/.test(query)
       const pattern = literal ? query.toLowerCase() : '%' + query.toLowerCase() + '%'
+      // Native LIKE already folds ASCII. Check this connection on each read,
+      // preserving explicit case-sensitive or Unicode-folding configurations.
+      // CAST retains LOWER's TEXT coercion for legacy BLOB/numeric values.
+      const foldsAscii = !literal && this.db.prepare(
+        "SELECT ('A' LIKE 'a') AND (LOWER('Æ') = 'Æ') AND NOT ('Æ' LIKE 'æ') AS folds_ascii"
+      ).get().folds_ascii === 1
       const where = literal ? `document_id = ? AND (
         INSTR(LOWER(node_id), ?) > 0 OR INSTR(LOWER(type), ?) > 0 OR INSTR(LOWER(text), ?) > 0 OR
         INSTR(LOWER(quote), ?) > 0 OR INSTR(LOWER(COALESCE(section_id, '')), ?) > 0 OR INSTR(LOWER(COALESCE(section_title, '')), ?) > 0
+      )` : foldsAscii ? `document_id = ? AND (
+        CAST(node_id AS TEXT) LIKE ? OR CAST(type AS TEXT) LIKE ? OR CAST(text AS TEXT) LIKE ? OR
+        CAST(quote AS TEXT) LIKE ? OR CAST(COALESCE(section_id, '') AS TEXT) LIKE ? OR CAST(COALESCE(section_title, '') AS TEXT) LIKE ?
       )` : `document_id = ? AND (
         LOWER(node_id) LIKE ? OR LOWER(type) LIKE ? OR LOWER(text) LIKE ? OR
         LOWER(quote) LIKE ? OR LOWER(COALESCE(section_id, '')) LIKE ? OR LOWER(COALESCE(section_title, '')) LIKE ?

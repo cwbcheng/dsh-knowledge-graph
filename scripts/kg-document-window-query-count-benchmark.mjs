@@ -7,16 +7,16 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { openSqliteStore, SqliteKnowledgeStore } from '../src/kg-store.mjs'
 import { baselineModules } from './kg-document-window-diagnostics-benchmark.mjs'
-import { literalWindowFixture, countWindowQueryWork, isWindowQuerySql, assertWindowQueryCallParity } from './kg-document-window-query-benchmark.mjs'
+import { literalWindowFixture, countWindowQueryWork, isWindowQuerySql, isWindowQueryFoldSql, assertWindowQueryCallParity } from './kg-document-window-query-benchmark.mjs'
 
 function capture(store, id, options) {
   const prepare = store.db.prepare, calls = []
   store.db.prepare = function(sql) {
     const statement = prepare.call(this, sql)
-    if (isWindowQuerySql(sql)) for (const method of ['get','all']) {
+    if (isWindowQuerySql(sql) || isWindowQueryFoldSql(sql)) for (const method of ['get','all']) {
       const execute = statement[method]
       statement[method] = function(...params) {
-        calls.push({sql,method,params}); return execute.apply(this,params)
+        const value=execute.apply(this,params);calls.push({sql,method,params,value});return value
       }
     }
     return statement
@@ -58,9 +58,9 @@ async function benchmark() {
       assert.equal(meter.counts.matchingStatements,counted?2:1)
       assert.equal(meter.counts.matched,matched)
       assert.equal(meter.counts.directRows,Math.min(matched,limit))
-      assert.equal(oldMeter.counts.matchingStatements,before.calls.length)
-      // Actual SQL and parameter bytes remain unchanged. Ordinary/literal
-      // queries now share direct-first reads and underfilled COUNT omission.
+      assert.equal(oldMeter.counts.matchingStatements,before.calls.filter(call=>isWindowQuerySql(call.sql)).length)
+      // Only guarded six-field LIKE coercions may differ; retain parameter
+      // bytes, complete Native records/counts and underfilled COUNT omission.
       assertWindowQueryCallParity(before.calls,after.calls,after.window)
       samples.push({nodes:fixture.graph.nodes.length,shape:fixture.shape,documentId:fixture.documentId,query,limit,matched,
         returned:after.window.nodes.length,before:{...oldMeter.counts},current:{...meter.counts}})

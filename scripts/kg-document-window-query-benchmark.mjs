@@ -1,6 +1,7 @@
 // Optional: node scripts/kg-document-window-query-benchmark.mjs [baseline-revision]
 // Compare actual store windows. Literal-query results intentionally correct the
-// old matches; ordinary-query windows and SQL must remain identical.
+// old matches; ordinary windows and Native records remain identical, with
+// only the connection guard and six equivalent LIKE coercions permitted.
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -44,11 +45,31 @@ export function literalWindowFixture(size = 12000, documentId = 'window-literal-
   return fixture
 }
 
-export const isWindowQuerySql = sql => sql.includes('LOWER(node_id) LIKE ?') || sql.includes('INSTR(LOWER(node_id), ?) > 0')
-// Later matching optimizations retain the actual predicate, parameter bytes
-// and direct rows. Only COUNT omission/order is allowed by this comparison.
+export const windowQueryFoldSql = "SELECT ('A' LIKE 'a') AND (LOWER('Æ') = 'Æ') AND NOT ('Æ' LIKE 'æ') AS folds_ascii"
+export const isWindowQueryFoldSql = sql => sql === windowQueryFoldSql
+export const isWindowQuerySql = sql => sql.includes('LOWER(node_id) LIKE ?') || sql.includes('CAST(node_id AS TEXT) LIKE ?') || sql.includes('INSTR(LOWER(node_id), ?) > 0')
+// Allow only the six guarded native-ASCII LIKE coercions; retain all other
+// predicate bytes, parameters, full Native rows/counts and direct-row order.
+export function normalizeWindowQuerySql(sql) {
+  if (!sql.includes('CAST(node_id AS TEXT) LIKE ?')) return sql
+  let casts = 0
+  const normalized = sql.replace(/CAST\((node_id|type|text|quote|COALESCE\(section_id, ''\)|COALESCE\(section_title, ''\)) AS TEXT\)/g,
+    (_, field) => { casts++; return 'LOWER(' + field + ')' })
+  assert.equal(casts, 6)
+  return normalized
+}
 export function assertWindowQueryCallParity(before, after, window) {
-  const oldCalls = before.filter(call => isWindowQuerySql(call.sql)), nextCalls = after.filter(call => isWindowQuerySql(call.sql))
+  const matching = calls => calls.filter(call => isWindowQuerySql(call.sql)).map(call => ({ ...call, sql: normalizeWindowQuerySql(call.sql) }))
+  const oldCalls = matching(before), nextCalls = matching(after)
+  const guards = after.filter(call => isWindowQueryFoldSql(call.sql))
+  const ordinary = oldCalls.some(call => call.sql.includes('LOWER(node_id) LIKE ?'))
+  assert.equal(guards.length, ordinary ? 1 : 0, 'Only ordinary queries must check this connection once')
+  if (ordinary) {
+    assert.equal(guards[0].method, 'get'); assert.deepEqual(guards[0].params, [])
+    assert.deepEqual(Object.keys(guards[0].value), ['folds_ascii'])
+    const castCalls = after.filter(call => isWindowQuerySql(call.sql) && call.sql.includes('CAST(node_id AS TEXT) LIKE ?'))
+    assert.equal(castCalls.length, guards[0].value.folds_ascii === 1 ? nextCalls.length : 0)
+  }
   if (!oldCalls.length) { assert.deepEqual(nextCalls, []); return }
   const direct = oldCalls.find(call => call.method === 'all'), count = oldCalls.find(call => call.method === 'get')
   assert(direct)
@@ -59,18 +80,23 @@ export function assertWindowQueryCallParity(before, after, window) {
 export function countWindowQueryWork(Store, database) {
   const original = Store.prototype.getDocumentWindow
   const counts = { queries: 0, literalQueries: 0, ordinaryQueries: 0, matched: 0, directRows: 0, maxDirectRows: 0,
-    matchingStatements: 0, matchCountReads: 0 }
+    matchingStatements: 0, matchCountReads: 0, foldChecks: 0, nativeAsciiQueries: 0 }
   Store.prototype.getDocumentWindow = function (...args) {
     if (this.filename !== database) return original.apply(this, args)
     const prepare = this.db.prepare
-    let queryKind = '', nativeMatched = null, nativeDirect = 0
+    let queryKind = '', nativeMatched = null, nativeDirect = 0, nativeAscii = false
     this.db.prepare = function (sql) {
       const statement = prepare.call(this, sql)
+      if (isWindowQueryFoldSql(sql)) {
+        const execute = statement.get
+        statement.get = function (...params) { counts.foldChecks++; return execute.apply(this, params) }
+      }
       if (isWindowQuerySql(sql)) for (const method of ['get', 'all']) {
         const execute = statement[method]
         statement[method] = function (...params) {
           const value = execute.apply(this, params)
           queryKind = sql.includes('INSTR(') ? 'literalQueries' : 'ordinaryQueries'
+          nativeAscii = sql.includes('CAST(node_id AS TEXT) LIKE ?')
           counts.matchingStatements++
           if (method === 'get') {
             nativeMatched = value.count; counts.matchCountReads++
@@ -87,6 +113,7 @@ export function countWindowQueryWork(Store, database) {
       this.db.prepare = prepare
       if (queryKind) {
         counts.queries++; counts[queryKind]++
+        if (nativeAscii) counts.nativeAsciiQueries++
         counts.matched += nativeMatched ?? nativeDirect
       }
     }
@@ -99,7 +126,7 @@ function capture(store, id, options) {
   const prepare = store.db.prepare, calls = []
   store.db.prepare = function (sql) {
     const statement = prepare.call(this, sql)
-    if (isWindowQuerySql(sql)) for (const method of ['get', 'all']) {
+    if (isWindowQuerySql(sql) || isWindowQueryFoldSql(sql)) for (const method of ['get', 'all']) {
       const execute = statement[method]
       statement[method] = function (...params) { const value = execute.apply(this, params); calls.push({ sql, method, params, value }); return value }
     }
