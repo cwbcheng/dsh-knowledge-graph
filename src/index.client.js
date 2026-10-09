@@ -10162,15 +10162,17 @@ export default function clientPlugin() {
       function resolveAngleOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed during this call;
+        // keep reading the current x/y after each angular adjustment.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 160; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               const ra = Math.hypot(a.x, a.y)
               const rb = Math.hypot(b.x, b.y)
