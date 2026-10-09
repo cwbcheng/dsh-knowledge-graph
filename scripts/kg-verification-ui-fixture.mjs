@@ -12,6 +12,7 @@ import { SqliteKnowledgeStore } from '../lib/kg-store.mjs'
 import { diagnosticFixture, countHydration } from './kg-document-window-diagnostics-benchmark.mjs'
 import { countWindowSourceHydration } from './kg-document-window-source-benchmark.mjs'
 import { literalWindowFixture, countWindowQueryWork } from './kg-document-window-query-benchmark.mjs'
+import { countWindowNeighborNodes } from './kg-document-window-neighbor-nodes-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -225,6 +226,7 @@ const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0, quest
 const diagnosticMeter = windowDiagnosticsMode ? countHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const sourceMeter = windowSourceOmissionMode || windowQueryLiteralMode ? countWindowSourceHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const queryMeter = windowQueryLiteralMode ? countWindowQueryWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+const neighborMeter = windowQueryLiteralMode ? countWindowNeighborNodes(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -377,6 +379,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
       ...(sourceMeter ? { sourceHydration: sourceMeter.counts } : {}),
       ...(queryMeter ? { queryWork: queryMeter.counts } : {}),
+      ...(neighborMeter ? { neighborNodeWork: neighborMeter.counts } : {}),
       ...(windowDiagnosticsMode ? { windowHydration: diagnosticMeter.counts,
         sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
         canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
@@ -492,6 +495,7 @@ const server = createServer(async (req, res) => {
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 async function stop() {
+  neighborMeter?.stop()
   queryMeter?.stop()
   sourceMeter?.stop()
   diagnosticMeter?.stop()
