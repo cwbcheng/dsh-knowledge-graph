@@ -36,6 +36,7 @@ const layeredLocalMode = process.argv.includes('--layered-local')
 const layoutConnectedMode = process.argv.includes('--layout-connected')
 const layoutComponentsMode = process.argv.includes('--layout-components') || layoutConnectedMode
 const layeredHubMode = process.argv.includes('--layered-hub')
+const layeredRowsMode = process.argv.includes('--layered-rows')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
@@ -83,7 +84,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: layoutComponentsMode || layeredHubMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: layoutComponentsMode || layeredHubMode || layeredRowsMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -117,7 +118,7 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: layeredLocalMode ? i === 0 ? 'concept' : ['example', 'definition', 'concept', 'concept', 'counter_example'][i % 5] : layeredHubMode && i % 3 === 0 ? 'claim' : paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: layeredLocalMode ? i === 0 ? 'concept' : ['example', 'definition', 'concept', 'concept', 'counter_example'][i % 5] : (layeredHubMode || layeredRowsMode) && i % 3 === 0 ? 'claim' : paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
@@ -139,7 +140,7 @@ if (layoutComponentsMode) {
   })
   graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }
-if (layeredHubMode) {
+if (layeredHubMode || layeredRowsMode) {
   for (let i = 1; i < graph.nodes.length; i++) graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n' + i, relation: 'supports',
     evidence: [{ paragraph: 0, quote: paragraphs[0] }] })
   graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
