@@ -136,7 +136,7 @@ try {
   props.prediction = store.getLearningAttempt('prediction'); render(); await settle()
   assert.equal(input('个人复盘内容').props.value, '尚未保存的个人记录。')
   legacy = true; click('重新读取验证结果'); await settle()
-  assert(text(tree).includes('Host 不支持保存'))
+  assert(text(tree).includes('服务不支持保存'))
   assert(button('保存结果记录').props.disabled)
   legacy = false; forged = true; click('重新读取验证结果'); await settle()
   assert(text(tree).includes('身份不一致'))

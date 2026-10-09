@@ -143,7 +143,7 @@ try {
   assert.equal(input('我的联结规律').props.value, '尚未保存的后续理解')
   warned = false; events.get('beforeunload')({ preventDefault: () => { warned = true } }); assert(warned)
   legacy = true; click('重新读取个人表述'); await settle()
-  assert(text(tree).includes('Host 不支持保存'))
+  assert(text(tree).includes('服务不支持保存'))
   assert(button('保存我的理解').props.disabled, 'legacy Host must not falsely acknowledge a personal save')
   assert.equal(input('我的联结规律').props.value, '尚未保存的后续理解')
   legacy = false; forged = true; click('重新读取个人表述'); await settle()
@@ -174,7 +174,7 @@ try {
   }
   render(); await settle()
   assert(button('我的理解').props.disabled, 'mixed Host blocks the workbench entry before sending unsupported requests')
-  assert(text(tree).includes('当前 Host 不支持保存我的理解'))
+  assert(text(tree).includes('当前服务不支持保存我的理解'))
   const learningPanel = () => all(tree, el => el.type === context.window.KGViewer.ModelLearningPanel)[0]
   assert.equal(learningPanel().props.onUnderstanding, undefined, 'practice return action cannot bypass a missing Host capability')
   rootLegacy = false; click('重新读取模型'); await settle()

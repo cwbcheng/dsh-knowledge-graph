@@ -119,7 +119,7 @@ assert(tree.props.children.includes(toolbar) && tree.props.children.includes(vie
 assert.equal(all(viewport(), byClass('kg-graph-toolbar')).length, 0, 'Toolbar cannot occlude the canvas')
 assert.equal(all(viewport(), item => item.type === 'svg').length, 1, 'Export and panning use the same rendered SVG')
 const initial = camera()
-click('适合画布')
+click('显示全部')
 assert.notEqual(camera(), initial, 'Fit must actually include a large graph below the editor zoom floor')
 const fitted = camera()
 const fittedValues = fitted.match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)

@@ -135,7 +135,7 @@ try {
     if (method === 'connection-models') delete result.modelStructureVersion
     return result
   } })
-  await assert.rejects(unsupportedController({ modelId: 'multi', revision: 1, modelStructure: proposed }), /Host 尚未部署/)
+  await assert.rejects(unsupportedController({ modelId: 'multi', revision: 1, modelStructure: proposed }), /服务暂不支持.*修改尚未提交/)
   assert(!unsupportedCalls.some(method => method.startsWith('graph-commit')), 'a mixed-version Host must not receive structural previews or writes')
   const preview = await controller({ modelId: 'multi', revision: 1, modelStructure: proposed })
   assert.equal(preview.changes.length, 1)
@@ -146,7 +146,7 @@ try {
   taxiDraft.branches[0].mapping.provenance.kind = 'ai'
   const semanticDiff = helpers.patch(original, 'taxi', taxiDraft).changes
   assert(semanticDiff.some(change => change.text.includes('输出状态') && change.before === '10' && change.after === '999'), 'paired answers must be visible in the approval')
-  assert(semanticDiff.some(change => change.text.includes('来源身份') && change.after.includes('AI 建议')), 'provenance changes must be visible in the approval')
+  assert(semanticDiff.some(change => change.text.includes('来源类型') && change.after.includes('AI 建议')), 'provenance changes must be visible in the approval')
   assert.equal(store.getDocumentRevision(document.documentId), 1, 'preview must be read-only')
   const previewRequest = calls.find(call => call.method === 'graph-commit-preview').args
   assert.equal(previewRequest.graph.nodes.length, 1, 'only the target model is changed')

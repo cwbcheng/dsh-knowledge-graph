@@ -64,7 +64,7 @@ for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/cl
     ui.render('completed')
     await new Promise(resolve => setImmediate(resolve))
     const tree = ui.render('completed')
-    assert(find(tree, n => n.attrs['aria-label'] === '轨迹 ⇄ 知识图结果'), file + ': restored result must render')
+    assert(find(tree, n => n.attrs['aria-label'] === '会话事件与知识图'), file + ': restored result must render')
     const viewer = find(tree, n => n.tag?.name === 'GraphViewer')
     assert.equal(viewer.attrs.nodes[0].id, 'n0')
     assert.equal(viewer.attrs.revision, 4)
@@ -75,6 +75,42 @@ for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/cl
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
+// Render real source rows with multiple content units per event, then switch
+// sessions while preserving the same source spans but changing event metadata.
+const rowsOf = tree => !tree || typeof tree !== 'object' ? [] : [
+  ...(tree.attrs?.id?.startsWith('kg-traj-para-') ? [tree] : []), ...(tree.children || []).flatMap(rowsOf),
+]
+for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/client.js', true]]) {
+  const ui = await mount(file, persistent)
+  const lines = Array.from({ length: 6 }, (_, i) => 'Source observation ' + i + ' has exact evidence.')
+  const source = lines.join('\n\n'), firstEnd = lines.slice(0, 3).join('\n\n').length
+  const graph = { source: { documentId: 'trace-multiple-units', revision: 4 }, revision: 4,
+    nodes: lines.map((text, i) => ({ id: 'n' + i, type: 'fact', text, quote: text, paragraph: i })), edges: [] }
+  const events = [{ line: source.slice(0, firstEnd), seq: 91, type: 'tool/result', start: 0, end: firstEnd },
+    { line: source.slice(firstEnd + 2), seq: 22, type: 'user/message', start: firstEnd + 2, end: source.length }]
+  const before = JSON.stringify(events)
+  ui.api.writeTrajResult('multi-event', { graph, traceText: source, traceEvents: events, revision: 4 })
+  ui.render('multi-event'); await tick()
+  let tree = ui.render('multi-event'), rows = rowsOf(tree)
+  assert.equal(rows.length, 6)
+  rows.forEach((row, i) => {
+    assert(row.attrs['aria-label'].includes(i < 3 ? '工具结果' : '用户消息'), 'source units retain their actual event kind')
+    assert(find(row, part => part.tag === 'span' && part.children?.includes(i < 3 ? '#91' : '#22')), 'event sequence is independent of paragraph index')
+  })
+  const revised = [{ line: source, seq: 700, type: 'assistant/message', start: 0, end: source.length }]
+  ui.api.writeTrajResult('replaced-event', { graph: { ...graph, source: { ...graph.source, documentId: 'trace-replaced' } },
+    traceText: source, traceEvents: revised, revision: 4 })
+  ui.render('replaced-event'); await tick()
+  tree = ui.render('replaced-event'); rows = rowsOf(tree)
+  assert.equal(rows.length, 6)
+  assert(rows.every(row => row.attrs['aria-label'].includes('AI 回复')), 'session replacement refreshes the memoized event lookup')
+  assert(rows.every(row => find(row, part => part.tag === 'span' && part.children?.includes('#700'))))
+  rows[4].attrs.onKeyDown({ key: 'Enter', preventDefault() {} })
+  const selectedViewer = find(ui.render('replaced-event'), n => n.tag?.name === 'GraphViewer')
+  assert.equal(selectedViewer.attrs.selectedNodeId, 'n4', 'event labels do not change paragraph-to-node navigation')
+  assert.equal(JSON.stringify(events), before)
+  ui.dispose()
+}
 const reviewGraph = (documentId, revision) => ({ source: { documentId, revision }, revision,
   nodes: [{ id: 'n0', type: 'fact', text: 'Source', quote: 'Source', paragraph: 0 }], edges: [],
   verification: { lastReport: { reportId: 'report-' + documentId, issues: [0, 1].map(i => ({ id: 'issue-' + i,
@@ -127,4 +163,5 @@ for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/cl
   }
 }
 console.log(JSON.stringify({ trajectoryResultRenders: true, dynamicAndPersistent: true, bothOntologies: true,
+  multiUnitEventIdentity: true, eventMetadataReplacement: true, sourceNodeNavigation: true,
   referenceOnlyStorage: true, sessionQueueIsolation: true, unmountQueueIsolation: true }))

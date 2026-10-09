@@ -97,8 +97,8 @@ try {
   let pickerNode = all(editor.tree, element => element.type === ModelSourceFieldPicker)[0]
   assert(pickerNode)
   picker = mount(ModelSourceFieldPicker, pickerNode.props); picker.render(); await picker.settle()
-  assert.equal(focused, '原文选取到结构草稿')
-  assert.equal(scrolled, '原文选取到结构草稿', 'source candidates must be brought into view even when opened from the bottom of a long editor')
+  assert.equal(focused, '从原文填写字段')
+  assert.equal(scrolled, '从原文填写字段', 'source candidates must be brought into view even when opened from the bottom of a long editor')
   picker.click('选取 P1')
   picker.change('待选原文片段', '结果必然成立')
   assert(picker.button('填入字段草稿').props.disabled)
@@ -143,10 +143,10 @@ try {
   const onEdit = [], gapProps = { documentId: fixture.documentId, revision: 2, modelId: 'taxi', active: true, load, onEdit: target => onEdit.push(target) }
   gaps = mount(ModelGapPanel, gapProps); gaps.render(); await gaps.settle()
   assert(text(gaps.tree).includes('不等于条件满足或关系成立'))
-  malformed = true; gaps.click('重读缺口'); await gaps.settle()
+  malformed = true; gaps.click('刷新待补充内容'); await gaps.settle()
   assert(text(gaps.tree).includes('缺口诊断版本或记录身份不一致'))
   assert(!all(gaps.tree, element => element.type === 'button' && element.props['aria-label']?.startsWith('整理缺口')).length)
-  malformed = false; delayReads = true; gaps.click('重读缺口')
+  malformed = false; delayReads = true; gaps.click('刷新待补充内容')
   const lateGap = pending.at(-1); gapProps.modelId = 'multi'; gaps.render()
   assert(lateGap.signal.aborted)
   for (const request of pending.splice(0)) request.resolve(await harness.post(request.args, 'connection-models'))

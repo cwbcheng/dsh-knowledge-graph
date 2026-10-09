@@ -7,7 +7,7 @@ import {join} from 'node:path'
 import {pathToFileURL} from 'node:url'
 import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
-import {literalWindowFixture,isWindowQuerySql,assertWindowQueryCallParity} from './kg-document-window-query-benchmark.mjs'
+import {literalWindowFixture,isWindowQuerySql,isWindowQueryFoldSql,assertWindowQueryCallParity} from './kg-document-window-query-benchmark.mjs'
 import {isWindowEdgeSql,isWindowEdgeProbeSql,assertWindowEdgeCallParity} from './kg-document-window-edge-reads.mjs'
 
 export const isWindowIncidentSql=sql=>sql.startsWith('SELECT * FROM graph_edges')&&sql.includes('from_node_id IN (')&&sql.includes('to_node_id IN (')&&!sql.includes('json_each')
@@ -95,7 +95,7 @@ async function benchmark(){
       assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=2049)
       assertWindowQueryCallParity(before.calls,after.calls,after.window)
       assertWindowEdgeCallParity(before.calls,after.calls)
-      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)&&!isWindowEdgeSql(call.sql)&&!isWindowEdgeProbeSql(call.sql)
+      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)&&!isWindowQueryFoldSql(call.sql)&&!isWindowEdgeSql(call.sql)&&!isWindowEdgeProbeSql(call.sql)
       assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
       for(let i=0;i<after.incident.length;i++)assert.deepEqual(after.incident[i].rows,before.incident[i].rows)
       samples.push({...fixture,kind,limit,options,before,after,beforeWork:{...oldMeter.counts},currentWork:{...meter.counts}})
@@ -112,7 +112,7 @@ async function benchmark(){
         beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,incident})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; matching predicate/params parity allows later direct-first COUNT omission; later window boolean/direct-IN membership verified separately with identical SQL bytes otherwise, selected-ID/budget params and complete Native edges; all remaining SQL, params, Native values and sequence identical; historical baselines include later Store changes, use the original measured revision to isolate incident savings; counters and comparisons outside timing; no inspector, HTTP, rendering or CI timing gate'}))
+      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; matching parity allows only later direct-first COUNT omission and six-field connection-guarded LIKE coercions with identical parameters/Native records/counts; later window boolean/direct-IN membership verified separately with identical SQL bytes otherwise, selected-ID/budget params and complete Native edges; all other SQL, params, Native values and sequence identical; historical baselines include later Store changes, use the original measured revision to isolate incident savings; counters and comparisons outside timing; no inspector, HTTP, rendering or CI timing gate'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()

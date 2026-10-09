@@ -109,7 +109,7 @@ try {
   for (const quote of expectedInputQuotes) assert(text(tree).includes(quote))
   props.prediction = structuredClone(revealed)
   for (const ref of props.prediction.task.references.filter(ref => ref.nodeId === 'distance')) { ref.state = 'rejected'; ref.entailmentStatus = 'unsupported' }
-  render(); assert(text(tree).includes('已驳回')); assert(text(tree).includes('原文语义不支持'), 'negative source status cannot be softened into a generic uncertainty label')
+  render(); assert(text(tree).includes('已拒绝')); assert(text(tree).includes('原文不支持'), 'negative source status cannot be softened into a generic uncertainty label')
   const appendCorrection = (attemptId, parentResultId, content) => post({ ...base, action: 'save-result', attemptId,
     predictionId: 'old-prediction', expectedRevision: 1, expectedVersion: 2,
     response: { ...original.response, content, parentResultId, revisionReason: '追加澄清，保留历史。' } })

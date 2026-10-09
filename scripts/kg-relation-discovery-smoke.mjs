@@ -153,8 +153,8 @@ try {
   const h = (tag, props, ...children) => typeof tag === 'function' ? tag(props) : ({ tag, props, children })
   const ui = new Function('h', components + '; return { RelationDiscoveryStatus, GenerationProgress, relationNetChange }')(h)
   const tree = JSON.stringify(ui.GenerationProgress({ progress: { discovery: { totalTargets: 3729, searchedTargets: 48, remainingTargets: 3681 }, requests: [] } }))
-  assert.ok(tree.includes('关系检索 48/3729'))
-  assert.ok(tree.includes('关系候选检索进度'))
+  assert.ok(tree.includes('查找关系 48/3729'))
+  assert.ok(tree.includes('关系候选查找进度'))
   assert.equal(ui.relationNetChange({ before: { edgeCount: 2723 }, after: { edgeCount: 2758 }, addedEdges: 534 }), 35, 'legacy candidate counts must not be displayed as final additions')
 
   process.env.DSH_KG_DB = join(dir, 'routes.sqlite')

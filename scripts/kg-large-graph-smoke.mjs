@@ -175,6 +175,6 @@ assert(!clientSource.includes("status !== 'cancelled' && await resumeLostTask"),
 assert(clientSource.includes("if (await resumeLostTask()) return"), 'Host-restart recovery path is missing')
 assert(clientSource.includes("className: 'kg-window-nav'"), 'large-graph UI window navigation is missing')
 assert(clientSource.includes("loadGraphWindow({ page: windowMeta.page + 1, query: '' })"), 'large-graph next-page control is missing')
-assert(clientSource.includes("placeholder: '按节点 ID / 文本 / 类型 / 章节查询子图…'"), 'large-graph subgraph query control is missing')
+assert(clientSource.includes("placeholder: '输入节点编号、内容、类型或章节…'"), 'large-graph subgraph query control is missing')
 
 console.log(JSON.stringify({ ok: true, canonicalNodes: result.view.totalNodes, visibleNodes: result.nodes.length, queriedNode: 'n801', checkpointVersion: 2 }))

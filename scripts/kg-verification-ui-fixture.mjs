@@ -2,6 +2,7 @@
 // by an owned temporary SQLite database and a manually controlled model.
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +17,14 @@ import { countWindowNeighborNodes } from './kg-document-window-neighbor-nodes-be
 import { countWindowIncidentWork } from './kg-document-window-incident-benchmark.mjs'
 import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
 import { countWindowEdgeWork } from './kg-document-window-edge-reads.mjs'
+
+// Compare real clients without changing the worktree or the fixture's host/data.
+const clientRef = process.argv.find(arg => arg.startsWith('--client-ref='))?.slice('--client-ref='.length)
+const clientCommit = clientRef ? execFileSync('git', ['rev-parse', '--verify', clientRef + '^{commit}'], { encoding: 'utf8' }).trim() : null
+const clientSnapshot = clientCommit ? execFileSync('git', ['show', clientCommit + ':lib/client.js'], {
+  encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+}) : null
+if (clientCommit) console.log('CLIENT_REF=' + clientCommit)
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -33,6 +42,7 @@ const sourceImagePerformanceMode = process.argv.includes('--source-image-perform
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
 const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
+const windowResponsePerformanceMode = process.argv.includes('--window-response-performance')
 const windowQueryLiteralMode = process.argv.includes('--window-query-literal') || windowQueryCountMode
 const literalFixture = windowQueryCountMode ? ordinaryWindowFixture(12000, documentId) : windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
 if (windowQueryCountMode) {
@@ -40,6 +50,13 @@ if (windowQueryCountMode) {
   for (const node of literalFixture.graph.nodes) if (node.sectionId === 'body') node.sectionTitle = 'Common_% section'
 }
 const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode || windowQueryLiteralMode
+const paragraphLocationMode = process.argv.includes('--paragraph-location')
+const trajectoryEventMode = process.argv.includes('--trajectory-event-lookup')
+const legacyFragmentMode = process.argv.includes('--legacy-fragment-lookup')
+const legacyTokenMode = process.argv.includes('--legacy-token-lookup') || legacyFragmentMode
+const normalizedAnchorMode = process.argv.includes('--normalized-anchor-lookup')
+const sourceTableLookupMode = process.argv.includes('--source-table-lookup')
+const paragraphWindowMode = process.argv.includes('--paragraph-window-lookup') || trajectoryEventMode || legacyTokenMode || normalizedAnchorMode || sourceTableLookupMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -59,10 +76,21 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
+if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
+  paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
+    : i % 3 === 2 ? paragraphs[i].replace('Fixture ', 'Fixture,') : paragraphs[i])
+}
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
+}
+if (sourceTableLookupMode) for (let i = 0; i < paragraphs.length; i += 30) {
+  paragraphs[i] = '<table><caption>来源表格 ' + i + '</caption><tr><th>阶段</th><th>原文内容</th></tr>'
+  paragraphs[i + 1] = '<tr><td>样本 ' + i + '</td><td><b>📚 保留原文 ' + i + '</b></td></tr></table>'
+  paragraphs[i + 2] = '代码示例 `<table><tr><td>inline literal ' + i + '</td></tr></table>`'
+  paragraphs[i + 3] = '    <table><tr><td>indented literal ' + i + '</td></tr></table>'
 }
 if (relationSemanticMode) paragraphs[0] = 'The two outcomes were correlated, but no causal direction was established.'
 if (textSemanticMode) paragraphs[0] = 'The teacher guessed answer-first might reduce errors, but the sequence was not tested.'
@@ -82,7 +110,7 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: 'n' + i, type: 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
@@ -101,6 +129,37 @@ if (windowEdgeProbeMode) {
   for (let i = 4000; i < 10000; i++) for (const relation of ['supports', 'relates_to']) graph.edges.push({
     fromNodeId: graph.nodes[i].id, toNodeId: graph.nodes[i + 40].id, relation,
     evidence: [{ paragraph: i, quote: paragraphs[i] }],
+  })
+}
+if (legacyTokenMode) for (const node of graph.nodes.slice(-200)) {
+  // Quotes have no exact match or paragraph metadata. Fragment mode alternates
+  // old prefix/suffix matches with the token fallback's numbered source unit.
+  const index = Number(node.id.slice(1))
+  delete node.paragraph
+  node.text = node.quote = legacyFragmentMode && index % 3 === 1 ? node.quote.slice(8) + ' INVALIDEND'
+    : legacyFragmentMode && index % 3 === 2 ? 'INVALIDSTART ' + node.quote.slice(0, 27)
+      : 'ZZZ observation ' + index + ' recorded QQQ'
+  node.evidence = []
+  node.groundingStatus = 'unverified'
+}
+if (normalizedAnchorMode) for (const node of graph.nodes.slice(-200)) {
+  const index = Number(node.id.slice(1))
+  delete node.paragraph
+  node.text = node.quote = index % 3 === 0 ? node.quote.replace('\t\t', ' ')
+    : index % 3 === 1 ? node.quote.replace('.', '!') : node.quote.replace('Fixture,', 'Fixture ').replace('.', '!')
+  node.evidence = []
+  node.groundingStatus = 'unverified'
+}
+const legacyNodeIds = new Set(legacyTokenMode ? graph.nodes.slice(-200).map(node => node.id) : [])
+const normalizedNodeIds = new Set(normalizedAnchorMode ? graph.nodes.slice(-200).map(node => node.id) : [])
+if (trajectoryEventMode) {
+  // The first event spans three content units; later event sequences deliberately
+  // differ from paragraph numbers so an accidental 1:1 mapping is observable.
+  let offset = 0
+  graph.traceEvents = [paragraphs.slice(0, 3).join('\n\n'), ...paragraphs.slice(3)].map((line, index) => {
+    const event = { line, seq: 1000 + index, type: index % 2 ? 'user/message' : 'tool/result', start: offset, end: offset + line.length }
+    offset = event.end + 2
+    return event
   })
 }
 if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
@@ -224,6 +283,9 @@ if (repairPatchLimitMode) for (const i of [0, 1]) {
     detail: 'Check the restriction to adults.', evidence: [{ paragraph: i, quote: repairQualification }] })
 }
 store.saveGraph(graph, { sourceText })
+const originalLegacyNodeContent = legacyTokenMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
+const originalNormalizedNodeContent = normalizedAnchorMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
+const originalTableNodeContent = sourceTableLookupMode ? JSON.stringify(nodeContent(store.getDocument(documentId).nodes)) : null
 if (documentQueueMode) {
   const second = structuredClone(graph), id = 'verification-second'
   second.source = { ...second.source, id, documentId: id, title: 'Second verification fixture' }
@@ -239,6 +301,8 @@ const queryMeter = windowQueryLiteralMode ? countWindowQueryWork(SqliteKnowledge
 const neighborMeter = windowQueryLiteralMode ? countWindowNeighborNodes(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const incidentMeter = windowQueryLiteralMode ? countWindowIncidentWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const edgeMeter = windowEdgeProbeMode ? countWindowEdgeWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+if (paragraphLocationMode) Object.assign(stats, { paragraphLocations: [], sourceUnchanged: true })
+let delayNextParagraphLocation = false
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -366,7 +430,31 @@ ${reviewSaveMode ? '<nav><button onclick="control(\'change-hidden\')">Change hid
 ${heldSaveMode ? '<nav><button onclick="control(\'hold-next-save\')">Hold next graph save</button><button onclick="control(\'reject-held-save\')">Reject held graph save</button></nav>' : ''}
 ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">Hold next quick report</button><button onclick="control(\'release-verification\')">Release quick report</button></nav>' : ''}
 ${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
+${paragraphLocationMode ? '<nav><button onclick="control(\'delay-paragraph\')">Delay next source location</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
+${windowResponsePerformanceMode ? `<output id="window-response-telemetry" style="display:block;white-space:pre-wrap;overflow-wrap:anywhere"></output>
+<script>
+// Synthetic-data DOM timing only; wait for the actual GraphCanvas ready state.
+const responseSamples=[];
+let responsePending={kind:'initial',budget:800,started:performance.now()};
+const responseOutput=document.getElementById('window-response-telemetry');
+function observeResponse(){
+ const select=document.querySelector('select[aria-label="每窗节点数"]');
+ const stage=document.querySelector('.kg-graph-stage');
+ if(!responsePending||!select||select.disabled||Number(select.value)!==responsePending.budget||!stage||stage.getAttribute('aria-busy')!=='false')return;
+ const nav=select.closest('.kg-window-nav');
+ responseSamples.push({kind:responsePending.kind,budget:responsePending.budget,elapsedMs:performance.now()-responsePending.started,
+  nodes:stage.querySelectorAll('svg g.kg-node').length,edges:stage.querySelectorAll('svg .kg-edge').length,windowText:nav.textContent});
+ responsePending=null;responseOutput.textContent=JSON.stringify({samples:responseSamples});
+}
+document.addEventListener('change',event=>{
+ if(!event.target.matches('select[aria-label="每窗节点数"]'))return;
+ const budget=Number(event.target.value);if(!Number.isFinite(budget))return;
+ responsePending={kind:'budget-change',budget,started:performance.now()};
+ responseOutput.textContent=JSON.stringify({samples:responseSamples,pending:{kind:'budget-change',budget}});
+},true);
+new MutationObserver(observeResponse).observe(document.getElementById('root'),{subtree:true,childList:true,attributes:true,attributeFilter:['aria-busy','disabled','value']});
+</script>` : ''}
 <script>
 window.fixtureErrors=[];window.addEventListener('error',event=>fixtureErrors.push(event.message));
 async function control(action){await fetch('/fixture/'+action,{method:'POST'})}
@@ -398,6 +486,31 @@ const server = createServer(async (req, res) => {
         sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
         canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
         canonicalEdges: store.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId).count } : {}),
+      ...(paragraphWindowMode ? (() => { const saved = store.getDocument(documentId); return {
+        paragraphWindowFixture: true, sourceUnchanged: saved.sourceText === sourceText,
+        nodeCount: saved.nodes.length, edgeCount: saved.edges.length,
+        ...(sourceTableLookupMode ? { sourceTableLookupFixture: true,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalTableNodeContent } : {}),
+        ...(trajectoryEventMode ? { trajectoryEventFixture: true, eventCount: saved.traceEvents.length,
+          eventMetadataUnchanged: JSON.stringify(saved.traceEvents) === JSON.stringify(graph.traceEvents) } : {}),
+        ...(legacyTokenMode ? (() => { const legacyNodes = saved.nodes.filter(node => legacyNodeIds.has(node.id)); return {
+          legacyTokenFixture: true, legacyNodes: legacyNodes.length,
+          missingParagraphMetadata: legacyNodes.filter(node => !Number.isInteger(node.paragraph)).length,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalLegacyNodeContent,
+          ...(legacyFragmentMode ? { legacyFragmentFixture: true, fragmentKinds: {
+            prefix: legacyNodes.filter(node => node.quote.endsWith(' INVALIDEND')).length,
+            suffix: legacyNodes.filter(node => node.quote.startsWith('INVALIDSTART ')).length,
+            tokenFallback: legacyNodes.filter(node => node.quote.startsWith('ZZZ ')).length,
+          } } : {}),
+        } })() : {}),
+        ...(normalizedAnchorMode ? (() => { const normalizedNodes = saved.nodes.filter(node => normalizedNodeIds.has(node.id)); return {
+          normalizedAnchorFixture: true, normalizedNodes: normalizedNodes.length,
+          missingParagraphMetadata: normalizedNodes.filter(node => !Number.isInteger(node.paragraph)).length,
+          originalNodeContentPreserved: JSON.stringify(nodeContent(saved.nodes)) === originalNormalizedNodeContent,
+          normalizationModes: Object.fromEntries(['ws', 'punct', 'both'].map((mode, index) =>
+            [mode, normalizedNodes.filter(node => Number(node.id.slice(1)) % 3 === index).length])),
+        } })() : {}),
+      } })() : {}),
       ...(visualInspectorMode ? { visualInspectorFixture: true, imageReviewFixture: imageReviewMode, visualHeld: !!releaseVisual,
         imageStates: store.getDocument(documentId).source.visualSource.images.map(image => ({ id: image.id, status: image.interpretationStatus })),
         originalNodeContentPreserved: JSON.stringify(nodeContent(store.getDocument(documentId).nodes.filter(node => /^n\d+$/.test(node.id)))) === JSON.stringify(nodeContent(graph.nodes)),
@@ -419,6 +532,7 @@ const server = createServer(async (req, res) => {
       issueStatuses: store.getDocument(documentId).verification?.lastReport?.issues?.map(issue => issue.status) }); return }
     if (url.pathname.startsWith('/fixture/') && req.method === 'POST') {
       if (url.pathname.endsWith('/offline')) dropStatus = 2
+      if (paragraphLocationMode && url.pathname.endsWith('/delay-paragraph')) delayNextParagraphLocation = true
       if (url.pathname.endsWith('/reject-save')) rejectSave = true
       if (visualInspectorMode && url.pathname.endsWith('/hold-visual')) holdVisual = true
       if (visualInspectorMode && url.pathname.endsWith('/malformed-visual')) malformedVisual = true
@@ -475,6 +589,25 @@ const server = createServer(async (req, res) => {
         return end(JSON.stringify(payload), ...args)
       }
     }
+    if (paragraphLocationMode && url.pathname.endsWith('/document-load')) {
+      let raw = '', args = {}
+      req.on('data', chunk => { raw += chunk })
+      req.on('end', () => { args = JSON.parse(raw || '{}') })
+      const end = res.end.bind(res)
+      res.end = (body, ...rest) => {
+        const response = JSON.parse(body)
+        if (args.focusParagraph !== undefined) {
+          const delayed = delayNextParagraphLocation
+          delayNextParagraphLocation = false
+          stats.paragraphLocations.push({ paragraph: args.focusParagraph, expectedRevision: args.expectedRevision,
+            nodeLimit: args.nodeLimit, includeSourceText: args.includeSourceText, delayed,
+            visibleNodes: response.graph?.nodes?.length, focusNodeId: response.graph?.view?.focusNodeId, revision: response.revision })
+          stats.sourceUnchanged = store.getDocument(documentId).sourceText === sourceText
+          if (delayed) { setTimeout(() => { if (!res.destroyed) end(body, ...rest) }, 1500); return res }
+        }
+        return end(body, ...rest)
+      }
+    }
     if (url.pathname.endsWith('/document-export')) stats.snapshotExports++
     if (url.pathname.endsWith('/question-graph')) stats.questionRequests++
     if (url.pathname.endsWith('/task-status')) {
@@ -494,7 +627,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) { await routes.get('/api/dsh-knowledge-graph').handler(req, res); return }
     if (url.pathname === '/client.js') {
-      const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+      const source = clientSnapshot ?? readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
       const marker = '      // --------------------------- slot registration'
       if (!source.includes(marker)) throw new Error('client exposure marker not found')
       res.setHeader('content-type', 'text/javascript')

@@ -67,7 +67,7 @@ function mount(code, initial, transport, draftState) {
     assert(node, 'Missing control: ' + name); return node }
   const settle = async () => { for (let count = 0; count < 5; count++) { await Promise.resolve(); render() } }
   const change = (name, value) => { control(name).props.onChange({ target: { value } }); render() }
-  const search = async () => { await control('检索').props.onClick(); await settle() }
+  const search = async () => { await control('查找').props.onClick(); await settle() }
   render()
   return { props, calls, saved, located, consumed, render, control, change, search, settle,
     tree: () => tree, options: () => all(control('关系上下文筛选'), item => item.type === 'option').map(item => [item.props.value, text(item)]),
@@ -130,18 +130,18 @@ try {
       assert.equal(all(ui.tree(), node => node.props.className === 'kg-consume-result').length, 0, 'Old query cannot restore actions after scope changes')
       await ui.search()
       assert(text(ui.tree()).includes('版本'), 'Actual Host must reject stale revisions without clearing the draft')
-      assert.equal(ui.control('知识图检索关键词').props.value, 'taxi')
+      assert.equal(ui.control('查找知识的关键词').props.value, 'taxi')
       assert.equal(ui.control('关系上下文筛选').props.value, 'maps_between')
       ui.props.graph = initial; ui.render()
       ui.control('证据问答').props.onClick(); ui.render()
-      assert(ui.control('基于证据回答').props.disabled)
+      assert(ui.control('依据原文回答').props.disabled)
       ui.props.readOnly = false; ui.render(); ui.change('向知识图提问', 'What connects these concepts?')
-      await ui.control('基于证据回答').props.onClick(); await ui.settle()
+      await ui.control('依据原文回答').props.onClick(); await ui.settle()
       assert.deepEqual(ui.calls.at(-1).payload.relations, ['maps_between'], 'Answer retrieval must not lose the selected context')
       assert.equal(ui.control('向知识图提问').props.value, 'What connects these concepts?')
       assert(text(ui.tree()).includes('deliberately blocked'))
       ui.props.graph = { ...initial, graphOntology: presentation(legacy) }; ui.render()
-      assert(ui.options().some(([id, label]) => id === 'maps_between' && label.includes('当前本体未声明')))
+      assert(ui.options().some(([id, label]) => id === 'maps_between' && label.includes('当前分类方案未定义')))
       assert(!ui.options().some(([id]) => id === 'has_rule' || id === 'unrelated_global_label'))
       ui.props.graph = { ...initial, graphOntology: undefined }; ui.render()
       assert.deepEqual(ui.options().filter(([id]) => id !== 'maps_between'),
@@ -150,8 +150,8 @@ try {
       const remounted = mount(code, { ...initial, revision: 2 }, transport, cached)
       try {
         assert.equal(remounted.control('向知识图提问').props.value, 'What connects these concepts?')
-        remounted.control('结构化检索').props.onClick(); remounted.render()
-        assert.equal(remounted.control('知识图检索关键词').props.value, 'taxi')
+        remounted.control('查找知识').props.onClick(); remounted.render()
+        assert.equal(remounted.control('查找知识的关键词').props.value, 'taxi')
         assert.equal(remounted.control('关系上下文筛选').props.value, 'maps_between')
         assert.equal(all(remounted.tree(), node => node.props.className === 'kg-consume-result').length, 0, 'Remount restores only draft inputs, never prior results')
         remounted.props.restoreState = { seq: 20, documentId: identity.documentId, revision: 2, state: {
@@ -159,27 +159,27 @@ try {
         } }; remounted.render()
         assert.equal(remounted.props.restoreState.consumedSeq, remounted.props.restoreState.seq)
         assert.equal(remounted.consumed.length, 1)
-        remounted.change('知识图检索关键词', 'AFTER VIEW APPLICATION'); remounted.change('关系上下文筛选', 'maps_between')
+        remounted.change('查找知识的关键词', 'AFTER VIEW APPLICATION'); remounted.change('关系上下文筛选', 'maps_between')
         remounted.control('证据问答').props.onClick(); remounted.render()
         const returned = mount(code, { ...initial, revision: 2 }, transport, { documentId: identity.documentId, state: remounted.saved.at(-1) })
         try {
           returned.props.restoreState = remounted.props.restoreState; returned.render()
           assert.equal(returned.control('向知识图提问').props.value, 'What connects these concepts?')
           assert.equal(returned.consumed.length, 0, 'A consumed restore cannot replay after panel remount')
-          returned.control('结构化检索').props.onClick(); returned.render()
-          assert.equal(returned.control('知识图检索关键词').props.value, 'AFTER VIEW APPLICATION')
+          returned.control('查找知识').props.onClick(); returned.render()
+          assert.equal(returned.control('查找知识的关键词').props.value, 'AFTER VIEW APPLICATION')
           assert.equal(returned.control('关系上下文筛选').props.value, 'maps_between')
           assert.equal(all(returned.tree(), node => node.props.className === 'kg-consume-result').length, 0)
         } finally { returned.dispose() }
         remounted.props.graph = { ...initial, source: { ...initial.source, documentId: 'another-document' } }; remounted.render()
-        assert.equal(remounted.control('知识图检索关键词').props.value, '')
+        assert.equal(remounted.control('查找知识的关键词').props.value, '')
         assert.equal(remounted.control('关系上下文筛选').props.value, 'all')
         remounted.control('证据问答').props.onClick(); remounted.render()
         assert.equal(remounted.control('向知识图提问').props.value, '', 'Changing documents cannot inherit the previous question draft')
       } finally { remounted.dispose() }
       const foreign = mount(code, { ...initial, source: { ...initial.source, documentId: 'another-document' } }, transport, cached)
       try {
-        assert.equal(foreign.control('知识图检索关键词').props.value, '')
+        assert.equal(foreign.control('查找知识的关键词').props.value, '')
         assert.equal(foreign.control('关系上下文筛选').props.value, 'all', 'Another document cannot receive a cached relation draft')
       } finally { foreign.dispose() }
       checks += 31
@@ -217,11 +217,11 @@ try {
     assert(text(stale.tree()).includes('relations'), 'Unsupported restored relation must reach strict canonical validation, not a broadened query')
     stale.control('证据问答').props.onClick(); stale.render(); stale.props.readOnly = false; stale.render()
     stale.change('向知识图提问', 'Check old relation')
-    await stale.control('基于证据回答').props.onClick(); await stale.settle()
+    await stale.control('依据原文回答').props.onClick(); await stale.settle()
     assert(text(stale.tree()).includes('relations'))
     const activity = await fetch(base + 'task-active'); assert.equal(activity.status, 200)
     assert.equal((await activity.json()).busy, false)
-    stale.control('结构化检索').props.onClick(); stale.render()
+    stale.control('查找知识').props.onClick(); stale.render()
     stale.change('关系上下文筛选', 'supports'); await stale.search()
     assert(text(stale.tree()).includes('没有匹配节点'))
   } finally { stale.dispose() }

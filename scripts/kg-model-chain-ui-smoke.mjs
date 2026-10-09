@@ -137,7 +137,7 @@ try {
   for (const kind of ['foreign', 'oldHost']) {
     if (kind === 'foreign') foreign = true; else oldHost = true
     await importFile(exchange()); await settle()
-    assert(text(tree).includes('当前身份或 Host 版本不一致'))
+    assert(text(tree).includes('当前身份或服务版本不一致'))
     assert.equal(storage.get(storedKey), cacheAfterImport)
     foreign = oldHost = false
   }
@@ -181,9 +181,9 @@ try {
   assert.equal(input('推测目标').props.value, '新的推测目标，旧回应不得替代')
   assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot')
   assert(!text(tree).includes('草稿字段已齐备'), 'cached draft is not cached successful validation')
-  click('后页第 2 步模型'); await settle()
+  click('下一页第 2 步模型'); await settle()
   assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot', 'pagination does not replace the active pair')
-  click('前页第 2 步模型'); await settle()
+  click('上一页第 2 步模型'); await settle()
   fill('搜索第 2 步模型', 't'); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
   confirm = false; choose('units'); await settle()
   assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot')

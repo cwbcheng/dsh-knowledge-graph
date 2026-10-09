@@ -129,6 +129,24 @@ assert.equal(secondSelectionNodes[21].props['aria-pressed'], true)
 assert.equal(secondSelectionNodes[22].props.style.opacity, 1)
 assert.equal(secondSelectionNodes[19].props.style.opacity, 0.22)
 
+// The production workbench creates a fresh image renderer on every render,
+// including text-only graphs. Only nodes that actually render a preview may
+// depend on its identity; retained controls must still use current actions.
+const ordinaryRendererHooks = owner(), ordinaryActions = []
+const unusedRenderer = () => { throw new Error('Text nodes never render source images') }
+let ordinaryScene = render(GraphScene, { ...props, selectedNodeId: 'n20', renderSourceImage: unusedRenderer }, ordinaryRendererHooks)
+const ordinaryFirst = all(ordinaryScene, byClass('kg-node'))
+ordinaryScene = render(GraphScene, { ...props, selectedNodeId: 'n21', renderSourceImage: () => unusedRenderer(),
+  onSelectNode: id => ordinaryActions.push(id) }, ordinaryRendererHooks)
+const ordinaryNext = all(ordinaryScene, byClass('kg-node'))
+assert.equal(ordinaryNext.filter((node, i) => node !== ordinaryFirst[i]).length, 4, 'Unused image callbacks must not rebuild 2000 text shells')
+ordinaryScene = render(GraphScene, { ...props, selectedNodeId: 'n21', renderSourceImage: () => unusedRenderer(),
+  onSelectNode: id => ordinaryActions.push('latest:' + id) }, ordinaryRendererHooks)
+const ordinaryLast = all(ordinaryScene, byClass('kg-node'))
+for (let i = 0; i < count; i++) assert.equal(ordinaryLast[i], ordinaryNext[i], 'An unused callback change alone retains every ordinary node')
+ordinaryLast[10].props.onKeyDown({ key: 'Enter', preventDefault() {} })
+assert.deepEqual(ordinaryActions, ['latest:n10'])
+
 // Context replacement must also refresh retained long-press/cancel actions.
 let pressed = 0, cancelled = 0
 scene = render(GraphScene, { ...nextProps, ctx: { timeout(fn, ms) { assert.equal(ms, 600); pressed++; return () => cancelled++ } } }, root)
@@ -172,7 +190,28 @@ assert(!all(visualScene, byClass('kg-node'))[1].props['aria-label'].includes('AI
 visualScene = render(GraphScene, { ...visualProps, renderSourceImage: () => React.createElement('span', { className: 'preview' }, 'New renderer') }, visualHooks)
 assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'New renderer', 'Replacing the renderer invalidates cached image elements')
 visualScene = render(GraphScene, { ...visualProps, anchors: {} }, visualHooks)
-assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法回链来源/, 'Anchor replacement refreshes accessible evidence')
+assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法定位来源/, 'Anchor replacement refreshes accessible evidence')
+
+const rendererOnlyHooks = owner()
+let rendererOnlyScene = render(GraphScene, visualProps, rendererOnlyHooks)
+const rendererOnlyNodes = all(rendererOnlyScene, byClass('kg-node'))
+rendererOnlyScene = render(GraphScene, { ...visualProps,
+  renderSourceImage: () => React.createElement('span', { className: 'preview' }, 'Latest preview') }, rendererOnlyHooks)
+const rendererNextNodes = all(rendererOnlyScene, byClass('kg-node'))
+assert.notEqual(rendererNextNodes[0], rendererOnlyNodes[0], 'Visible images must refresh their preview renderer')
+assert.equal(rendererNextNodes[1], rendererOnlyNodes[1], 'Ordinary nodes in mixed image/text scenes retain their elements')
+assert.equal(all(rendererOnlyScene, byClass('preview'))[0].props.children[0], 'Latest preview')
+const hiddenRendererHooks = owner(), hiddenProps = { ...visualProps, layoutMode: 'overview', renderSourceImage: unusedRenderer }
+let hiddenRendererScene = render(GraphScene, hiddenProps, hiddenRendererHooks)
+const hiddenNodes = all(hiddenRendererScene, byClass('kg-node'))
+hiddenRendererScene = render(GraphScene, { ...hiddenProps, renderSourceImage: () => unusedRenderer() }, hiddenRendererHooks)
+const hiddenNextNodes = all(hiddenRendererScene, byClass('kg-node'))
+for (let i = 0; i < hiddenNodes.length; i++) assert.equal(hiddenNextNodes[i], hiddenNodes[i], 'Hidden overview previews do not depend on the renderer')
+const cameraState = hiddenRendererHooks.slots.find(slot => slot.value && typeof slot.value.k === 'number')
+cameraState.value = { ...cameraState.value, k: 0.4 }
+hiddenRendererScene = render(GraphScene, { ...hiddenProps,
+  renderSourceImage: () => React.createElement('span', { className: 'preview' }, 'Revealed preview') }, hiddenRendererHooks)
+assert.equal(all(hiddenRendererScene, byClass('preview'))[0].props.children[0], 'Revealed preview', 'Revealing overview details uses the current renderer')
 
 // Exercise the production scene to guard against restoring one image-list
 // scan per node or per opened detail card.
@@ -316,4 +355,5 @@ assert.equal(JSON.stringify(identityEdges), identityBefore, 'Selection does not 
 console.log(JSON.stringify({ nodes: count, edges: edges.length, hoverElements, selectionElements, localFocus: true, hiddenLabels: true, parallelSelection: true, cachedTextInvalidation: true, overviewNodes: allNodes.length,
   overviewNodeSelectionReads, overviewParallelSelectionReads, canonicalIndices: true, exactEndpointIdentity: true, selfLoops: true,
   changedNodeShells, retainedShells: count - changedNodeShells, currentCallbacks: true, contextReplacement: true, issueAndImageInvalidation: true, fullAccessibleEvidence: true,
-  indexedSourceImages: originals.length, sceneImageReads: imageReads, indexedImageDetails: true }))
+  indexedSourceImages: originals.length, sceneImageReads: imageReads, indexedImageDetails: true,
+  unusedImageRendererRetention: true, visiblePreviewRendererUpdates: true, overviewPreviewToggle: true }))

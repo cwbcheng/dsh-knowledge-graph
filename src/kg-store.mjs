@@ -2363,7 +2363,8 @@ export class SqliteKnowledgeStore {
 
   /** Read a bounded graph window with optional full-graph structural diagnostics.
    * @param {string} documentId Canonical document identifier.
-   * @param {object} options Window, query, edge and source-text limits.
+   * @param {object} options Window, query, edge and source-text limits. Optional
+   * focusParagraph selects its ordinary page and requires expectedRevision.
    * @param {Function} [inspectStructure] Pure, synchronous full-graph inspector.
    * @returns {object|null} The window and diagnostics from the same SQLite snapshot.
    */
@@ -2382,20 +2383,22 @@ export class SqliteKnowledgeStore {
           dataVersion: this.db.prepare('PRAGMA data_version').get().data_version,
           localChanges: this.db.prepare('SELECT total_changes() AS changes').get().changes,
         } : null
-        const window = this.#getDocumentWindow(documentId, options)
-        if (window && inspectStructure) {
-          const cached = this.#windowStructureCache
-          if (stamp && cached && cached.documentId === documentId && cached.inspector === inspectStructure &&
-              cached.revision === window.revision && cached.dataVersion === stamp.dataVersion && cached.localChanges === stamp.localChanges) {
-            window.graphStructureQuality = structuredClone(cached.quality)
-            pending = cached
+        const cached = this.#windowStructureCache
+        const reusable = stamp && cached && cached.documentId === documentId && cached.inspector === inspectStructure &&
+          cached.dataVersion === stamp.dataVersion && cached.localChanges === stamp.localChanges ? cached : null
+        const window = this.#getDocumentWindow(documentId, options, reusable)
+        if (window && !window.error && inspectStructure) {
+          if (reusable && reusable.revision === window.revision) {
+            window.graphStructureQuality = structuredClone(reusable.quality)
+            pending = reusable
           } else {
             const quality = inspectStructure(this.getDocument(documentId))
             window.graphStructureQuality = quality
             if (stamp) {
               // Callers own their returned result. Retain only one detached
               // diagnostic, never the canonical graph or a mutable response.
-              try { pending = { documentId, inspector: inspectStructure, revision: window.revision, ...stamp, quality: structuredClone(quality) } }
+              try { pending = { documentId, inspector: inspectStructure, revision: window.revision, ...stamp,
+                totalNodes: window.view.totalNodes, totalEdges: window.view.totalEdges, quality: structuredClone(quality) } }
               catch { /* Non-cloneable custom inspectors remain uncached. */ }
             }
           }
@@ -2411,7 +2414,7 @@ export class SqliteKnowledgeStore {
     }
   }
 
-  #getDocumentWindow(documentId, options) {
+  #getDocumentWindow(documentId, options, cached) {
     // Source omission must happen before SQLite converts the full text to a
     // Node string. Keep the complete document path for requested source text
     // and canonical diagnostics; project every metadata field used below.
@@ -2420,14 +2423,42 @@ export class SqliteKnowledgeStore {
       : 'SELECT * FROM documents WHERE document_id = ?'
     const row = this.db.prepare(documentSql).get(documentId)
     if (!row) return null
+    const locatingParagraph = options.focusParagraph !== undefined
+    if (locatingParagraph && (!Number.isSafeInteger(options.focusParagraph) || options.focusParagraph < 0
+      || !Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0 || text(options.query).trim())) {
+      return { error: { code: 'invalid_input', message: '原文定位需要非负整数段落编号和知识图版本，不能同时查询其他子图' } }
+    }
+    if (locatingParagraph && row.graph_revision !== options.expectedRevision) {
+      return { error: { code: 'revision_conflict', message: '知识图版本已更新，请重新载入后定位', currentRevision: row.graph_revision } }
+    }
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? Math.min(2000, options.limit) : 800
     const edgeLimit = Math.max(limit, Math.min(12000, int(options.edgeLimit, limit * 6)))
-    const totalNodesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId)
-    const totalEdgesRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId)
-    const totalNodes = totalNodesRow ? Number(totalNodesRow.count) || 0 : 0
-    const totalEdges = totalEdgesRow ? Number(totalEdgesRow.count) || 0 : 0
+    // Counts belong to the same snapshot as the retained structural diagnostic.
+    // Reuse only after its connection/write stamps AND this row's revision match.
+    // Cold, enclosing-transaction and non-cacheable inspector reads still count.
+    const reuseCounts = cached && cached.revision === row.graph_revision
+    const totalNodes = reuseCounts ? cached.totalNodes : Number(this.db.prepare(
+      'SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId)?.count) || 0
+    const totalEdges = reuseCounts ? cached.totalEdges : Number(this.db.prepare(
+      'SELECT COUNT(*) AS count FROM graph_edges WHERE document_id = ?').get(documentId)?.count) || 0
     const requestedOffset = Number.isInteger(options.offset) && options.offset > 0 ? options.offset : 0
-    const offset = Math.min(requestedOffset, Math.max(0, totalNodes - 1))
+    let offset = Math.min(requestedOffset, Math.max(0, totalNodes - 1))
+    let focusNodeId = ''
+    if (locatingParagraph) {
+      const focus = this.db.prepare(`SELECT node_id FROM graph_nodes
+        WHERE document_id = ? AND paragraph = ? ORDER BY node_id LIMIT 1`).get(documentId, options.focusParagraph)
+      if (focus) {
+        focusNodeId = focus.node_id
+        // focus is already the first binary node ID in its paragraph, so no
+        // same-paragraph row can precede it. Separate NULLs and earlier units
+        // into covering index ranges instead of testing every document row.
+        const preceding = this.db.prepare(`SELECT
+          (SELECT COUNT(*) FROM graph_nodes WHERE document_id = ? AND paragraph IS NULL)
+          + (SELECT COUNT(*) FROM graph_nodes WHERE document_id = ? AND paragraph < ?) AS count`)
+          .get(documentId, documentId, options.focusParagraph)
+        offset = Math.floor(Number(preceding.count) / limit) * limit
+      } else offset = 0
+    }
     const query = text(options.query).trim().slice(0, 200)
 
     const fetchNodesByIds = (ids, remaining) => {
@@ -2521,9 +2552,18 @@ export class SqliteKnowledgeStore {
       // behavior (including its existing case folding) for all other inputs.
       const literal = /[%_]/.test(query)
       const pattern = literal ? query.toLowerCase() : '%' + query.toLowerCase() + '%'
+      // Native LIKE already folds ASCII. Check this connection on each read,
+      // preserving explicit case-sensitive or Unicode-folding configurations.
+      // CAST retains LOWER's TEXT coercion for legacy BLOB/numeric values.
+      const foldsAscii = !literal && this.db.prepare(
+        "SELECT ('A' LIKE 'a') AND (LOWER('Æ') = 'Æ') AND NOT ('Æ' LIKE 'æ') AS folds_ascii"
+      ).get().folds_ascii === 1
       const where = literal ? `document_id = ? AND (
         INSTR(LOWER(node_id), ?) > 0 OR INSTR(LOWER(type), ?) > 0 OR INSTR(LOWER(text), ?) > 0 OR
         INSTR(LOWER(quote), ?) > 0 OR INSTR(LOWER(COALESCE(section_id, '')), ?) > 0 OR INSTR(LOWER(COALESCE(section_title, '')), ?) > 0
+      )` : foldsAscii ? `document_id = ? AND (
+        CAST(node_id AS TEXT) LIKE ? OR CAST(type AS TEXT) LIKE ? OR CAST(text AS TEXT) LIKE ? OR
+        CAST(quote AS TEXT) LIKE ? OR CAST(COALESCE(section_id, '') AS TEXT) LIKE ? OR CAST(COALESCE(section_title, '') AS TEXT) LIKE ?
       )` : `document_id = ? AND (
         LOWER(node_id) LIKE ? OR LOWER(type) LIKE ? OR LOWER(text) LIKE ? OR
         LOWER(quote) LIKE ? OR LOWER(COALESCE(section_id, '')) LIKE ? OR LOWER(COALESCE(section_title, '')) LIKE ?
@@ -2550,7 +2590,7 @@ export class SqliteKnowledgeStore {
         for (const item of neighbors) if (!selected.has(item.node_id) && selected.size < limit) selected.set(item.node_id, item)
       }
       nodeRows = Array.from(selected.values())
-    } else {
+    } else if (!locatingParagraph || focusNodeId) {
       // Deep pages need only narrow row identities while sorting/skipping.
       // Hydrate this page in the same statement and restore canonical order;
       // rowids are transient here, never persisted or exposed to callers.
@@ -2594,6 +2634,7 @@ export class SqliteKnowledgeStore {
         totalNodes,
         totalEdges,
         truncated: totalNodes > nodeRows.length || totalEdges > edgeRows.length,
+        ...(locatingParagraph ? { focusParagraph: options.focusParagraph, focusNodeId } : {}),
         ...(query ? { query, matchedNodes } : {}),
       },
     }

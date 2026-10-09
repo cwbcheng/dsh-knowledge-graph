@@ -56,7 +56,7 @@ const resolve = async request => { request.resolve(query(doc, request.args)); aw
 render()
 await resolve(requests[0])
 await resolve(requests.find(request => request.args.modelId === 'taxi'))
-assert(text(tree).includes('输入') && text(tree).includes('下层 · 具体情境与验证材料'))
+assert(text(tree).includes('输入') && text(tree).includes('例子与验证材料'))
 assert(text(tree).includes('2 km 对应 10 元'))
 assert.equal(writes.length, 0, 'browsing must issue no writes')
 click('核对方向')

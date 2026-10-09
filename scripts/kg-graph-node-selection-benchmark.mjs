@@ -1,13 +1,14 @@
 // Optional before/after diagnostic of the generated production scene.
-// node scripts/kg-graph-node-selection-benchmark.mjs [baseline-git-revision]
+// node scripts/kg-graph-node-selection-benchmark.mjs [baseline-git-revision] [--replace-image-renderer]
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { runInNewContext } from 'node:vm'
 
-const revision = process.argv[2]
+const revision = process.argv.slice(2).find(arg => arg !== '--replace-image-renderer')
 if (revision?.startsWith('-')) throw new Error('Expected a git revision')
+const replaceImageRenderer = process.argv.includes('--replace-image-renderer')
 const bundle = revision ? execFileSync('git', ['show', revision + ':extension/viewer.js'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   : readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
@@ -47,7 +48,9 @@ for (let trial = 0; trial < 5; trial++) {
   const props = { nodes, edges, anchors, selectedNodeId: null, selectedEdgeId: null, focusReq: { seq: 0 },
     ctx: { timeout: () => () => {} }, onSelectNode() {}, onSelectEdge() {}, onReady() {}, onLayoutModeChange() {},
     prepared: { sizes, layout, bbox: computeBBox(nodes, layout, sizes), edgeLanes: new Map(), layeredEdgeGeometry: new Map() }, layoutMode: 'overview' }
-  const render = id => { owner = hooks; cursor = 0; return GraphScene({ ...props, selectedNodeId: id, onSelectNode: value => events.push([id, value]) }) }
+  const render = id => { owner = hooks; cursor = 0; return GraphScene({ ...props, selectedNodeId: id,
+    ...(replaceImageRenderer ? { renderSourceImage: () => { throw new Error('No preview in this text-only scene') } } : {}),
+    onSelectNode: value => events.push([id, value]) }) }
   const all = (tree, predicate) => Array.isArray(tree) ? tree.flatMap(item => all(item, predicate))
     : !tree || typeof tree !== 'object' ? [] : [...(predicate(tree) ? [tree] : []), ...all(tree.props?.children, predicate)]
   render(null); render('n6000')
@@ -67,6 +70,8 @@ for (let trial = 0; trial < 5; trial++) {
 }
 assert(metrics.every(item => item.shells === metrics[0].shells && item.excerptReads === metrics[0].excerptReads))
 console.log(JSON.stringify({ baseline: revision || 'current', graphNodes: 12000, trials: metrics.length, consecutiveSelections: 4,
+  replacesUnusedImageRenderer: replaceImageRenderer,
   rebuiltNodeShells: metrics[0].shells, excerptReads: metrics[0].excerptReads,
   sceneRenderMedianMs: Math.round(median(metrics.map(item => item.elapsed)) * 100) / 100,
-  fullEvidenceAndLatestCallbacks: true }))
+  fullEvidenceAndLatestCallbacks: true,
+  scope: 'Actual production scene with simulated React hook/element construction. Same fixed nodes, prepared layout and full excerpts; optional fresh image callbacks match workbench renders. Counts are deterministic. This standalone elapsed time is a diagnostic, not browser latency, paint or a paired timing experiment.' }))
