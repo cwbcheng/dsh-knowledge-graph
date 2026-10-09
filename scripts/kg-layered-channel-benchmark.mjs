@@ -8,17 +8,18 @@ import { loadChannelEngine, channelFixture, channelRegressionFixtures, prepareCh
 
 export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly = false } = {}) {
   const baseline = execFileSync('git', ['rev-parse', ref], { encoding: 'utf8' }).trim()
-  const before = loadChannelEngine(execFileSync('git', ['show', baseline + ':extension/viewer.js'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }))
-  const current = loadChannelEngine(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'))
+  const beforeSource = execFileSync('git', ['show', baseline + ':extension/viewer.js'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+  const currentSource = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
+  const before = loadChannelEngine(beforeSource), current = loadChannelEngine(currentSource)
   const samples = []
   const cases = [...channelRegressionFixtures(),
     ['grid-800', channelFixture(800)], ['grid-2000', channelFixture(2000)],
     ['disconnected-2000', channelFixture(40, { components: 50 })],
     ['force-control', channelFixture(2000), 'force'], ['overview-control', channelFixture(2000), 'overview']]
   for (const [name, fixture, mode = 'layered'] of cases) {
-    const stats = [{}, {}], engines = [before, current]
-    const expected = await prepareChannelFixture(before, fixture, { mode, stats: stats[0] })
-    const actual = await prepareChannelFixture(current, fixture, { mode, stats: stats[1] })
+    const stats = [{}, {}], labelStats = [{}, {}]
+    const expected = await prepareChannelFixture(before, fixture, { mode, stats: stats[0], labelStats: labelStats[0] })
+    const actual = await prepareChannelFixture(current, fixture, { mode, stats: stats[1], labelStats: labelStats[1] })
     assert.equal(preparedChannelJSON(actual), preparedChannelJSON(expected), name + ': complete prepared geometry')
     const lanes = before.buildLayeredEdgeLanes(fixture.edges, fixture.layout.pos, fixture.layout.componentKeyById, fixture.layout.componentNodesById)
     const routes = engine => {
@@ -39,8 +40,14 @@ export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly =
     assert.equal(JSON.stringify(routes(current)), JSON.stringify(routes(before)), name + ': path and original label anchor bytes')
     const routeTimes = [[], []], routingStageTimes = [[], []]
     if (!validateOnly) {
+      // Counters pass Proxy arrays to the old collision function. Use fresh
+      // functions for timing so instrumentation cannot affect their JIT type
+      // feedback even after warmup. Both engines get the same fresh lifecycle.
+      const engines = [loadChannelEngine(beforeSource), loadChannelEngine(currentSource)]
       for (let warm = 0; warm < 3; warm++) for (const engine of engines) {
-        routes(engine); await prepareChannelFixture(engine, fixture, { mode })
+        routes(engine)
+        const prepared = await prepareChannelFixture(engine, fixture, { mode })
+        if (warm === 0) assert.equal(preparedChannelJSON(prepared), preparedChannelJSON(expected), name + ': uninstrumented timing engine geometry')
       }
       for (let trial = 0; trial < 9; trial++) for (const index of trial % 2 ? [1, 0] : [0, 1]) {
         if (mode === 'layered') {
@@ -55,12 +62,18 @@ export async function benchmarkLayeredChannels(ref = 'f710ff5', { validateOnly =
       beforeMaxRowNodeVisits: stats[0].maxRowNodeVisits || 0, currentMaxRowNodeVisits: stats[1].maxRowNodeVisits || 0,
       beforeIndexNodeVisits: stats[0].indexNodeVisits || 0, currentIndexNodeVisits: stats[1].indexNodeVisits || 0,
       currentBandEntries: [...(stats[1].caches || [])].reduce((sum, cache) => sum + cache.size, 0),
+      beforeLabelChecks: (labelStats[0].nodeChecks || 0) + (labelStats[0].occupiedChecks || 0) + (labelStats[0].indexChecks || 0),
+      currentLabelChecks: (labelStats[1].nodeChecks || 0) + (labelStats[1].occupiedChecks || 0) + (labelStats[1].indexChecks || 0),
+      currentLabelIndexes: labelStats[1].indexes?.size || 0,
+      currentLabelRectangles: labelStats[1].rectangles || 0,
+      currentLabelBucketReferences: labelStats[1].references || 0,
+      currentLabelOverflow: labelStats[1].overflow || 0,
       beforeRouteMs: median(routeTimes[0]), currentRouteMs: median(routeTimes[1]),
       beforeRoutingStageMs: median(routingStageTimes[0]), currentRoutingStageMs: median(routingStageTimes[1]),
       routeTimes, routingStageTimes, exactPreparedGeometry: true, exactRouteAnchors: true })
   }
   return { ok: true, baseline, validateOnly, warmups: validateOnly ? 0 : 3, trials: validateOnly ? 0 : 9, samples,
-    scope: 'Both real generated routing engines compiled in one realm. Route-only time includes index allocation and excludes lane building and label collision placement; actual prepare stage 2 time includes lanes, routes, fixed-width label measurement and actual label collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh channel indexes/maps per run; actual index, band and same-row iterations counted outside timing. Scopes are not added. No CI timing threshold.' }
+    scope: 'Both real generated engines compiled in one realm. Separate fresh engine instances for timing never receive counter proxies or instrumentation. Route-only time includes channel index allocation and excludes lanes and label collision placement; actual prepare stage 2 includes lanes, channels, routes, label index allocation, fixed-width label measurement and actual collision placement. Supplied dimensions and fixed layout exclude real text measurement, layout worker, HTTP, source, React and rendering. Fresh indexes per run; actual node iterations, label intersection calls and bucket references counted outside timing. Scopes are not added. No CI timing threshold.' }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

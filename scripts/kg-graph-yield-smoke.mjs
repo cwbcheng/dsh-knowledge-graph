@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm'
 
 const viewer = readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
 const context = { window: { React: {} }, console }
-runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { prepareGraphScene, buildLayeredChannelIndex,'), context)
+runInNewContext(viewer.replace('window.KGViewer = {', 'window.KGViewer = { prepareGraphScene, buildLayeredChannelIndex, buildLayeredLabelIndex,'), context)
 const prepareSource = context.window.KGViewer.prepareGraphScene.toString()
 
 // Model a busy batch without timing thresholds. Painting is a phase barrier,
@@ -36,6 +36,7 @@ async function prepare(count, mode = 'layered', abortAt = null) {
     },
     buildLayeredEdgeLanes: () => new Map(),
     buildLayeredChannelIndex: context.window.KGViewer.buildLayeredChannelIndex,
+    buildLayeredLabelIndex: context.window.KGViewer.buildLayeredLabelIndex,
     layeredOrthoPath(edge) { clock += 9; routes++; return { d: edge.toNodeId, lblX: routes * 200, lblY: 0 } },
     measureLabel: () => 20,
     edgeRelationLabel: () => 'relation',

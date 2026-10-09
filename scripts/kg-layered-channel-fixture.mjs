@@ -13,7 +13,8 @@ export function loadChannelEngine(viewer) {
   const environment = { window: { React: {} }, console }
   const marker = 'window.KGViewer = {'
   assert(viewer.includes(marker), 'Generated viewer export marker')
-  const exported = [...names, ...(viewer.includes('function buildLayeredChannelIndex(') ? ['buildLayeredChannelIndex'] : [])]
+  const helpers = ['buildLayeredChannelIndex', 'buildLayeredLabelIndex'].filter(name => viewer.includes('function ' + name + '('))
+  const exported = [...names, ...helpers]
   runInNewContext(viewer.replace(marker, marker + exported.join(',') + ','), environment)
   const engine = environment.window.KGViewer
   // Compile both comparison engines into this same realm. VM Math/global
@@ -21,7 +22,7 @@ export function loadChannelEngine(viewer) {
   for (const name of ['channelBand', 'corridorFree', 'findCorridor', 'buildLayeredEdgeLanes', ...(engine.buildLayeredChannelIndex ? ['buildLayeredChannelIndex'] : [])]) {
     engine[name] = new Function('LAYER_Y_GAP', 'return (' + engine[name].toString() + ')')(engine.LAYER_Y_GAP)
   }
-  for (const name of ['clamp', 'placeLayeredEdgeLabel', 'computeBBox']) {
+  for (const name of ['clamp', 'placeLayeredEdgeLabel', 'computeBBox', ...(engine.buildLayeredLabelIndex ? ['buildLayeredLabelIndex'] : [])]) {
     engine[name] = new Function('return (' + engine[name].toString() + ')')()
   }
   engine.edgeRelationLabel = new Function('REL_LABEL', 'EDGE_ATTRIBUTE_LABELS',
@@ -75,7 +76,41 @@ export function channelFixture(count, { components = 1, varied = false, fallback
   return { nodes, edges, sizes, layout }
 }
 
-export async function prepareChannelFixture(engine, fixture, { mode = 'layered', stats, cancelAtRoute = null } = {}) {
+// Instrument actual predicate calls and bucket insertions only outside timing.
+// Both ordinary array scans and the optional real index use their own source.
+export function countedLabelFunctions(engine, stats) {
+  const wrap = (array, kind) => new Proxy(array, { get(target, key, receiver) {
+    if (key === 'some') return predicate => target.some((rect, index) => {
+      stats[kind] = (stats[kind] || 0) + 1; return predicate(rect, index, target)
+    })
+    return Reflect.get(target, key, receiver)
+  } })
+  let buildLayeredLabelIndex
+  if (engine.buildLayeredLabelIndex) {
+    const predicate = 'const overlaps = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0'
+    const source = engine.buildLayeredLabelIndex.toString()
+    assert(source.includes(predicate), 'Count the actual index intersection predicate')
+    const build = new Function('stats', 'return (' + source
+      .replace(predicate, 'const overlaps = (a, b) => { stats.indexChecks = (stats.indexChecks || 0) + 1; return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0 }')
+      .replace('all.push(rect)', 'stats.rectangles = (stats.rectangles || 0) + 1; all.push(rect)')
+      .replace('overflow.push(rect)', 'stats.overflow = (stats.overflow || 0) + 1; overflow.push(rect)')
+      .replace('bucket.push(rect)', 'stats.references = (stats.references || 0) + 1; bucket.push(rect)') + ')')(stats)
+    buildLayeredLabelIndex = rects => {
+      const index = build(rects)
+      stats.indexes ||= new Set(); stats.indexes.add(index)
+      return index
+    }
+  }
+  return {
+    buildLayeredLabelIndex,
+    placeLayeredEdgeLabel(x, y, w, h, occupied, nodes, index, axis, collisions) {
+      stats.calls = (stats.calls || 0) + 1
+      return engine.placeLayeredEdgeLabel(x, y, w, h, wrap(occupied, 'occupiedChecks'), wrap(nodes, 'nodeChecks'), index, axis, collisions)
+    },
+  }
+}
+
+export async function prepareChannelFixture(engine, fixture, { mode = 'layered', stats, labelStats, cancelAtRoute = null } = {}) {
   const { nodes, edges, sizes, layout } = fixture
   const controller = new AbortController(), progress = []
   let routes = 0, routingStarted, routingMs
@@ -103,6 +138,7 @@ export async function prepareChannelFixture(engine, fixture, { mode = 'layered',
     return engine.channelBand(row, countedNodes, dimensions, points, cache)
   } : engine.channelBand
   const route = engine.routeWith(band, stats)
+  const labels = labelStats ? countedLabelFunctions(engine, labelStats) : engine
   const deps = {
     performance: cancelAtRoute === null ? performance : { now: () => routes * 9 },
     async graphPaint(signal) { signal.throwIfAborted() },
@@ -128,7 +164,8 @@ export async function prepareChannelFixture(engine, fixture, { mode = 'layered',
     layeredOrthoPath(...args) { routes++; return route(...args) },
     measureLabel: text => String(text).length * 8,
     edgeRelationLabel: engine.edgeRelationLabel,
-    placeLayeredEdgeLabel: engine.placeLayeredEdgeLabel,
+    placeLayeredEdgeLabel: labels.placeLayeredEdgeLabel,
+    buildLayeredLabelIndex: labels.buildLayeredLabelIndex,
     computeBBox: engine.computeBBox,
   }
   const run = new Function(...Object.keys(deps), 'return (' + engine.prepareGraphScene.toString() + ')')(...Object.values(deps))
