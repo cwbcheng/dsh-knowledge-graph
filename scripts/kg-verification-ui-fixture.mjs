@@ -32,6 +32,7 @@ const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
 const workPackagesMode = process.argv.includes('--work-packages')
 const snapshotMode = process.argv.includes('--snapshot')
+const layeredSweepMode = process.argv.includes('--layered-sweeps')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
@@ -76,7 +77,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : snapshotMode || layeredSweepMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -110,11 +111,18 @@ const sourceText = sourceBoundaryMode
   ? paragraphs.slice(0, 3).join('\n') + '\n\n' + paragraphs.slice(3).join('\n\n') : paragraphs.join('\n\n')
 const graph = {
   source: { id: documentId, documentId, title: 'Verification fixture' },
-  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
+  nodes: (graphReviewMode || paragraphLocationMode ? paragraphs.slice(0, -1) : paragraphs).map((text, i) => ({ id: paragraphLocationMode ? 'source-' + i.toString(36) : 'n' + i, type: layeredSweepMode && i % 3 === 0 ? 'claim' : paragraphWindowMode && i % 3 === 0 ? 'concept' : 'fact', text: text.trim(), quote: text, paragraph: i,
     evidence: [{ documentId, sourceId: documentId, paragraph: i, quote: text }], groundingStatus: 'grounded' })),
   edges: [],
   traceText: sourceText,
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
+}
+if (layeredSweepMode) {
+  graph.edges = graph.nodes.slice(1).map((node, i) => ({
+    fromNodeId: graph.nodes[Math.floor(i / 3)].id, toNodeId: node.id,
+    relation: (i + 1) % 5 === 0 ? 'causes' : 'supports',
+  }))
+  graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n1', relation: 'analogy' })
 }
 if (windowDiagnosticsMode) {
   const diagnostic = diagnosticFixture().graph

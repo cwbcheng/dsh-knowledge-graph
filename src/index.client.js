@@ -9605,7 +9605,12 @@ export default function clientPlugin() {
         }
         const sortByNeighbours = (list, filter) => {
           const idx = new Map(list.map((node, i) => [node.id, i]))
+          // Positions and the direction filter stay fixed during this sort.
+          // Small layers have little reuse; retain their original mean path.
+          const reuseMeans = list.length >= 4
           const meanOf = (node) => {
+            const cached = reuseMeans ? idx.get(node.id) : null
+            if (cached && typeof cached === 'object') return cached.mean
             const id = node.id
             let weightedSum = 0
             let totalWeight = 0
@@ -9614,13 +9619,15 @@ export default function clientPlugin() {
               const p = pos.get(link.id)
               if (p) { weightedSum += p.x * link.weight; totalWeight += link.weight }
             }
-            return totalWeight > 0 ? weightedSum / totalWeight : Infinity
+            const mean = totalWeight > 0 ? weightedSum / totalWeight : Infinity
+            if (reuseMeans) idx.set(id, { index: cached, mean })
+            return mean
           }
           list.sort((a, b) => {
             const ma = meanOf(a)
             const mb = meanOf(b)
             if (ma !== mb) return ma - mb
-            return idx.get(a.id) - idx.get(b.id)
+            return reuseMeans ? idx.get(a.id).index - idx.get(b.id).index : idx.get(a.id) - idx.get(b.id)
           })
         }
 
