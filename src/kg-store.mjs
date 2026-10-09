@@ -2524,13 +2524,11 @@ export class SqliteKnowledgeStore {
         const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + where).get(...params)
         return countRow ? Number(countRow.count) || 0 : 0
       }
-      // Literal queries may scan all six fields. An underfilled direct page
-      // already contains every match, including zero, so do not scan twice.
+      // An underfilled direct page already contains every match, including
+      // zero, for both LIKE and literal predicates. Do not scan twice.
       // A full page still needs COUNT (even when exactly limit rows match).
-      // Ordinary queries retain their existing count-first path and SQL.
-      if (!literal) matchedNodes = countMatches()
       const direct = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + where + ' ORDER BY paragraph, node_id LIMIT ?').all(...params, limit)
-      if (literal) matchedNodes = direct.length < limit ? direct.length : countMatches()
+      matchedNodes = direct.length < limit ? direct.length : countMatches()
       const selected = new Map(direct.map((item) => [item.node_id, item]))
       if (selected.size > 0 && selected.size < limit) {
         const incident = fetchIncidentEdges(Array.from(selected.keys()), edgeLimit)

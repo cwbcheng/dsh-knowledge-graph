@@ -7,7 +7,7 @@ import {join} from 'node:path'
 import {pathToFileURL} from 'node:url'
 import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
-import {literalWindowFixture} from './kg-document-window-query-benchmark.mjs'
+import {literalWindowFixture,isWindowQuerySql,assertWindowQueryCallParity} from './kg-document-window-query-benchmark.mjs'
 
 export const isWindowIncidentSql=sql=>sql.startsWith('SELECT * FROM graph_edges')&&sql.includes('from_node_id IN (')&&sql.includes('to_node_id IN (')&&!sql.includes('json_each')
 export const isWindowIncidentProbeSql=sql=>sql.startsWith('SELECT COUNT(*) AS count FROM (')&&sql.includes('SELECT 1 FROM graph_edges')
@@ -62,8 +62,9 @@ function timePair(runs){
   return{beforeMedianMs:median(times[0]),currentMedianMs:median(times[1])}
 }
 async function benchmark(){
-  const revision=process.argv[2]||'71d5102'
-  if(process.argv.length>3)throw new Error('Expected at most one baseline revision')
+  const validateOnly=process.argv.includes('--validate-only'),args=process.argv.slice(2).filter(arg=>arg!=='--validate-only')
+  const revision=args[0]||'71d5102'
+  if(args.length>1)throw new Error('Expected at most one baseline revision')
   const baseline=(await baselineModules(revision)).store,directory=mkdtempSync(join(tmpdir(),'kg-window-incident-benchmark-')),database=join(directory,'graph.sqlite')
   const current=await openSqliteStore(database)
   let previous,meter,oldMeter
@@ -91,11 +92,13 @@ async function benchmark(){
       const before=capture(previous,fixture.documentId,options),after=capture(current,fixture.documentId,options)
       assert.deepEqual(after.window,before.window);assert.equal(after.incident.length,before.incident.length)
       assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=130)
-      assert.deepEqual(after.calls.filter(call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)),before.calls.filter(call=>!isWindowIncidentSql(call.sql)))
+      assertWindowQueryCallParity(before.calls,after.calls,after.window)
+      assert.deepEqual(after.calls.filter(call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)),before.calls.filter(call=>!isWindowIncidentSql(call.sql)&&!isWindowQuerySql(call.sql)))
       for(let i=0;i<after.incident.length;i++)assert.deepEqual(after.incident[i].rows,before.incident[i].rows)
       samples.push({...fixture,kind,limit,options,before,after,beforeWork:{...oldMeter.counts},currentWork:{...meter.counts}})
     }
     meter.stop();meter=null;oldMeter.stop();oldMeter=null
+    if(validateOnly){console.log(JSON.stringify({ok:true,baseline:revision,cases:samples.length,validationOnly:true}));return}
     const results=[]
     for(const sample of samples){
       const whole=timePair([()=>previous.getDocumentWindow(sample.documentId,sample.options),()=>current.getDocumentWindow(sample.documentId,sample.options)])
@@ -106,7 +109,7 @@ async function benchmark(){
         beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,incident})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; Native counts and other-SQL equality outside timing; no inspector, HTTP, rendering or CI timing gate'}))
+      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; matching predicate/params parity allows later direct-first COUNT omission; all other SQL equality and Native counts outside timing; historical baselines include later Store changes, use the original measured revision to isolate incident savings; no inspector, HTTP, rendering or CI timing gate'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()

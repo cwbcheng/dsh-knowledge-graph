@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { openSqliteStore, SqliteKnowledgeStore } from '../src/kg-store.mjs'
 import { baselineModules } from './kg-document-window-diagnostics-benchmark.mjs'
-import { literalWindowFixture, countWindowQueryWork, isWindowQuerySql } from './kg-document-window-query-benchmark.mjs'
+import { literalWindowFixture, countWindowQueryWork, isWindowQuerySql, assertWindowQueryCallParity } from './kg-document-window-query-benchmark.mjs'
 
 function capture(store, id, options) {
   const prepare = store.db.prepare, calls = []
@@ -26,8 +26,9 @@ function capture(store, id, options) {
 }
 const median = values => [...values].sort((a,b) => a-b)[4]
 async function benchmark() {
-  const revision = process.argv[2] || '9bfe9f1'
-  if(process.argv.length>3) throw new Error('Expected at most one baseline revision')
+  const validateOnly=process.argv.includes('--validate-only'),args=process.argv.slice(2).filter(arg=>arg!=='--validate-only')
+  const revision = args[0] || '9bfe9f1'
+  if(args.length>1) throw new Error('Expected at most one baseline revision')
   const baseline = (await baselineModules(revision)).store
   const directory=mkdtempSync(join(tmpdir(),'kg-window-query-count-')),database=join(directory,'graph.sqlite')
   const current=await openSqliteStore(database)
@@ -52,19 +53,20 @@ async function benchmark() {
       const matched=fixture.graph.nodes.filter(node=>[node.id,node.type,node.text,node.quote,node.sectionId,node.sectionTitle]
         .some(value=>String(value||'').replace(/[A-Z]/g,letter=>letter.toLowerCase()).includes(query.toLowerCase()))).length
       assert.equal(after.window.view.matchedNodes,matched)
-      const literal=/[%_]/.test(query),counted=!literal||matched>=limit
+      const counted=matched>=limit
       assert.equal(meter.counts.matchCountReads,counted?1:0)
       assert.equal(meter.counts.matchingStatements,counted?2:1)
       assert.equal(meter.counts.matched,matched)
       assert.equal(meter.counts.directRows,Math.min(matched,limit))
-      assert.equal(oldMeter.counts.matchingStatements,2)
-      // Actual SQL and parameter bytes remain unchanged. Only literal
-      // execution order and unnecessary COUNT calls may differ.
-      assert.deepEqual(after.calls,literal?(counted?[before.calls[1],before.calls[0]]:[before.calls[1]]):before.calls)
+      assert.equal(oldMeter.counts.matchingStatements,before.calls.length)
+      // Actual SQL and parameter bytes remain unchanged. Ordinary/literal
+      // queries now share direct-first reads and underfilled COUNT omission.
+      assertWindowQueryCallParity(before.calls,after.calls,after.window)
       samples.push({nodes:fixture.graph.nodes.length,shape:fixture.shape,documentId:fixture.documentId,query,limit,matched,
         returned:after.window.nodes.length,before:{...oldMeter.counts},current:{...meter.counts}})
     }
     oldMeter.stop();oldMeter=null;meter.stop();meter=null
+    if(validateOnly){console.log(JSON.stringify({ok:true,baseline:revision,cases:samples.length,validationOnly:true}));return}
     for (const sample of samples) {
       const options={query:sample.query,limit:sample.limit,includeSourceText:false},times=[[],[]]
       const runs=[()=>previous.getDocumentWindow(sample.documentId,options),()=>current.getDocumentWindow(sample.documentId,options)]

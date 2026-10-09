@@ -14,6 +14,7 @@ import { countWindowSourceHydration } from './kg-document-window-source-benchmar
 import { literalWindowFixture, countWindowQueryWork } from './kg-document-window-query-benchmark.mjs'
 import { countWindowNeighborNodes } from './kg-document-window-neighbor-nodes-benchmark.mjs'
 import { countWindowIncidentWork } from './kg-document-window-incident-benchmark.mjs'
+import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -31,7 +32,7 @@ const sourceImagePerformanceMode = process.argv.includes('--source-image-perform
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowQueryCountMode = process.argv.includes('--window-query-count')
 const windowQueryLiteralMode = process.argv.includes('--window-query-literal') || windowQueryCountMode
-const literalFixture = windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
+const literalFixture = windowQueryCountMode ? ordinaryWindowFixture(12000, documentId) : windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
 if (windowQueryCountMode) {
   literalFixture.graph.source.sections[0].title = 'Common_% section'
   for (const node of literalFixture.graph.nodes) if (node.sectionId === 'body') node.sectionTitle = 'Common_% section'

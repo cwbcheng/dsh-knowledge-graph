@@ -45,6 +45,17 @@ export function literalWindowFixture(size = 12000, documentId = 'window-literal-
 }
 
 export const isWindowQuerySql = sql => sql.includes('LOWER(node_id) LIKE ?') || sql.includes('INSTR(LOWER(node_id), ?) > 0')
+// Later matching optimizations retain the actual predicate, parameter bytes
+// and direct rows. Only COUNT omission/order is allowed by this comparison.
+export function assertWindowQueryCallParity(before, after, window) {
+  const oldCalls = before.filter(call => isWindowQuerySql(call.sql)), nextCalls = after.filter(call => isWindowQuerySql(call.sql))
+  if (!oldCalls.length) { assert.deepEqual(nextCalls, []); return }
+  const direct = oldCalls.find(call => call.method === 'all'), count = oldCalls.find(call => call.method === 'get')
+  assert(direct)
+  const counted = window.view.matchedNodes >= window.view.nodeLimit
+  if (counted) assert(count)
+  assert.deepEqual(nextCalls, counted ? [direct, count] : [direct])
+}
 export function countWindowQueryWork(Store, database) {
   const original = Store.prototype.getDocumentWindow
   const counts = { queries: 0, literalQueries: 0, ordinaryQueries: 0, matched: 0, directRows: 0, maxDirectRows: 0,
@@ -85,15 +96,23 @@ export function countWindowQueryWork(Store, database) {
 }
 
 function capture(store, id, options) {
-  const prepare = store.db.prepare, statements = []
-  store.db.prepare = function (sql) { if (isWindowQuerySql(sql)) statements.push(sql); return prepare.call(this, sql) }
-  try { return { window: store.getDocumentWindow(id, options), statements } }
+  const prepare = store.db.prepare, calls = []
+  store.db.prepare = function (sql) {
+    const statement = prepare.call(this, sql)
+    if (isWindowQuerySql(sql)) for (const method of ['get', 'all']) {
+      const execute = statement[method]
+      statement[method] = function (...params) { const value = execute.apply(this, params); calls.push({ sql, method, params, value }); return value }
+    }
+    return statement
+  }
+  try { return { window: store.getDocumentWindow(id, options), calls } }
   finally { store.db.prepare = prepare }
 }
 const median = values => [...values].sort((a,b) => a-b)[4]
 async function benchmark() {
-  const revision = process.argv[2] || 'b967b9f'
-  if (process.argv.length > 3) throw new Error('Expected at most one baseline revision')
+  const validateOnly = process.argv.includes('--validate-only'), args = process.argv.slice(2).filter(arg => arg !== '--validate-only')
+  const revision = args[0] || 'b967b9f'
+  if (args.length > 1) throw new Error('Expected at most one baseline revision')
   const baseline = (await baselineModules(revision)).store
   const directory = mkdtempSync(join(tmpdir(), 'kg-window-query-benchmark-')), database = join(directory, 'graph.sqlite')
   const current = await openSqliteStore(database)
@@ -113,13 +132,14 @@ async function benchmark() {
         .some(value => String(value || '').replace(/[A-Z]/g, letter => letter.toLowerCase()).includes(query.toLowerCase())))
       assert.equal(after.window.view.matchedNodes, expected.length)
       assert.deepEqual(after.window.nodes.slice(0, Math.min(800, expected.length)).map(node => node.id), expected.slice(0, 800).map(node => node.id))
-      if (!/[%_]/.test(query)) { assert.deepEqual(after.window, before.window); assert.deepEqual(after.statements, before.statements) }
+      if (!/[%_]/.test(query)) { assert.deepEqual(after.window, before.window); assertWindowQueryCallParity(before.calls, after.calls, after.window) }
       samples.push({ nodes: fixture.graph.nodes.length, documentId: fixture.documentId, query,
         beforeMatched: before.window.view.matchedNodes, currentMatched: after.window.view.matchedNodes,
         beforeReturned: before.window.nodes.length, currentReturned: after.window.nodes.length,
         before: { ...oldMeter.counts }, current: { ...meter.counts } })
     }
     oldMeter.stop(); oldMeter = null; meter.stop(); meter = null
+    if (validateOnly) { console.log(JSON.stringify({ ok: true, baseline: revision, cases: samples.length, validationOnly: true })); return }
     for (const sample of samples) {
       const options = { query: sample.query, limit: 800, includeSourceText: false }, times = [[], []]
       const runs = [() => previous.getDocumentWindow(sample.documentId, options), () => current.getDocumentWindow(sample.documentId, options)]

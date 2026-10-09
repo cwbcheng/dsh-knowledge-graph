@@ -7,12 +7,32 @@ import { openSqliteStore, SqliteKnowledgeStore } from '../lib/kg-store.mjs'
 import * as hostPlugin from '../lib/index.js'
 import { createGenerationStructureTools } from '../src/kg-generation-structure.mjs'
 import { startDiagnosticHost } from './kg-document-window-diagnostics-benchmark.mjs'
-import { literalWindowFixture, countWindowQueryWork, isWindowQuerySql } from './kg-document-window-query-benchmark.mjs'
+import { countWindowQueryWork, isWindowQuerySql } from './kg-document-window-query-benchmark.mjs'
+import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-window-query-')), database = join(directory, 'graph.sqlite')
 const writer = await openSqliteStore(database)
 writer.db.exec('PRAGMA journal_mode = WAL')
-const reader = await openSqliteStore(database), meter = countWindowQueryWork(SqliteKnowledgeStore, database)
+const reader = await openSqliteStore(database), nativePrepare = reader.db.prepare
+let nativeCountChecks = 0
+// The frozen COUNT uses the exact original predicate and parameters, inside
+// the current read snapshot. Test instrumentation is excluded from the meter.
+reader.db.prepare = function(sql) {
+  const statement = nativePrepare.call(this, sql)
+  if (isWindowQuerySql(sql) && sql.startsWith('SELECT *')) {
+    const all = statement.all
+    statement.all = function(...params) {
+      const rows = all.apply(this, params), tail = ' ORDER BY paragraph, node_id LIMIT ?'
+      assert(sql.endsWith(tail))
+      const countSql = sql.slice(0, -tail.length).replace('SELECT *', 'SELECT COUNT(*) AS count')
+      const count = nativePrepare.call(reader.db, countSql).get(...params.slice(0, -1)).count
+      assert.equal(rows.length, Math.min(count, params.at(-1))); nativeCountChecks++
+      return rows
+    }
+  }
+  return statement
+}
+const meter = countWindowQueryWork(SqliteKnowledgeStore, database)
 let reads = 0, httpReads = 0, interleavings = 0, maximum = 0, host
 const compare = (fields, a, b) => {
   for (const field of fields) {
@@ -60,8 +80,8 @@ function check(documentId, options, full = writer.getDocument(documentId)) {
   assert.equal(meter.counts.directRows, expected.direct)
   assert.equal(meter.counts.maxDirectRows, expected.direct)
   assert.equal(meter.counts.literalQueries, /[%_]/.test(options.query.trim().slice(0, 200)) ? 1 : 0)
-  const countReads = meter.counts.literalQueries && expected.matched < expected.limit ? 0 : 1
-  assert.equal(meter.counts.matchCountReads, countReads, 'Only underfilled literal candidates may omit COUNT')
+  const countReads = expected.matched < expected.limit ? 0 : 1
+  assert.equal(meter.counts.matchCountReads, countReads, 'Only an underfilled direct page may omit COUNT')
   assert.equal(meter.counts.matchingStatements, 1 + countReads)
   assert.equal(meter.counts.matched, expected.matched, 'Native count or exhausted candidate rows supply the total')
   maximum = Math.max(maximum, meter.counts.maxDirectRows); reads++
@@ -70,19 +90,31 @@ function check(documentId, options, full = writer.getDocument(documentId)) {
 const digest = value => createHash('sha256').update(value).digest('hex')
 const inspect = graph => ({ canonicalNodes: graph.nodes.length, revision: graph.revision, sourceDigest: digest(graph.sourceText) })
 try {
-  const fixtures = [64, 12000].map(size => literalWindowFixture(size))
+  const fixtures = [64, 12000].map(size => ordinaryWindowFixture(size, 'window-literal-' + size))
   const queries = ['node_17', 'NODE_17', 'node17', '100%', '%', '_', '%_', 'q%_uote', 'C:\\source\\_unit',
     'chapter_17', 'Section_17', '中_%_😀', "n')_% OR 1=1 --", 'absent_%', 'fact', 'observation 11999.']
   for (const fixture of fixtures) {
     writer.saveGraph(fixture.graph, { sourceText: fixture.sourceText, sourceUnits: fixture.sourceUnits })
     // Exercise the persisted type column separately from opaque identities.
     writer.db.prepare('UPDATE graph_nodes SET type = ? WHERE document_id = ? AND node_id = ?').run('literal_type', fixture.documentId, 'type-marker')
+    // Persisted legacy values exercise ordinary predicates in all six fields,
+    // including SQLite's retained Unicode/ASCII case behavior.
+    for (const [field, id, value] of [['text','n20','Uppercase CAFÉ only. windowexact'],['text','n21','Lowercase café only. windowexact'],
+      ['quote','n22','Quoteonly Straße literal.'],['section_id','n23','ordinarychapter'],['section_title','n23','Ordinarytitle'],['type','n24','ordinarytype']]) {
+      writer.db.prepare('UPDATE graph_nodes SET ' + field + ' = ? WHERE document_id = ? AND node_id = ?').run(value, fixture.documentId, id)
+    }
     const full = writer.getDocument(fixture.documentId), untouched = JSON.stringify(full)
     for (const query of [...queries, 'literal_type']) for (const limit of [1, 4, 20, 800, 2000]) for (const includeSourceText of [false, true]) {
       check(fixture.documentId, { query, limit, includeSourceText }, full)
     }
     for (const query of ['  node_17  ', 'x'.repeat(199) + '_truncated', 'C:\\source\\', 'missing%\\', '%\\_']) {
       check(fixture.documentId, { query, limit: 20, edgeLimit: 20, includeSourceText: false }, full)
+    }
+    for (const query of ['NODE17','café','CAFÉ','quoteonly','ordinarychapter','ordinarytitle','ordinarytype','not-in-this-source']) {
+      for (const limit of [1,20,800]) for (const includeSourceText of [false,true]) check(fixture.documentId, { query, limit, includeSourceText }, full)
+    }
+    for (const query of ['windowexact','windowunder']) for (const limit of [199,200,201]) for (const includeSourceText of [false,true]) {
+      check(fixture.documentId, { query, limit, includeSourceText }, full)
     }
     for (const query of ['', '   ']) {
       meter.reset()
@@ -98,8 +130,12 @@ try {
     { query: '%_', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
     { query: '%_', limit: 20, boundary: sql => sql.startsWith('SELECT * FROM graph_edges') && sql.includes('from_node_id IN (') && sql.includes('to_node_id IN (') && !sql.includes('json_each') },
     { query: 'never_%', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
+    ...[false,true].flatMap(afterRead => [
+      { query: 'observation 11999.', limit: 20, afterRead, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
+      { query: 'node17', limit: 1, afterRead, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT COUNT') },
+    ]),
   ]
-  for (const { boundary, query, limit } of boundaries) {
+  for (const { boundary, query, limit, afterRead = true } of boundaries) {
     const options = { query, limit, includeSourceText: false }
     const before = reader.getDocumentWindow(id, options, inspect), prepare = reader.db.prepare
     let fired = false
@@ -108,8 +144,7 @@ try {
       if (boundary(sql)) for (const method of ['get','all']) {
         const execute = statement[method]
         statement[method] = function (...args) {
-          const result = execute.apply(this, args)
-          if (!fired) {
+          const commit = () => {
             fired = true; assert.throws(() => reader.db.exec('BEGIN'), /within a transaction/)
             const revised = writer.getDocument(id), newId = 'new%_match-' + interleavings
             revised.nodes.push({ id: newId, type: 'fact', text: 'Independent ' + query + ' observation.', paragraph: 11971 })
@@ -118,6 +153,9 @@ try {
             writer.saveGraph(revised, { sourceText: revised.sourceText + '\n\nIndependent source.', expectedRevision: revised.revision })
             interleavings++
           }
+          if (!fired && !afterRead) commit()
+          const result = execute.apply(this, args)
+          if (!fired && afterRead) commit()
           return result
         }
       }
@@ -147,8 +185,8 @@ try {
     }
   }
   assert.equal(reader.getDocumentWindow('missing', { query: '%_' }), null)
-  console.log(JSON.stringify({ ok: true, documents: fixtures.length, reads, httpReads, interleavings, maxDirectRows: maximum,
+  console.log(JSON.stringify({ ok: true, documents: fixtures.length, reads, httpReads, interleavings, maxDirectRows: maximum, nativeCountChecks,
     literalIdsAndSixFields: true, ordinaryAndEmptyQueries: true, boundedNativeRows: true,
     orderedNeighborsAndEvidence: true, immutableSourceAndMetadata: true, independentWalSnapshot: true, canonicalHttpDiagnostics: true,
-    underfilledLiteralCountOmitted: true, fullAndExactBudgetCounted: true, nativeMatchCountParity: true }))
+    underfilledLiteralAndOrdinaryCountOmitted: true, fullAndExactBudgetCounted: true, nativeMatchCountParity: true, ordinaryUnicodeAndSixFields: true }))
 } finally { await host?.stop(); meter.stop(); reader.close(); writer.close(); rmSync(directory, { recursive: true, force: true }) }
