@@ -11,6 +11,7 @@ import * as plugin from '../lib/index.js'
 import { SqliteKnowledgeStore } from '../lib/kg-store.mjs'
 import { diagnosticFixture, countHydration } from './kg-document-window-diagnostics-benchmark.mjs'
 import { countWindowSourceHydration } from './kg-document-window-source-benchmark.mjs'
+import { literalWindowFixture, countWindowQueryWork } from './kg-document-window-query-benchmark.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -26,7 +27,9 @@ const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
-const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode
+const windowQueryLiteralMode = process.argv.includes('--window-query-literal')
+const literalFixture = windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
+const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode || windowQueryLiteralMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode
 const textSemanticMode = process.argv.includes('--text-semantic')
@@ -45,7 +48,8 @@ const quickVerifyMode = process.argv.includes('--quick-verify')
 const documentQueueMode = process.argv.includes('--document-queue') || quickVerifyMode
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
-const paragraphs = Array.from({ length: sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
+  : Array.from({ length: sourceImagePerformanceMode || windowDiagnosticsMode ? 12000 : snapshotMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (sourceImagePerformanceMode) {
   paragraphs[3] = '<table><tr><th>阶段</th><th>原文内容</th></tr>'
   paragraphs[4] = '<tr><td>来源样本</td><td>跨段表格保持原文</td></tr></table>'
@@ -82,6 +86,7 @@ if (windowDiagnosticsMode) {
   graph.edges = diagnostic.edges.map(edge => ({ ...edge,
     evidence: [{ paragraph: edge.evidence[0].paragraph, quote: paragraphs[edge.evidence[0].paragraph] }] }))
 }
+if (literalFixture) Object.assign(graph, literalFixture.graph)
 if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
   images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
     startParagraph: 1, endParagraph: 1, interpretationStatus: 'not_requested',
@@ -213,7 +218,8 @@ if (documentQueueMode) {
 const routes = new Map(), ctx = new Context(), pending = new Set()
 const stats = { submissions: 0, statusCalls: 0, commits: 0, modelCalls: 0, questionRequests: 0, snapshotExports: 0 }
 const diagnosticMeter = windowDiagnosticsMode ? countHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
-const sourceMeter = windowSourceOmissionMode ? countWindowSourceHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+const sourceMeter = windowSourceOmissionMode || windowQueryLiteralMode ? countWindowSourceHydration(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+const queryMeter = windowQueryLiteralMode ? countWindowQueryWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -364,7 +370,8 @@ const server = createServer(async (req, res) => {
     const json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html); return }
     if (url.pathname === '/fixture/stats') { json({ ...stats, pending: pending.size, revision: store.getDocumentRevision(documentId),
-      ...(windowSourceOmissionMode ? { sourceHydration: sourceMeter.counts } : {}),
+      ...(sourceMeter ? { sourceHydration: sourceMeter.counts } : {}),
+      ...(queryMeter ? { queryWork: queryMeter.counts } : {}),
       ...(windowDiagnosticsMode ? { windowHydration: diagnosticMeter.counts,
         sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
         canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
@@ -480,6 +487,7 @@ const server = createServer(async (req, res) => {
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 async function stop() {
+  queryMeter?.stop()
   sourceMeter?.stop()
   diagnosticMeter?.stop()
   for (const stream of pending) stream.return()
