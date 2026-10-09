@@ -605,6 +605,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 
 ### 关键设计
 
+- **层级布局直接用 ID 选择起点**：已有度数表按分量 BFS 顺序比较节点 ID，保留严格大于的同度数选择规则，省去每个候选再在节点数组中查找。真实完整生成引擎 `node scripts/kg-layered-hub-benchmark.mjs [ce6c56a] [--smoke|--large]` 对照：800 节点宽层 / 链 / 循环各 320,401 次查找比较 → 0；12,000 节点链 / 循环各 72,006,001 → 0，候选度数比较仍各 800 / 12,000 次，无新增索引或复制。冻结完整坐标、分量元数据 / 成员顺序 / 引用身份和原始进度；验证 BFS 同度数、数字 / 字符串 ID、推理链与循环回退、实际 worker、取消及新拓扑和尺寸。计数限于起点查找，不代表整个布局时延。浏览器 `node scripts/kg-verification-ui-fixture.mjs --layered-hub [--client-ref=ce6c56a]` 使用 800 节点。
+
 - **普通节点选择复用**：工作台更新时创建新的图片渲染回调，只有实际显示原图预览的节点依赖它；普通文字节点和总览中隐藏的预览复用视觉状态未变的外框。显示或更新预览仍使用最新回调，节点操作也使用当前回调，缓存仍限于当前视口。`node scripts/kg-graph-node-selection-benchmark.mjs f710ff5 --replace-image-renderer` 与省略提交参数的当前版本对照：12,000 个文字节点连续四次选择，实际外框重建 48,000 → 16；保留完整证据。这是生产场景的确定性构造计数，脚本中的模拟 hooks 耗时不代表浏览器延迟或绘制收益。
 - **分层连线复用行边界**：单次绘制准备中，一次组件扫描建立行边界和最高层索引，层间通道与同层关系直接复用，避免每条关系或每个新通道扫描组件；路径、标签避让及隐藏规则保持。索引随本次准备结束释放，新尺寸、新位置或取消后重试会重新计算。`npm run test:kg-performance` 核对冻结几何、组件隔离、空行与非有限值回退和实际节点访问次数；`node scripts/kg-layered-channel-benchmark.mjs 68270e9` 可对照逐通道缓存版本，`f710ff5` 可对照原始实现。基准分别报告含索引建立的路径计算及包含分轨、固定宽度标签测量与标签避让的整理连线阶段，不相加，不包含真实文字测量、后台布局、原文、HTTP 或绘制，也不设 CI 时延门槛。真实浏览器可运行 `node scripts/kg-verification-ui-fixture.mjs --window-query-count --window-response-performance`；加 `--client-ref=68270e9` 可只读取该提交的客户端，在相同宿主和数据夹具下交替对照，不改工作区。
 
