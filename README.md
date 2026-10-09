@@ -599,6 +599,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 
 ### 关键设计
 
+- **分层连线复用通道边界**：单次绘制准备中，同一组件、同一层间通道只扫描节点一次；路径、标签避让及隐藏规则保持。通道数据随本次准备结束释放，新尺寸、新位置或取消后重试会重新计算。`npm run test:kg-performance` 核对冻结几何、组件隔离和实际节点访问次数；`node scripts/kg-layered-channel-benchmark.mjs f710ff5` 可独立对照原始实现。基准分别报告路径计算及包含分轨、固定宽度标签测量与标签避让的整理连线阶段，不相加，不包含真实文字测量、后台布局、原文、HTTP 或绘制，也不设 CI 时延门槛。
+
 - **内容单元编号即锚点**：Host 与 Client 用同一算法先把每个空行块做结构分类（标题 / 列表 / 对话 / 表格 / 代码 / 引用 / 普通叙述），再按结构切分编号单元——标题与列表项各自成单元、对话每轮成单元、引用与代码按行组织；普通叙述按话题转换标记（但是/因此/例如…）与词汇话题漂移分组，组满约 120 字、单句超 180 字时按句边界/软标点继续拆，避免一个长单元挂太多节点标签。提示词要求每个节点直接汇报出处的单元编号；客户端据此**确定性映射内容单元**，不再依赖 LLM 逐字复述原文。
 - **多批次全局重编号**：每个批次的 AI 都从 `n1` 开始命名节点，Host 在合并前无条件重编号冲突 id 并同步重写边，避免长文档后续批次的节点被当成重复 id 丢弃。
 - **Evidence 自带 provenance，且关系证据必须证明关系本身**：节点与关系的 canonical evidence 统一为 `evidence[{ documentId, sourceId, chunkId, paragraph, quote }]`。Host 在写入门重新验证 quote 确实存在于对应 source unit，并按 paragraph 对应的 source-version/chunk 补齐 provenance；无法认证的 quote 不会被包装成 evidence。相同 Node/Edge 在后续 source-version 再次出现时会合并 evidence，而不是丢掉后来的证据。仅仅证明两个端点分别出现过，不足以证明 `supports / causes / infers` 等 relation。

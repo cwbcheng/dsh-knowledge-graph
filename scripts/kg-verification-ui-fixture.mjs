@@ -33,6 +33,7 @@ const sourceImagePerformanceMode = process.argv.includes('--source-image-perform
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
 const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
 const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
+const windowResponsePerformanceMode = process.argv.includes('--window-response-performance')
 const windowQueryLiteralMode = process.argv.includes('--window-query-literal') || windowQueryCountMode
 const literalFixture = windowQueryCountMode ? ordinaryWindowFixture(12000, documentId) : windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
 if (windowQueryCountMode) {
@@ -367,6 +368,29 @@ ${heldSaveMode ? '<nav><button onclick="control(\'hold-next-save\')">Hold next g
 ${quickVerifyMode ? '<nav><button onclick="control(\'hold-next-verification\')">Hold next quick report</button><button onclick="control(\'release-verification\')">Release quick report</button></nav>' : ''}
 ${workPackagesMode ? '<nav><button onclick="control(\'change-allegation\')">Change first allegation</button></nav>' : ''}
 <main class="kg-root" id="root"></main><pre id="fixture-state"></pre>
+${windowResponsePerformanceMode ? `<output id="window-response-telemetry" style="display:block;white-space:pre-wrap;overflow-wrap:anywhere"></output>
+<script>
+// Synthetic-data DOM timing only; wait for the actual GraphCanvas ready state.
+const responseSamples=[];
+let responsePending={kind:'initial',budget:800,started:performance.now()};
+const responseOutput=document.getElementById('window-response-telemetry');
+function observeResponse(){
+ const select=document.querySelector('select[aria-label="每窗节点数"]');
+ const stage=document.querySelector('.kg-graph-stage');
+ if(!responsePending||!select||select.disabled||Number(select.value)!==responsePending.budget||!stage||stage.getAttribute('aria-busy')!=='false')return;
+ const nav=select.closest('.kg-window-nav');
+ responseSamples.push({kind:responsePending.kind,budget:responsePending.budget,elapsedMs:performance.now()-responsePending.started,
+  nodes:stage.querySelectorAll('svg g.kg-node').length,edges:stage.querySelectorAll('svg .kg-edge').length,windowText:nav.textContent});
+ responsePending=null;responseOutput.textContent=JSON.stringify({samples:responseSamples});
+}
+document.addEventListener('change',event=>{
+ if(!event.target.matches('select[aria-label="每窗节点数"]'))return;
+ const budget=Number(event.target.value);if(!Number.isFinite(budget))return;
+ responsePending={kind:'budget-change',budget,started:performance.now()};
+ responseOutput.textContent=JSON.stringify({samples:responseSamples,pending:{kind:'budget-change',budget}});
+},true);
+new MutationObserver(observeResponse).observe(document.getElementById('root'),{subtree:true,childList:true,attributes:true,attributeFilter:['aria-busy','disabled','value']});
+</script>` : ''}
 <script>
 window.fixtureErrors=[];window.addEventListener('error',event=>fixtureErrors.push(event.message));
 async function control(action){await fetch('/fixture/'+action,{method:'POST'})}
