@@ -9694,6 +9694,22 @@ export default function clientPlugin() {
           const maxHeight = Math.max(...Array.from(before.values(), (entry) => entry.size.h))
           // Each candidate consumes its intervals immediately. Reuse scratch
           // storage, rewriting both bounds before every use; it never escapes.
+          // Strictly overlapping prefixes prove a single union without sorting.
+          // Keep the first equal left endpoint, including its signed zero.
+          const mergeConnected = (blocked, merged) => {
+            let left = blocked[0].left, right = blocked[0].right
+            if (!(left < right)) return false
+            for (let i = 1; i < blocked.length; i++) {
+              const interval = blocked[i]
+              if (!(interval.left < right && interval.right > left)) return false
+              if (interval.left < left) left = interval.left
+              right = Math.max(right, interval.right)
+            }
+            const interval = blocked[0]
+            interval.left = left; interval.right = right
+            merged.push(interval)
+            return true
+          }
           let blocked, merged, intervalPool
           for (let pass = 0; pass < 12; pass++) {
             let moved = false
@@ -9751,12 +9767,14 @@ export default function clientPlugin() {
                     blocked.push(interval)
                   }
                 }
-                blocked.sort((a, b) => a.left - b.left)
                 merged.length = 0
-                for (const interval of blocked) {
-                  const last = merged[merged.length - 1]
-                  if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
-                  else merged.push(interval)
+                if (blocked.length < 32 || !mergeConnected(blocked, merged)) {
+                  blocked.sort((a, b) => a.left - b.left)
+                  for (const interval of blocked) {
+                    const last = merged[merged.length - 1]
+                    if (last && interval.left < last.right) last.right = Math.max(last.right, interval.right)
+                    else merged.push(interval)
+                  }
                 }
                 const preferred = backboneLane.has(id) ? backboneLane.get(id) : meanX
                 const occupied = merged.find((interval) => preferred > interval.left && preferred < interval.right)

@@ -7,8 +7,8 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { Worker } from 'node:worker_threads'
-const smoke = process.argv.includes('--smoke'), large = process.argv.includes('--large')
-const revision = process.argv.slice(2).find(arg => arg !== '--smoke' && arg !== '--large')
+const smoke = process.argv.includes('--smoke'), large = process.argv.includes('--large'), captureUnion = process.argv.includes('--capture-union')
+const revision = process.argv.slice(2).find(arg => !['--smoke','--large','--capture-union'].includes(arg))
 if (revision?.startsWith('-')) throw new Error('Expected a git revision')
 const bundle = revision ? execFileSync('git', ['show', revision + ':extension/viewer.js'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   : readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8')
@@ -16,6 +16,9 @@ const usesEntries = bundle.includes('for (const peerEntry of rows.get(r) || [])'
 const usesPool = bundle.includes('intervalPool.push(interval)')
 const distantRowGuard = 'if (Math.abs(r * LAYER_Y_GAP - y) >= (size.h + maxHeight) / 2 + 18) continue'
 const skipsDistantRows = bundle.includes(distantRowGuard)
+const usesConnectedUnion = bundle.includes('const mergeConnected = (blocked, merged) => {')
+if (captureUnion && revision && revision !== '0dedb9c') throw new Error('Union capture requires the original 0dedb9c or the current measured implementation')
+const unionFields = ['sortCalls','sortComparisons','mergeVisits','mergeComparisons','mergeMaxCalls','unionCalls','unionVisits','unionRangeChecks','unionOverlapChecks','unionLeftChecks','unionMaxCalls','unions','unionRejected','unionGuardChecks','unionHelpers']
 assert(usesEntries || bundle.includes('const peer = placed.get(peerId), ps = sizes.get(peerId)'))
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const phaseFields = ['calls','passes','nodeVisits','rowCandidates','rowRequests','linkRowChecks','blockedSamples','blockedEntries','peerVisits','moves']
@@ -25,7 +28,8 @@ function engine(instrument = true) {
   const work = { calls: 0, passes: 0, nodeVisits: 0, rowCandidates: 0, rowRequests: 0, linkRowChecks: 0,
     blockedSamples: 0, blockedEntries: 0, peerVisits: 0, moves: [], mapReads: {},
     intervalObjects: 0, mergedCopies: 0, scratchArrays: 0, poolReuses: 0, poolPeak: 0,
-    neighbourRows: 0, prunedRows: 0, rowGridChecks: 0 }
+    neighbourRows: 0, prunedRows: 0, rowGridChecks: 0,
+    ...Object.fromEntries(unionFields.map(field => [field,0])) }
   if (instrument) {
     const start = source.indexOf('const compactRows = () => {'), end = source.indexOf('\n        compactRows()', start)
     assert(start >= 0 && end > start)
@@ -42,9 +46,25 @@ function engine(instrument = true) {
       .replace('for (let r = row - reach; r <= row + reach; r++) {', 'for (let r = row - reach; r <= row + reach; r++) { work.neighbourRows++;')
       .replace(distantRowGuard, 'if (Math.abs(r * LAYER_Y_GAP - y) >= (size.h + maxHeight) / 2 + 18) { work.prunedRows++; continue }')
       .replace('moved = true', 'assertGrid(p.y, Math.round(p.y / LAYER_Y_GAP) * LAYER_Y_GAP); work.moves.push([id,p.x,p.y]); moved = true')
-      .replace('blocked.sort(', 'work.blockedSamples++; work.blockedEntries += blocked.length; recordIntervals("raw", blocked); blocked.sort(')
+      .replace(usesConnectedUnion ? 'merged.length = 0' : 'blocked.sort(', usesConnectedUnion
+        ? 'work.blockedSamples++; work.blockedEntries += blocked.length; recordIntervals("raw", blocked); merged.length = 0'
+        : 'work.blockedSamples++; work.blockedEntries += blocked.length; recordIntervals("raw", blocked); blocked.sort(')
       .replace('const preferred = backboneLane.has(id)', 'recordIntervals("merged", merged); const preferred = backboneLane.has(id)')
+      .replace('blocked.sort((a, b) => a.left - b.left)', 'work.sortCalls++; blocked.sort((a,b)=>(work.sortComparisons++,a.left-b.left))')
+      .replace('for (const interval of blocked) {', 'for (const interval of blocked) { work.mergeVisits++;')
+      .replace('if (last && interval.left < last.right)', 'if (last && (work.mergeComparisons++,interval.left < last.right))')
+      .replace('last.right = Math.max(last.right, interval.right)', 'last.right = (work.mergeMaxCalls++,Math.max(last.right, interval.right))')
       .replace(/\b(placed|sizes|weightedAdj|lower|upper|rows|backboneLane|before|compact)\.get\(/g, 'readMap($1, "$1", ')
+    if (usesConnectedUnion) block = block
+      .replace('const mergeConnected = (blocked, merged) => {', 'work.unionHelpers++; const mergeConnected = (blocked, merged) => { work.unionCalls++; work.unionVisits++;')
+      .replace('if (!(left < right))', 'if (!(work.unionRangeChecks++,left < right))')
+      .replace('const interval = blocked[i]', 'work.unionVisits++; const interval = blocked[i]')
+      .replace('interval.left < right && interval.right > left', '(work.unionOverlapChecks++,interval.left < right) && (work.unionOverlapChecks++,interval.right > left)')
+      .replace(/return false/g, '{ work.unionRejected++; return false }')
+      .replace('if (interval.left < left)', 'if ((work.unionLeftChecks++,interval.left < left))')
+      .replace('right = Math.max(right, interval.right)', 'work.unionMaxCalls++; right = Math.max(right, interval.right)')
+      .replace('return true', 'work.unions++; return true')
+      .replace('blocked.length < 32 || !mergeConnected', '(work.unionGuardChecks++,blocked.length < 32) || !mergeConnected')
     if (usesPool) block = block
       .replace('if (!blocked) { blocked = []; merged = []; intervalPool = [] }', 'if (!blocked) { work.scratchArrays += 3; blocked = []; merged = []; intervalPool = [] }')
       .replace('intervalPool.push(interval)', 'work.intervalObjects++; intervalPool.push(interval); work.poolPeak = Math.max(work.poolPeak, intervalPool.length)')
@@ -146,6 +166,23 @@ const frozenRowScans = {
   "cycle/12000": [1413109,650989,261033,325549,195018,"1ee7e16461bc0a1e90db05e116dc12d016cd4d5ab181fda743ab1231015e3f7c"],
   "groups/12000": [948120,579069,381047,270033,150018,"77c1700ffd95ed9ffd40e9c5882899344b5da81333e3339b6466af7463bd474d"],
 }
+// Original and current exact ordering/merge work, including failed trials,
+// new length guards and the one helper constructed per component invocation.
+const frozenUnionWork = {
+  "wide/80": ["5a2cfd2813ad78c70c30d1ca218ab9503b6ab4634cc7c510b3217c1bbf9d29b2","4a47bab14aed7aa97c4c404c1a03492b03206163c375040d3f7138754060233a"],
+  "chain/80": ["1137390e6e169b1cd147a604cd4833999ee5c65f3dca62f4826b2e360054af6c","b443b4296663bf2d93732288142faef80ae085985602e758f5f7fcaa61d09003"],
+  "cycle/80": ["131f42b70e2d7a38ebf1035ea2bae4ef00c4507e48263e90e5056720d2a4047f","eeac9a2065902806e7a0c5ad8a4048b7a340d61529c9855db8576a70be852dfe"],
+  "groups/80": ["6d350fb7ae15cc91295d69e6b3cff4fff0b9b29696ef81c7cb3026548b1cf48b","de2fbc84a28709f453f841c679ff6d2bc72843fdaeb68c08f93c288449abb89d"],
+  "tree/80": ["c85663b3ce707ca7371591b857eeaa1ad47908d02ea479a268d7c285c1141d71","33165aa6656d90d776e32ec51148fcf0fb2ea469d62fa5a1ae9ccbe26d4a3f99"],
+  "wide/800": ["e9a34065a029ff6eb1b8e12a5e0c860c865c2103f9e76af4a12811203a8cef8d","e3ec3c04a1f3688af4f9e547953c3e273507c5d0c524e7655a905dfca92fa6a7"],
+  "chain/800": ["1137390e6e169b1cd147a604cd4833999ee5c65f3dca62f4826b2e360054af6c","b443b4296663bf2d93732288142faef80ae085985602e758f5f7fcaa61d09003"],
+  "cycle/800": ["26fc1f899a397ade3f3aa07a2920b12001b499fb1c9727632c2ee21b73655b38","4c9eafb17061ceb8541714c6de9f49c0bc2c1c9366425ec97fb223e285d97903"],
+  "groups/800": ["9932855f437e47dbbf152c47b81f279495fc08f194c686be83e6985e5ca07e93","e61491ed2d97373591a7fc58315130e88a4fee48f7d0b8f09e3c37af4158514c"],
+  "tree/800": ["f7d5aaeceb0744720cbf4993184711a272bf9a860fe86e6af7f3125d4d650583","ddeb2fff32237d4e6e9670642522ddc65b534d8cd2151dd618b1740c3df2ad59"],
+  "chain/12000": ["1137390e6e169b1cd147a604cd4833999ee5c65f3dca62f4826b2e360054af6c","b443b4296663bf2d93732288142faef80ae085985602e758f5f7fcaa61d09003"],
+  "cycle/12000": ["6c426d5de9cbb7fbdd9d41128c192371ffac90723da72130b15f68c77e853fea","f4ee8d3a341ee96033b1fc48dfe7ea4b86b16e0bbbdb1cfc1505a08db4e73489"],
+  "groups/12000": ["3f648d1735b9a326ee53f7865c60e4fe145d70cf5ccb0df3fb118617400ad9e3","8aa4e457143bd38264f10a81e71a2d46c133702a444c530775006df4153d4f93"],
+}
 for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chain','cycle','groups','tree']) {
   const count = smoke ? 80 : large ? 12000 : 800, data = fixture(count, shape), run = engine(), progress = []
   const readonly = JSON.stringify({ ...data, sizes: [...data.sizes] })
@@ -165,10 +202,12 @@ for (const shape of large && !smoke ? ['chain','cycle','groups'] : ['wide','chai
   const rawIntervals = run.intervalHashes.raw.digest('hex'), mergedIntervals = run.intervalHashes.merged.digest('hex')
   assert.equal(rawIntervals, intervals[7]); assert.equal(mergedIntervals, intervals[8])
   assert.equal(run.work.intervalObjects + run.work.poolReuses, run.work.blockedEntries)
+  const unionWork = Object.fromEntries(unionFields.map(field => [field,run.work[field]])), unionDigest = digest(unionWork)
+  if (!captureUnion) assert.equal(unionDigest, frozenUnionWork[shape+'/'+count]?.[usesConnectedUnion?1:0], 'complete ordering and merge work')
   console.log(JSON.stringify({ baseline: revision || 'current', shape, nodes: count, mapReads, mapReadsByName: run.work.mapReads,
     result: digest(result), moveTrace: digest(run.work.moves), phase: digest(phase), peerVisits: run.work.peerVisits, blockedEntries: run.work.blockedEntries,
     neighbourRows: run.work.neighbourRows, prunedRows: run.work.prunedRows, rowGridChecks: run.work.rowGridChecks,
-    allocations: { intervalObjects: allocations[0], mergedCopies: allocations[1], scratchArrays: allocations[2], poolReuses: allocations[3], poolPeak: allocations[4] }, rawIntervals, mergedIntervals,
+    allocations: { intervalObjects: allocations[0], mergedCopies: allocations[1], scratchArrays: allocations[2], poolReuses: allocations[3], poolPeak: allocations[4] }, rawIntervals, mergedIntervals, unionWork, unionDigest,
     scope: 'All Map reads, row member visits and collision scratch allocations in actual compactRows, including preparation. Only impossible distant rows are skipped; candidate order, colliding intervals and every live-coordinate update remain. No full-layout or browser timing claim.' }))
 }
 const sample = (ids, links) => ({ nodes: ids.map(id => ({ id, text: 'Node ' + id, type: 'fact' })),
@@ -184,6 +223,8 @@ const cases = [
   ['reasoning-cycle', sample(['n0','n1','n2','n3'], [['n0','n1','causes'],['n1','n2','infers'],['n2','n0','causes'],['n2','n3','relates_to']]), 'b64c66ddc02dfcfd911fdecb50dafcea197b24071e6b417f2fe5ad58a3da9653'],
   ['isolated', sample(['n0','n1','n2','n3'], []), 'fcf8a1b5310a6c42dcca130209e6edcd7726355c48de648ec1a7a3bdf0ce5149'],
 ]
+const denseUnionResult = 'dc10387a52f54b61c4dfe4a4729462d435894e29167693b0fd363f22e9a0eb1c'
+cases.push(['dense-wide-union',fixture(320,'wide'),denseUnionResult])
 const missing = sample(['n0','n1','n2'], [['n0','n1'],['n0','n2']]); missing.sizes = new Map([['n0',{w:210,h:190}]])
 cases.push(['missing-sizes', missing, 'c31ca29421c7f790d7509a941e6326a0ed784489573731de3eb50f488efa60f2'])
 // Strict collision boundaries at one and two row gaps, including tall peers.
@@ -204,7 +245,12 @@ const workerSource = engine(false).graphLayoutWorkerSource()
 for (const [name, data, expected, intervals] of cases) {
   const run = engine(), progress = [], readonly = JSON.stringify({ ...data, sizes: [...data.sizes] })
   const result = snapshot(run.layoutGraph(data.nodes, data.edges, data.sizes, 'layered', p => progress.push(p)), progress, data.nodes)
-  assert.equal(digest(result), expected, name); assert.equal(JSON.stringify({ ...data, sizes: [...data.sizes] }), readonly)
+  const frozenResult = name === 'dense-wide-union' && captureUnion && revision === '0dedb9c' ? digest(result) : expected
+  assert.equal(digest(result), frozenResult, name); assert.equal(JSON.stringify({ ...data, sizes: [...data.sizes] }), readonly)
+  if (name === 'dense-wide-union') {
+    if (usesConnectedUnion) assert(run.work.unions > 0, 'dense worker fixture must execute connected unions')
+    console.log(JSON.stringify({baseline:revision||'current',denseUnion:320,result:digest(result),unions:run.work.unions}))
+  }
   if (intervals) {
     assert.equal(digest(run.work.moves), intervals.moves)
     assert.equal(run.intervalHashes.raw.copy().digest('hex'), intervals.raw)
@@ -226,7 +272,7 @@ for (const [name, data, expected, intervals] of cases) {
     assert(index > last); last = index
   }
   assert.equal(JSON.stringify(workerProgress.at(-1)), JSON.stringify(progress.at(-1)))
-  assert.equal(digest(snapshot(remote, progress, data.nodes, false)), expected, name + ' actual worker')
+  assert.equal(digest(snapshot(remote, progress, data.nodes, false)), frozenResult, name + ' actual worker')
   assert.throws(() => run.layoutGraph(data.nodes, data.edges, data.sizes, 'layered', () => { throw new Error('cancel fixture') }), /cancel fixture/)
 }
 const duplicate = sample(['a','b','a'], [['a','b']]); duplicate.nodes[2].text = 'Duplicate A'
@@ -245,6 +291,67 @@ assert.equal(new Set(disconnected.componentKeyById.values()).size, dynamic.nodes
 assert.notEqual(reconnected.componentNodesById.get('n0'), first.componentNodesById.get('n0'))
 assert.notEqual(digest([...reconnected.pos]), digest([...first.pos]))
 assert.equal(digest(snapshot(reconnected, [], dynamic.nodes)), digest(snapshot(fresh, [], dynamic.nodes)))
+// Execute the actual merging block on successive candidates using the same
+// scratch objects, and freeze every resulting bound against the old algorithm.
+const compactStart = bundle.indexOf('const compactRows = () => {')
+const helperStart = bundle.indexOf('const mergeConnected = (blocked, merged) => {', compactStart)
+const helperEnd = bundle.indexOf('let blocked, merged, intervalPool', helperStart)
+const helperSource = usesConnectedUnion ? bundle.slice(helperStart,helperEnd) : ''
+const mergerStart = bundle.indexOf(usesConnectedUnion ? '                merged.length = 0' : '                blocked.sort(', compactStart)
+const mergerEnd = bundle.indexOf('                const preferred = backboneLane.has(id)',mergerStart)
+assert(mergerStart > compactStart && mergerEnd > mergerStart)
+const mergeCandidate = runInNewContext('(blocked) => { const merged = []; '+helperSource
+  +bundle.slice(mergerStart,mergerEnd).replace('const merged = []','merged.length = 0')+'; return merged }')
+const encodedNumber = value => Object.is(value,-0)?'-0':Number.isNaN(value)?'NaN':value===Infinity?'Infinity':value===-Infinity?'-Infinity':value
+const encodedIntervals = intervals => intervals.map(interval => [encodedNumber(interval.left),encodedNumber(interval.right)])
+const grow = pairs => Array.from({length:33},(_,i)=>pairs[i%pairs.length])
+const unionCases = [
+  ['shuffled-connected',grow([[10,30],[0,20],[19,100]])],
+  ['strict-touch',grow([[0,20],[20,40]])],
+  ['gap-bridged-late',grow([[0,20],[40,60],[10,50]])],
+  ['contained-degenerate',grow([[0,100],[60,30],[50,50]])],
+  ['positive-zero-first',grow([[0,10],[-0,8],[2,9]])],
+  ['negative-zero-first',grow([[-0,10],[0,8],[2,9]])],
+  ['signed-zero-right',grow([[-10,-0],[-5,0]])],
+  ['invalid-first',grow([[5,3],[-10,10]])],
+  ['infinite-union',grow([[-Infinity,Infinity],[-1,1]])],
+  ['nan-fallback',grow([[NaN,1],[0,10],[5,NaN]])],
+  ['strict-gap-epsilon',grow([[0,1],[1+1e-9,2]])],
+  ['strict-overlap-epsilon',grow([[0,1],[1-1e-9,2]])],
+  ...[0,1,31,32].map(length=>['threshold-'+length,Array.from({length},(_,i)=>[i-20,i+20])]),
+]
+let seed=0x56f03a29
+const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed}
+const bounds=[-Infinity,-100,-1,-1e-9,-0,0,1e-9,1,100,Infinity,NaN]
+for(let i=0;i<2000;i++)unionCases.push(['seeded-'+i,Array.from({length:random()%97},()=>[bounds[random()%bounds.length],bounds[random()%bounds.length]])])
+const scratch=[], unionResults=[]
+for(const [name,pairs] of unionCases) {
+  const before=digest(pairs.map(pair=>pair.map(encodedNumber)))
+  const blocked=pairs.map(([left,right],i)=>{
+    const interval=scratch[i]||(scratch[i]={left,right})
+    interval.left=left;interval.right=right;return interval
+  })
+  const result=mergeCandidate(blocked)
+  if(usesPool)for(const interval of result)assert(scratch.includes(interval),name+' uses existing scratch objects')
+  assert.equal(digest(pairs.map(pair=>pair.map(encodedNumber))),before,name+' input data')
+  unionResults.push([name,encodedIntervals(result)])
+}
+const directUnionFrozen = '95b5b193c58820b2466a3362ad3b23ee3456abe192cb25dfc5a0d150d2f564ef'
+const directUnionDigest = digest(unionResults)
+if(!(captureUnion && revision==='0dedb9c'))assert.equal(directUnionDigest,directUnionFrozen,'complete sequential strict interval results')
+if(usesConnectedUnion) {
+  const tryUnion=runInNewContext(helperSource+'; mergeConnected')
+  for(const pairs of [grow([[0,20],[20,40]]),grow([[5,3],[-10,10]]),grow([[0,20],[40,60],[10,50]]),grow([[NaN,1],[0,10]])]) {
+    const blocked=pairs.map(([left,right])=>({left,right})),merged=[]
+    const before=digest(encodedIntervals(blocked))
+    assert.equal(tryUnion(blocked,merged),false)
+    assert.equal(digest(encodedIntervals(blocked)),before,'failed trial keeps fallback input intact')
+    assert.equal(merged.length,0)
+  }
+}
+console.log(JSON.stringify({baseline:revision||'current',directUnion:unionCases.length,result:directUnionDigest,unionControls:{
+  strictOverlapAndTouching:true,signedZeroAndNonfiniteBounds:true,invalidFirstRangeAndDisconnectedFallback:true,sequentialPoolReuse:true,
+  failedUnionTrialReadonly:usesConnectedUnion?true:undefined,denseActualWorkerExercisesFastPath:usesConnectedUnion?true:undefined}}))
 console.log(JSON.stringify({ baseline: revision || 'current', controls: { originalRankConstraintsAndRowOrder: true, allLiveRelocationsFrozen: true,
   numericStringAndFalseyIds: true, reasoningDagAndCycleFallback: true, duplicateIdRowMembership: true, emptySingletonAndMissingSizes: true,
   readonlyInputsAndSharedCanonicalMembers: true, actualWorkerMetadataAndThrottledCompletion: true, cancellationPropagates: true,
