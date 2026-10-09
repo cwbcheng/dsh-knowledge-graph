@@ -10843,6 +10843,11 @@
         const edgeDetail = selectedEdgeId != null ? (edges || [])[selectedEdgeId] : null
 
         const markerId = markerIdRef.current
+        // Selection and current callbacks change presentation, not routing.
+        // Populate lazily for overview's incident edges; replacing the graph or
+        // geometry inputs releases the previous graph's bounded cache.
+        const edgeGeometryCache = useMemo(() => new Map(),
+          [edges, nodes, layout, sizes, layoutMode, layeredEdgeGeometry, edgeLanes, edgeFan])
         // ---- bundle parallel relations between the same ordered node pair ----
         // When two nodes are joined by several edges (e.g. supports/aims_at/
         // example), drawing one line per edge floods the layout with near-
@@ -10871,103 +10876,112 @@
           const dim = focus ? !inFocus : false
           const rel = edgeRelationLabel(edge)
           const issueSev = issueSeverityForEdge(edge)
-          // Radial mode: polylines — each edge leaves its source radially,
-          // sweeps along an arc just OUTSIDE the outer ring of its two
-          // endpoints, then enters the target radially. Hub edges stay
-          // straight spokes. Other modes keep the fanned quadratic bezier.
-          let d
-          let lblX
-          let lblY
-          let labelW = layoutMode === 'layered' ? 0 : measureLabel(rel) + 10
-          let labelH = 15
-          let labelHidden = false
-          if (edge.fromNodeId === edge.toNodeId) {
-            const x = a.x + sa.w / 2, y = a.y
-            d = 'M ' + x + ' ' + (y - 12) + ' C ' + (x + 70) + ' ' + (y - 65) + ' ' + (x + 70) + ' ' + (y + 65) + ' ' + x + ' ' + (y + 12)
-            lblX = x + 55; lblY = y
-          } else if (layoutMode === 'layered') {
-            const geometry = layeredEdgeGeometry.get(edge)
+          let geometry = edgeGeometryCache.get(edge)
+          if (!geometry) {
+            geometry = (() => {
+              // Radial mode: polylines — each edge leaves its source radially,
+              // sweeps along an arc just OUTSIDE the outer ring of its two
+              // endpoints, then enters the target radially. Hub edges stay
+              // straight spokes. Other modes keep the fanned quadratic bezier.
+              let d
+              let lblX
+              let lblY
+              let labelW = layoutMode === 'layered' ? 0 : measureLabel(rel) + 10
+              let labelH = 15
+              let labelHidden = false
+              if (edge.fromNodeId === edge.toNodeId) {
+                const x = a.x + sa.w / 2, y = a.y
+                d = 'M ' + x + ' ' + (y - 12) + ' C ' + (x + 70) + ' ' + (y - 65) + ' ' + (x + 70) + ' ' + (y + 65) + ' ' + x + ' ' + (y + 12)
+                lblX = x + 55; lblY = y
+              } else if (layoutMode === 'layered') {
+                const geometry = layeredEdgeGeometry.get(edge)
+                if (!geometry) return null
+                d = geometry.d
+                lblX = geometry.lblX
+                lblY = geometry.lblY
+                labelW = geometry.labelW
+                labelH = geometry.labelH
+                labelHidden = geometry.labelHidden
+              } else if (layoutMode === 'radial') {
+                const ra = Math.hypot(a.x, a.y)
+                const rb = Math.hypot(b.x, b.y)
+                if (ra < 1 || rb < 1) {
+                  // hub spokes: straight, border to border, but dodge ring nodes
+                  // that sit on the same angle
+                  const target = ra < 1 ? b : a
+                  const tR = ra < 1 ? rb : ra
+                  const tA = ra < 1 ? a : b
+                  const tBase = Math.atan2(target.y, target.x)
+                  const tFree = radialFreeAngle(tBase, 0, tR, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const exu = Math.cos(tFree)
+                  const eyu = Math.sin(tFree)
+                  const sT = sizes.get(edge.toNodeId)
+                  const sF = sizes.get(edge.fromNodeId)
+                  const tOut = sF ? intersectDist(sF, exu, eyu) : 0
+                  const tIn = sT ? intersectDist(sT, exu, eyu) : 0
+                  const pxA = tA.x + exu * tOut
+                  const pyA = tA.y + eyu * tOut
+                  const pxB = target.x - exu * tIn
+                  const pyB = target.y - eyu * tIn
+                  d = 'M ' + pxA + ' ' + pyA + ' L ' + pxB + ' ' + pyB
+                  const llen = Math.max(Math.hypot(pxA + pxB, pyA + pyB), 0.001)
+                  lblX = (pxA + pxB) / 2 + ((pxA + pxB) / 2) / llen * 14
+                  lblY = (pyA + pyB) / 2 + ((pyA + pyB) / 2) / llen * 14
+                } else {
+                  // The arc sweeps in the EMPTY BAND just OUTSIDE the outer of the
+                  // two endpoint rings (ring radii grow by 240px, nodes extend
+                  // ~60px, so band = ring+60..ring+180): every edge stays local
+                  // instead of looping around the whole graph. Lane offsets spread
+                  // parallel arcs within the band (clamped so they never enter a
+                  // ring's node zone).
+                  const lane = edgeLanes.get(edge) || 0
+                  const R = Math.max(ra, rb) + 90 + Math.min(Math.abs(lane) * 16, 90)
+                  const ta = Math.atan2(a.y, a.x)
+                  const tb = Math.atan2(b.y, b.x)
+                  const sA = sizes.get(edge.fromNodeId)
+                  const sB = sizes.get(edge.toNodeId)
+                  const tae = radialFreeAngle(ta, ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const tbe = radialFreeAngle(tb, rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
+                  const exu = Math.cos(tae)
+                  const eyu = Math.sin(tae)
+                  const exv = Math.cos(tbe)
+                  const eyv = Math.sin(tbe)
+                  const tA = sA ? intersectDist(sA, exu, eyu) : 0
+                  const tB = sB ? intersectDist(sB, exv, eyv) : 0
+                  const pxA = a.x + exu * tA
+                  const pyA = a.y + eyu * tA
+                  const pxB = b.x + exv * tB
+                  const pyB = b.y + eyv * tB
+                  const arc = arcSegments(tae, tbe, R)
+                  const parts = ['M ' + pxA + ' ' + pyA]
+                  for (const ap of arc) parts.push('L ' + ap[0] + ' ' + ap[1])
+                  parts.push('L ' + pxB + ' ' + pyB)
+                  d = parts.join(' ')
+                  let diff = tbe - tae
+                  while (diff > Math.PI) diff -= 2 * Math.PI
+                  while (diff < -Math.PI) diff += 2 * Math.PI
+                  const midAng = tae + diff / 2
+                  lblX = Math.cos(midAng) * (R + 14)
+                  lblY = Math.sin(midAng) * (R + 14)
+                }
+              } else {
+                // Quadratic bezier with a signed perpendicular bend: same-source
+                // edges fan out symmetrically by rank. Endpoints are clipped along
+                // the curve tangents so the line and arrowhead touch node borders.
+                const geometry = bezierGeometry(a, b, sa, sb, edgeFan.get(edge) || 0)
+                d = 'M ' + geometry.x1 + ' ' + geometry.y1 + ' Q ' + geometry.cx + ' ' + geometry.cy + ' ' + geometry.x2 + ' ' + geometry.y2
+                const bx = (geometry.x1 + 2 * geometry.cx + geometry.x2) / 4
+                const by = (geometry.y1 + 2 * geometry.cy + geometry.y2) / 4
+                lblX = bx - geometry.ey * 11
+                lblY = by + geometry.ex * 11
+              }
+              if ((layoutMode === 'neighborhood' && edges.length > 12) || overview) labelHidden = true
+              return { d, lblX, lblY, labelW, labelH, labelHidden }
+            })()
             if (!geometry) return null
-            d = geometry.d
-            lblX = geometry.lblX
-            lblY = geometry.lblY
-            labelW = geometry.labelW
-            labelH = geometry.labelH
-            labelHidden = geometry.labelHidden
-          } else if (layoutMode === 'radial') {
-            const ra = Math.hypot(a.x, a.y)
-            const rb = Math.hypot(b.x, b.y)
-            if (ra < 1 || rb < 1) {
-              // hub spokes: straight, border to border, but dodge ring nodes
-              // that sit on the same angle
-              const target = ra < 1 ? b : a
-              const tR = ra < 1 ? rb : ra
-              const tA = ra < 1 ? a : b
-              const tBase = Math.atan2(target.y, target.x)
-              const tFree = radialFreeAngle(tBase, 0, tR, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const exu = Math.cos(tFree)
-              const eyu = Math.sin(tFree)
-              const sT = sizes.get(edge.toNodeId)
-              const sF = sizes.get(edge.fromNodeId)
-              const tOut = sF ? intersectDist(sF, exu, eyu) : 0
-              const tIn = sT ? intersectDist(sT, exu, eyu) : 0
-              const pxA = tA.x + exu * tOut
-              const pyA = tA.y + eyu * tOut
-              const pxB = target.x - exu * tIn
-              const pyB = target.y - eyu * tIn
-              d = 'M ' + pxA + ' ' + pyA + ' L ' + pxB + ' ' + pyB
-              const llen = Math.max(Math.hypot(pxA + pxB, pyA + pyB), 0.001)
-              lblX = (pxA + pxB) / 2 + ((pxA + pxB) / 2) / llen * 14
-              lblY = (pyA + pyB) / 2 + ((pyA + pyB) / 2) / llen * 14
-            } else {
-              // The arc sweeps in the EMPTY BAND just OUTSIDE the outer of the
-              // two endpoint rings (ring radii grow by 240px, nodes extend
-              // ~60px, so band = ring+60..ring+180): every edge stays local
-              // instead of looping around the whole graph. Lane offsets spread
-              // parallel arcs within the band (clamped so they never enter a
-              // ring's node zone).
-              const lane = edgeLanes.get(edge) || 0
-              const R = Math.max(ra, rb) + 90 + Math.min(Math.abs(lane) * 16, 90)
-              const ta = Math.atan2(a.y, a.x)
-              const tb = Math.atan2(b.y, b.x)
-              const sA = sizes.get(edge.fromNodeId)
-              const sB = sizes.get(edge.toNodeId)
-              const tae = radialFreeAngle(ta, ra, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const tbe = radialFreeAngle(tb, rb, R, edge.fromNodeId, edge.toNodeId, nodes, sizes, layout.pos)
-              const exu = Math.cos(tae)
-              const eyu = Math.sin(tae)
-              const exv = Math.cos(tbe)
-              const eyv = Math.sin(tbe)
-              const tA = sA ? intersectDist(sA, exu, eyu) : 0
-              const tB = sB ? intersectDist(sB, exv, eyv) : 0
-              const pxA = a.x + exu * tA
-              const pyA = a.y + eyu * tA
-              const pxB = b.x + exv * tB
-              const pyB = b.y + eyv * tB
-              const arc = arcSegments(tae, tbe, R)
-              const parts = ['M ' + pxA + ' ' + pyA]
-              for (const ap of arc) parts.push('L ' + ap[0] + ' ' + ap[1])
-              parts.push('L ' + pxB + ' ' + pyB)
-              d = parts.join(' ')
-              let diff = tbe - tae
-              while (diff > Math.PI) diff -= 2 * Math.PI
-              while (diff < -Math.PI) diff += 2 * Math.PI
-              const midAng = tae + diff / 2
-              lblX = Math.cos(midAng) * (R + 14)
-              lblY = Math.sin(midAng) * (R + 14)
-            }
-          } else {
-            // Quadratic bezier with a signed perpendicular bend: same-source
-            // edges fan out symmetrically by rank. Endpoints are clipped along
-            // the curve tangents so the line and arrowhead touch node borders.
-            const geometry = bezierGeometry(a, b, sa, sb, edgeFan.get(edge) || 0)
-            d = 'M ' + geometry.x1 + ' ' + geometry.y1 + ' Q ' + geometry.cx + ' ' + geometry.cy + ' ' + geometry.x2 + ' ' + geometry.y2
-            const bx = (geometry.x1 + 2 * geometry.cx + geometry.x2) / 4
-            const by = (geometry.y1 + 2 * geometry.cy + geometry.y2) / 4
-            lblX = bx - geometry.ey * 11
-            lblY = by + geometry.ex * 11
+            edgeGeometryCache.set(edge, geometry)
           }
-          if ((layoutMode === 'neighborhood' && edges.length > 12) || overview) labelHidden = true
+          const { d, lblX, lblY, labelW, labelH, labelHidden } = geometry
           return h(GraphEdgeInteraction, { key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i, render: (hover, interaction) => h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: parallelGroup.get(edge)?.length > 1 ? 'group' : 'button', tabIndex: 0,
@@ -11043,7 +11057,7 @@
               )
             })() : null,
           ) })
-        }), [sceneEdges, edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, selectedRelation, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, onSelectEdge, markerId])
+        }), [sceneEdges, edges, layout, sizes, parallelLeaders, parallelGroup, edgeIndexes, selectedEdgeId, selectedRelation, focus, related, issueMaps, layoutMode, overview, layeredEdgeGeometry, edgeLanes, nodes, edgeFan, edgeGeometryCache, onSelectEdge, markerId])
 
         // Selection changes borders/opacity, not thousands of text/tspan
         // subtrees. Reuse those elements so React also skips reconciling them.
