@@ -32,7 +32,8 @@ const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
 const workPackagesMode = process.argv.includes('--work-packages')
 const snapshotMode = process.argv.includes('--snapshot')
-const layoutComponentsMode = process.argv.includes('--layout-components')
+const layoutConnectedMode = process.argv.includes('--layout-connected')
+const layoutComponentsMode = process.argv.includes('--layout-components') || layoutConnectedMode
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
 const sourceBoundaryMode = process.argv.includes('--source-boundary')
@@ -118,9 +119,9 @@ const graph = {
   traceEvents: paragraphs.map((line, index) => ({ line, index, type: 'user/message', title: 'Fixture event ' + index })),
 }
 if (layoutComponentsMode) {
-  for (let i = 1; i < graph.nodes.length; i++) if (i % 8 !== 0) graph.edges.push({
-    fromNodeId: 'n' + (i - i % 8), toNodeId: 'n' + i, relation: 'supports',
-    evidence: [{ paragraph: i - i % 8, quote: paragraphs[i - i % 8] }],
+  for (let i = 1; i < graph.nodes.length; i++) if (layoutConnectedMode || i % 8 !== 0) graph.edges.push({
+    fromNodeId: 'n' + (layoutConnectedMode ? 0 : i - i % 8), toNodeId: 'n' + i, relation: 'supports',
+    evidence: [{ paragraph: layoutConnectedMode ? 0 : i - i % 8, quote: paragraphs[layoutConnectedMode ? 0 : i - i % 8] }],
   })
   graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }

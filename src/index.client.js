@@ -10115,8 +10115,11 @@ export default function clientPlugin() {
           for (const [id, point] of local) merged.set(id, point)
           if (onProgress) onProgress({ detail: '已布局 ' + merged.size + '/' + nodes.length + ' 个节点', completed: merged.size, total: nodes.length })
         }
-        const pos = packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38,
-          components.map(component => component.map(node => node.id)))
+        // One component needs no packing, ID copy or packing order table.
+        const pos = components.length > 1
+          ? packDisconnectedComponents(nodes, safeEdges, sizes, merged, 38,
+            components.map(component => component.map(node => node.id)))
+          : merged
         return { pos, componentNodesById, componentKeyById }
       }
 
