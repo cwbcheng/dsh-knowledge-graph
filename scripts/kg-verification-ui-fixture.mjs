@@ -27,8 +27,13 @@ const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
-const windowQueryLiteralMode = process.argv.includes('--window-query-literal')
+const windowQueryCountMode = process.argv.includes('--window-query-count')
+const windowQueryLiteralMode = process.argv.includes('--window-query-literal') || windowQueryCountMode
 const literalFixture = windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
+if (windowQueryCountMode) {
+  literalFixture.graph.source.sections[0].title = 'Common_% section'
+  for (const node of literalFixture.graph.nodes) if (node.sectionId === 'body') node.sectionTitle = 'Common_% section'
+}
 const windowDiagnosticsMode = process.argv.includes('--window-diagnostics') || windowSourceOmissionMode || windowQueryLiteralMode
 const visualInspectorMode = process.argv.includes('--visual-inspector') || imageReviewMode || sourceImagePerformanceMode
 const markdownImageMode = process.argv.includes('--markdown-image') || visualInspectorMode

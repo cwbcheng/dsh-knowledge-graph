@@ -60,6 +60,10 @@ function check(documentId, options, full = writer.getDocument(documentId)) {
   assert.equal(meter.counts.directRows, expected.direct)
   assert.equal(meter.counts.maxDirectRows, expected.direct)
   assert.equal(meter.counts.literalQueries, /[%_]/.test(options.query.trim().slice(0, 200)) ? 1 : 0)
+  const countReads = meter.counts.literalQueries && expected.matched < expected.limit ? 0 : 1
+  assert.equal(meter.counts.matchCountReads, countReads, 'Only underfilled literal candidates may omit COUNT')
+  assert.equal(meter.counts.matchingStatements, 1 + countReads)
+  assert.equal(meter.counts.matched, expected.matched, 'Native count or exhausted candidate rows supply the total')
   maximum = Math.max(maximum, meter.counts.maxDirectRows); reads++
   return actual
 }
@@ -88,11 +92,15 @@ try {
     assert.equal(JSON.stringify(writer.getDocument(fixture.documentId)), untouched, 'Queries do not write canonical data')
     writer.db.prepare('UPDATE graph_nodes SET type = ? WHERE document_id = ? AND node_id = ?').run(fixture.graph.nodes[4].type, fixture.documentId, 'type-marker')
   }
-  const fixture = fixtures[1], id = fixture.documentId, options = { query: '%_', limit: 20, includeSourceText: false }
-  const boundaries = [sql => isWindowQuerySql(sql) && sql.startsWith('SELECT COUNT'),
-    sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *'),
-    sql => sql.startsWith('SELECT * FROM graph_edges') && sql.includes('OR to_node_id IN')]
-  for (const boundary of boundaries) {
+  const fixture = fixtures[1], id = fixture.documentId
+  const boundaries = [
+    { query: '%_', limit: 1, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT COUNT') },
+    { query: '%_', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
+    { query: '%_', limit: 20, boundary: sql => sql.startsWith('SELECT * FROM graph_edges') && sql.includes('OR to_node_id IN') },
+    { query: 'never_%', limit: 20, boundary: sql => isWindowQuerySql(sql) && sql.startsWith('SELECT *') },
+  ]
+  for (const { boundary, query, limit } of boundaries) {
+    const options = { query, limit, includeSourceText: false }
     const before = reader.getDocumentWindow(id, options, inspect), prepare = reader.db.prepare
     let fired = false
     reader.db.prepare = function (sql) {
@@ -104,7 +112,7 @@ try {
           if (!fired) {
             fired = true; assert.throws(() => reader.db.exec('BEGIN'), /within a transaction/)
             const revised = writer.getDocument(id), newId = 'new%_match-' + interleavings
-            revised.nodes.push({ id: newId, type: 'fact', text: 'Independent %_ observation.', paragraph: 11971 })
+            revised.nodes.push({ id: newId, type: 'fact', text: 'Independent ' + query + ' observation.', paragraph: 11971 })
             revised.edges.push({ fromNodeId: 'literal%_target', toNodeId: newId, relation: 'supports' })
             revised.staging.chunks[0].summary = 'New chunk ' + interleavings
             writer.saveGraph(revised, { sourceText: revised.sourceText + '\n\nIndependent source.', expectedRevision: revised.revision })
@@ -126,7 +134,7 @@ try {
   const full = writer.getDocument(id)
   const canonicalQuality = createGenerationStructureTools().inspect(full)
   for (const query of ['node_17', '100%', '%_', 'C:\\source\\_unit', "n')_% OR 1=1 --", 'absent_%', 'observation 11999.']) {
-    for (const nodeLimit of [20, 800]) {
+    for (const nodeLimit of [1, 20, 800]) {
       const result = await host.post({ documentId: id, query, nodeLimit, includeSourceText: false })
       assert(!result.error)
       const expected = reference(full, { query, limit: nodeLimit })
@@ -141,5 +149,6 @@ try {
   assert.equal(reader.getDocumentWindow('missing', { query: '%_' }), null)
   console.log(JSON.stringify({ ok: true, documents: fixtures.length, reads, httpReads, interleavings, maxDirectRows: maximum,
     literalIdsAndSixFields: true, ordinaryAndEmptyQueries: true, boundedNativeRows: true,
-    orderedNeighborsAndEvidence: true, immutableSourceAndMetadata: true, independentWalSnapshot: true, canonicalHttpDiagnostics: true }))
+    orderedNeighborsAndEvidence: true, immutableSourceAndMetadata: true, independentWalSnapshot: true, canonicalHttpDiagnostics: true,
+    underfilledLiteralCountOmitted: true, fullAndExactBudgetCounted: true, nativeMatchCountParity: true }))
 } finally { await host?.stop(); meter.stop(); reader.close(); writer.close(); rmSync(directory, { recursive: true, force: true }) }

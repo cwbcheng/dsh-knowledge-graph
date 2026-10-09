@@ -47,26 +47,38 @@ export function literalWindowFixture(size = 12000, documentId = 'window-literal-
 export const isWindowQuerySql = sql => sql.includes('LOWER(node_id) LIKE ?') || sql.includes('INSTR(LOWER(node_id), ?) > 0')
 export function countWindowQueryWork(Store, database) {
   const original = Store.prototype.getDocumentWindow
-  const counts = { queries: 0, literalQueries: 0, ordinaryQueries: 0, matched: 0, directRows: 0, maxDirectRows: 0 }
+  const counts = { queries: 0, literalQueries: 0, ordinaryQueries: 0, matched: 0, directRows: 0, maxDirectRows: 0,
+    matchingStatements: 0, matchCountReads: 0 }
   Store.prototype.getDocumentWindow = function (...args) {
     if (this.filename !== database) return original.apply(this, args)
     const prepare = this.db.prepare
+    let queryKind = '', nativeMatched = null, nativeDirect = 0
     this.db.prepare = function (sql) {
       const statement = prepare.call(this, sql)
       if (isWindowQuerySql(sql)) for (const method of ['get', 'all']) {
         const execute = statement[method]
         statement[method] = function (...params) {
           const value = execute.apply(this, params)
+          queryKind = sql.includes('INSTR(') ? 'literalQueries' : 'ordinaryQueries'
+          counts.matchingStatements++
           if (method === 'get') {
-            counts.queries++; counts.matched += value.count
-            counts[sql.includes('INSTR(') ? 'literalQueries' : 'ordinaryQueries']++
-          } else { counts.directRows += value.length; counts.maxDirectRows = Math.max(counts.maxDirectRows, value.length) }
+            nativeMatched = value.count; counts.matchCountReads++
+          } else {
+            nativeDirect += value.length; counts.directRows += value.length
+            counts.maxDirectRows = Math.max(counts.maxDirectRows, value.length)
+          }
           return value
         }
       }
       return statement
     }
-    try { return original.apply(this, args) } finally { this.db.prepare = prepare }
+    try { return original.apply(this, args) } finally {
+      this.db.prepare = prepare
+      if (queryKind) {
+        counts.queries++; counts[queryKind]++
+        counts.matched += nativeMatched ?? nativeDirect
+      }
+    }
   }
   return { counts, reset() { for (const key of Object.keys(counts)) counts[key] = 0 },
     stop() { Store.prototype.getDocumentWindow = original } }
