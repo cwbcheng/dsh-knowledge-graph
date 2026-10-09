@@ -605,6 +605,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 
 ### 关键设计
 
+- **自由布局的重叠处理复用位置和尺寸引用**：d3-force 结束后的两段中心线避让分别准备当前节点的引用，每个阶段按 ID 各读取一次位置和尺寸；保留逐对最新坐标、推动顺序、连线排斥、分量整理和进度消息。`node scripts/kg-force-overlap-benchmark.mjs ce6c56a --smoke` 与当前版比较真实生成引擎：80 节点两段各 120 轮，Map 读取合计 3,033,600 → 320；省略 `--smoke` 使用 800 节点，306,816,000 → 3,200。两个规模均冻结第一段及最终完整坐标、推动次数和进度序列。计数包含准备，不代表浏览器延迟。回归覆盖混合尺寸、断连/并行关系、重布局、缺失输入、后台/本地几何一致性及进度取消。真实工作台运行 `node scripts/kg-verification-ui-fixture.mjs --force-overlaps`，旧客户端加 `--client-ref=ce6c56a` 后选择自由布局。
+
 - **普通节点选择复用**：工作台更新时创建新的图片渲染回调，只有实际显示原图预览的节点依赖它；普通文字节点和总览中隐藏的预览复用视觉状态未变的外框。显示或更新预览仍使用最新回调，节点操作也使用当前回调，缓存仍限于当前视口。`node scripts/kg-graph-node-selection-benchmark.mjs f710ff5 --replace-image-renderer` 与省略提交参数的当前版本对照：12,000 个文字节点连续四次选择，实际外框重建 48,000 → 16；保留完整证据。这是生产场景的确定性构造计数，脚本中的模拟 hooks 耗时不代表浏览器延迟或绘制收益。
 - **分层连线复用行边界**：单次绘制准备中，一次组件扫描建立行边界和最高层索引，层间通道与同层关系直接复用，避免每条关系或每个新通道扫描组件；路径、标签避让及隐藏规则保持。索引随本次准备结束释放，新尺寸、新位置或取消后重试会重新计算。`npm run test:kg-performance` 核对冻结几何、组件隔离、空行与非有限值回退和实际节点访问次数；`node scripts/kg-layered-channel-benchmark.mjs 68270e9` 可对照逐通道缓存版本，`f710ff5` 可对照原始实现。基准分别报告含索引建立的路径计算及包含分轨、固定宽度标签测量与标签避让的整理连线阶段，不相加，不包含真实文字测量、后台布局、原文、HTTP 或绘制，也不设 CI 时延门槛。真实浏览器可运行 `node scripts/kg-verification-ui-fixture.mjs --window-query-count --window-response-performance`；加 `--client-ref=68270e9` 可只读取该提交的客户端，在相同宿主和数据夹具下交替对照，不改工作区。
 

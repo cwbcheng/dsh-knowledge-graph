@@ -9176,16 +9176,18 @@ export default function clientPlugin() {
         // pairs apart ALONG their center line (axis-only separation can
         // oscillate on closed topologies).
         if (n > 1) {
-          const ids = nodes.map((x) => x.id)
+          // Refresh references after edge repulsion; every pair still reads
+          // the coordinates produced by preceding pushes in this pass.
+          const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
           for (let iter = 0; iter < 120; iter++) {
             if (onProgress && iter % 10 === 0) onProgress({ detail: '消除残余重叠，第 ' + (iter + 1) + ' 轮' })
             let moved = 0
             for (let i = 0; i < n; i++) {
               for (let j = i + 1; j < n; j++) {
-                const a = pos.get(ids[i])
-                const b = pos.get(ids[j])
-                const sa = sizes.get(ids[i])
-                const sb = sizes.get(ids[j])
+                const a = bodies[i].point
+                const b = bodies[j].point
+                const sa = bodies[i].size
+                const sb = bodies[j].size
                 if (!sa || !sb) continue
                 let dx = b.x - a.x
                 let dy = b.y - a.y
@@ -10118,15 +10120,17 @@ export default function clientPlugin() {
       function resolveNodeOverlaps(nodes, sizes, pos, gap) {
         const n = nodes.length
         if (n < 2) return pos
-        const ids = nodes.map((x) => x.id)
+        // Measurements and point identities stay fixed for this invocation;
+        // x/y remain mutable and are read anew for every pair.
+        const bodies = nodes.map(node => ({ point: pos.get(node.id), size: sizes.get(node.id) }))
         for (let iter = 0; iter < 120; iter++) {
           let moved = 0
           for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-              const a = pos.get(ids[i])
-              const b = pos.get(ids[j])
-              const sa = sizes.get(ids[i])
-              const sb = sizes.get(ids[j])
+              const a = bodies[i].point
+              const b = bodies[j].point
+              const sa = bodies[i].size
+              const sb = bodies[j].size
               if (!sa || !sb) continue
               let dx = b.x - a.x
               let dy = b.y - a.y
