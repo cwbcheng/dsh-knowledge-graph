@@ -9,6 +9,7 @@ import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
 import {ordinaryWindowFixture} from './kg-document-window-ordinary-query-benchmark.mjs'
 import {incidentShapeFixture,isWindowIncidentSql,isWindowIncidentProbeSql,countWindowIncidentWork} from './kg-document-window-incident-benchmark.mjs'
+import {isWindowEdgeSql,isWindowEdgeProbeSql,assertWindowEdgeCallParity} from './kg-document-window-edge-reads.mjs'
 
 function capture(store,id,options){
   const prepare=store.db.prepare,calls=[],incident=[]
@@ -58,7 +59,8 @@ async function benchmark(){
       meter.reset();oldMeter.reset()
       const before=capture(previous,fixture.id,options),after=capture(current,fixture.id,options)
       assert.deepEqual(after.window,before.window);assert.deepEqual(after.incident,before.incident)
-      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)
+      assertWindowEdgeCallParity(before.calls,after.calls)
+      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowEdgeSql(call.sql)&&!isWindowEdgeProbeSql(call.sql)
       assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
       assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=2049)
       if(fixture.shape==='small')assert.equal(meter.counts.probes,0)
@@ -78,7 +80,7 @@ async function benchmark(){
         beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,incident})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows, complete Native incident batches, remaining budgets, deduplication and ordering; all other SQL, parameters, Native values and sequence identical; actual prepared aggregate probe plus selected incident reads timed separately; counters and equivalence checks outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
+      scope:'Identical complete production Store windows, complete Native incident batches, remaining budgets, deduplication and ordering; later window boolean/direct-IN membership verified separately with identical SQL bytes otherwise, selected-ID/budget params and complete Native edges; all remaining SQL, parameters, Native values and sequence identical; actual prepared aggregate probe plus selected incident reads timed separately; historical baselines include later window changes, use the original measured revision to isolate incident savings; counters and equivalence checks outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()

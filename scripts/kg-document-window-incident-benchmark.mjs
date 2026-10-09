@@ -8,9 +8,10 @@ import {pathToFileURL} from 'node:url'
 import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
 import {literalWindowFixture,isWindowQuerySql,assertWindowQueryCallParity} from './kg-document-window-query-benchmark.mjs'
+import {isWindowEdgeSql,isWindowEdgeProbeSql,assertWindowEdgeCallParity} from './kg-document-window-edge-reads.mjs'
 
 export const isWindowIncidentSql=sql=>sql.startsWith('SELECT * FROM graph_edges')&&sql.includes('from_node_id IN (')&&sql.includes('to_node_id IN (')&&!sql.includes('json_each')
-export const isWindowIncidentProbeSql=sql=>sql.startsWith('SELECT COUNT(*) AS count FROM (')&&sql.includes('SELECT 1 FROM graph_edges')
+export const isWindowIncidentProbeSql=sql=>sql.startsWith('SELECT COUNT(*) AS count FROM (')&&sql.includes('SELECT 1 FROM graph_edges')&&!sql.includes('json_each')
 export function countWindowIncidentWork(Store,database){
   const original=Store.prototype.getDocumentWindow
   const counts={probes:0,probeCandidates:0,maxProbeCandidates:0,indexedReads:0,fallbackReads:0,incidentRows:0,maxIncidentRows:0}
@@ -49,7 +50,7 @@ function capture(store,id,options){
   const prepare=store.db.prepare,calls=[],incident=[]
   store.db.prepare=function(sql){const statement=prepare.call(this,sql)
     for(const method of['get','all']){const execute=statement[method];statement[method]=function(...params){const value=execute.apply(this,params)
-      calls.push({sql,method,params});if(isWindowIncidentSql(sql))incident.push({sql,params,rows:value});return value}}
+      calls.push({sql,method,params,value});if(isWindowIncidentSql(sql))incident.push({sql,params,rows:value});return value}}
     return statement
   }
   try{return{window:store.getDocumentWindow(id,options),calls,incident}}finally{store.db.prepare=prepare}
@@ -93,7 +94,8 @@ async function benchmark(){
       assert.deepEqual(after.window,before.window);assert.equal(after.incident.length,before.incident.length)
       assert.equal(meter.counts.incidentRows,oldMeter.counts.incidentRows);assert(meter.counts.maxProbeCandidates<=2049)
       assertWindowQueryCallParity(before.calls,after.calls,after.window)
-      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)
+      assertWindowEdgeCallParity(before.calls,after.calls)
+      const unrelated=call=>!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowQuerySql(call.sql)&&!isWindowEdgeSql(call.sql)&&!isWindowEdgeProbeSql(call.sql)
       assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
       for(let i=0;i<after.incident.length;i++)assert.deepEqual(after.incident[i].rows,before.incident[i].rows)
       samples.push({...fixture,kind,limit,options,before,after,beforeWork:{...oldMeter.counts},currentWork:{...meter.counts}})
@@ -110,7 +112,7 @@ async function benchmark(){
         beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,incident})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; matching predicate/params parity allows later direct-first COUNT omission; all other SQL equality and Native counts outside timing; historical baselines include later Store changes, use the original measured revision to isolate incident savings; no inspector, HTTP, rendering or CI timing gate'}))
+      scope:'Identical complete production Store windows; actual prepared aggregate-probe/get plus selected incident SELECT/all measured separately; matching predicate/params parity allows later direct-first COUNT omission; later window boolean/direct-IN membership verified separately with identical SQL bytes otherwise, selected-ID/budget params and complete Native edges; all remaining SQL, params, Native values and sequence identical; historical baselines include later Store changes, use the original measured revision to isolate incident savings; counters and comparisons outside timing; no inspector, HTTP, rendering or CI timing gate'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()

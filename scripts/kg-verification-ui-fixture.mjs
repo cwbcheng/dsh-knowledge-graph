@@ -15,6 +15,7 @@ import { literalWindowFixture, countWindowQueryWork } from './kg-document-window
 import { countWindowNeighborNodes } from './kg-document-window-neighbor-nodes-benchmark.mjs'
 import { countWindowIncidentWork } from './kg-document-window-incident-benchmark.mjs'
 import { ordinaryWindowFixture } from './kg-document-window-ordinary-query-benchmark.mjs'
+import { countWindowEdgeWork } from './kg-document-window-edge-reads.mjs'
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
 process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
@@ -30,7 +31,8 @@ const relationSemanticMode = process.argv.includes('--relation-semantic')
 const imageReviewMode = process.argv.includes('--image-review')
 const sourceImagePerformanceMode = process.argv.includes('--source-image-performance')
 const windowSourceOmissionMode = process.argv.includes('--window-source-omission')
-const windowQueryCountMode = process.argv.includes('--window-query-count')
+const windowEdgeProbeMode = process.argv.includes('--window-edge-probe')
+const windowQueryCountMode = process.argv.includes('--window-query-count') || windowEdgeProbeMode
 const windowQueryLiteralMode = process.argv.includes('--window-query-literal') || windowQueryCountMode
 const literalFixture = windowQueryCountMode ? ordinaryWindowFixture(12000, documentId) : windowQueryLiteralMode ? literalWindowFixture(12000, documentId) : null
 if (windowQueryCountMode) {
@@ -95,6 +97,12 @@ if (windowDiagnosticsMode) {
     evidence: [{ paragraph: edge.evidence[0].paragraph, quote: paragraphs[edge.evidence[0].paragraph] }] }))
 }
 if (literalFixture) Object.assign(graph, literalFixture.graph)
+if (windowEdgeProbeMode) {
+  for (let i = 4000; i < 10000; i++) for (const relation of ['supports', 'relates_to']) graph.edges.push({
+    fromNodeId: graph.nodes[i].id, toNodeId: graph.nodes[i + 40].id, relation,
+    evidence: [{ paragraph: i, quote: paragraphs[i] }],
+  })
+}
 if (markdownImageMode) graph.source.visualSource = { version: 1, kind: 'markdown-assets', transcriptMethod: 'original-markdown',
   images: [{ id: 'figure-1', name: 'images/diagram.png', caption: 'A 到 B 的箭头图', paragraphs: [1],
     startParagraph: 1, endParagraph: 1, interpretationStatus: 'not_requested',
@@ -230,6 +238,7 @@ const sourceMeter = windowSourceOmissionMode || windowQueryLiteralMode ? countWi
 const queryMeter = windowQueryLiteralMode ? countWindowQueryWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const neighborMeter = windowQueryLiteralMode ? countWindowNeighborNodes(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 const incidentMeter = windowQueryLiteralMode ? countWindowIncidentWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
+const edgeMeter = windowEdgeProbeMode ? countWindowEdgeWork(SqliteKnowledgeStore, process.env.DSH_KG_DB) : null
 if (snapshotMode) Object.assign(stats, { cachedSourceResponses: 0, sourceParagraph0: null })
 let dropStatus = 0, rejectSave = false, finishAutomatically = markdownImageMode
 let holdNextSave = false, releaseHeldSave = null
@@ -384,6 +393,7 @@ const server = createServer(async (req, res) => {
       ...(queryMeter ? { queryWork: queryMeter.counts } : {}),
       ...(neighborMeter ? { neighborNodeWork: neighborMeter.counts } : {}),
       ...(incidentMeter ? { incidentWork: incidentMeter.counts } : {}),
+      ...(edgeMeter ? { windowEdgeWork: edgeMeter.counts } : {}),
       ...(windowDiagnosticsMode ? { windowHydration: diagnosticMeter.counts,
         sourceUnchanged: store.db.prepare('SELECT source_text FROM documents WHERE document_id = ?').get(documentId).source_text === sourceText,
         canonicalNodes: store.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE document_id = ?').get(documentId).count,
@@ -499,6 +509,7 @@ const server = createServer(async (req, res) => {
 })
 server.listen(0, '127.0.0.1', () => console.log('FIXTURE_URL=http://127.0.0.1:' + server.address().port))
 async function stop() {
+  edgeMeter?.stop()
   incidentMeter?.stop()
   neighborMeter?.stop()
   queryMeter?.stop()

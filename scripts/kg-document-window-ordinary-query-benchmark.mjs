@@ -9,6 +9,7 @@ import {openSqliteStore,SqliteKnowledgeStore} from '../src/kg-store.mjs'
 import {baselineModules} from './kg-document-window-diagnostics-benchmark.mjs'
 import {literalWindowFixture,countWindowQueryWork,isWindowQuerySql} from './kg-document-window-query-benchmark.mjs'
 import {isWindowIncidentSql,isWindowIncidentProbeSql} from './kg-document-window-incident-benchmark.mjs'
+import {isWindowEdgeSql,isWindowEdgeProbeSql,assertWindowEdgeCallParity} from './kg-document-window-edge-reads.mjs'
 
 export function ordinaryWindowFixture(size,documentId){
   const fixture=literalWindowFixture(size,documentId)
@@ -52,7 +53,8 @@ async function benchmark(){
       meter.reset();oldMeter.reset()
       const before=capture(previous,fixture.id,options),after=capture(current,fixture.id,options)
       assert.deepEqual(after.window,before.window)
-      const unrelated=call=>!isWindowQuerySql(call.sql)&&!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)
+      assertWindowEdgeCallParity(before.calls,after.calls)
+      const unrelated=call=>!isWindowQuerySql(call.sql)&&!isWindowIncidentSql(call.sql)&&!isWindowIncidentProbeSql(call.sql)&&!isWindowEdgeSql(call.sql)&&!isWindowEdgeProbeSql(call.sql)
       assert.deepEqual(after.calls.filter(unrelated),before.calls.filter(unrelated))
       const incidents=capture=>capture.calls.filter(call=>isWindowIncidentSql(call.sql)).map(call=>{
         const length=(call.params.length-(call.sql.includes('UNION SELECT rowid')?3:2))/2
@@ -85,7 +87,7 @@ async function benchmark(){
         returnedNodes:sample.after.window.nodes.length,beforeWork:sample.beforeWork,currentWork:sample.currentWork,whole,matching})
     }
     console.log(JSON.stringify({ok:true,baseline:revision,cases:results.length,repeats:9,samples:results,
-      scope:'Identical complete production Store windows and complete Native incident batches; matching SQL/params/complete direct records unchanged, ordinary COUNT omitted only on underfilled direct rows; literal query sequence unchanged; all unrelated SQL, parameters, Native values and order identical; prepared matching COUNT/get plus direct SELECT/all measured separately; historical baselines include later incident changes, use the original measured revision to isolate matching savings; Native instrumentation outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
+      scope:'Identical complete production Store windows and complete Native incident batches; matching SQL/params/complete direct records unchanged, ordinary COUNT omitted only on underfilled direct rows; literal query sequence unchanged; later window boolean/direct-IN membership verified separately with identical SQL bytes otherwise, selected-ID/budget params and complete Native edges; all remaining SQL, parameters, Native values and order identical; prepared matching COUNT/get plus direct SELECT/all measured separately; historical baselines include later incident/window changes, use the original measured revision to isolate matching savings; Native instrumentation outside timing; excludes inspector, HTTP, rendering and CI timing gates'}))
   }finally{meter?.stop();oldMeter?.stop();previous?.close();current.close();rmSync(directory,{recursive:true,force:true})}
 }
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url)await benchmark()
