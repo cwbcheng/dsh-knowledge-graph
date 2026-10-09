@@ -207,7 +207,7 @@ for (const kind of ['document', 'trajectory']) {
     assert.deepEqual(failed.refs.currentResultRef.current, failed.opening, failure + ': an existing rollback may recreate the view, but must preserve all original data')
     assert.equal(failed.state.report, failed.opening.graph.verification.lastReport)
     assert.equal(failed.refs.graphRevisionRef.current, 1)
-    assert(!failed.state.toasts.some(text => text.startsWith('快速体检完成')))
+    assert(!failed.state.toasts.some(text => text.startsWith('规则检查完成')))
     assert(failed.state.error?.message)
     if (failure === 'conflict') assert.equal(failed.state.error.code, 'revision_conflict')
     assert.equal(failed.state.phase, 'idle')

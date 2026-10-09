@@ -85,8 +85,8 @@ try {
   const control = name => { const value = all(tree, node => node.props['aria-label'] === name || node.type === 'button' && text(node) === name)[0]; assert(value, name); return value }
   const settle = async () => { for (let index = 0; index < 5; index++) { await Promise.resolve(); render() } }
   const display = async result => {
-    control('知识图检索关键词').props.onChange({ target: { value: result.query } }); render()
-    control('检索').props.onClick(); render(); requests.at(-1).resolve(structuredClone(result)); await settle()
+    control('查找知识的关键词').props.onChange({ target: { value: result.query } }); render()
+    control('查找').props.onClick(); render(); requests.at(-1).resolve(structuredClone(result)); await settle()
   }
   const group = id => { const found = css('kg-consume-result-group').find(node => node.props['data-model-id'] === id); assert(found, id); return found }
   render()
@@ -136,7 +136,7 @@ try {
     assert(!text(tree).includes('已掌握') && !text(tree).includes('条件已满足') && !text(tree).includes('独立验证通过'))
   }
   for (const [id, label] of [['pair-wrong-model', '错误示例'], ['pair-type-model', '类型说明'],
-    ['pair-uncited', '假设'], ['pair-unsupported-model', '语义不支持'], ['pair-no-reasoning', '尚未记录推测过程']]) {
+    ['pair-uncited', '假设'], ['pair-unsupported-model', '原文不支持'], ['pair-no-reasoning', '尚未记录推测过程']]) {
     await display(responses.get(id)); assert(text(group(id)).includes(label), id + ': ' + label)
   }
   const valid = responses.get('pair-incomplete')
@@ -174,20 +174,20 @@ try {
   for (const mutate of mutations) {
     const result = structuredClone(sourceResult); mutate(result); await display(result)
     assert.equal(css('kg-consume-example').length, 0, 'Malformed/ambiguous/foreign/oversized context must not fall back to full raw node examples')
-    assert(text(tree).includes('成对实例未随本次检索有效返回'))
+    assert(text(tree).includes('成对实例未随本次查找有效返回'))
     assert(css('kg-consume-result').length > 0, 'A missing example projection must not hide the model result')
   }
   await display(responses.get('pair-huge'))
   assert.equal(css('kg-consume-example').length, 0)
   assert(text(group('pair-huge')).includes('本次 0 / 已记录 1') && text(tree).includes('1 个未返回'))
   await display(sourceResult)
-  control('检索').props.onClick(); render(); requests.at(-1).reject(new Error('Read failed')); await settle()
+  control('查找').props.onClick(); render(); requests.at(-1).reject(new Error('Read failed')); await settle()
   assert.equal(css('kg-consume-example').length, 0); assert(text(tree).includes('Read failed'))
-  assert.equal(control('知识图检索关键词').props.value, 'pair-source')
-  control('检索').props.onClick(); render(); const pending = requests.at(-1)
+  assert.equal(control('查找知识的关键词').props.value, 'pair-source')
+  control('查找').props.onClick(); render(); const pending = requests.at(-1)
   props.graph.revision = 2; render(); pending.resolve(sourceResult); await settle()
   assert.equal(css('kg-consume-example').length, 0)
-  assert.equal(control('知识图检索关键词').props.value, 'pair-source')
+  assert.equal(control('查找知识的关键词').props.value, 'pair-source')
   const revised = await get('pair-source'); revised.revision = 2
   await display(revised); assert.equal(css('kg-consume-example').length, 0, 'Response version must not bless old example/core versions')
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)

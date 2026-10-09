@@ -80,8 +80,8 @@ try {
   const control = name => { const value = all(tree, node => node.props['aria-label'] === name || node.type === 'button' && text(node) === name)[0]; assert(value, name); return value }
   const settle = async () => { for (let index = 0; index < 5; index++) { await Promise.resolve(); render() } }
   const display = async result => {
-    control('知识图检索关键词').props.onChange({ target: { value: result.query } }); render()
-    control('检索').props.onClick(); render(); requests.at(-1).resolve(structuredClone(result)); await settle()
+    control('查找知识的关键词').props.onChange({ target: { value: result.query } }); render()
+    control('查找').props.onClick(); render(); requests.at(-1).resolve(structuredClone(result)); await settle()
   }
   render()
   for (const result of responses) {
@@ -109,8 +109,8 @@ try {
   for (const [index, label] of [[0, '个人表述'], [1, 'AI 建议'], [2, '原文记录'], [6, '来源未判定']]) {
     await display(responses[index]); assert(text(tree).includes(label))
   }
-  await display(responses[2]); assert(text(tree).includes('错误示例') && text(tree).includes('语义未验证'))
-  await display(responses[8]); assert(text(tree).includes('语义不支持'), 'Search highlighting cannot promote unsupported models')
+  await display(responses[2]); assert(text(tree).includes('错误示例') && text(tree).includes('原文支持未核对'))
+  await display(responses[8]); assert(text(tree).includes('原文不支持'), 'Search highlighting cannot promote unsupported models')
   const operators = await get('OPERATORCASE x > 3')
   await display(operators)
   assert(text(tree).includes('OPERATORCASE x > 3;') && text(tree).includes('OPERATORCASE x < 3;'),
@@ -120,16 +120,16 @@ try {
     value => { value.modelContexts.items[0].revision = 2 }, value => { value.modelContexts.items[0].documentId += ' ' },
     value => { value.modelContexts.items[0].modelId += ' ' }]) {
     const result = structuredClone(responses[0]); mutation(result); await display(result)
-    assert(text(tree).includes('字段内容未随本次检索返回'))
+    assert(text(tree).includes('字段内容未随本次查找返回'))
     assert.equal(all(tree, node => node.props.className === 'kg-consume-field-text').length, 0)
   }
   const invalid = structuredClone(responses[0]); invalid.matches[0].modelFieldMatches.basis = 'verified_applicability'
   await display(invalid); assert.equal(all(tree, node => node.props.className === 'kg-consume-field-hit').length, 0)
   await display(responses[0])
-  control('检索').props.onClick(); render(); const pending = requests.at(-1)
+  control('查找').props.onClick(); render(); const pending = requests.at(-1)
   props.graph.revision = 2; render(); pending.resolve(responses[0]); await settle()
   assert.equal(all(tree, node => node.props.className === 'kg-consume-field-hit').length, 0)
-  control('检索').props.onClick(); render(); requests.at(-1).resolve({ error: { code: 'revision_conflict', message: 'Version changed' } }); await settle()
+  control('查找').props.onClick(); render(); requests.at(-1).resolve({ error: { code: 'revision_conflict', message: 'Version changed' } }); await settle()
   assert.equal(all(tree, node => node.props.className === 'kg-consume-result').length, 0)
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)

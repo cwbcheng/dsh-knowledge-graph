@@ -190,7 +190,7 @@ assert(!all(visualScene, byClass('kg-node'))[1].props['aria-label'].includes('AI
 visualScene = render(GraphScene, { ...visualProps, renderSourceImage: () => React.createElement('span', { className: 'preview' }, 'New renderer') }, visualHooks)
 assert.equal(all(visualScene, byClass('preview'))[0].props.children[0], 'New renderer', 'Replacing the renderer invalidates cached image elements')
 visualScene = render(GraphScene, { ...visualProps, anchors: {} }, visualHooks)
-assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法回链来源/, 'Anchor replacement refreshes accessible evidence')
+assert.match(all(visualScene, byClass('kg-node'))[1].props['aria-label'], /无法定位来源/, 'Anchor replacement refreshes accessible evidence')
 
 const rendererOnlyHooks = owner()
 let rendererOnlyScene = render(GraphScene, visualProps, rendererOnlyHooks)

@@ -70,10 +70,10 @@ try {
   assert(text(tree).includes('前 2 / 2 条关联材料'))
   click('挑战模型 B'); assert.deepEqual(challenges, ['night'], 'challenge targets selected secondary model, not primary by mistake')
   click('原文 P9'); await settle(); assert(text(tree).includes('Locate failed visibly'))
-  click('后页比较模型'); await settle()
+  click('下一页比较模型'); await settle()
   assert(text(tree).includes('已记录的输入、输出端点相同'), 'candidate pagination does not replace the selected pair')
   assert(text(tree).includes('peer-9'))
-  click('前页比较模型'); await settle()
+  click('上一页比较模型'); await settle()
   paused = true
   choose('multi'); const old = deferred.splice(0)
   choose('unknown'); const fresh = deferred.splice(0)
@@ -96,7 +96,7 @@ try {
   await settle()
   const fields = { inputs: '输入', mapping: '联结与推理', outputs: '输出', boundary: '适用条件与失效边界',
     scenario: '改变后的情境', prediction: '改变后的预测', check: '可观察的验证依据', baseline: '基准情境',
-    baselinePrediction: '基准预测', changedVariable: '只改变的一项与保持不变的条件', falsifier: '什么观察结果会反驳这个联结' }
+    baselinePrediction: '基准预测', changedVariable: '只改变的一项与保持不变的条件', falsifier: '什么观察结果会反驳这条规律' }
   assert(text(tree).includes('反例挑战')); assert(!text(tree).includes('2 km 对应 10 元'))
   for (const [key, label] of Object.entries(fields)) {
     assert(button('保存预测').props.disabled, 'all challenge fields, including falsifier, are required')
@@ -110,7 +110,7 @@ try {
   assert.equal(input('基准情境').props.value, counterexampleResponse.baseline)
   const preservedProps = props
   mount('ModelLearningPanel', preservedProps); await settle()
-  assert.equal(input('什么观察结果会反驳这个联结').props.value, counterexampleResponse.falsifier, 'challenge draft survives remount')
+  assert.equal(input('什么观察结果会反驳这条规律').props.value, counterexampleResponse.falsifier, 'challenge draft survives remount')
   loseSave = true
   const saveButton = button('保存预测'); saveButton.props.onClick(); saveButton.props.onClick(); render(); await settle()
   assert.equal(requests.filter(item => item.args.action === 'save').length, 1)
