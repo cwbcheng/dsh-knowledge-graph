@@ -726,6 +726,8 @@ export async function openSqliteStore(filePath = defaultStorePath()) {
 }
 
 export class SqliteKnowledgeStore {
+  #windowStructureCache = null
+
   constructor(db, filename) {
     this.db = db
     this.filename = filename
@@ -825,6 +827,7 @@ export class SqliteKnowledgeStore {
   }
 
   close() {
+    this.#windowStructureCache = null
     if (this.db && typeof this.db.close === 'function') this.db.close()
   }
 
@@ -2365,15 +2368,57 @@ export class SqliteKnowledgeStore {
    * @returns {object|null} The window and diagnostics from the same SQLite snapshot.
    */
   getDocumentWindow(documentId, options = {}, inspectStructure) {
-    return this.#readDocumentSnapshot(() => {
-      const window = this.#getDocumentWindow(documentId, options)
-      if (window && inspectStructure) window.graphStructureQuality = inspectStructure(this.getDocument(documentId))
-      return window
-    })
+    // Cache only an independent read: an enclosing transaction may later roll
+    // back, or retain a historical WAL snapshot. Older runtimes without an
+    // explicit transaction flag safely keep the uncached path.
+    const cacheable = !!inspectStructure && this.db.isTransaction === false
+    let pending = null
+    try {
+      const result = this.#readDocumentSnapshot(() => {
+        // data_version starts the SQLite read snapshot BEFORE the document
+        // query. It fences other connections; total_changes fences this one,
+        // including raw SQL, failed writes and delete/recreate at revision 1.
+        const stamp = cacheable ? {
+          dataVersion: this.db.prepare('PRAGMA data_version').get().data_version,
+          localChanges: this.db.prepare('SELECT total_changes() AS changes').get().changes,
+        } : null
+        const window = this.#getDocumentWindow(documentId, options)
+        if (window && inspectStructure) {
+          const cached = this.#windowStructureCache
+          if (stamp && cached && cached.documentId === documentId && cached.inspector === inspectStructure &&
+              cached.revision === window.revision && cached.dataVersion === stamp.dataVersion && cached.localChanges === stamp.localChanges) {
+            window.graphStructureQuality = structuredClone(cached.quality)
+            pending = cached
+          } else {
+            const quality = inspectStructure(this.getDocument(documentId))
+            window.graphStructureQuality = quality
+            if (stamp) {
+              // Callers own their returned result. Retain only one detached
+              // diagnostic, never the canonical graph or a mutable response.
+              try { pending = { documentId, inspector: inspectStructure, revision: window.revision, ...stamp, quality: structuredClone(quality) } }
+              catch { /* Non-cloneable custom inspectors remain uncached. */ }
+            }
+          }
+        }
+        return window
+      })
+      // Publish only after the savepoint has successfully released.
+      if (cacheable) this.#windowStructureCache = pending
+      return result
+    } catch (error) {
+      this.#windowStructureCache = null
+      throw error
+    }
   }
 
   #getDocumentWindow(documentId, options) {
-    const row = this.db.prepare('SELECT * FROM documents WHERE document_id = ?').get(documentId)
+    // Source omission must happen before SQLite converts the full text to a
+    // Node string. Keep the complete document path for requested source text
+    // and canonical diagnostics; project every metadata field used below.
+    const documentSql = options.includeSourceText === false
+      ? 'SELECT document_id, source_id, title, chars, paragraph_count, chunk_count, section_count, source_json, graph_meta_json, graph_revision FROM documents WHERE document_id = ?'
+      : 'SELECT * FROM documents WHERE document_id = ?'
+    const row = this.db.prepare(documentSql).get(documentId)
     if (!row) return null
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? Math.min(2000, options.limit) : 800
     const edgeLimit = Math.max(limit, Math.min(12000, int(options.edgeLimit, limit * 6)))
@@ -2391,7 +2436,13 @@ export class SqliteKnowledgeStore {
       for (let start = 0; start < unique.length && result.length < remaining; start += 400) {
         const part = unique.slice(start, start + 400)
         const marks = part.map(() => '?').join(',')
-        const rows = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id IN (' + marks + ') ORDER BY paragraph, node_id').all(documentId, ...part)
+        // Resolve the bounded ID set before sorting complete records. Sorting
+        // the direct IN query may instead scan the document/paragraph index.
+        // Row identities stay inside this statement; preserve each batch's
+        // original paragraph/node-ID order and subsequent budget handling.
+        const rows = this.db.prepare('SELECT * FROM graph_nodes WHERE rowid IN (' +
+          'SELECT rowid FROM graph_nodes WHERE document_id = ? AND node_id IN (' + marks +
+          ')) ORDER BY paragraph, node_id').all(documentId, ...part)
         for (const item of rows) {
           if (result.length >= remaining) break
           result.push(item)
@@ -2406,7 +2457,25 @@ export class SqliteKnowledgeStore {
         const part = unique.slice(start, start + 300)
         const marks = part.map(() => '?').join(',')
         const remaining = maxRows - result.size
-        const rows = this.db.prepare(
+        // Sparse selections otherwise scan the document's ordered edge index.
+        // Probe narrow endpoint indexes without complete payloads, stopping
+        // after the combined budget plus one. Small batches retain the 64-row
+        // bound; larger batches may hydrate at most 2048 incident records.
+        // Small graphs and dense selections keep the original ordered LIMIT.
+        let indexed = false
+        if (totalEdges >= 4096) {
+          const budget = Math.min(part.length <= 64 ? 64 : 2048, remaining)
+          const candidates = this.db.prepare(
+            'SELECT COUNT(*) AS count FROM (SELECT 1 FROM (SELECT 1 FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') LIMIT ?) ' +
+            'UNION ALL SELECT 1 FROM (SELECT 1 FROM graph_edges WHERE document_id = ? AND to_node_id IN (' + marks + ') LIMIT ?) LIMIT ?)'
+          ).get(documentId, ...part, budget + 1, documentId, ...part, budget + 1, budget + 1)
+          // Shared endpoints count twice: a conservative bound, not a total.
+          indexed = candidates.count <= budget
+        }
+        const rows = indexed ? this.db.prepare(
+          'SELECT * FROM graph_edges WHERE rowid IN (SELECT rowid FROM graph_edges WHERE document_id = ? AND from_node_id IN (' + marks + ') ' +
+          'UNION SELECT rowid FROM graph_edges WHERE document_id = ? AND to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
+        ).all(documentId, ...part, documentId, ...part, remaining) : this.db.prepare(
           'SELECT * FROM graph_edges WHERE document_id = ? AND (from_node_id IN (' + marks + ') OR to_node_id IN (' + marks + ')) ORDER BY from_node_id, to_node_id, relation LIMIT ?'
         ).all(documentId, ...part, ...part, remaining)
         for (const item of rows) result.set(item.edge_key || (item.from_node_id + '>' + item.to_node_id + ':' + item.relation), item)
@@ -2415,11 +2484,29 @@ export class SqliteKnowledgeStore {
     }
     const fetchWindowEdges = (ids, maxRows) => {
       if (ids.length === 0) return []
-      const selected = JSON.stringify(Array.from(new Set(ids.filter(Boolean))))
+      const unique = Array.from(new Set(ids.filter(Boolean)))
+      const selected = JSON.stringify(unique)
+      // Two indexed IN predicates can probe every pair of window IDs. Keep
+      // the complete-graph bound for sparse large windows; otherwise probe
+      // only outgoing index entries, stopping at 2049 without full payloads.
+      // At least 64 IDs means 4096 pairs: at most 2048 outgoing entries can
+      // safely use the same boolean membership test. Smaller sets and dense
+      // selections keep their selective lookup, ordering, TEXT affinity and
+      // LIMIT. The probe and full read share this document's read snapshot.
+      let outgoing = totalEdges < unique.length * unique.length
+      if (!outgoing && unique.length >= 64) {
+        const candidates = this.db.prepare(
+          'SELECT COUNT(*) AS count FROM (SELECT 1 FROM graph_edges WHERE document_id = ? AND from_node_id IN (SELECT value FROM json_each(?)) LIMIT ?)'
+        ).get(documentId, selected, 2049)
+        outgoing = candidates.count <= 2048
+      }
+      const destination = outgoing
+        ? '(to_node_id IN (SELECT value FROM json_each(?))) = 1'
+        : 'to_node_id IN (SELECT value FROM json_each(?))'
       return this.db.prepare(`SELECT * FROM graph_edges
         WHERE document_id = ?
           AND from_node_id IN (SELECT value FROM json_each(?))
-          AND to_node_id IN (SELECT value FROM json_each(?))
+          AND ${destination}
         ORDER BY from_node_id, to_node_id, relation LIMIT ?`)
         .all(documentId, selected, selected, maxRows)
     }
@@ -2429,15 +2516,28 @@ export class SqliteKnowledgeStore {
     let viewKind = 'window'
     if (query) {
       viewKind = 'query'
-      const pattern = '%' + query.toLowerCase().replace(/[%_]/g, '') + '%'
-      const where = `document_id = ? AND (
+      // '%' and '_' are user text, not LIKE syntax or disposable characters.
+      // Use a literal substring only for these queries; retain ordinary LIKE
+      // behavior (including its existing case folding) for all other inputs.
+      const literal = /[%_]/.test(query)
+      const pattern = literal ? query.toLowerCase() : '%' + query.toLowerCase() + '%'
+      const where = literal ? `document_id = ? AND (
+        INSTR(LOWER(node_id), ?) > 0 OR INSTR(LOWER(type), ?) > 0 OR INSTR(LOWER(text), ?) > 0 OR
+        INSTR(LOWER(quote), ?) > 0 OR INSTR(LOWER(COALESCE(section_id, '')), ?) > 0 OR INSTR(LOWER(COALESCE(section_title, '')), ?) > 0
+      )` : `document_id = ? AND (
         LOWER(node_id) LIKE ? OR LOWER(type) LIKE ? OR LOWER(text) LIKE ? OR
         LOWER(quote) LIKE ? OR LOWER(COALESCE(section_id, '')) LIKE ? OR LOWER(COALESCE(section_title, '')) LIKE ?
       )`
       const params = [documentId, pattern, pattern, pattern, pattern, pattern, pattern]
-      const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + where).get(...params)
-      matchedNodes = countRow ? Number(countRow.count) || 0 : 0
+      const countMatches = () => {
+        const countRow = this.db.prepare('SELECT COUNT(*) AS count FROM graph_nodes WHERE ' + where).get(...params)
+        return countRow ? Number(countRow.count) || 0 : 0
+      }
+      // An underfilled direct page already contains every match, including
+      // zero, for both LIKE and literal predicates. Do not scan twice.
+      // A full page still needs COUNT (even when exactly limit rows match).
       const direct = this.db.prepare('SELECT * FROM graph_nodes WHERE ' + where + ' ORDER BY paragraph, node_id LIMIT ?').all(...params, limit)
+      matchedNodes = direct.length < limit ? direct.length : countMatches()
       const selected = new Map(direct.map((item) => [item.node_id, item]))
       if (selected.size > 0 && selected.size < limit) {
         const incident = fetchIncidentEdges(Array.from(selected.keys()), edgeLimit)
@@ -2451,7 +2551,16 @@ export class SqliteKnowledgeStore {
       }
       nodeRows = Array.from(selected.values())
     } else {
-      nodeRows = this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id LIMIT ? OFFSET ?').all(documentId, limit, offset)
+      // Deep pages need only narrow row identities while sorting/skipping.
+      // Hydrate this page in the same statement and restore canonical order;
+      // rowids are transient here, never persisted or exposed to callers.
+      // Keep shallow reads direct to avoid extra lookups for small offsets.
+      const nodeSql = offset >= limit * 4
+        ? `SELECT * FROM graph_nodes WHERE rowid IN (
+            SELECT rowid FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id LIMIT ? OFFSET ?
+          ) ORDER BY paragraph, node_id`
+        : 'SELECT * FROM graph_nodes WHERE document_id = ? ORDER BY paragraph, node_id LIMIT ? OFFSET ?'
+      nodeRows = this.db.prepare(nodeSql).all(documentId, limit, offset)
     }
     const nodeIds = nodeRows.map((item) => item.node_id)
     const edgeRows = fetchWindowEdges(nodeIds, edgeLimit)
