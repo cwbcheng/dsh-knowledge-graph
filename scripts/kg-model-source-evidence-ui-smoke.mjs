@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { modelCitationPanelLocationSource } from './kg-model-citation-locator-fixture.mjs'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { createServer } from 'node:http'
@@ -98,17 +99,10 @@ try {
   }
   assert.throws(() => quoteEnvironment.target({ ...view, graph: { ...view.graph, revision: 2 } }, reference), /版本/)
   assert.throws(() => quoteEnvironment.target({ ...view, paragraphs: [] }, reference), /阅读范围/)
-  const callback = value => {
-    const anchor = value.indexOf('h(ConnectionModelPanel, { key: documentIdOfGraph(resultView.graph)')
-    assert(anchor >= 0)
-    const first = value.indexOf('onLocate: async reference => {', anchor) + 'onLocate: '.length
-    const last = value.indexOf(',\n                    onReview:', first)
-    assert(first > anchor && last > first)
-    return value.slice(first, last)
-  }
+  const callback = modelCitationPanelLocationSource
   assert.equal(callback(source), callback(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')))
-  const modes = [], pending = [], adapter = { changeReadMode: mode => modes.push(mode),
-    locateConsumptionReference: ref => { quoteEnvironment.target(view, ref); return new Promise(resolve => pending.push(resolve)) } }
+  const modes = [], pending = [], adapter = { changeReadMode: mode => modes.push(mode), resultView: view, currentResultRef: { current: view },
+    locateConsumptionReference: (ref, isCurrent) => { assert.equal(isCurrent(), true); quoteEnvironment.target(view, ref); return new Promise(resolve => pending.push(resolve)) } }
   runInNewContext('this.locate=' + callback(source), adapter)
   await assert.rejects(adapter.locate({ ...reference, revision: 2 }), /版本/)
   assert.equal(modes.length, 0, 'Failed evidence lookup must not hide its model-panel error before validation')
