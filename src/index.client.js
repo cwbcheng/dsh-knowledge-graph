@@ -5263,6 +5263,17 @@ export default function clientPlugin() {
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
         const location = useConnectionModelLocation(locationScope, active)
+        const refreshContext = useRef(null), refreshMounted = useRef(true)
+        if (!refreshContext.current || refreshContext.current.scope !== locationScope || refreshContext.current.active !== active
+          || refreshContext.current.roles !== roles || refreshContext.current.preview !== preview
+          || refreshContext.current.saving !== saving || refreshContext.current.busy !== busy || refreshContext.current.importBusy !== importBusy) {
+          refreshContext.current = { scope: locationScope, active, roles, preview, saving, busy, importBusy, sequence: 0 }
+        }
+        const refreshOpening = refreshContext.current
+        useEffect(() => {
+          refreshMounted.current = true
+          return () => { refreshMounted.current = false; refreshContext.current.sequence++ }
+        }, [])
         useEffect(() => { setSourceError('') }, [locationScope, active])
         const locate = (reference, stillCurrent) => location(reference, api.current.onLocate, null, stillCurrent)
         const locateInDetail = (reference, stillCurrent) => location(reference, (value, isCurrent) => {
@@ -5401,11 +5412,19 @@ export default function clientPlugin() {
           setFieldRequest(value => value + 1)
         }
         const act = async fn => { try { await fn() } catch (reason) { setDetailError(reason.message || '操作未完成') } }
-        const refresh = () => act(async () => {
+        const refresh = async () => {
+          const id = ++refreshOpening.sequence
+          const isCurrent = () => refreshMounted.current && refreshContext.current === refreshOpening
+            && refreshOpening.active && refreshOpening.sequence === id
+          if (!isCurrent() || saving || busy || importBusy) return
           if (Object.keys(roles).length && !window.confirm('放弃未保存的方向修改并重新读取知识图？')) return
-          if (api.current.onRefresh) await api.current.onRefresh()
-          setRoles({}); setPreview(null); setReload(value => value + 1)
-        })
+          try {
+            const refreshed = await api.current.onRefresh?.(isCurrent)
+            // A newer selection or draft cancels both publication and cleanup.
+            if (refreshed === false || !isCurrent()) return
+            setRoles({}); setPreview(null); setReload(value => value + 1)
+          } catch (reason) { if (isCurrent()) setDetailError(reason.message || '操作未完成') }
+        }
         const reviewRoles = async commit => {
           if (saving || busy || !detail || !api.current.onRoles) return
           const id = ++writeSequence.current
@@ -18058,13 +18077,16 @@ export default function clientPlugin() {
           }
           return true
         }
-        const refreshConnectionModels = async () => {
+        const refreshConnectionModels = async (isCurrent = () => true) => {
+          if (!isCurrent()) return false
           const openingView = resultView, documentId = documentIdOfGraph(openingView?.graph)
           await graphCommitQueueRef.current.catch(() => {})
+          if (!isCurrent()) return false
           if (currentResultRef.current !== openingView) throw new Error('文档已切换，取消旧模型刷新')
           const meta = graphViewMetadata(openingView.graph)
           const loaded = await loadGraphDocument({ documentId, nodeOffset: meta?.nodeOffset || 0,
             nodeLimit: meta?.nodeLimit || 800, query: meta?.kind === 'query' ? meta.query : '', includeSourceText: true })
+          if (!isCurrent()) return false
           if (currentResultRef.current !== openingView) throw new Error('文档已切换，取消旧模型刷新')
           if (loaded?.error || !loaded?.graph || loaded.documentId !== documentId || !Number.isSafeInteger(loaded.revision)) throw new Error(loaded?.error?.message || '无法刷新知识图版本')
           graphRevisionRef.current = loaded.revision
@@ -18072,6 +18094,7 @@ export default function clientPlugin() {
           setResultView(makeView(loaded.graph, loaded.sourceText))
           setVerification(loaded.graph.verification?.lastReport || null)
           setFactReport(loaded.graph.factCheck?.lastReport || null)
+          return true
         }
         const importConnectionModels = ({ graph, revision, preview }) => {
           const openingView = resultView, documentId = documentIdOfGraph(openingView?.graph)
