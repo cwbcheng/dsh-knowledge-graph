@@ -447,7 +447,12 @@ function createHostPlugin(graphContractOnly) {
         "summary": "按《学习观》的靶图本体抽取：知识（概念/特征/规律/判别模型/联结模型）与学习材料（判别材料/联结材料 × 上料/下料）。",
         "edgeAttributes": [
           "role",
-          "mode"
+          "mode",
+          "modelId",
+          "branchId",
+          "statement",
+          "condition",
+          "boundary"
         ],
         "nodeAttributes": [
           "stage",
@@ -1631,6 +1636,19 @@ function createHostPlugin(graphContractOnly) {
                 "联模"
               ],
               "hint": "已划分出的类别之间的映射。"
+            },
+            {
+              "id": "relation_material",
+              "zh": "关系材料",
+              "label": "关系材料",
+              "color": "#6366f1",
+              "fill": "rgba(99,102,241,0.15)",
+              "layer": "upper",
+              "modelKind": "connection",
+              "aliases": [
+                "关系材料"
+              ],
+              "hint": "交代输出变量如何随输入变量改变。relKind 取 常量映射/基本关系/关系组合。"
             }
           ],
           "relationTypes": [
@@ -1671,6 +1689,91 @@ function createHostPlugin(graphContractOnly) {
               "hint": "概念或联结模型所依赖的映射规律。"
             },
             {
+              "id": "builds",
+              "zh": "渐构",
+              "family": "directional",
+              "weight": 5,
+              "aliases": [
+                "渐构",
+                "用于渐构"
+              ],
+              "from": [
+                "intension_description",
+                "feature_description",
+                "positive_example",
+                "negative_example",
+                "contrast_group",
+                "extension_contrast",
+                "relation_material",
+                "factor_material",
+                "property_material",
+                "segment_example_group",
+                "data_or_experience"
+              ],
+              "to": [
+                "discrimination_model",
+                "connection_model"
+              ],
+              "hint": "材料用于渐构某个模型。"
+            },
+            {
+              "id": "states_mapping",
+              "zh": "交代映射",
+              "family": "backbone",
+              "weight": 8,
+              "aliases": [
+                "交代映射",
+                "关系材料交代映射"
+              ],
+              "from": [
+                "relation_material"
+              ],
+              "to": [
+                "rule",
+                "connection_model"
+              ],
+              "hint": "关系材料交代输出如何随输入改变。"
+            },
+            {
+              "id": "compares_relation",
+              "zh": "关系对比/类比",
+              "family": "satellite",
+              "weight": 5,
+              "aliases": [
+                "关系对比",
+                "关系类比"
+              ],
+              "from": [
+                "connection_model",
+                "rule"
+              ],
+              "to": [
+                "connection_model",
+                "rule"
+              ],
+              "hint": "对比或类比两个知识的映射关系；边的 mode 取 contrast / analogy。"
+            },
+            {
+              "id": "composes",
+              "zh": "复合",
+              "family": "backbone",
+              "weight": 7,
+              "aliases": [
+                "复合",
+                "子关系组成复合关系",
+                "关系组合"
+              ],
+              "from": [
+                "rule",
+                "connection_model"
+              ],
+              "to": [
+                "rule",
+                "connection_model"
+              ],
+              "hint": "子关系组成复合关系。"
+            },
+            {
               "id": "source_relation",
               "zh": "原文对应",
               "family": "directional",
@@ -1684,11 +1787,12 @@ function createHostPlugin(graphContractOnly) {
               "aliases": [
                 "原文对应"
               ],
-              "hint": "模型分支中有逐字证据的概念对应；保留 statement、condition、boundary、modelId、branchId，不表示已认证的普遍因果。"
+              "hint": "旧版本的自定义对应，仅为读取历史图保留；新整理使用《学习观》的联结映射、规律、交代映射与复合关系。"
             }
           ],
           "edgeAttributes": [
             "role",
+            "mode",
             "modelId",
             "branchId",
             "statement",
@@ -1699,6 +1803,10 @@ function createHostPlugin(graphContractOnly) {
             "role": {
               "input": "入",
               "output": "出"
+            },
+            "mode": {
+              "contrast": "对比",
+              "analogy": "类比"
             }
           }
         }
@@ -2054,11 +2162,30 @@ function createHostPlugin(graphContractOnly) {
             statement: branch.mapping.text, condition: branch.condition.text, boundary: branch.boundary.text,
             evidence, state: 'candidate' }
         }
+        // Learning-view has no arbitrary concept → concept relation. A condition
+        // belongs to a mapping rule, linked by has_rule to its model and concepts.
+        // Keep the old builder only for historical snapshots; do not relabel it.
+        const buildLearning = (graph, modelId, branchId, fromNodeId, toNodeId, nodes = new Map((graph.nodes || []).map(node => [node.id, node]))) => {
+          const model = nodes.get(modelId), slots = model?.modelStructure?.slots || []
+          const endpoints = [...new Set(slots.map(slot => slot.conceptId))]
+          const branch = branchOf(graph, modelId, branchId, endpoints[0], endpoints[1], nodes)
+          const from = nodes.get(fromNodeId), rule = nodes.get(toNodeId)
+          if (fromNodeId !== modelId && (from?.type !== 'concept' || from.state === 'rejected' || !endpoints.includes(fromNodeId))) fail('has_rule requires the recorded model or one of its concepts')
+          if (rule?.type !== 'rule' || rule.state === 'rejected' || rule.text !== branch.mapping.text) fail('has_rule must target the literal mapping rule')
+          const evidence = []
+          for (const field of ['mapping', 'condition']) {
+            const p = branch[field].provenance
+            if (!evidence.some(item => item.paragraph === p.paragraph && item.quote === p.quote)) evidence.push({ paragraph: p.paragraph, quote: p.quote })
+          }
+          return { fromNodeId, toNodeId, relation: 'has_rule', modelId, branchId,
+            statement: branch.mapping.text, condition: branch.condition.text, boundary: branch.boundary.text, evidence, state: 'candidate' }
+        }
         const errors = (graph, units) => {
           const out = []
           const nodes = new Map((graph.nodes || []).map(node => [node.id, node]))
           for (const edge of graph.edges || []) {
-            if (edge?.relation !== 'source_relation') {
+            const learning = edge?.relation === 'has_rule' && attributes.some(key => edge?.[key] !== undefined)
+            if (edge?.relation !== 'source_relation' && !learning) {
               if (attributes.some(key => edge?.[key] !== undefined)) out.push({ targetId: edge.fromNodeId + '>' + edge.toNodeId,
                 message: 'source correspondence fields cannot be relabeled as another relation' })
               continue
@@ -2067,7 +2194,7 @@ function createHostPlugin(graphContractOnly) {
               for (const key of attributes) {
                 if (typeof edge[key] !== 'string' || !edge[key].trim() || edge[key].length > attributeLimit(key)) fail('missing or oversized ' + key)
               }
-              const expected = build(graph, edge.modelId, edge.branchId, edge.fromNodeId, edge.toNodeId, nodes)
+              const expected = (learning ? buildLearning : build)(graph, edge.modelId, edge.branchId, edge.fromNodeId, edge.toNodeId, nodes)
               for (const key of attributes) if (edge[key] !== expected[key]) fail('edge no longer matches its recorded model ' + key)
               for (const citation of expected.evidence) {
                 if (!units?.get(citation.paragraph)?.includes(citation.quote)) fail('mapping or condition quotation does not match its source unit')
@@ -2077,7 +2204,7 @@ function createHostPlugin(graphContractOnly) {
           }
           return out
         }
-        return { attributes, attributeLimit, build, errors }
+        return { attributes, attributeLimit, build, buildLearning, errors }
       })()
       // <<< END SOURCE RELATION TOOLS <<<
        function pickDeclaredAttributes(source, allowed) {

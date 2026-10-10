@@ -133,6 +133,8 @@
 
 > `has_feature`（知识与知识）与 `states_feature`（材料与知识）必须分开。前者说「这个概念有什么判别依据」，后者说「哪段文字描述了它」——诊断「只记描述」靠的正是后者有、前者无。
 
+有条件的原文映射依然使用上述关系，不新增“原文对应”类型：`rule` 保存逐字映射，`relation_material` 保存源句，模型以 `maps_between` 挂接输入/输出并以 `has_rule` 引用规律；材料以 `states_mapping` 交代规律/模型。绑定分支的 `has_rule` 可以保存 `modelId / branchId / statement / condition / boundary`，Host 与 SQLite 校验实际模型、逐字条件及引文，详情保留长文本。这些是关系的限定与审计字段，不是第 22 种关系，也不表示该规律已获经验验证。见 [《道德经》全篇审校](dao-learning-audit.md)。
+
 ### 3.3 材料与模型（4）
 
 | id | 中文 | 语义 | from → to | 出处 |
