@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
 
-export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false, sourcePages = false, legacyGaps = false, gapPages = false } = {}) {
+export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false, sourcePages = false, legacyGaps = false, gapPages = false, documentId } = {}) {
   const fixture = modelSourceTableFixture({ dense, peer })
+  const previousDocumentId = fixture.documentId
+  if (documentId !== undefined) fixture.documentId = documentId
   if (third) {
     const model = structuredClone(fixture.graph.nodes[0]); model.id = 'taxi-third'; model.text = '第三个明确选择的计价模型'
     fixture.graph.nodes.push(model)
@@ -22,7 +24,8 @@ export function modelCitationFixture({ dense = false, anchor = 1, peer = true, l
   const from = fixture.sourceUnits[1], to = fixture.sourceUnits[anchor]
   const move = value => Array.isArray(value) ? value.map(move) : value && typeof value === 'object'
     ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-      key === 'paragraph' && item === from.paragraph ? to.paragraph : key === 'quote' && item === from.text ? to.text : move(item)])) : value
+      key === 'paragraph' && item === from.paragraph ? to.paragraph : key === 'quote' && item === from.text ? to.text
+        : key === 'documentId' && item === previousDocumentId ? fixture.documentId : move(item)])) : value
   fixture.graph = move(fixture.graph)
   if (sourcePages) {
     // Explicit synthetic context, solely to exercise actual Host pagination.

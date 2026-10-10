@@ -8,14 +8,15 @@ import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { modelSourceEvidenceFixture } from './kg-model-source-evidence-fixture-data.mjs'
 
 const fixture = modelSourceEvidenceFixture()
-let modelCalls = 0
+let modelCalls = 0, actualHttpRequests = 0
 const harness = await modelLearningHarness({ fixture, llm: { async createMessage() { modelCalls++; throw new Error('No model calls') } } })
 const server = createServer((req, res) => harness.handler(req, res))
 try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   const before = JSON.stringify(harness.store.getDocument(fixture.documentId)), units = JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId))
-  const post = async body => {
-    const response = await fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/connection-models', {
+  const post = async (body, method = 'connection-models') => {
+    actualHttpRequests++
+    const response = await fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/' + method, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     })
     assert.equal(response.status, 200); return response.json()
@@ -75,7 +76,7 @@ try {
   }
   const value = details.get('fields').structure.branches[0].mapping.provenance
   const invalid = [
-    candidate => { candidate.documentId = '' }, candidate => { candidate.documentId += ' ' }, candidate => { candidate.documentId = null },
+    candidate => { candidate.documentId = '' }, candidate => { candidate.documentId = 'x'.repeat(4097) }, candidate => { candidate.documentId = null },
     candidate => { candidate.revision = 0 }, candidate => { candidate.revision = 1.5 }, candidate => { candidate.revision = '1' },
     candidate => { candidate.value.paragraph = -1 }, candidate => { candidate.value.paragraph = 0.5 }, candidate => { candidate.value.paragraph = null },
     candidate => { candidate.value.quote = ' ' }, candidate => { candidate.value.quote = 'x'.repeat(2001) },
@@ -119,11 +120,70 @@ try {
   for (const request of [{ documentId: fixture.documentId + ' ', expectedRevision: 1, modelId: 'source-fields' },
     { documentId: fixture.documentId, expectedRevision: 2, modelId: 'source-fields' },
     { documentId: fixture.documentId, expectedRevision: 1, modelId: 'source-fields ' }]) assert((await post(request)).error)
+
+  // Seed distinct accepted canonical keys, including their prefix and trimmed
+  // aliases. The real HTTP projection and quote receiver must retain each key.
+  const prefix = 'opaque-model-document:' + 'x'.repeat(138)
+  assert.equal(prefix.length, 160)
+  const identities = [prefix, prefix + 'A', prefix + 'y'.repeat(69) + 'A', prefix + 'y'.repeat(69) + 'B',
+    prefix + 'z'.repeat(3936), ' ' + fixture.documentId + ' ', ' 文档: "甲">:原始 \t']
+  let opaqueSourceActions = 0, rejectedWriteIdentities = 0, opaqueOriginGuards = 0
+  for (const documentId of identities) {
+    const remap = input => Array.isArray(input) ? input.map(remap) : input && typeof input === 'object'
+      ? Object.fromEntries(Object.entries(input).map(([key, item]) => [key,
+        key === 'documentId' && item === fixture.documentId ? documentId : remap(item)])) : input
+    harness.store.saveGraph(remap(fixture.graph), { sourceText: fixture.sourceText, sourceUnits: fixture.sourceUnits })
+    const graphBefore = JSON.stringify(harness.store.getDocument(documentId))
+    const unitsBefore = JSON.stringify(harness.store.getDocumentSourceUnits(documentId))
+    const detail = await post({ documentId, expectedRevision: 1, modelId: 'source-fields' })
+    assert(!detail.error, JSON.stringify(detail.error)); assert.equal(detail.documentId, documentId); assert.equal(detail.revision, 1)
+    const sourceValues = [...detail.structure.slots.map(slot => slot.provenance),
+      ...['condition', 'mapping', 'boundary'].map(key => detail.structure.branches[0][key].provenance), detail.structure.examples[0].provenance]
+    const opaqueView = { ...view, graph: harness.store.getDocument(documentId) }
+    const pairEvidence = all(environment.Pairs({ ...props, documentId, structure: detail.structure, onSlot() {}, onPage() {} }),
+      node => node.type === environment.Evidence)
+    assert.equal(pairEvidence.length, 1); assert.equal(pairEvidence[0].props.documentId, documentId); assert.equal(pairEvidence[0].props.revision, 1)
+    for (const origin of sourceValues) {
+      const button = all(environment.Evidence({ ...props, documentId, value: origin }), node => node.type === 'button')[0]
+      assert(button && !button.props.disabled, 'Accepted canonical read-only document identity must allow field source navigation: length ' + documentId.length)
+      button.props.onClick(); const full = located.at(-1)
+      assert.equal(full.documentId, documentId); assert.equal(full.revision, 1); assert.equal(full.quote, origin.quote)
+      assert.equal(full.paragraph, origin.paragraph); assert.equal(full.sourceQuoteOnly, true); assert.equal(full.nodeId, undefined)
+      const target = quoteEnvironment.target(opaqueView, full)
+      assert(opaqueView.sourceText.slice(paragraphs[target.first].start).startsWith(origin.quote))
+      // Even an existing alias with the same quote cannot substitute its identity.
+      for (const foreign of new Set([fixture.documentId, documentId.trim(), documentId.slice(0, 160)])) {
+        if (foreign !== documentId) assert.throws(() => quoteEnvironment.target(opaqueView, { ...full, documentId: foreign }), /文档或版本/)
+      }
+      assert.throws(() => quoteEnvironment.target(opaqueView, { ...full, revision: 2 }), /文档或版本/)
+      opaqueSourceActions++
+    }
+    for (const kind of ['user', 'ai', 'unknown']) {
+      const other = await post({ documentId, expectedRevision: 1, modelId: 'source-' + kind })
+      assert(!other.error); assert.equal(other.documentId, documentId)
+      const origin = other.structure.branches[0].mapping.provenance
+      assert.equal(origin.kind, kind)
+      assert.equal(all(environment.Evidence({ ...props, documentId, value: origin }), node => node.type === 'button').length, 0)
+      opaqueOriginGuards++
+    }
+    if (documentId.length > 160 || documentId !== documentId.trim()) {
+      for (const method of ['graph-commit-preview', 'graph-commit']) {
+        const rejected = await post({ documentId, expectedRevision: 1, baseNodeIds: [], baseEdgeKeys: [], graph: { nodes: [], edges: [] } }, method)
+        assert.equal(rejected.error?.code, 'invalid_input', 'Read-only access must not widen the structure-write identity contract')
+        rejectedWriteIdentities++
+      }
+    }
+    assert.equal(JSON.stringify(harness.store.getDocument(documentId)), graphBefore)
+    assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(documentId)), unitsBefore)
+  }
+  assert.equal((await post({ documentId: 'x'.repeat(4097), expectedRevision: 1, modelId: 'source-fields' })).error?.code, 'invalid_input')
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), units)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   assert.equal(modelCalls, 0)
-  console.log(JSON.stringify({ ok: true, actualHttpRequests: 9, sourceActions, rejectedOrigins, invalidMetadata: invalid.length,
+  console.log(JSON.stringify({ ok: true, actualHttpRequests, sourceActions, rejectedOrigins, invalidMetadata: invalid.length,
+    opaqueDocuments: identities.length, opaqueSourceActions, opaqueOriginGuards, rejectedWriteIdentities,
+    maxReadIdentity: 4096, opaqueKeysNotNormalized: true, existingAliasesRefused: true,
     negativeTargets: 7, completeFieldQuotes: true, sourceUnitNotReadingIndex: true, duplicateQuoteRefused: true,
     noRawHtml: true, conflictingSourceRetained: true, oldSnapshotDisabled: true, failureKeepsModelPanel: true,
     noTruthPromotion: true, nonMutating: true, modelCalls }))
