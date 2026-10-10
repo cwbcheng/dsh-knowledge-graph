@@ -15193,6 +15193,7 @@ export default function clientPlugin() {
         const [allNodesLoading, setAllNodesLoading] = useState(false)
         const [candidateReviews, setCandidateReviews] = useState(() => loadCandidateReviews())
         const [candidateRemote, setCandidateRemote] = useState(null)
+        const candidateReviewPendingRef = useRef(new Set())
         const changeLayoutMode = (id) => {
           setLayoutMode(id)
           try { localStorage.setItem(LS_LAYOUT, id) } catch (e) {}
@@ -18087,18 +18088,43 @@ export default function clientPlugin() {
             revision: resolved.revision, request: state.gather }))
         }
         const handleCandidateReview = async (key, status) => {
-          const previousStatus = candidateReviews[key] || 'candidate'
+          const reviewedView = resultView
+          const graph = reviewedView && reviewedView.graph
+          if (!graph || currentResultRef.current !== reviewedView || !REVIEW_STATUS_ORDER.includes(status)) return
+          const node = (Array.isArray(graph.nodes) ? graph.nodes : [])
+            .find(node => candidateKindFor(node) && reviewKeyFor(graph, node) === key)
+          if (!node) return
+          const pending = candidateReviewPendingRef.current
+          if (pending.has(key)) { toastStore.show('候选状态正在同步，请稍候'); return }
+          pending.add(key)
+          const isCurrent = () => currentResultRef.current === reviewedView
+          let previousStatus = candidateReviews[key] || 'candidate'
           setCandidateReviews((previous) => {
             const next = { ...previous, [key]: status }
             saveCandidateReviews(next)
             return next
           })
-          const remote = Array.isArray(candidateRemote)
+          let remote = Array.isArray(candidateRemote)
             ? candidateRemote.find((row) => row && row.documentId + '|' + row.kind + '|' + row.nodeId === key)
             : null
-          if (!remote || !resultView || !resultView.graph) return
-          const source = resultView.graph.source && typeof resultView.graph.source === 'object' ? resultView.graph.source : {}
+          const source = graph.source && typeof graph.source === 'object' ? graph.source : {}
+          const documentId = source.documentId || graph.documentId || source.id || 'local'
+          const kind = candidateKindFor(node)
           try {
+            if (!remote || typeof remote.id !== 'string' || !remote.id) {
+              const options = { documentId, kind, nodeId: node.id, status: 'all', limit: 1, reviewOnly: true }
+              let listed = await host.call('candidate-list', options)
+              if (!isCurrent()) throw new Error('知识图已切换')
+              if (listed && listed.requiresGraph === true) {
+                listed = await host.call('candidate-list', { ...options, graph: candidateGraphPayload(graph, node.id) })
+                if (!isCurrent()) throw new Error('知识图已切换')
+              }
+              if (!listed || listed.error) throw new Error(listed?.error?.message || '候选身份查询失败')
+              remote = (Array.isArray(listed.candidates) ? listed.candidates : []).find(row => row &&
+                row.documentId === documentId && row.kind === kind && row.nodeId === node.id && typeof row.id === 'string' && row.id)
+              if (!remote) throw new Error('找不到当前节点的候选，请重新载入知识图')
+            }
+            if (REVIEW_STATUS_ORDER.includes(remote.status)) previousStatus = remote.status
             const res = await host.call('candidate-update', {
               documentId: remote.documentId || source.documentId || '',
               kind: remote.kind,
@@ -18106,17 +18132,33 @@ export default function clientPlugin() {
               nodeId: remote.nodeId,
               status,
               reviewOnly: true,
-              graph: candidateGraphPayload(resultView.graph, remote.nodeId),
+              graph: candidateGraphPayload(graph, remote.nodeId),
             })
             if (!res || res.error || !res.candidate) throw new Error(res && res.error && res.error.message ? res.error.message : '候选状态同步失败')
-            setCandidateRemote((previous) => Array.isArray(previous) ? previous.map((row) => row && row.id === remote.id ? { ...row, status: res.candidate.status || status } : row) : previous)
+            if (!isCurrent()) return
+            const confirmedStatus = REVIEW_STATUS_ORDER.includes(res.candidate.status) ? res.candidate.status : status
+            setCandidateReviews(previous => {
+              if (!isCurrent()) return previous
+              const next = { ...previous, [key]: confirmedStatus }
+              saveCandidateReviews(next)
+              return next
+            })
+            setCandidateRemote((previous) => {
+              if (!isCurrent()) return previous
+              const rows = Array.isArray(previous) ? previous : []
+              const matches = row => row && row.documentId === remote.documentId && row.kind === remote.kind && row.nodeId === remote.nodeId
+              const updated = { ...remote, status: confirmedStatus }
+              return rows.some(matches) ? rows.map(row => matches(row) ? updated : row) : [updated, ...rows].slice(0, 500)
+            })
           } catch (error) {
             setCandidateReviews((previous) => {
               const next = { ...previous, [key]: previousStatus }
               saveCandidateReviews(next)
               return next
             })
-            toastStore.show('候选状态未能同步：' + (error && error.message ? error.message : '未知错误'))
+            if (isCurrent()) toastStore.show('候选状态未能同步：' + (error && error.message ? error.message : '未知错误'))
+          } finally {
+            pending.delete(key)
           }
         }
         const handleCandidateLocate = (node) => {

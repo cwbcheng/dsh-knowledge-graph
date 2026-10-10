@@ -21,6 +21,44 @@ function assert(condition, message) {
 }
 
 const identities = { source: graph.source, ontology: 'proposition-v1', nodes: graph.nodes.map(({ id, type }) => ({ id, type })) }
+const targetedGraph = {
+  source: { documentId: 'candidate-targeted|opaque', id: 'targeted-source' }, ontology: 'proposition-v1',
+  nodes: Array.from({ length: 1202 }, (_, i) => ({ id: 'candidate-' + i, type: i % 2 ? 'fact' : 'concept',
+    text: '候选原文 ' + i, paragraph: i, quote: '候选原文 ' + i,
+    evidence: [{ paragraph: i, quote: '候选原文 ' + i }] })), edges: [],
+}
+targetedGraph.nodes[1200].id = 'entity| "尾" |节点'
+targetedGraph.nodes[1201].id = 'claim|尾\'"'
+async function targetedSmoke(call, source, fixture = targetedGraph) {
+  const options = { documentId: fixture.source.documentId, kind: 'all', status: 'all', limit: 500, reviewOnly: true, graph: fixture }
+  const initial = await call('candidate-list', options)
+  assert(initial.candidates.length === 500, source + ': preserve the initial bounded list')
+  const initialIds = new Set(initial.candidates.map(row => row.nodeId))
+  for (const node of fixture.nodes.slice(-2)) {
+    assert(!initialIds.has(node.id), source + ': targeted fixture must be outside the initial 500')
+    const kind = node.type === 'concept' ? 'entity' : 'claim'
+    const requested = { ...options, nodeId: node.id, kind, limit: 1 }
+    const found = await call('candidate-list', requested)
+    assert(found.candidates.length === 1 && found.candidates[0].nodeId === node.id
+      && found.candidates[0].documentId === fixture.source.documentId && found.candidates[0].kind === kind,
+      source + ': precise lookup must find the late candidate before applying the limit')
+    const row = found.candidates[0]
+    const updated = await call('candidate-update', { ...requested, id: row.id, status: 'accepted' })
+    assert(updated.candidate?.status === 'accepted', source + ': targeted candidate update failed')
+    const readBack = await call('candidate-list', { ...requested, status: 'accepted' })
+    assert(readBack.candidates.length === 1 && readBack.candidates[0].status === 'accepted', source + ': targeted update must read back')
+    const rejected = await call('candidate-list', { ...requested, status: 'rejected' })
+    assert(rejected.candidates.length === 0, source + ': preserve targeted status filtering')
+  }
+  assert((await call('candidate-list', { ...options, nodeId: 'absent', limit: 1 })).candidates.length === 0,
+    source + ': missing node must not return an unrelated candidate')
+  for (const nodeId of ['', null, 7, {}]) {
+    assert((await call('candidate-list', { ...options, nodeId, limit: 1 })).error?.code === 'invalid_input',
+      source + ': invalid node identity must not broaden the lookup')
+  }
+  return { source, nodes: fixture.nodes.length, initialLimit: initial.candidates.length, targetedKinds: 2,
+    lateCandidatesReadBack: true, exactOpaqueNodeIds: true, missingRejected: true, invalidNodeIds: 4 }
+}
 async function compactSmoke(call, source) {
   const documentId = 'unsaved-' + source
   const localGraph = { ...identities, source: { documentId } }
@@ -37,6 +75,10 @@ async function compactSmoke(call, source) {
   assert(updated.candidate?.status === 'accepted', source + ': one-identity update failed')
   const accepted = await call('candidate-list', { ...options, graph: localGraph, status: 'accepted' })
   assert(accepted.candidates.length === 1 && accepted.candidates[0].nodeId === claim.nodeId, source + ': local status was lost')
+  const targeted = await call('candidate-list', { ...options, graph: localGraph, kind: 'entity', nodeId: 'n-concept', limit: 1 })
+  assert(targeted.candidates.length === 1 && targeted.candidates[0].nodeId === 'n-concept', source + ': compact targeted lookup failed')
+  const missingLookup = await call('candidate-list', { ...options, graph: localGraph, nodeId: 'missing', limit: 1 })
+  assert(missingLookup.candidates.length === 0, source + ': compact missing lookup must not return an unrelated candidate')
   const missing = await call('candidate-update', { ...args, nodeId: 'missing' })
   assert(missing.error?.code === 'not_found', source + ': nonexistent update must fail without writing a review')
   const invalid = await call('candidate-update', { ...args, status: 'invalid' })
@@ -56,7 +98,7 @@ async function compactSmoke(call, source) {
   assert(learning.candidates.map(row => row.kind + '|' + row.nodeId).sort().join(',') === expected && expected,
     source + ': compact fallback must retain the learning ontology candidate types')
   return { source, identityList: listed.candidates.length, oneIdentityUpdate: true, acceptedFilter: true,
-    missingRejected: true, invalidRejected: true, learningKinds: expected }
+    missingRejected: true, invalidRejected: true, targetedSingleIdentity: true, learningKinds: expected }
 }
 
 async function dynamicSmoke() {
@@ -72,7 +114,8 @@ async function dynamicSmoke() {
   const accepted = await handlers.get('candidate-list')({ graph, status: 'accepted', limit: 20 })
   assert(accepted.candidates.length === 1 && accepted.candidates[0].nodeId === 'n-fact', 'dynamic candidate status was not retained')
   const compact = await compactSmoke((method, args) => handlers.get(method)(args), 'dynamic')
-  return { listed: listed.candidates.length, updated: updated.candidate.id, compact }
+  const targeted = await targetedSmoke((method, args) => handlers.get(method)(args), 'dynamic')
+  return { listed: listed.candidates.length, updated: updated.candidate.id, compact, targeted }
 }
 
 function request(handler, body, endpoint = 'candidate-list') {
@@ -100,6 +143,13 @@ async function persistentSmoke() {
   const store = await openSqliteStore(dbPath)
   const sourceText = '事实候选\n\n概念候选'
   store.saveGraph(graph, { sourceText })
+  store.saveGraph(targetedGraph, { sourceText: targetedGraph.nodes.map(node => node.text).join('\n\n') })
+  const queryPlans = ['entity', 'claim'].map(kind => {
+    const plan = store.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM ' + kind + '_candidates WHERE document_id = ? AND node_id = ? ORDER BY updated_at DESC LIMIT ?')
+      .all(targetedGraph.source.documentId, targetedGraph.nodes.at(-1).id, 1).map(row => row.detail).join('; ')
+    assert(plan.includes(kind + '_candidates_node_idx'), 'targeted candidate lookup must use the document/node index')
+    return plan
+  })
   const opaqueIds = [' spaced-candidate ', 'candidate:'.padEnd(180, 'x'), '候选:Ａ:"甲">', '候选:A:"甲">']
   for (const documentId of opaqueIds) store.saveGraph({ ...graph, source: { ...graph.source, documentId } }, { sourceText })
   store.close()
@@ -111,6 +161,11 @@ async function persistentSmoke() {
     interval() { return () => {} },
   })
   const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
+  const targeted = await targetedSmoke((method, args) => request(api, args, method), 'sqlite')
+  assert((await request(api, { reviewOnly: true, kind: 'claim', nodeId: targetedGraph.nodes.at(-1).id, limit: 1 })).error?.code === 'invalid_input',
+    'targeted lookup must not search across all documents')
+  const wrongDocument = await request(api, { documentId: graph.source.documentId, nodeId: targetedGraph.nodes.at(-1).id, limit: 1, reviewOnly: true })
+  assert(wrongDocument.source === 'sqlite' && wrongDocument.candidates.length === 0, 'targeted lookup must stay within the exact document')
   for (const documentId of opaqueIds) {
     const options = { documentId, reviewOnly: true, kind: 'all', status: 'all', limit: 500 }
     const exact = await request(api, options)
@@ -240,7 +295,7 @@ async function persistentSmoke() {
   process.env.DSH_KG_DB = dbPath
   rmSync(dir, { recursive: true, force: true })
   return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id,
-    revision: committed.revision, compact, fallback, unavailable, exactOpaqueIdentities: opaqueIds.length }
+    revision: committed.revision, compact, fallback, unavailable, targeted, queryPlans, exactOpaqueIdentities: opaqueIds.length }
 }
 
 const dynamic = await dynamicSmoke()
