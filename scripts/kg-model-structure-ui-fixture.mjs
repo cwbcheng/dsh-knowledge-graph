@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
+import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelReviewControllerSource } from './kg-model-review-controller-fixture.mjs'
 
-const fixture = modelStructureFixture()
+const fixture = process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
 if (process.argv.includes('--diagnostics')) {
   fixture.sourceUnits[0].text += ' 此处结果往往成立，但不保证必然成立。'
   fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')

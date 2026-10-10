@@ -4378,6 +4378,20 @@ function createHostPlugin(graphContractOnly) {
         const unitMap = new Map(Array.isArray(document.sourceUnits) && document.sourceUnits.length
           ? document.sourceUnits.map(unit => [unit.paragraph, unit.text])
           : splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+        let sourceContextIndex = null
+        const addSourceContext = (contexts, paragraph) => {
+          if (!unitMap.has(paragraph)) return
+          if (!sourceContextIndex) {
+            const paragraphs = [...unitMap.keys()].sort((a, b) => a - b)
+            sourceContextIndex = { paragraphs, positions: new Map(paragraphs.map((id, index) => [id, index])) }
+          }
+          const { paragraphs, positions } = sourceContextIndex, anchor = positions.get(paragraph)
+          // Stored identities can be sparse; adjacency belongs to source order.
+          for (let index = Math.max(0, anchor - 1); index <= anchor + 2 && index < paragraphs.length; index++) {
+            const id = paragraphs[index]
+            contexts.set(id, { paragraph: id, text: unitMap.get(id) })
+          }
+        }
         const citations = item => {
           const records = [...(Array.isArray(item?.evidence) ? item.evidence : [])]
           if (item?.quote) records.push({ paragraph: item.paragraph, quote: item.quote,
@@ -4528,18 +4542,14 @@ function createHostPlugin(graphContractOnly) {
             if (Number.isInteger(item.paragraph)) anchors.add(item.paragraph)
             for (const p of anchors) {
               // Adjacent units preserve split tables and the surrounding qualification.
-              for (let index = Math.max(0, p - 1); index <= p + 2; index++) {
-                if (unitMap.has(index)) contexts.set(index, { paragraph: index, text: unitMap.get(index) })
-              }
+              addSourceContext(contexts, p)
             }
           }
           for (const provenance of specification ? [...specification.slots.map(slot => slot.provenance),
             ...specification.branches.flatMap(branch => ['condition', 'mapping', 'boundary'].map(key => branch[key].provenance)),
             ...(options.structureSources === true ? specification.examples : structure.examples).map(example => example.provenance)] : []) {
             for (const citation of citations(provenance)) {
-              for (let p = Math.max(0, citation.paragraph - 1); p <= citation.paragraph + 2; p++) {
-                if (unitMap.has(p)) contexts.set(p, { paragraph: p, text: unitMap.get(p) })
-              }
+              addSourceContext(contexts, citation.paragraph)
             }
           }
           if (options.structureSources === true) {
