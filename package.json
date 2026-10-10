@@ -88,7 +88,7 @@
     "test:kg-pipeline": "node scripts/kg-pipeline-smoke.mjs",
     "gen:ontology": "node scripts/gen-ontology-inline.mjs",
     "test:kg-ontology": "node scripts/kg-ontology-smoke.mjs",
-    "test:kg-ontology-prompt": "node scripts/kg-ontology-prompt-smoke.mjs && node scripts/kg-aggregate-model-import-smoke.mjs",
+    "test:kg-ontology-prompt": "node scripts/kg-ontology-prompt-smoke.mjs && node scripts/kg-aggregate-model-import-smoke.mjs && node scripts/kg-source-relations-smoke.mjs && node scripts/gen-source-relations-inline.mjs --check",
     "test:kg-ontology-extraction": "node scripts/kg-ontology-extraction-smoke.mjs",
     "test:kg-ontology-client": "node scripts/kg-ontology-client-smoke.mjs",
     "test:kg-ontology-transport": "node scripts/kg-ontology-transport-smoke.mjs",

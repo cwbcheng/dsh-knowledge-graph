@@ -1669,10 +1669,31 @@ function createHostPlugin(graphContractOnly) {
                 "rule"
               ],
               "hint": "概念或联结模型所依赖的映射规律。"
+            },
+            {
+              "id": "source_relation",
+              "zh": "原文对应",
+              "family": "directional",
+              "weight": 6,
+              "from": [
+                "concept"
+              ],
+              "to": [
+                "concept"
+              ],
+              "aliases": [
+                "原文对应"
+              ],
+              "hint": "模型分支中有逐字证据的概念对应；保留 statement、condition、boundary、modelId、branchId，不表示已认证的普遍因果。"
             }
           ],
           "edgeAttributes": [
-            "role"
+            "role",
+            "modelId",
+            "branchId",
+            "statement",
+            "condition",
+            "boundary"
           ],
           "edgeAttributeLabels": {
             "role": {
@@ -1995,12 +2016,76 @@ function createHostPlugin(graphContractOnly) {
        // exactly as it was.
        function ontEdgeAttributes(carrier) { return ontSet(carrier, 'edgeAttributes', 'edgeAttributes') }
        function ontNodeAttributes(carrier) { return ontSet(carrier, 'nodeAttributes', 'nodeAttributes') }
+      // >>> GENERATED SOURCE RELATION TOOLS >>>
+      const SOURCE_RELATION_TOOLS = (function createSourceRelationTools() {
+        const attributes = ['modelId', 'branchId', 'statement', 'condition', 'boundary']
+        const attributeLimit = key => ['statement', 'condition', 'boundary'].includes(key) ? 2000
+          : key === 'modelId' ? 160 : key === 'branchId' ? 80 : 64
+        const fail = message => { throw Object.assign(new Error(message), { code: 'invalid_source_relation' }) }
+        const branchOf = (graph, modelId, branchId, from, to, nodes = new Map((graph.nodes || []).map(node => [node.id, node]))) => {
+          const model = nodes.get(modelId)
+          const structure = model?.modelStructure
+          const branch = structure?.branches?.find(item => item.id === branchId)
+          if (model?.type !== 'connection_model' || model.state === 'rejected' || !branch) fail('missing active model or branch')
+          for (const id of [from, to]) {
+            if (nodes.get(id)?.type !== 'concept' || nodes.get(id).state === 'rejected'
+              || !structure.slots.some(slot => slot.conceptId === id)) fail('endpoint must be a concept in the recorded model slots')
+          }
+          if (from === to) fail('a correspondence needs two distinct scoped endpoints')
+          for (const field of ['condition', 'mapping', 'boundary']) {
+            if (!branch[field]?.text?.trim()) fail('condition, mapping and interpretive boundary must be recorded')
+          }
+          const origin = branch.mapping.provenance
+          if (origin?.kind !== 'source' || !origin.quote || !Number.isSafeInteger(origin.paragraph)
+            || !origin.quote.includes(branch.mapping.text)) fail('the mapping must retain a literal source clause')
+          const condition = branch.condition.provenance
+          if (condition?.kind !== 'source' || !condition.quote || !Number.isSafeInteger(condition.paragraph)
+            || !condition.quote.includes(branch.condition.text)) fail('condition needs literal, locatable source context')
+          return branch
+        }
+        const build = (graph, modelId, branchId, fromNodeId, toNodeId, nodes) => {
+          const branch = branchOf(graph, modelId, branchId, fromNodeId, toNodeId, nodes)
+          const evidence = []
+          for (const field of ['mapping', 'condition']) {
+            const p = branch[field].provenance
+            if (!evidence.some(item => item.paragraph === p.paragraph && item.quote === p.quote)) evidence.push({ paragraph: p.paragraph, quote: p.quote })
+          }
+          return { fromNodeId, toNodeId, relation: 'source_relation', modelId, branchId,
+            statement: branch.mapping.text, condition: branch.condition.text, boundary: branch.boundary.text,
+            evidence, state: 'candidate' }
+        }
+        const errors = (graph, units) => {
+          const out = []
+          const nodes = new Map((graph.nodes || []).map(node => [node.id, node]))
+          for (const edge of graph.edges || []) {
+            if (edge?.relation !== 'source_relation') {
+              if (attributes.some(key => edge?.[key] !== undefined)) out.push({ targetId: edge.fromNodeId + '>' + edge.toNodeId,
+                message: 'source correspondence fields cannot be relabeled as another relation' })
+              continue
+            }
+            try {
+              for (const key of attributes) {
+                if (typeof edge[key] !== 'string' || !edge[key].trim() || edge[key].length > attributeLimit(key)) fail('missing or oversized ' + key)
+              }
+              const expected = build(graph, edge.modelId, edge.branchId, edge.fromNodeId, edge.toNodeId, nodes)
+              for (const key of attributes) if (edge[key] !== expected[key]) fail('edge no longer matches its recorded model ' + key)
+              for (const citation of expected.evidence) {
+                if (!units?.get(citation.paragraph)?.includes(citation.quote)) fail('mapping or condition quotation does not match its source unit')
+                if (!edge.evidence?.some(item => item.paragraph === citation.paragraph && item.quote === citation.quote)) fail('mapping or condition evidence is missing')
+              }
+            } catch (error) { out.push({ targetId: edge.fromNodeId + '>' + edge.toNodeId, message: error.message }) }
+          }
+          return out
+        }
+        return { attributes, attributeLimit, build, errors }
+      })()
+      // <<< END SOURCE RELATION TOOLS <<<
        function pickDeclaredAttributes(source, allowed) {
          if (!allowed || allowed.size === 0 || !source || typeof source !== 'object') return null
          const out = {}
          for (const key of allowed) {
            const value = source[key]
-           if (typeof value === 'string' && value.trim()) out[key] = value.trim().slice(0, 64)
+           if (typeof value === 'string' && value.trim()) out[key] = value.trim().slice(0, SOURCE_RELATION_TOOLS.attributeLimit(key))
            else if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
          }
          return Object.keys(out).length > 0 ? out : null
@@ -2713,6 +2798,7 @@ function createHostPlugin(graphContractOnly) {
         '15. 高知识密度 worked example 不得只因是例子而整体省略：若例子明确命名一个可复用对象或定义，并在同段或紧邻段落用于引出具体行为、误区、机制或验证区分，至少保留能把该例子连接到后续机制的最小 example/definition/concept 锚点。纯修辞且不承载这种连接作用的例子仍可省略。',
         '16. 对以【图示关系】【表格】【统计图】标记的视觉转写，图中明确编码的节点、类别、分组、对应、包含、箭头/连线、先后顺序以及具有图例语义的颜色/形状都是候选知识，不能仅因它们表现为版面或颜色而当作装饰省略。能准确映射到允许 relation 时建立有直接 evidence 的边；若图中关系真实明确但不适合 12 种 relation，至少创建一个原子 fact/claim 节点忠实记录“谁与谁通过何种可见方式关联”，禁止整段丢弃或强行套用错误关系。纯粹位置且无图例/标签语义的 layout 仍可省略。',
         '17. 输出前自查：节点粒度是否与内容单元一致（既没有逐句拆点，也没有把互不依赖的独立结论压成一个“主结论大节点”）？fact/claim 是否分对？counter_example 是否真的在反驳一个命题而不是仅描述负向/对照结果？核心稳定对象是否有 concept anchor？显式纠偏或留待后文的信息是否被遗漏？高知识密度 worked example 是否被整段丢失？是否保留“可能/多数/必须/如果”等强度？是否存在比 supports 更精确的关系？证据是否真的证明节点和关系？',
+        '18. 古典语句“失X而后Y”“X生Y”“修之X其德乃Y”等要保留各步对应与各自条件；“失道而后德”不可改写为“道导致德”，“知足知止可以长久”不可改写为必然长久。概念挂接到同一模型或同一段不是端点之间的关系证据。若对应不能诚实映射到允许关系，记录有完整条件与原文的命题，勿强套因果；多段模型必须按每段证据分别建模，不用一段引文支撑另一段的映射。',
       ].join(NL)
 
       /**
@@ -3319,7 +3405,9 @@ function createHostPlugin(graphContractOnly) {
       function mechanismCoverageNeededHost(batch, graph) {
         const units = batch && Array.isArray(batch.units) ? batch.units : []
         if (units.length === 0) return false
-        const mechanismCue = /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越)/g
+        const mechanismCue = ontIdOf(graph) === AGGREGATE_ONTOLOGY
+          ? /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越|而后|故能|是以|则|乃|生於|生一|一生二|二生三|三生万物)/g
+          : /(?:导致|因此|所以|于是|从而|因而|进而|继而|随后|最终|无法|依赖|变成|成为|误认为|等同|如果|一旦|只有|必须|先|再|然后|接着|直到|越来越)/g
         const boundaryCue = /(?:并非|并不是|不是说|并不意味着|不意味着|问题不在|而是)/
         const forwardCue = /(?:后文|下文|接下来|留待后文|本书将|将在后文|后面会|随后会|将会回答|将会解释)/
         const nodesByParagraph = new Map()
@@ -5429,6 +5517,10 @@ function createHostPlugin(graphContractOnly) {
             add('model_structure_invalid', true, 'error', 'type', 'node', issue.nodeId,
               '联结模型结构无效', issue.message, [], { action: 'none' })
           }
+        }
+        for (const issue of SOURCE_RELATION_TOOLS.errors(graph || { nodes: [], edges: [] }, paragraphTexts)) {
+          add('source_relation_invalid', true, 'error', 'relation', 'edge', issue.targetId,
+            '原文对应缺少有效的模型分支、条件或证据', issue.message, [], { action: 'none' })
         }
           for (const issue of IMAGE_NODE_TOOLS.errors(graph || { nodes: [], edges: [] }, paragraphTexts)) {
           add('image_source_invalid', true, 'error', 'grounding', issue.targetKind, issue.targetId,
@@ -14650,6 +14742,7 @@ function createHostPlugin(graphContractOnly) {
         buildSourceManifest: buildSourceManifestHost,
         authenticateGraphEvidence: authenticateGraphEvidenceHost,
         validateGraphInvariants: validateGraphInvariantsHost,
+        mechanismCoverageNeeded: mechanismCoverageNeededHost,
         exactOrUniqueTypographicQuote: exactOrUniqueTypographicQuoteHost,
         systemPrompt: SYSTEM_PROMPT,
         ontologySystemPrompts: Object.keys(ONTOLOGY_PROFILES).reduce((out, id) => { out[id] = systemPromptFor(id); return out }, {}),

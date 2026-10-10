@@ -2,6 +2,7 @@ import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import './gen-image-nodes-inline.mjs'
 import './gen-model-structure-inline.mjs'
+import './gen-source-relations-inline.mjs'
 import './gen-generation-structure-inline.mjs'
 import './gen-model-consumption-inline.mjs'
 import './gen-model-chain-inline.mjs'
@@ -1630,7 +1631,7 @@ function writeJson(res, status, body) {
 host = host.replace('      // Periodically purge finished tasks (kept for 2h after completion).', helpers + '\n      // Periodically purge finished tasks (kept for 2h after completion).')
 
 const buildHash = createHash('sha256').update(host)
-for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs', 'kg-image-nodes.mjs']) {
+for (const source of ['kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs', 'kg-image-nodes.mjs', 'kg-source-relations.mjs']) {
   buildHash.update('\0').update(source).update('\0')
     .update(readFileSync(new URL('../src/' + source, import.meta.url)))
 }
@@ -1638,6 +1639,7 @@ host = `export const hostBuildSha256 = '${buildHash.digest('hex')}'\n` + host
 
 writeFileSync(new URL('../lib/index.js', import.meta.url), host)
 copyFileSync(new URL('../src/kg-store.mjs', import.meta.url), new URL('../lib/kg-store.mjs', import.meta.url))
+copyFileSync(new URL('../src/kg-source-relations.mjs', import.meta.url), new URL('../lib/kg-source-relations.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-markdown.mjs', import.meta.url), new URL('../lib/kg-markdown.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-ontology.mjs', import.meta.url), new URL('../lib/kg-ontology.mjs', import.meta.url))
 copyFileSync(new URL('../src/kg-image-nodes.mjs', import.meta.url), new URL('../lib/kg-image-nodes.mjs', import.meta.url))

@@ -50,7 +50,8 @@ try {
   const saved = await post('graph-commit', request)
   assert.equal(saved.revision, 2, JSON.stringify(saved.error))
   assert(saved.graph.graphOntology.nodeTypes.some(type => type.id === 'connection_model'))
-  assert.deepEqual(saved.graph.graphOntology.edgeAttributes, ['role'])
+  assert(saved.graph.graphOntology.edgeAttributes.includes('role'))
+  assert(saved.graph.graphOntology.edgeAttributes.includes('condition'))
   assert(!saved.graph.graphOntology.nodeTypes.some(type => type.kind), 'classic node semantics are preserved')
   assert.equal((await post('graph-commit', request)).error.code, 'revision_conflict')
   const bad = structuredClone(model); bad.id = 'bad'; bad.modelStructure.slots[0].provenance.quote = '编造摘录'
