@@ -6,8 +6,10 @@ import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
 import { modelReviewControllerSource } from './kg-model-review-controller-fixture.mjs'
+import { modelCitationFixture, modelCitationBrowserNavigatorSource } from './kg-model-citation-locator-fixture.mjs'
 
-const fixture = process.argv.includes('--source-table')
+const citationNavigation = process.argv.includes('--citation-navigation'), citationWindow = process.argv.includes('--citation-window')
+const fixture = citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1, long: process.argv.includes('--long-citation') }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
   : process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
 if (process.argv.includes('--diagnostics')) {
@@ -26,18 +28,20 @@ const rpc=async(method,args,signal)=>{const response=await fetch('/api/dsh-knowl
 const documentIdOfGraph=graph=>graph?.source?.documentId;
 ${quoteLocator}
 ${modelReviewControllerSource()}
+${citationNavigation ? modelCitationBrowserNavigatorSource() : ''}
 function App(){
   const [view,setView]=React.useState(null),[reference,setReference]=React.useState(null);
   const state=React.useRef({graphCommitQueueRef:{current:Promise.resolve()},currentResultRef:{current:null},graphRevisionRef:{current:0},verifyBusyRef:{current:false}});
   const refresh=async()=>{const result=await rpc('document-export',{documentId:'connection-fixture',includeSourceText:true});if(result.error)throw new Error(result.error.message);const next={graph:result.graph,sourceText:result.sourceText};state.current.currentResultRef.current=next;state.current.graphRevisionRef.current=result.revision;setView(next)};
   React.useEffect(()=>{refresh().catch(reason=>setReference({error:reason.message}))},[]);
+  const citationNavigator=React.useMemo(()=>view&&${citationNavigation ? `createCitationNavigator(view,reference=>setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1})),${citationWindow})` : 'null'},[view]);
   if(!view)return h('main',{className:'kg-root'},h('p',{role:'status'},'正在读取隔离模型…'));
   state.current.resultView=view;state.current.onSaved=setView;
   const controller=createModelReviewController(state.current,{call:rpc});
-  const locate=reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))};
+  const locate=citationNavigator||(reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))});
   return h('main',{className:'kg-root'},h('h1',null,'联结模型 · 结构核对'),h(KGViewer.ConnectionModelPanel,{documentId:'connection-fixture',revision:state.current.graphRevisionRef.current,
     load:(args,signal)=>rpc('connection-models',args,signal),learningCall:(args,signal)=>rpc('learning-mode',args,signal),onStructure:controller,onRoles:controller,onRefresh:refresh,onLocate:locate}),
-    h('p',{role:'status'},reference?JSON.stringify(reference):''));
+    h('p',{role:'status'},reference?JSON.stringify(reference):''), ${citationNavigation ? `h('section',{'aria-label':'原文定位结果'},KGViewer.makeView(view.graph,view.sourceText).paragraphs.map((span,index)=>h('p',{key:index,id:'kg-para-'+index,'data-located':reference?.readingParagraph===index},view.sourceText.slice(span.start,span.end))))` : 'null'});
 }
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
 </script></body></html>`

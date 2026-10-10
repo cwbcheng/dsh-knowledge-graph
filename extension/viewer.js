@@ -4149,7 +4149,7 @@
           finally { setSaving(false) }
         }
         const refButton = reference => h('button', { type: 'button', className: 'kg-secondary',
-          onClick: () => act(() => api.current.onLocate(reference)) }, '原文 P' + (reference.paragraph + 1))
+          onClick: () => act(() => api.current.onLocate({ ...reference, documentId, revision, sourceQuoteOnly: true, sourceCitation: true })) }, '原文 P' + (reference.paragraph + 1))
         const evidence = item => item.citations?.length ? item.citations.map((citation, index) => h('div', { key: index, className: 'kg-model-evidence' },
           refButton(citation), h('p', null, citation.quote))) : h('p', { className: 'kg-model-meta' }, '尚无可匹配当前原文的引用')
         const title = model => model.inputs.length && model.outputs.length
@@ -4413,7 +4413,7 @@
         const locate = reference => Promise.resolve().then(() => api.current.onLocate?.(reference)).catch(reason => setPairError(reason.message || '原文定位失败'))
         const roleLabels = { input: '输入', output: '输出', unknown: '待核对' }
         const citations = item => item.citations.length ? item.citations.map((citation, index) => h('div', { key: index, className: 'kg-model-evidence' },
-          h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate(citation) }, '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote))) :
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ ...citation, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) }, '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote))) :
           h('p', { className: 'kg-model-meta' }, '暂无匹配当前原文的引用')
         const ports = (detail, role) => {
           const items = detail.ports.filter(port => port.role === role)
