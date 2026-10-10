@@ -273,12 +273,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const options = {
                 documentId: canonicalDocumentInputHost(a.documentId, true),
                 kind: a.kind,
+                nodeId: a.nodeId,
                 status: a.status,
                 limit: Number.isInteger(a.limit) ? a.limit : 100,
                 reviewOnly: a.reviewOnly,
               }
               if (a.documentId != null && a.documentId !== '' && !options.documentId) return writeJson(res, 200,
                 { error: { code: 'invalid_input', message: 'documentId 必须为不超过 4096 字的非空字符串；未截断或改写标识' } })
+              if (a.nodeId !== undefined && (typeof a.nodeId !== 'string' || !a.nodeId || !options.documentId)) return writeJson(res, 200,
+                { error: { code: 'invalid_input', message: '按节点查询候选需要 documentId 和非空字符串 nodeId' } })
               try {
                 const store = await getSqliteStore()
                 // Candidate reads keep opaque identities, including whitespace.

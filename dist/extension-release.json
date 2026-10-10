@@ -1,6 +1,6 @@
 {
   "version": "1.0.1",
-  "crxSha256": "72490a11600b72b97096b9f96817153e2ecc8371c1060d53b389a9f0fcc9073d",
+  "crxSha256": "dce8f75e94932077fc0cedcdf0fe91bf339ec2c8b41bdc8c9526eaa6a0d5aa4b",
   "files": {
     "background.js": "87540ccc3c84a1b9f4905b1142846a79f92348a997cc162b37bc38eca08e2b2c",
     "content.js": "f2c1296e9c7135d725f06e6bd2c999559cd32051c7f39b6ad70dd0bc69f2db0d",

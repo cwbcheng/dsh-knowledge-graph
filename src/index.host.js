@@ -2362,6 +2362,7 @@ function createHostPlugin(graphContractOnly) {
          const documentId = candidateDocumentId(graph)
          const requestedKind = options.kind === 'entity' || options.kind === 'claim' ? options.kind : 'all'
          const requestedStatus = CANDIDATE_STATUSES.has(options.status) ? options.status : null
+         const nodeId = typeof options.nodeId === 'string' ? options.nodeId : null
          const limit = Math.max(1, Math.min(500, Number.isInteger(options.limit) ? options.limit : 100))
          const entityTypes = ontEntityCandidates(graph)
          const claimTypes = ontClaimCandidates(graph)
@@ -2369,6 +2370,7 @@ function createHostPlugin(graphContractOnly) {
          const reviewOnly = options.reviewOnly === true
          for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
            if (!node || typeof node.id !== 'string' || (!reviewOnly && (typeof node.text !== 'string' || !node.text.trim()))) continue
+           if (nodeId !== null && node.id !== nodeId) continue
            const kinds = []
            if (entityTypes.has(node.type)) kinds.push('entity')
            if (claimTypes.has(node.type)) kinds.push('claim')
@@ -2402,7 +2404,7 @@ function createHostPlugin(graphContractOnly) {
          const status = CANDIDATE_STATUSES.has(args.status) ? args.status : ''
          const key = candidateKeyFromArgs(args)
          if (!graph || !key || !status) return { error: { code: 'invalid_input', message: '候选更新缺少 graph、kind、nodeId 或合法 status' } }
-         const rows = candidateRowsFromGraph(graph, { kind: args.kind, limit: 500, reviewOnly: args.reviewOnly })
+         const rows = candidateRowsFromGraph(graph, { kind: args.kind, nodeId: args.nodeId, limit: 1, reviewOnly: args.reviewOnly })
          const candidate = rows.find(row => row.kind === args.kind && row.nodeId === args.nodeId)
          if (!candidate) return { error: { code: 'not_found', message: '找不到要更新的候选' } }
          candidateReviewState.set(key, status)
@@ -15010,10 +15012,11 @@ function createHostPlugin(graphContractOnly) {
       harness.handle('candidate-list', async (args) => {
          const a = args && typeof args === 'object' ? args : {}
          const documentId = typeof a.documentId === 'string' && a.documentId ? a.documentId : candidateDocumentId(a.graph)
+         if (a.nodeId !== undefined && (typeof a.nodeId !== 'string' || !a.nodeId)) return { error: { code: 'invalid_input', message: 'nodeId 必须为非空字符串' } }
          const canonical = documentId ? loadCanonicalDocumentHost(documentId) : null
          const graph = canonical && canonical.graph ? canonical.graph : (a.graph && typeof a.graph === 'object' ? a.graph : null)
          if (!graph || !Array.isArray(graph.nodes)) return { candidates: [], source: 'dynamic', requiresGraph: true }
-         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit, reviewOnly: a.reviewOnly }), source: canonical ? 'dynamic-canonical' : 'dynamic' }
+         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, nodeId: a.nodeId, status: a.status, limit: a.limit, reviewOnly: a.reviewOnly }), source: canonical ? 'dynamic-canonical' : 'dynamic' }
        })
 
        harness.handle('candidate-update', async (args) => {
