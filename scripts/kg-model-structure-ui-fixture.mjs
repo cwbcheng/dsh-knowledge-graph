@@ -64,6 +64,30 @@ if (process.argv.includes('--learning-citation-records')) {
     }
   }
 }
+if (process.argv.includes('--feedback-citation-records')) {
+  // Seed typed source results through the real explicit-write route, before
+  // freezing every record for read-only browser citation checks.
+  const base = { documentId: harness.document.documentId, modelId: 'taxi', expectedRevision: 1 }
+  for (const predictionId of ['diagnosis-prediction-a', 'diagnosis-prediction-b', 'learning-challenge-a', 'learning-challenge-b']) {
+    const prediction = (await harness.post({ ...base, action: 'get', attemptId: predictionId })).attempt
+    if (!prediction?.revealedAt) throw new Error('--feedback-citation-records requires diagnosis and learning citation records')
+    const citation = prediction.task.references.find(item => item.nodeId === 'taxi').citations[0]
+    const response = { ...feedbackResponse('reference'), sourceName: '', sourceLocator: '',
+      reference: { nodeId: 'taxi', paragraph: citation.paragraph, quote: citation.quote.slice(-1900).trim() } }
+    for (const name of ['a', 'b', ...(predictionId.endsWith('-a') ? ['correction'] : [])]) {
+      const attemptId = 'feedback-book-' + predictionId + '-' + name
+      const result = await harness.post({ ...base, action: 'save-result', predictionId, attemptId, expectedVersion: prediction.version,
+        response: { ...response, content: attemptId + ' · 合成资料对照，尚未独立核验',
+          ...(name === 'correction' ? { parentResultId: 'feedback-book-' + predictionId + '-a', revisionReason: '另行明确记录的更正，保留先前摘录。' } : {}) } })
+      if (result.error) throw new Error(result.error.message)
+    }
+  }
+  const hiddenId = 'learning-challenge-hidden'
+  const hidden = (await harness.post({ ...base, action: 'get', attemptId: hiddenId })).attempt
+  const result = await harness.post({ ...base, action: 'save-result', predictionId: hiddenId, expectedVersion: hidden.version,
+    attemptId: 'feedback-hidden-challenge', response: feedbackResponse('reflection') })
+  if (result.error) throw new Error(result.error.message)
+}
 if (process.argv.includes('--understanding-citation-records')) {
   // Explicit synthetic learner records let browser checks switch snapshots
   // without writing any personal data during citation navigation.
