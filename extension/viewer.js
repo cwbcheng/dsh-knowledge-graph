@@ -4319,7 +4319,7 @@
                 tab === 'source' ? h('div', { className: 'kg-model-source' },
                   h('h4', null, '模型引用'), evidence(detail.model),
                   selectedMaterial ? evidence(detail.related.find(item => item.nodeId === selectedMaterial) || { citations: [] }) : null,
-                  h('h4', null, '相关原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, onLocate: reference => act(() => api.current.onLocate(reference)) })) : null,
+                  h('h4', null, '相关原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: reference => act(() => api.current.onLocate(reference)) })) : null,
                 tab === 'review' ? h('div', null,
                   h('p', { className: 'kg-model-meta' }, '方向核对不代表事实成立；错误示例和转写内容仍需分别复核。'),
                   detail.ports.filter(item => item.editable).map(item => h('div', { key: item.edgeIndex }, h('label', { className: 'kg-model-review-row' }, item.node.text,
@@ -4336,10 +4336,18 @@
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null)))
       }
 
-      function ConnectionSourceUnits({ units, onLocate }) {
+      function ConnectionSourceUnits({ units, documentId, revision, onLocate }) {
         const runs = []
         for (const unit of units || []) {
-          if (!runs.length || runs.at(-1).at(-1).paragraph + 1 !== unit.paragraph) runs.push([])
+          const previous = runs.at(-1)?.at(-1)
+          // Paragraph identities can be sparse. Only join known neighboring
+          // source positions; filtered-out context must keep a table incomplete.
+          const adjacent = previous && (previous.sourcePosition === undefined && unit.sourcePosition === undefined
+            ? previous.paragraph + 1 === unit.paragraph
+            : Number.isSafeInteger(previous.sourcePosition) && previous.sourcePosition >= 0
+              && Number.isSafeInteger(unit.sourcePosition) && unit.sourcePosition >= 0
+              && previous.sourcePosition + 1 === unit.sourcePosition)
+          if (!adjacent) runs.push([])
           runs.at(-1).push(unit)
         }
         return runs.map(run => {
@@ -4350,9 +4358,12 @@
             const table = tables.get(index)
             if (table && table.first !== index) return null
             return h('div', { key: unit.paragraph, className: 'kg-model-material' },
-              h('button', { type: 'button', className: 'kg-secondary', onClick: () => onLocate({ paragraph: unit.paragraph }) }, 'P' + (unit.paragraph + 1)),
+              (table ? run.slice(index, table.last + 1) : [unit]).map(part => h('button', { key: part.paragraph,
+                type: 'button', className: 'kg-secondary', onClick: () => onLocate({ documentId, revision, paragraph: part.paragraph,
+                  quote: part.text.slice(0, 2000), sourceQuoteOnly: true }) }, 'P' + (part.paragraph + 1))),
               table ? h(React.Fragment, null, table.prefix ? h('p', null, table.prefix) : null,
                 h('div', { className: 'kg-source-table-scroll' }, h('table', { className: 'kg-source-table' },
+                  table.caption ? h('caption', null, table.caption) : null,
                   h('tbody', null, table.rows.map((row, rowIndex) => h('tr', { key: rowIndex }, row.map((cell, cellIndex) => h(rowIndex === 0 ? 'th' : 'td', {
                     key: cellIndex, colSpan: cell.colspan, rowSpan: cell.rowspan, ...(rowIndex === 0 ? { scope: 'col' } : {}) }, cell.text))))))),
                 table.suffix ? h('p', null, table.suffix) : null) : h('p', null, unit.text))
@@ -4462,7 +4473,7 @@
                 h('p', { className: 'kg-model-meta' }, '条件尚未单独结构化，需核对原文限定。'), citations(detail.model))),
             row('输出', detail => ports(detail, 'output')), row('未定角色的端点', detail => ports(detail, 'unknown')),
             row('规律、例子与验证材料', materials),
-            row('原文上下文', detail => h('details', null, h('summary', null, '展开原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, onLocate: locate })))) : null)
+            row('原文上下文', detail => h('details', null, h('summary', null, '展开原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: locate })))) : null)
       }
 
       function ConnectionModelChain({ documentId, revision, modelId, active = true, load, onLocate, onOpen, onStructure }) {
