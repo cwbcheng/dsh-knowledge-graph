@@ -5263,6 +5263,7 @@ export default function clientPlugin() {
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
         const location = useConnectionModelLocation(locationScope, active)
+        const reviewLocation = useConnectionModelLocation(JSON.stringify([locationScope, saving, !!busy, importBusy]), active)
         const refreshContext = useRef(null), refreshMounted = useRef(true)
         if (!refreshContext.current || refreshContext.current.scope !== locationScope || refreshContext.current.active !== active
           || refreshContext.current.roles !== roles || refreshContext.current.preview !== preview
@@ -5411,7 +5412,10 @@ export default function clientPlugin() {
           setBranchId(item.branchId); setExampleOffset(0); setFocusField(item.field)
           setFieldRequest(value => value + 1)
         }
-        const act = async fn => { try { await fn() } catch (reason) { setDetailError(reason.message || '操作未完成') } }
+        const review = () => {
+          if (saving || busy || !detail || detail.documentId !== documentId || detail.revision !== revision || detail.model?.nodeId !== modelId) return false
+          return reviewLocation(detail.model, api.current.onReview, reason => setDetailError(reason.message || '操作未完成'))
+        }
         const refresh = async () => {
           const id = ++refreshOpening.sequence
           const isCurrent = () => refreshMounted.current && refreshContext.current === refreshOpening
@@ -5622,7 +5626,7 @@ export default function clientPlugin() {
                   !detail.ports.some(item => item.editable) ? h('p', null, '暂无可直接核对方向的概念端点') : null,
                   h('div', { className: 'kg-model-toolbar' },
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy || !Object.keys(roles).length || !onRoles, onClick: () => reviewRoles(false) }, '预览方向修改'),
-                    onReview ? h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: () => act(() => api.current.onReview(detail.model)) }, '审阅模型与相关关系') : null),
+                    onReview ? h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: review }, '审阅模型与相关关系') : null),
                   preview ? h('div', null, h('h4', null, '待确认的方向修改'), preview.diff.map((item, index) => h('p', { key: index }, item.text + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对'))),
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null)))
@@ -18173,10 +18177,15 @@ export default function clientPlugin() {
           graphCommitQueueRef.current = job.catch(() => {})
           return job
         }
-        const reviewConnectionModel = async model => {
-          await locateConsumptionReference(model)
+        const reviewConnectionModel = async (model, stillCurrent = () => true) => {
+          if (!stillCurrent()) return false
+          const located = await locateConsumptionReference(model, () => currentResultRef.current === resultView && stillCurrent())
+          // Loading the requested node window may publish a new view itself.
+          // Keep the caller's selection fence after that successful navigation.
+          if (!located || !stillCurrent()) return false
           setQuestionDraft('核对这个联结模型及全部相关关系：输入、输出、适用条件是否有原文依据；区分规律、类型说明、假设和错误示例。保留因素材料，不把材料冒充概念。先给出有来源的修改建议，不直接改图。')
           handleQuestionNode({ id: model.nodeId })
+          return true
         }
         const showImageNodes = async () => {
           if (imageNodesSubmitting.current || taskId || phase === 'extracting' || !resultView) return
