@@ -11,9 +11,12 @@ import { modelReviewControllerSource } from './kg-model-review-controller-fixtur
 import { modelCitationFixture, modelCitationBrowserNavigatorSource } from './kg-model-citation-locator-fixture.mjs'
 
 const citationNavigation = process.argv.includes('--citation-navigation'), citationWindow = process.argv.includes('--citation-window')
+const citationDocumentId = process.argv.includes('--max-document-id') ? 'opaque-document:' + 'x'.repeat(4080)
+  : process.argv.includes('--opaque-document-id') ? 'opaque-document:' + 'x'.repeat(214)
+  : process.argv.includes('--padded-document-id') ? ' connection-fixture ' : undefined
 const fixture = citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
   long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages'),
-  legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages') }) : process.argv.includes('--source-table')
+  legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages'), documentId: citationDocumentId }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
   : process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
 if (process.argv.includes('--diagnostics')) {
@@ -121,7 +124,7 @@ ${citationNavigation ? modelCitationBrowserNavigatorSource() : ''}
 function App(){
   const [view,setView]=React.useState(null),[reference,setReference]=React.useState(null),[modelsActive,setModelsActive]=React.useState(true);
   const state=React.useRef({graphCommitQueueRef:{current:Promise.resolve()},currentResultRef:{current:null},graphRevisionRef:{current:0},verifyBusyRef:{current:false}});
-  const refresh=async()=>{const result=await rpc('document-export',{documentId:'connection-fixture',includeSourceText:true});if(result.error)throw new Error(result.error.message);const next={graph:result.graph,sourceText:result.sourceText};state.current.currentResultRef.current=next;state.current.graphRevisionRef.current=result.revision;setView(next)};
+  const refresh=async()=>{const result=await rpc('document-export',{documentId:${JSON.stringify(fixture.documentId)},includeSourceText:true});if(result.error)throw new Error(result.error.message);const next={graph:result.graph,sourceText:result.sourceText};state.current.currentResultRef.current=next;state.current.graphRevisionRef.current=result.revision;setView(next)};
   React.useEffect(()=>{refresh().catch(reason=>setReference({error:reason.message}))},[]);
   const citationNavigator=React.useMemo(()=>view&&${citationNavigation ? `createCitationNavigator(view,reference=>setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1})),${citationWindow})` : 'null'},[view]);
   if(!view)return h('main',{className:'kg-root'},h('p',{role:'status'},'正在读取隔离模型…'));
@@ -129,7 +132,7 @@ function App(){
   const controller=createModelReviewController(state.current,{call:rpc});
   const locate=${process.argv.includes('--citation-hold-controls') ? `async(reference,stillCurrent)=>{try{if(window.__citationPaused){await new Promise((resolve,reject)=>{(window.__citationHolds||=[]).push({resolve,reject})})}return await citationNavigator(reference,stillCurrent)}finally{window.__citationAdapterCompleted=(window.__citationAdapterCompleted||0)+1}}` : `citationNavigator||(reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))})`};
   return h('main',{className:'kg-root'},h('h1',null,'联结模型 · 结构核对'),${process.argv.includes('--citation-switch-controls') ? "h('button',{onClick:()=>setModelsActive(value=>!value)},modelsActive?'查看知识图':'返回联结模型')," : ''}
-    h('div',{style:{display:modelsActive?'block':'none'}},h(KGViewer.ConnectionModelPanel,{documentId:'connection-fixture',revision:state.current.graphRevisionRef.current,active:modelsActive,
+    h('div',{style:{display:modelsActive?'block':'none'}},h(KGViewer.ConnectionModelPanel,{documentId:${JSON.stringify(fixture.documentId)},revision:state.current.graphRevisionRef.current,active:modelsActive,
     load:(args,signal)=>rpc('connection-models',args,signal),learningCall:(args,signal)=>rpc('learning-mode',args,signal),onStructure:controller,onRoles:controller,onRefresh:refresh,onLocate:locate})),
     h('p',{role:'status'},reference?JSON.stringify(reference):''), ${citationNavigation ? `h('section',{'aria-label':'原文定位结果'},KGViewer.makeView(view.graph,view.sourceText).paragraphs.map((span,index)=>h('p',{key:index,id:'kg-para-'+index,'data-located':reference?.readingParagraph===index},view.sourceText.slice(span.start,span.end))))` : 'null'});
 }
