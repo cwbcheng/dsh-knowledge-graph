@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 const name = 'dsh-knowledge-graph'
 // These are the runtime outputs of build-lib.mjs and build-client.mjs.
 const modules = ['index.js', 'client.js', 'kg-store.mjs', 'kg-markdown.mjs', 'kg-ontology.mjs',
-  'kg-image-nodes.mjs', 'kg-model-structure.mjs', 'kg-model-chain.mjs', 'kg-target-map.mjs']
+  'kg-image-nodes.mjs', 'kg-model-structure.mjs', 'kg-model-chain.mjs', 'kg-target-map.mjs', 'kg-source-relations.mjs']
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 
 function ensureDirectory(path) {

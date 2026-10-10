@@ -486,8 +486,11 @@ const AGGREGATE = {
   // Graph reads/edits use this extension; extraction prompts keep the 8/12 base.
   manualModels: {
     nodeTypes: LEARNING_VIEW.nodeTypes.filter(type => type.id === 'connection_model'),
-    relationTypes: LEARNING_VIEW.relationTypes.filter(relation => ['maps_between', 'has_rule'].includes(relation.id)),
-    edgeAttributes: ['role'],
+    relationTypes: [...LEARNING_VIEW.relationTypes.filter(relation => ['maps_between', 'has_rule'].includes(relation.id)),
+      { id: 'source_relation', zh: '原文对应', family: FAMILY_DIRECTIONAL, weight: 6,
+        from: ['concept'], to: ['concept'], aliases: ['原文对应'],
+        hint: '模型分支中有逐字证据的概念对应；保留 statement、condition、boundary、modelId、branchId，不表示已认证的普遍因果。' }],
+    edgeAttributes: ['role', 'modelId', 'branchId', 'statement', 'condition', 'boundary'],
     edgeAttributeLabels: { role: { input: '入', output: '出' } },
   },
 }

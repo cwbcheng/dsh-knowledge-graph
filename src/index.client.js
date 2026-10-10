@@ -1489,6 +1489,7 @@ export default function clientPlugin() {
       }
 
       function edgeRelationLabel(edge) {
+        if (edge?.relation === 'source_relation' && edge.statement) return '原文·' + (edge.statement.length > 32 ? edge.statement.slice(0, 32) + '…' : edge.statement)
         const base = REL_LABEL[edge && edge.relation] || (edge && edge.relation) || ''
         const parts = []
         for (const key of Object.keys(EDGE_ATTRIBUTE_LABELS)) {
@@ -12471,6 +12472,13 @@ export default function clientPlugin() {
                 }, label + ' · ' + (nodeById.get(id)?.text || id), h('small', null, ' (' + id + ')')))),
               h('div', { className: 'kg-node-detail-quote' }, '关系：' + (REL_LABEL[edgeDetail.relation] || edgeDetail.relation)
                 + attributeDetailSuffix(edgeDetail)),
+              edgeDetail.relation === 'source_relation' ? h('div', { className: 'kg-source-relation-detail' },
+                h('p', null, '原文对应：' + edgeDetail.statement),
+                h('p', null, '语境／条件：' + edgeDetail.condition),
+                h('p', null, '解释边界：' + edgeDetail.boundary),
+                h('p', null, '文本对应仍需解读审校；不据此认证为普遍因果。'),
+                (edgeDetail.evidence || []).map((citation, index) => h('blockquote', { key: index },
+                  'P' + (citation.paragraph + 1) + '：' + citation.quote))) : null,
               h('div', { className: 'kg-node-detail-actions' },
                 !['visual_source', 'visual_reference'].includes(edgeDetail.relation) && typeof onQuestionEdge === 'function'
                   ? h('button', {

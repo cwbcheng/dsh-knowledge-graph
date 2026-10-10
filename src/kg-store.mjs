@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { getOntology, ontologyIdOf, rawProfiles, withManualModels } from './kg-ontology.mjs'
+import { createSourceRelationTools } from './kg-source-relations.mjs'
 import { createImageNodeTools } from './kg-image-nodes.mjs'
 import { createModelStructureTools, createModelConsumptionTools } from './kg-model-structure.mjs'
 import { createTargetMapTools } from './kg-target-map.mjs'
@@ -246,7 +247,8 @@ const ENTITY_TYPES = new Set(['concept', 'definition'])
 const CLAIM_TYPES = new Set(['fact', 'claim', 'inference', 'rule', 'definition', 'counter_example'])
 const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
 const NODE_ATTRIBUTES = new Set(Object.values(rawProfiles()).flatMap((profile) => profile.nodeAttributes || []))
-const EDGE_ATTRIBUTES = new Set(Object.values(rawProfiles()).flatMap((profile) => profile.edgeAttributes || []))
+const SOURCE_RELATION_TOOLS = createSourceRelationTools()
+const EDGE_ATTRIBUTES = new Set(Object.values(rawProfiles()).flatMap((profile) => withManualModels(profile).edgeAttributes || []))
 
 // A completed review is recoverable only until its report has been committed.
 // Current and historical revisions are atomic publication evidence, even after
@@ -354,7 +356,7 @@ function declaredAttributes(value, allowed) {
   const attributes = {}
   for (const key of allowed || []) {
     const item = value?.[key]
-    if (typeof item === 'string' && item.trim()) attributes[key] = item.trim().slice(0, 64)
+    if (typeof item === 'string' && item.trim()) attributes[key] = item.trim().slice(0, SOURCE_RELATION_TOOLS.attributeLimit(key))
     else if (typeof item === 'number' && Number.isFinite(item)) attributes[key] = item
   }
   return attributes
@@ -947,6 +949,8 @@ export class SqliteKnowledgeStore {
         nodes = projected.nodes; edges = projected.edges
       }
       const structureErrors = nodes.some(node => node.modelStructure != null) ? modelStructureTools.errors({ ...graph, nodes }, structureUnits) : []
+      const relationErrors = SOURCE_RELATION_TOOLS.errors({ ...graph, nodes, edges }, structureUnits)
+      if (relationErrors.length) throw Object.assign(new Error(relationErrors[0].message), { code: 'invalid_source_relation' })
       if (structureErrors.length) throw Object.assign(new Error(structureErrors[0].message), { code: 'invalid_model_structure' })
       // Keep the overwritten graph and source units in the same transaction.
       // Older revisions without snapshots remain explicitly non-restorable.
