@@ -5,11 +5,16 @@ import { once } from 'node:events'
 import { runInNewContext } from 'node:vm'
 import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { modelRefreshFixture, modelRefreshReceiver } from './kg-model-refresh-fixture.mjs'
+import { createModelReviewController } from './kg-model-review-controller-fixture.mjs'
 
 const fixture = modelRefreshFixture(), harness = await modelLearningHarness({ fixture })
 const requests = new Set(), owners = []
-let current, cursor = 0, cases = 0, actualHttpRequests = 0, failRead = false, confirm = true
+let current, cursor = 0, cases = 0, actualHttpRequests = 0, failRead = false, failPreview = false, confirm = true
 const server = createServer((request, response) => {
+  if (failPreview && request.url.endsWith('/graph-commit-preview')) {
+    failPreview = false; request.resume(); response.writeHead(503, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ error: { message: '隔离方向预览校验失败' } })); return
+  }
   if (failRead && request.url.endsWith('/document-load')) {
     failRead = false; request.resume(); response.writeHead(503, { 'Content-Type': 'application/json' })
     response.end(JSON.stringify({ error: { message: '隔离模型刷新读取失败' } })); return
@@ -62,7 +67,7 @@ try {
     requests.add(request); request.finally(() => requests.delete(request)).catch(() => {})
     return request
   }
-  const mount = async () => {
+  const mount = async (directionPreview = false) => {
     const owner = { slots: [], effects: [], updates: [], tree: null }, props = { documentId: fixture.documentId, revision: 1, active: true,
       focusRequest: { documentId: fixture.documentId, revision: 1, nodeId: 'taxi', type: 'connection_model' },
       load: args => post('connection-models', args), onRoles: () => { throw new Error('No automatic role writes') } }
@@ -85,6 +90,10 @@ try {
         return loaded
       } }
     nav.environment = receiverEnv
+    if (directionPreview) props.onRoles = args => {
+      assert(!args.preview, 'This read-only regression does not confirm a canonical write')
+      return createModelReviewController({ ...receiverEnv, verifyBusyRef: { current: false } }, { call: post })(args)
+    }
     props.onRefresh = (...args) => {
       const response = modelRefreshReceiver(receiverEnv)(...args)
       nav.results.push(response); response.catch(() => {})
@@ -184,11 +193,64 @@ try {
   current = standalone.owner; const refreshing = standalone.button('重新读取模型').props.onClick(); standalone.render()
   assert.equal(actualHttpRequests, beforeLocalReload + 2, 'A standalone local retry issues the directory/detail reads synchronously')
   await refreshing; await standalone.settle(); assert.deepEqual(alerts(standalone), []); cases++
+
+  // A validated direction preview does not recover a failed canonical refresh.
+  // Both operations use their actual production receivers and isolated HTTP.
+  const previewSuccess = await mount(true); await previewSuccess.click('核对方向')
+  failRead = true; await previewSuccess.click('重新读取模型'); await previewSuccess.complete()
+  assert.deepEqual(alerts(previewSuccess), ['隔离模型刷新读取失败'])
+  await previewSuccess.edit(); await previewSuccess.click('预览方向修改')
+  assert.deepEqual(alerts(previewSuccess), ['隔离模型刷新读取失败'], 'Successful direction preview must preserve the unrecovered refresh failure')
+  assert(previewSuccess.button('确认保存方向')); assert.equal(previewSuccess.role().props.value, 'output')
+  assert.equal(previewSuccess.nav.published.length, 0); cases++
+  const declinePreview = text(previewSuccess.owner.tree).split('待确认的方向修改')[1]
+  confirm = false; const declinedCalls = previewSuccess.nav.results.length
+  await previewSuccess.click('重新读取模型'); confirm = true
+  assert.equal(previewSuccess.nav.results.length, declinedCalls)
+  assert(previewSuccess.button('确认保存方向'))
+  assert.equal(text(previewSuccess.owner.tree).split('待确认的方向修改')[1], declinePreview, 'Declining a discard preserves the pending direction diff')
+  assert.deepEqual(alerts(previewSuccess), ['隔离模型刷新读取失败']); cases++
+  await previewSuccess.click('取消预览'); assert.deepEqual(alerts(previewSuccess), ['隔离模型刷新读取失败']); cases++
+
+  for (const first of ['refresh', 'preview']) {
+    const ui = await mount(true); await ui.click('核对方向'); await ui.edit()
+    const failRefresh = async () => { failRead = true; await ui.click('重新读取模型'); await ui.complete() }
+    const failDirection = async () => { failPreview = true; await ui.click('预览方向修改') }
+    if (first === 'refresh') { await failRefresh(); await failDirection() }
+    else { await failDirection(); await failRefresh() }
+    assert.deepEqual(new Set(alerts(ui)), new Set(['隔离模型刷新读取失败', '隔离方向预览校验失败']), 'Independent failures must not replace each other')
+    assert.equal(ui.role().props.value, 'output'); assert.equal(ui.nav.published.length, 0); cases++
+  }
+  const retryOwn = await mount(true); await retryOwn.click('核对方向'); await retryOwn.edit()
+  failPreview = true; await retryOwn.click('预览方向修改'); failRead = true
+  await retryOwn.click('重新读取模型'); await retryOwn.complete()
+  failRead = true; await retryOwn.click('重新读取模型')
+  assert.deepEqual(alerts(retryOwn), ['隔离方向预览校验失败'], 'An admitted refresh retry clears only its own failure')
+  await retryOwn.complete(1)
+  assert.deepEqual(new Set(alerts(retryOwn)), new Set(['隔离模型刷新读取失败', '隔离方向预览校验失败']))
+  assert.equal(retryOwn.role().props.value, 'output'); assert.equal(retryOwn.nav.published.length, 0); cases++
+  retryOwn.nav.paused = false; await retryOwn.click('预览方向修改')
+  assert.deepEqual(alerts(retryOwn), ['隔离模型刷新读取失败']); assert(retryOwn.button('确认保存方向')); cases++
+  await retryOwn.click('重新读取模型')
+  assert.deepEqual(alerts(retryOwn), []); assert.equal(retryOwn.role().props.value, 'input'); assert.equal(retryOwn.nav.published.length, 1); cases++
+
+  const staleError = await mount(); failRead = true; await staleError.click('重新读取模型'); await staleError.complete()
+  const oldRefresh = staleError.button('重新读取模型').props.onClick
+  await staleError.select('taxi-peer'); assert.deepEqual(alerts(staleError), [])
+  failRead = true; await staleError.click('重新读取模型'); await staleError.complete(1)
+  const callsBeforeStale = staleError.nav.results.length
+  current = staleError.owner; await oldRefresh(); await staleError.settle()
+  assert.equal(staleError.nav.results.length, callsBeforeStale)
+  assert.deepEqual(alerts(staleError), ['隔离模型刷新读取失败'], 'An obsolete callback cannot erase the current model failure'); cases++
+  const blocked = staleError.button('重新读取模型').props.onClick
+  staleError.props.busy = true; staleError.render(); current = staleError.owner; await blocked(); await staleError.settle()
+  assert.equal(staleError.nav.results.length, callsBeforeStale); assert.deepEqual(alerts(staleError), ['隔离模型刷新读取失败']); cases++
+
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   console.log(JSON.stringify({ ok: true, cases, actualHttpRequests, productionPanelAndRefreshReceiver: true,
-    canonicalGraphAndSourceUnchanged: true, automaticWrites: 0, learningRecords: 0 }))
+    directionPreviewErrorOwnership: true, canonicalGraphAndSourceUnchanged: true, automaticWrites: 0, learningRecords: 0 }))
 } finally {
   for (const owner of owners) for (const state of owner.slots) state.cleanup?.()
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); harness.stop()
