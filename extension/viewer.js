@@ -5426,6 +5426,14 @@
         const scope = useRef(contextKey), sequence = useRef(0), operation = useRef(0), locked = useRef(false)
         const api = useRef(call), drafts = useRef(new Map())
         const appliedFocus = useRef(null)
+        const [locationError, setLocationError] = useState('')
+        const locationKey = JSON.stringify([contextKey, opened?.attemptId, opened?.version, opened?.baseRevision, opened?.revealedAt,
+          reload, focusRequest?.attemptId])
+        const canLocate = active && !loading && !busy && !!opened?.revealedAt && !opened.stale && opened.baseRevision === revision
+          && opened.documentId === documentId && opened.modelId === modelId && (opened.task.exercise || 'prediction') === exercise && !!onLocate
+        const locateInScope = useConnectionModelLocation(locationKey, canLocate)
+        useEffect(() => { setLocationError('') }, [locationKey, canLocate])
+        const locate = reference => locateInScope(reference, onLocate, reason => setLocationError(reason.message || '原文定位失败，请重试'))
         api.current = call; scope.current = contextKey
         const blank = () => ({ revision, fields: Object.fromEntries(Object.keys(labels).map(field => [field, ''])), sourceExposure: 'unsure', attemptId: '', submitted: false })
         const readDraft = name => {
@@ -5565,8 +5573,9 @@
           h('p', { className: 'kg-model-meta' }, '当时状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[ref.state] || '待确认') +
             ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[ref.entailmentStatus] || '未核对原文支持')),
           ref.citations.map((citation, index) => h('div', { key: index }, h('p', null, '当时原文 P' + (citation.paragraph + 1) + '：' + citation.quote),
-            h('button', { type: 'button', className: 'kg-secondary', disabled: opened.stale || opened.baseRevision !== revision,
-              onClick: () => Promise.resolve().then(() => onLocate?.({ nodeId: ref.nodeId, paragraph: citation.paragraph })).catch(reason => setError(reason.message)) }, '定位原文'))))
+            h('button', { type: 'button', className: 'kg-secondary', disabled: !canLocate,
+              onClick: () => locate({ ...citation, nodeId: ref.nodeId, documentId: opened.documentId, revision: opened.baseRevision,
+                sourceQuoteOnly: true, sourceCitation: true }) }, '定位原文'))))
         if (!active) return null
         return h('section', { className: 'kg-learning-mode kg-model-learning', 'aria-label': challenge ? '联结模型反例挑战' : '联结模型情境预测' },
           h('div', { className: 'kg-model-toolbar' }, h('strong', null, challenge ? '反例挑战' : '情境预测'),
@@ -5578,6 +5587,7 @@
             opened && onUnderstanding ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => onUnderstanding(opened) }, '修订我的理解') : null),
           loading ? h('p', { role: 'status' }, '正在读取当前模型的练习与记录…') : null,
           error ? h('p', { role: 'alert' }, error) : null,
+          locationError ? h('p', { role: 'alert' }, locationError) : null,
           message ? h('p', { role: 'status' }, message) : null,
           challenge ? h('p', { className: 'kg-model-meta' }, '是否只改变一个条件尚未核验。边界外不适用，不等于边界内被反驳；计划中的观察不是已发生的证据。') : null,
           !opened && task && draft ? h(React.Fragment, null,

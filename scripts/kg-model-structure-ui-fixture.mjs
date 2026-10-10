@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { modelLearningHarness, learnerResponse } from './kg-model-learning-fixture-data.mjs'
 import { feedbackResponse } from './kg-model-feedback-fixture-data.mjs'
+import { counterexampleResponse } from './kg-model-comparison-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
@@ -41,6 +42,25 @@ if (process.argv.includes('--diagnosis-citation-records')) {
         response: { ...feedbackResponse('reflection'), diagnosis: name === 'input' ? 'input' : 'mapping', content: resultId + ' · 个人诊断，尚未核验' } })
       if (result.error) throw new Error(result.error.message)
       harness.store.db.prepare('UPDATE learning_attempts SET created_at = ? WHERE attempt_id = ?').run(stamp + 100 + position, resultId)
+    }
+  }
+}
+if (process.argv.includes('--learning-citation-records')) {
+  // Explicit challenge snapshots exercise the same saved-citation component;
+  // unrevealed source remains hidden and browser navigation stays read-only.
+  const base = { documentId: harness.document.documentId, modelId: 'taxi', exercise: 'counterexample', expectedRevision: 1 }
+  const plan = await harness.post({ ...base, action: 'plan' })
+  if (plan.error) throw new Error(plan.error.message)
+  const stamp = Date.now() - 10000
+  for (const [index, id] of ['a', 'b', 'hidden'].entries()) {
+    const attemptId = 'learning-challenge-' + id
+    const saved = await harness.post({ ...base, action: 'save', taskId: plan.tasks[0].id, attemptId, selfRating: 'uncertain',
+      response: { ...counterexampleResponse, scenario: id + ' · ' + counterexampleResponse.scenario } })
+    if (saved.error) throw new Error(saved.error.message)
+    harness.store.db.prepare('UPDATE learning_attempts SET created_at = ? WHERE attempt_id = ?').run(stamp + index, attemptId)
+    if (id !== 'hidden') {
+      const revealed = await harness.post({ ...base, action: 'reveal', attemptId, expectedVersion: 1 })
+      if (revealed.error) throw new Error(revealed.error.message)
     }
   }
 }
