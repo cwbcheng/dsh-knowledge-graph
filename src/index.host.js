@@ -4425,15 +4425,20 @@ function createHostPlugin(graphContractOnly) {
         const sectionOf = node => sections.find(section => Number.isInteger(node.paragraph)
           && node.paragraph >= section.startParagraph && node.paragraph <= section.endParagraph)
         const modelNodes = graph.nodes.filter(node => node.type === 'connection_model')
+        const legacyCitations = item => citations(item).map(citation => {
+          const provenance = provenanceForParagraphHost(graph, citation.paragraph)
+          return { ...citation, documentId: document.documentId, revision: document.revision,
+            sourceId: citation.sourceId || provenance.sourceId, chunkId: provenance.chunkId }
+        })
         const legacyPortsOf = node => (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
           .map(({ edge, index }) => {
             const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
             const valid = edge.fromNodeId === node.id && target?.type === 'concept' && edge.state !== 'rejected' && target.state !== 'rejected'
             const edgeKey = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
             return { edgeIndex: index, edgeKey,
-              node: target ? reference(target) : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
+              node: target ? { ...reference(target), citations: legacyCitations(target) } : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
               role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
-              storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: citations(edge) }
+              storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: legacyCitations(edge) }
           })
         const structures = new Map(), structureErrors = new Map()
         const structureOf = node => {
@@ -7682,8 +7687,13 @@ function createHostPlugin(graphContractOnly) {
             if (text(example.scenario)) origin(example.provenance, target('examples', example.id), example.title)
           }
           for (const port of ports) {
-            if (!port.editable || port.role === 'unknown') add('legacy_port', 'review', null, { name: port.node?.text || port.node?.nodeId,
-              edgeKey: port.edgeKey, edgeIndex: port.edgeIndex, paragraph: port.citations?.[0]?.paragraph ?? port.node?.citations?.[0]?.paragraph ?? null })
+            if (!port.editable || port.role === 'unknown') {
+              const relationCitations = array(port.citations, 8), endpointCitations = array(port.node?.citations, 8)
+              const citations = relationCitations.length ? relationCitations : endpointCitations
+              add('legacy_port', 'review', null, { name: port.node?.text || port.node?.nodeId,
+                edgeKey: port.edgeKey, edgeIndex: port.edgeIndex, paragraph: citations[0]?.paragraph ?? null, citations,
+                citationBasis: relationCitations.length ? 'stored_relation_context' : endpointCitations.length ? 'stored_endpoint_context' : 'missing' })
+            }
           }
           if (value && JSON.stringify(slots.map(slot => slot.conceptId + ':' + slot.role).sort())
             !== JSON.stringify(ports.map(port => port.node?.nodeId + ':' + port.role).sort())) add('legacy_difference', 'review', null)

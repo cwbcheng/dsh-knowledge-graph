@@ -12,7 +12,8 @@ import { modelCitationFixture, modelCitationBrowserNavigatorSource } from './kg-
 
 const citationNavigation = process.argv.includes('--citation-navigation'), citationWindow = process.argv.includes('--citation-window')
 const fixture = citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
-  long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages') }) : process.argv.includes('--source-table')
+  long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages'),
+  legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages') }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
   : process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
 if (process.argv.includes('--diagnostics')) {

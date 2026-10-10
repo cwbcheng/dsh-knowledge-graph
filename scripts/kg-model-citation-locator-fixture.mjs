@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
 
-export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false, sourcePages = false } = {}) {
+export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false, sourcePages = false, legacyGaps = false, gapPages = false } = {}) {
   const fixture = modelSourceTableFixture({ dense, peer })
   if (third) {
     const model = structuredClone(fixture.graph.nodes[0]); model.id = 'taxi-third'; model.text = '第三个明确选择的计价模型'
@@ -37,6 +37,17 @@ export function modelCitationFixture({ dense = false, anchor = 1, peer = true, l
     }
     fixture.graph.source.paragraphCount = fixture.sourceUnits.length
     fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')
+  }
+  if (legacyGaps) {
+    // Explicitly unknown legacy role, independent of the recorded slots.
+    delete fixture.graph.edges.find(edge => edge.fromNodeId === 'taxi' && edge.toNodeId === 'distance').role
+    if (gapPages) for (let index = 0; index < 22; index++) {
+      const id = 'legacy-gap-' + index, unit = fixture.sourceUnits[index % 2 ? 0 : 2]
+      const evidence = [{ documentId: fixture.documentId, sourceId: fixture.graph.source.id, paragraph: unit.paragraph, quote: unit.text }]
+      fixture.graph.nodes.push({ id, type: 'concept', text: '未核对的旧端点 ' + index, paragraph: unit.paragraph,
+        evidence, state: 'candidate', entailmentStatus: 'unverified' })
+      fixture.graph.edges.push({ fromNodeId: 'taxi', toNodeId: id, relation: 'maps_between', evidence, state: 'candidate' })
+    }
   }
   return fixture
 }

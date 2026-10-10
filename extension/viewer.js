@@ -1327,8 +1327,13 @@
             if (text(example.scenario)) origin(example.provenance, target('examples', example.id), example.title)
           }
           for (const port of ports) {
-            if (!port.editable || port.role === 'unknown') add('legacy_port', 'review', null, { name: port.node?.text || port.node?.nodeId,
-              edgeKey: port.edgeKey, edgeIndex: port.edgeIndex, paragraph: port.citations?.[0]?.paragraph ?? port.node?.citations?.[0]?.paragraph ?? null })
+            if (!port.editable || port.role === 'unknown') {
+              const relationCitations = array(port.citations, 8), endpointCitations = array(port.node?.citations, 8)
+              const citations = relationCitations.length ? relationCitations : endpointCitations
+              add('legacy_port', 'review', null, { name: port.node?.text || port.node?.nodeId,
+                edgeKey: port.edgeKey, edgeIndex: port.edgeIndex, paragraph: citations[0]?.paragraph ?? null, citations,
+                citationBasis: relationCitations.length ? 'stored_relation_context' : endpointCitations.length ? 'stored_endpoint_context' : 'missing' })
+            }
           }
           if (value && JSON.stringify(slots.map(slot => slot.conceptId + ':' + slot.role).sort())
             !== JSON.stringify(ports.map(port => port.node?.nodeId + ':' + port.role).sort())) add('legacy_difference', 'review', null)
@@ -1640,7 +1645,7 @@
           canonical_invalid: '已有正式结构未通过当前引用或格式校验：' + (item.detail || '') })[item.code] || '该记录需进一步核对。'
       }
 
-      function ModelGapList({ report, onEdit, onLocate, busy }) {
+      function ModelGapList({ report, documentId, revision, onEdit, onLocate, busy }) {
         return h('div', null,
           h('p', { className: 'kg-model-meta' }, '结构缺项 ' + report.counts.structure + ' · 实例缺项 ' + report.counts.examples +
             ' · 来源待核对 ' + report.counts.sources + ' · 其他核对事项 ' + report.counts.review),
@@ -1650,15 +1655,31 @@
             h('div', { className: 'kg-model-toolbar' },
               item.target && onEdit ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy,
                 'aria-label': '整理缺口 ' + item.id, onClick: () => { if (!busy) onEdit({ ...item.target, missingSlotId: item.missing?.[0]?.slotId }) } }, '填写草稿') : null,
-              Number.isInteger(item.paragraph) && onLocate ? h('button', { type: 'button', className: 'kg-secondary',
-                onClick: () => onLocate({ paragraph: item.paragraph }) }, '核对原文 P' + (item.paragraph + 1)) : null))),
+              (Array.isArray(item.citations) ? item.citations.slice(0, 8) : []).map((citation, index) => {
+                const canLocate = !busy && typeof onLocate === 'function' && citation.documentId === documentId
+                  && Number.isSafeInteger(revision) && revision > 0 && citation.revision === revision
+                  && Number.isSafeInteger(citation.paragraph) && citation.paragraph >= 0 && typeof citation.quote === 'string' && !!citation.quote.trim()
+                return h('details', { key: index, className: 'kg-model-evidence' },
+                  h('summary', null, item.citationBasis === 'stored_relation_context' ? '旧关系的原文引用 · 角色待核对' : '端点的原文上下文 · 不代表关系方向'),
+                  h('p', { style: { whiteSpace: 'pre-wrap' } }, citation.quote),
+                  h('button', { type: 'button', className: 'kg-secondary', disabled: !canLocate,
+                    onClick: () => { if (canLocate) onLocate({ documentId: citation.documentId, revision: citation.revision,
+                      paragraph: citation.paragraph, quote: citation.quote, sourceId: citation.sourceId, chunkId: citation.chunkId,
+                      sourceQuoteOnly: true, sourceCitation: true }) } }, '核对原文 P' + (citation.paragraph + 1)))
+              })),
+            item.code === 'legacy_port' && !item.citations?.length ? h('p', { className: 'kg-model-meta' }, '没有可定位的逐字引用；请先对照原文核对该端点，不能仅凭段号确认关系方向。') : null)),
           !report.total ? h('p', null, '未发现上述记录缺项；条件满足、原文一致性和模型真伪仍未验证。') : null)
       }
 
       function ModelGapPanel({ documentId, revision, modelId, active, load, onEdit, onLocate, busy }) {
         const [report, setReport] = useState(null), [offset, setOffset] = useState(0), [reload, setReload] = useState(0)
         const [error, setError] = useState(''), [loading, setLoading] = useState(false)
+        const [locationError, setLocationError] = useState('')
         const sequence = useRef(0), api = useRef({}); api.current = { load, onEdit, onLocate }
+        const locationKey = JSON.stringify([documentId, revision, modelId, active, offset, reload])
+        const canLocate = active && !!report && !loading && !busy && !!onLocate
+        const locate = useConnectionModelLocation(locationKey, canLocate)
+        useEffect(() => { setLocationError('') }, [locationKey, canLocate])
         useEffect(() => { setOffset(0); setReport(null) }, [documentId, revision, modelId])
         useEffect(() => {
           const id = ++sequence.current, abort = new AbortController()
@@ -1684,7 +1705,11 @@
         return h('section', { className: 'kg-model-gaps', 'aria-label': '已保存结构的待补充内容' }, h('h4', null, '已记录结构的缺口'),
           h('p', { className: 'kg-model-meta' }, '记录缺项不是学习能力诊断；完整配对不等于条件满足或关系成立。'),
           loading ? h('p', { role: 'status' }, '正在检查全部分支与实例…') : null, error ? h('p', { role: 'alert' }, error) : null,
-          report ? h(ModelGapList, { report, busy, onEdit: target => api.current.onEdit?.(target), onLocate: reference => api.current.onLocate?.(reference) }) : null,
+          locationError ? h('p', { role: 'alert' }, locationError) : null,
+          report ? h(ModelGapList, { report, documentId, revision, busy: busy || loading, onEdit: target => api.current.onEdit?.(target),
+            onLocate: onLocate ? reference => locate(reference, (value, stillCurrent) => {
+              setLocationError(''); return api.current.onLocate?.(value, stillCurrent)
+            }, reason => setLocationError(reason.message || '原文定位失败，请重新核对引用。')) : undefined }) : null,
           h('div', { className: 'kg-model-toolbar' }, h('span', null, report ? '核对事项 ' + report.items.length + ' / ' + report.total : ''),
             h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页待补充内容'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !report || offset + report.items.length >= report.total, onClick: () => setOffset(offset + 20) }, '下一页待补充内容'),
@@ -1769,11 +1794,19 @@
         const [supported, setSupported] = useState(false)
         const [assistSupported, setAssistSupported] = useState(false), [legacyPorts, setLegacyPorts] = useState([])
         const [sourceTarget, setSourceTarget] = useState(null), [requestedFocus, setRequestedFocus] = useState(null), [gapOffset, setGapOffset] = useState(0)
+        const [gapLocationError, setGapLocationError] = useState(''), gapContext = useRef(null)
         const root = useRef(null), sourceSession = useRef(0), sourceGuard = useRef('')
         const sequence = useRef(0), conceptSequence = useRef(0), operation = useRef(0), lock = useRef(false), api = useRef({}), scope = useRef('')
         scope.current = JSON.stringify([documentId, modelId, revision])
         sourceGuard.current = active && sourceTarget ? JSON.stringify([scope.current, sourceTarget]) : ''
         api.current = { load, onCommit, onBusy, onRefresh, onLocate }
+        const gapKey = JSON.stringify([scope.current, active, section, gapOffset, reload, selectedExample])
+        if (!gapContext.current || gapContext.current.key !== gapKey || gapContext.current.draft !== draft || gapContext.current.ports !== legacyPorts) {
+          gapContext.current = { key: gapKey, draft, ports: legacyPorts }
+        }
+        const canLocateGap = active && !!draft && draft.revision === revision && !loading && !saving && !externalBusy && !!onLocate
+        const gapLocation = useConnectionModelLocation(gapContext.current, canLocateGap)
+        useEffect(() => { setGapLocationError('') }, [gapContext.current, canLocateGap])
         const uuid = () => 's-' + (globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random().toString(36).slice(2))
         const source = () => ({ kind: 'unknown', paragraph: null, quote: '', note: '' })
         const emptyField = () => ({ text: '', provenance: source() })
@@ -1918,8 +1951,12 @@
           draft?.revision !== revision && draft ? h('p', { role: 'alert' }, '草稿基于第 ' + draft.revision + ' 版，当前为第 ' + revision + ' 版；草稿保留，不能覆盖新图。') : null,
           spec ? h(React.Fragment, null,
             h('details', { className: 'kg-model-gaps' }, h('summary', null, '草稿待补充内容与核对事项 (' + gaps.total + ')'),
-              h(ModelGapList, { report: { ...gaps, items: gaps.items.slice(visibleGapOffset, visibleGapOffset + 20) },
-                busy: saving || externalBusy, onEdit: target => setRequestedFocus(target), onLocate: reference => api.current.onLocate?.(reference) }),
+              gapLocationError ? h('p', { role: 'alert' }, gapLocationError) : null,
+              h(ModelGapList, { report: { ...gaps, items: gaps.items.slice(visibleGapOffset, visibleGapOffset + 20) }, documentId, revision,
+                busy: saving || externalBusy || loading, onEdit: target => setRequestedFocus(target),
+                onLocate: onLocate ? reference => gapLocation(reference, (value, stillCurrent) => {
+                  setGapLocationError(''); return api.current.onLocate?.(value, stillCurrent)
+                }, reason => setGapLocationError(reason.message || '原文定位失败，请重新核对引用。')) : undefined }),
               h('div', { className: 'kg-model-toolbar' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset === 0, onClick: () => setGapOffset(Math.max(0, visibleGapOffset - 20)) }, '上一页草稿待补充内容'),
                 h('button', { type: 'button', className: 'kg-secondary', disabled: visibleGapOffset + 20 >= gaps.total, onClick: () => setGapOffset(visibleGapOffset + 20) }, '下一页草稿待补充内容'))),
