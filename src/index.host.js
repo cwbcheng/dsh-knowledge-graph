@@ -4389,7 +4389,7 @@ function createHostPlugin(graphContractOnly) {
           // Stored identities can be sparse; adjacency belongs to source order.
           for (let index = Math.max(0, anchor - 1); index <= anchor + 2 && index < paragraphs.length; index++) {
             const id = paragraphs[index]
-            contexts.set(id, { paragraph: id, text: unitMap.get(id) })
+            contexts.set(id, { paragraph: id, text: unitMap.get(id), sourcePosition: index })
           }
         }
         const citations = item => {
