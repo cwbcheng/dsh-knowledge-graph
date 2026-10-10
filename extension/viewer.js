@@ -5042,7 +5042,10 @@
         }
         const snapshot = draft ? task : opened?.task
         const snapshotRevision = draft ? revision : opened?.baseRevision
-        const locate = reference => Promise.resolve().then(() => onLocate?.(reference)).catch(reason => setError(reason.message || '原文定位失败'))
+        const locateInSnapshot = useConnectionModelLocation(JSON.stringify([contextKey, snapshotRevision,
+          draft ? 'draft' : opened?.attemptId, reload, practiceRequest?.nonce]), active && !!snapshot && !loading && snapshotRevision === revision)
+        const locate = (reference, stillCurrent) => locateInSnapshot(reference, onLocate,
+          reason => setError(reason.message || '原文定位失败'), stillCurrent)
         const readFields = value => Object.keys(labels).map(key => h('p', { key }, h('strong', null, labels[key] + '：'), value[key] || '尚未表述'))
         if (!active) return null
         return h('section', { className: 'kg-learning-mode kg-model-understanding', 'aria-label': '我的理解记录' },
@@ -5125,7 +5128,8 @@
                   snapshot.references.map(reference => h('div', { key: reference.nodeId }, h('strong', null, reference.text),
                     reference.citations.map((citation, index) => h('div', { key: index }, h('p', null, '当时原文 P' + (citation.paragraph + 1) + '：' + citation.quote),
                       h('button', { type: 'button', className: 'kg-secondary', disabled: snapshotRevision !== revision,
-                        onClick: () => locate({ nodeId: reference.nodeId, paragraph: citation.paragraph }) }, '定位原文'))))),
+                        onClick: () => locate({ ...citation, nodeId: reference.nodeId, documentId, revision: snapshotRevision,
+                          sourceQuoteOnly: true, sourceCitation: true }) }, '定位原文'))))),
                   !snapshot.references.length ? h('p', null, '没有可匹配原文的引用；个人表述仍是未核对记录。') : null),
                 snapshot.referencesLimited ? h('p', { className: 'kg-model-meta' }, '有限来源快照；不代表完整模型或完整原文。') : null) : null)),
           onPractice ? h('div', { className: 'kg-model-toolbar' },

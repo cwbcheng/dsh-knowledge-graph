@@ -18,7 +18,22 @@ if (process.argv.includes('--diagnostics')) {
   fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')
 }
 const harness = await modelLearningHarness({ fixture })
+if (process.argv.includes('--understanding-citation-records')) {
+  // Explicit synthetic learner records let browser checks switch snapshots
+  // without writing any personal data during citation navigation.
+  const base = { documentId: harness.document.documentId, modelId: 'taxi', exercise: 'understanding', expectedRevision: 1 }
+  const plan = await harness.post({ ...base, action: 'plan' })
+  if (plan.error) throw new Error(plan.error.message)
+  for (const [attemptId, parentAttemptId] of [['understanding-first', ''], ['understanding-second', 'understanding-first']]) {
+    const result = await harness.post({ ...base, action: 'save', taskId: plan.tasks[0].id, attemptId, selfRating: 'not_assessed',
+      response: { inputs: '本次行程距离', mapping: attemptId + ' · 个人表述，尚未核验', outputs: '费用', conditions: '白天、无附加收费',
+        boundary: '不能外推到夜间；未独立验证', questions: '条件是否充分？', revisionReason: parentAttemptId ? '对照后仍有疑问' : '',
+        parentAttemptId, practiceIds: [] } })
+    if (result.error) throw new Error(result.error.message)
+  }
+}
 const initial = harness.store.getDocument(harness.document.documentId)
+const initialUnderstanding = JSON.stringify(harness.store.listLearningAttempts(harness.document.documentId, 'taxi', 'understanding'))
 const clientSource = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const quoteLocator = clientSource.slice(clientSource.indexOf('function exactSourceQuoteTarget('), clientSource.indexOf('function KnowledgeConsumePanel('))
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -60,6 +75,7 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({ revision: graph.revision, sourceUnchanged: graph.sourceText === initial.sourceText,
       edgesUnchanged: JSON.stringify(graph.edges) === JSON.stringify(initial.edges),
       nodeEvidenceUnchanged: initial.nodes.every(node => isDeepStrictEqual(graph.nodes.find(saved => saved.id === node.id)?.evidence, node.evidence)),
+      learningRecordsUnchanged: JSON.stringify(harness.store.listLearningAttempts(harness.document.documentId, 'taxi', 'understanding')) === initialUnderstanding,
       models: graph.nodes.filter(node => node.modelStructure).map(node => ({ id: node.id, structure: node.modelStructure })),
       learningCount: harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n }))
     return
