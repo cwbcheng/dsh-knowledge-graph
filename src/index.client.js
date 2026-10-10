@@ -1556,24 +1556,23 @@ export default function clientPlugin() {
          const first = evidence.find((item) => item && typeof item.quote === 'string' && item.quote.trim())
          return first ? first.quote.trim() : ''
        }
-       function candidateGraphPayload(graph) {
+       function candidateGraphPayload(graph, nodeId) {
          const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
+         const nodes = []
+         for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
+           if (!node || typeof node.id !== 'string' || typeof node.text !== 'string' || !node.text.trim() || !candidateKindFor(node)) continue
+           if (nodeId !== undefined && node.id !== nodeId) continue
+           // Candidate synchronization needs review identities, not source text.
+           nodes.push({ id: node.id, type: node.type })
+           if (nodeId !== undefined || nodes.length === 500) break
+         }
          return {
            source: {
              documentId: source.documentId || graph && graph.documentId || '',
              id: source.id || '',
            },
-           nodes: (Array.isArray(graph && graph.nodes) ? graph.nodes : []).map((node) => ({
-             id: node.id,
-             type: node.type,
-             text: node.text,
-             quote: node.quote,
-             paragraph: node.paragraph,
-             evidence: Array.isArray(node.evidence) ? node.evidence : [],
-             sectionId: node.sectionId,
-             sectionTitle: node.sectionTitle,
-             confidence: node.confidence,
-           })),
+           ontology: graph && (graph.ontology || source.ontology || graph.graphMeta?.ontology || graph.graphOntology?.id),
+           nodes,
          }
        }
       const SEVERITY_META = {
@@ -15658,12 +15657,15 @@ export default function clientPlugin() {
            ;(async () => {
              try {
                const source = resultView.graph.source && typeof resultView.graph.source === 'object' ? resultView.graph.source : {}
-               const res = await host.call('candidate-list', {
-                 documentId: source.documentId || '',
-                 graph: candidateGraphPayload(resultView.graph),
-                 kind: 'all', status: 'all', limit: 500,
-               })
+               const options = { documentId: source.documentId || resultView.graph.documentId || source.id || 'local',
+                 kind: 'all', status: 'all', limit: 500, reviewOnly: true }
+               let res = await host.call('candidate-list', options)
                if (disposed) return
+               if (res && res.requiresGraph === true) {
+                 res = await host.call('candidate-list', { ...options, graph: candidateGraphPayload(resultView.graph) })
+               }
+               if (disposed) return
+               if (!res || res.error) throw new Error(res?.error?.message || '候选状态同步失败')
                const rows = res && Array.isArray(res.candidates) ? res.candidates : []
                setCandidateRemote(rows)
                if (rows.length > 0) {
@@ -18103,7 +18105,8 @@ export default function clientPlugin() {
               id: remote.id,
               nodeId: remote.nodeId,
               status,
-              graph: candidateGraphPayload(resultView.graph),
+              reviewOnly: true,
+              graph: candidateGraphPayload(resultView.graph, remote.nodeId),
             })
             if (!res || res.error || !res.candidate) throw new Error(res && res.error && res.error.message ? res.error.message : '候选状态同步失败')
             setCandidateRemote((previous) => Array.isArray(previous) ? previous.map((row) => row && row.id === remote.id ? { ...row, status: res.candidate.status || status } : row) : previous)

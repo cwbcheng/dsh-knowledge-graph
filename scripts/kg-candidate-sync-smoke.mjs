@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import hostPlugin from '../src/index.host.js'
 import * as persistentHost from '../lib/index.js'
+import { SqliteKnowledgeStore } from '../lib/kg-store.mjs'
+import { entityCandidateSet, claimCandidateSet } from '../src/kg-ontology.mjs'
 
 const graph = {
   source: { id: 'source-candidate-smoke', documentId: 'document-candidate-smoke', title: 'candidate smoke', sections: [] },
@@ -18,6 +20,45 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+const identities = { source: graph.source, ontology: 'proposition-v1', nodes: graph.nodes.map(({ id, type }) => ({ id, type })) }
+async function compactSmoke(call, source) {
+  const documentId = 'unsaved-' + source
+  const localGraph = { ...identities, source: { documentId } }
+  const options = { documentId, reviewOnly: true, kind: 'all', status: 'all', limit: 500 }
+  const needed = await call('candidate-list', options)
+  assert(needed.requiresGraph === true && needed.candidates.length === 0, source + ': missing canonical graph must explicitly request identities')
+  const listed = await call('candidate-list', { ...options, graph: localGraph })
+  assert(listed.candidates.length === 2 && !listed.requiresGraph, source + ': identity-only list lost local candidates')
+  assert(listed.candidates.every(row => row.documentId === documentId && !('text' in row) && !('evidence' in row)), source + ': reviews must not fabricate source content')
+  const claim = listed.candidates.find(row => row.kind === 'claim')
+  const args = { documentId, reviewOnly: true, kind: claim.kind, nodeId: claim.nodeId, id: claim.id, status: 'accepted',
+    graph: { ...localGraph, nodes: localGraph.nodes.filter(node => node.id === claim.nodeId) } }
+  const updated = await call('candidate-update', args)
+  assert(updated.candidate?.status === 'accepted', source + ': one-identity update failed')
+  const accepted = await call('candidate-list', { ...options, graph: localGraph, status: 'accepted' })
+  assert(accepted.candidates.length === 1 && accepted.candidates[0].nodeId === claim.nodeId, source + ': local status was lost')
+  const missing = await call('candidate-update', { ...args, nodeId: 'missing' })
+  assert(missing.error?.code === 'not_found', source + ': nonexistent update must fail without writing a review')
+  const invalid = await call('candidate-update', { ...args, status: 'invalid' })
+  assert(invalid.error?.code === 'invalid_input', source + ': invalid status must fail')
+  const legacy = await call('candidate-list', { documentId, graph: { ...graph, source: { documentId } }, limit: 20 })
+  // Persistent healthy SQLite's legacy route deliberately remains SQLite-only.
+  if (legacy.source !== 'sqlite') {
+    assert(legacy.candidates.length === 2 && legacy.candidates[0].text && legacy.candidates[0].evidence.length,
+      source + ': legacy callers must retain full candidate content and evidence')
+  }
+  const learningGraph = { ...localGraph, source: { documentId: documentId + '-learning' }, ontology: 'learning-view-v1',
+    nodes: ['concept', 'rule', 'connection_model', 'discrimination_model', 'fact'].map((type, i) => ({ id: 'learning-' + i, type })) }
+  const learning = await call('candidate-list', { ...options, documentId: learningGraph.source.documentId, graph: learningGraph })
+  const entityTypes = entityCandidateSet(learningGraph.ontology), claimTypes = claimCandidateSet(learningGraph.ontology)
+  const expected = learningGraph.nodes.flatMap(node => [entityTypes.has(node.type) ? 'entity|' + node.id : '',
+    claimTypes.has(node.type) ? 'claim|' + node.id : ''].filter(Boolean)).sort().join(',')
+  assert(learning.candidates.map(row => row.kind + '|' + row.nodeId).sort().join(',') === expected && expected,
+    source + ': compact fallback must retain the learning ontology candidate types')
+  return { source, identityList: listed.candidates.length, oneIdentityUpdate: true, acceptedFilter: true,
+    missingRejected: true, invalidRejected: true, learningKinds: expected }
+}
+
 async function dynamicSmoke() {
   const handlers = new Map()
   globalThis.harness = { handle(name, handler) { handlers.set(name, handler) } }
@@ -30,7 +71,8 @@ async function dynamicSmoke() {
   assert(updated.candidate && updated.candidate.status === 'accepted', 'dynamic candidate update failed')
   const accepted = await handlers.get('candidate-list')({ graph, status: 'accepted', limit: 20 })
   assert(accepted.candidates.length === 1 && accepted.candidates[0].nodeId === 'n-fact', 'dynamic candidate status was not retained')
-  return { listed: listed.candidates.length, updated: updated.candidate.id }
+  const compact = await compactSmoke((method, args) => handlers.get(method)(args), 'dynamic')
+  return { listed: listed.candidates.length, updated: updated.candidate.id, compact }
 }
 
 function request(handler, body, endpoint = 'candidate-list') {
@@ -58,6 +100,8 @@ async function persistentSmoke() {
   const store = await openSqliteStore(dbPath)
   const sourceText = '事实候选\n\n概念候选'
   store.saveGraph(graph, { sourceText })
+  const opaqueIds = [' spaced-candidate ', 'candidate:'.padEnd(180, 'x'), '候选:Ａ:"甲">', '候选:A:"甲">']
+  for (const documentId of opaqueIds) store.saveGraph({ ...graph, source: { ...graph.source, documentId } }, { sourceText })
   store.close()
   const routes = []
   const webServer = { register(spec) { routes.push(spec); return () => {} } }
@@ -67,14 +111,65 @@ async function persistentSmoke() {
     interval() { return () => {} },
   })
   const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
+  for (const documentId of opaqueIds) {
+    const options = { documentId, reviewOnly: true, kind: 'all', status: 'all', limit: 500 }
+    const exact = await request(api, options)
+    assert(exact.source === 'sqlite' && !exact.requiresGraph && exact.candidates.length === 2
+      && exact.candidates.every(row => row.documentId === documentId), 'saved opaque candidate identity must not be trimmed, normalized or truncated: ' + documentId)
+    const row = exact.candidates[0]
+    const updated = await request(api, { documentId, reviewOnly: true, kind: row.kind, id: row.id,
+      nodeId: row.nodeId, status: 'accepted', graph: { source: { documentId }, nodes: [{ id: row.nodeId, type: row.type }] } }, 'candidate-update')
+    assert(updated.source === 'sqlite' && updated.candidate?.status === 'accepted', 'opaque candidate update must stay persistent')
+    const again = await request(api, { ...options, status: 'accepted' })
+    assert(again.source === 'sqlite' && again.candidates.length === 1 && again.candidates[0].nodeId === row.nodeId,
+      'opaque candidate review must read back from the exact SQLite document')
+  }
   const queried = await request(api, { documentId: graph.source.documentId, query: '概念候选' }, 'document-load')
   assert(queried && queried.graph && queried.graph.view && queried.graph.view.kind === 'query', 'persistent document-load did not expose query view metadata')
   assert(queried.graph.nodes.some((node) => node.id === 'n-concept'), 'persistent canonical query could not locate the requested node')
   const listed = await request(api, { documentId: graph.source.documentId, kind: 'all', status: 'all', limit: 20, graph })
   assert(listed.source === 'sqlite' && Array.isArray(listed.candidates) && listed.candidates.length === 2, 'persistent candidate list did not use SQLite')
   const entity = listed.candidates.find((candidate) => candidate.kind === 'entity')
-  const update = await request(api, { documentId: graph.source.documentId, kind: entity.kind, id: entity.id, nodeId: entity.nodeId, status: 'rejected', graph }, 'candidate-update')
+  const options = { documentId: graph.source.documentId, kind: 'all', status: 'all', limit: 500, reviewOnly: true }
+  const canonical = await request(api, options)
+  assert(canonical.source === 'sqlite' && !canonical.requiresGraph && canonical.candidates.length === 2,
+    'saved candidate list must work without graph data')
+  const update = await request(api, { documentId: graph.source.documentId, kind: entity.kind, id: entity.id, nodeId: entity.nodeId,
+    status: 'rejected', reviewOnly: true, graph: { ...identities, nodes: [{ id: entity.nodeId, type: 'concept' }] } }, 'candidate-update')
   assert(update.source === 'sqlite' && update.candidate && update.candidate.status === 'rejected', 'persistent candidate update failed')
+  const compact = await compactSmoke((method, args) => request(api, args, method), 'sqlite-unsaved')
+  assert((await request(api, { ...options, documentId: '' })).requiresGraph === true,
+    'identity-only local request must not list other documents')
+  const originalList = SqliteKnowledgeStore.prototype.listCandidates
+  const originalUpdate = SqliteKnowledgeStore.prototype.updateCandidate
+  let fallback
+  try {
+    SqliteKnowledgeStore.prototype.listCandidates = function (...args) {
+      if (this.filename === dbPath) throw new Error('synthetic candidate read failure')
+      return originalList.apply(this, args)
+    }
+    SqliteKnowledgeStore.prototype.updateCandidate = function (...args) {
+      if (this.filename === dbPath) throw new Error('synthetic candidate write failure')
+      return originalUpdate.apply(this, args)
+    }
+    const needsFallback = await request(api, options)
+    assert(needsFallback.source === 'fallback' && needsFallback.requiresGraph === true,
+      'failed SQLite query must request graph identities, not silently clear review state')
+    fallback = await compactSmoke((method, args) => request(api, args, method), 'sqlite-fallback')
+    // Use the saved identity too, so getDocumentRevision succeeds before SQL fails.
+    const fromSaved = await request(api, { ...options, graph: identities })
+    const row = fromSaved.candidates.find(row => row.kind === 'claim')
+    const written = await request(api, { documentId: graph.source.documentId, reviewOnly: true,
+      kind: row.kind, id: row.id, nodeId: row.nodeId, status: 'accepted',
+      graph: { ...identities, nodes: [{ id: row.nodeId, type: 'fact' }] } }, 'candidate-update')
+    assert(written.source === 'fallback' && written.candidate?.status === 'accepted', 'saved SQLite failure must support one-identity update')
+    const readBack = await request(api, { ...options, graph: identities, status: 'accepted' })
+    assert(readBack.candidates.length === 1 && readBack.candidates[0].nodeId === row.nodeId,
+      'saved SQLite failure must retain fallback status on the same host')
+  } finally {
+    SqliteKnowledgeStore.prototype.listCandidates = originalList
+    SqliteKnowledgeStore.prototype.updateCandidate = originalUpdate
+  }
   const loaded = await request(api, { documentId: graph.source.documentId }, 'document-load')
   assert(loaded && loaded.sourceText === sourceText && loaded.revision === 1 && loaded.graph.nodes.length === 2, 'persistent document-load did not hydrate canonical state')
   const commitPayload = {
@@ -134,8 +229,18 @@ async function persistentSmoke() {
   const afterUnsafeUndo = await request(api, { documentId: graph.source.documentId }, 'document-export')
   assert(afterUnsafeUndo.revision === 5 && afterUnsafeUndo.graph.summary === 'later independent edit',
     'a rejected undo changed canonical graph contents')
+  // Fail the actual lazy SQLite open too, using only an owned file as a parent.
+  // A request failure and an unavailable store are distinct fallback paths.
+  process.env.DSH_KG_DB = join(dbPath, 'not-a-directory.sqlite')
+  const unavailableRoutes = []
+  persistentHost.apply({ get(name) { return name === 'webServer' ? { register(route) { unavailableRoutes.push(route); return () => {} } } : null },
+    effect(fn) { return fn() }, interval() { return () => {} } })
+  const unavailableApi = unavailableRoutes.find(route => route.path === '/api/dsh-knowledge-graph').handler
+  const unavailable = await compactSmoke((method, args) => request(unavailableApi, args, method), 'sqlite-open-failure')
+  process.env.DSH_KG_DB = dbPath
   rmSync(dir, { recursive: true, force: true })
-  return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id, revision: committed.revision }
+  return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id,
+    revision: committed.revision, compact, fallback, unavailable, exactOpaqueIdentities: opaqueIds.length }
 }
 
 const dynamic = await dynamicSmoke()
