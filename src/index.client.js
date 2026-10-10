@@ -9876,14 +9876,21 @@ export default function clientPlugin() {
             const s = sizes.get(id)
             const half = (s ? s.w : 170) / 2
             const preferred = p.x
-            const candidates = [preferred]
-            for (const slot of occupied) {
-              candidates.push(slot.left - rowGap - half)
-              candidates.push(slot.right + rowGap + half)
-            }
-            candidates.sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred) || a - b)
             const fits = (x) => occupied.every((slot) => x + half + rowGap <= slot.left || x - half - rowGap >= slot.right)
-            let chosen = candidates.find((x) => fits(x))
+            // For finite geometry the preferred x is the first-ranked candidate.
+            // Avoid building alternatives when it fits; occupancy cannot change
+            // while sorting alternatives, so reuse a failed origin check too.
+            const probeOrigin = Number.isFinite(preferred) && Number.isFinite(half)
+            let chosen = probeOrigin && fits(preferred) ? preferred : undefined
+            if (chosen == null) {
+              const candidates = [preferred]
+              for (const slot of occupied) {
+                candidates.push(slot.left - rowGap - half)
+                candidates.push(slot.right + rowGap + half)
+              }
+              candidates.sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred) || a - b)
+              chosen = candidates.find((x) => probeOrigin && x === preferred ? false : fits(x))
+            }
             if (chosen == null) {
               const right = occupied.reduce((max, slot) => Math.max(max, slot.right), preferred)
               chosen = right + rowGap + half

@@ -37,6 +37,7 @@ const layoutConnectedMode = process.argv.includes('--layout-connected')
 const layoutComponentsMode = process.argv.includes('--layout-components') || layoutConnectedMode
 const layeredHubMode = process.argv.includes('--layered-hub')
 const layeredRowsMode = process.argv.includes('--layered-rows')
+const layeredOriginMode = process.argv.includes('--layered-origin')
 const layeredSweepMode = process.argv.includes('--layered-sweeps')
 const contextLimitMode = process.argv.includes('--context-limit')
 const sourceLimitMode = process.argv.includes('--source-limit')
@@ -85,7 +86,7 @@ const documentQueueMode = process.argv.includes('--document-queue') || quickVeri
 const heldSaveMode = trajectoryQueueMode || documentQueueMode
 const reviewMode = process.argv.includes('--review') || workPackagesMode || snapshotMode || contextLimitMode || sourceLimitMode || sourceBoundaryMode || graphReviewMode || relationSemanticMode || textSemanticMode || sourcePeersMode || offWindowPeerMode || reviewFieldsMode || reviewSaveMode || heldSaveMode || repairPatchLimitMode
 const paragraphs = literalFixture ? literalFixture.sourceUnits.map(unit => unit.text)
-  : Array.from({ length: layoutComponentsMode || layeredHubMode || layeredRowsMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || layeredSweepMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
+  : Array.from({ length: layoutComponentsMode || layeredHubMode || layeredRowsMode || layeredOriginMode ? 800 : paragraphLocationMode ? 12001 : sourceImagePerformanceMode || windowDiagnosticsMode || paragraphWindowMode ? 12000 : edgeGeometryPerformanceMode || radialWidthsMode || forceOverlapsMode ? 800 : snapshotMode || layeredLocalMode || layeredSweepMode || contextLimitMode || reviewSaveMode || offWindowPeerMode || visualInspectorMode ? 803 : 37 }, (_, i) => 'Fixture observation ' + i + ' is recorded in the source.')
 if (paragraphLocationMode) paragraphs[0] = paragraphs[1] = 'Repeated fixture observation is recorded in the source.'
 if (normalizedAnchorMode) for (let i = paragraphs.length - 200; i < paragraphs.length; i++) {
   paragraphs[i] = '📚 ' + (i % 3 === 0 ? paragraphs[i].replace('Fixture ', 'Fixture\t\t')
@@ -146,12 +147,16 @@ if (layeredHubMode || layeredRowsMode) {
     evidence: [{ paragraph: 0, quote: paragraphs[0] }] })
   graph.edges.push({ ...graph.edges[0], relation: 'analogy' })
 }
-if (layeredSweepMode) {
+if (layeredSweepMode || layeredOriginMode) {
   graph.edges = graph.nodes.slice(1).map((node, i) => ({
     fromNodeId: graph.nodes[Math.floor(i / 3)].id, toNodeId: node.id,
     relation: (i + 1) % 5 === 0 ? 'causes' : 'supports',
   }))
   graph.edges.push({ fromNodeId: 'n0', toNodeId: 'n1', relation: 'analogy' })
+  if (layeredOriginMode) for (let i = 1; i < Math.floor(graph.nodes.length * 0.3); i++) graph.edges.push({
+    fromNodeId: 'n' + (i - 1), toNodeId: 'n' + i, relation: 'infers',
+    evidence: [{ paragraph: i - 1, quote: paragraphs[i - 1] }],
+  })
 }
 if (windowDiagnosticsMode) {
   const diagnostic = diagnosticFixture().graph
@@ -693,7 +698,8 @@ const server = createServer(async (req, res) => {
       const marker = '      // --------------------------- slot registration'
       if (!source.includes(marker)) throw new Error('client exposure marker not found')
       res.setHeader('content-type', 'text/javascript')
-      res.end(source.replace(marker, '      window.fixtureComponents = { WorkbenchBody, TrajectoryTab };\n' + marker))
+      res.end(source.replace(marker, '      window.fixtureComponents = { WorkbenchBody, TrajectoryTab'
+        + (layeredOriginMode ? ', computeNodeSizes' : '') + ' };\n' + marker))
       return
     }
     const asset = { '/react.js': 'react.production.min.js', '/react-dom.js': 'react-dom.production.min.js' }[url.pathname]
