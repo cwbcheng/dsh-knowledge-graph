@@ -10782,8 +10782,11 @@
         // the first contact's target until it moves, so ordinary taps still work.
         const onCanvasPointerDownCapture = (e) => {
           const el = containerRef.current, touch = touchRef.current
-          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0 || e.button !== 0 || e.target?.closest?.('.kg-graph-controls, .kg-node-detail')) return
-          if (!touch.points.size) suppressClickRef.current = false
+          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0 || e.button !== 0) return
+          // A fresh press on a panel also ends the previous gesture's click
+          // suppression; contacts during an active pan/pinch must preserve it.
+          if (!touch.points.size && !panRef.current) suppressClickRef.current = false
+          if (e.target?.closest?.('.kg-graph-controls, .kg-node-detail')) return
           if (e.pointerType !== 'touch' || panRef.current) return
           if (!touch.points.size) {
             touch.moved = false

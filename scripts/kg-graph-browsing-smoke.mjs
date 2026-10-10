@@ -247,8 +247,8 @@ const cameraValues = () => {
 }
 const nodeElement = () => all(tree, byClass('kg-node')).find(item => item.props['data-node-id'] === 'n1')
 const nodeTarget = { closest: selector => /\.kg-node(?![-\w])/.test(selector) ? nodeElement() : null }
-const touch = (name, id, x, y, target = nodeTarget) => {
-  const event = { pointerId: id, pointerType: 'touch', button: 0, clientX: x, clientY: y,
+const touch = (name, id, x, y, target = nodeTarget, pointerType = 'touch') => {
+  const event = { pointerId: id, pointerType, button: 0, clientX: x, clientY: y,
     target, detail: 1, stopped: false, prevented: false,
     stopPropagation() { this.stopped = true }, preventDefault() { this.prevented = true } }
   const canvas = viewport()
@@ -265,6 +265,7 @@ const touchClick = (target = nodeTarget, detail = 1) => {
     stopPropagation() { this.stopped = true }, preventDefault() { this.prevented = true } }
   viewport().props.onClickCapture?.(event)
   if (!event.stopped && target === nodeTarget) nodeElement().props.onClick(event)
+  if (!event.stopped && target !== nodeTarget) target.onClick?.(event)
   render()
   return event
 }
@@ -425,6 +426,94 @@ wheelAtNode(-1)
 for (const key of ['k','tx','ty']) assert(Math.abs(cameraValues()[key] - wheelBaseline[key]) < 1e-8,
   'Touchpad pinch direction round trips preserve the same camera')
 assert.equal(JSON.stringify({ nodes, edges }), original, 'Gesture handling cannot alter canonical graph data')
+// A gesture's compatibility click is suppressed, but a new primary pointer
+// sequence must activate controls inside the canvas as well as graph nodes.
+props.nodes = nodes; props.edges = edges; render()
+let controlSequences = 0
+const controlTarget = item => {
+  const inSearch = all(tree, byClass('kg-node-search')).some(panel => all(panel, element => element === item).length)
+  return {
+    closest: selector => selector.includes('.kg-graph-controls')
+      ? all(tree, byClass(inSearch ? 'kg-graph-controls' : 'kg-node-detail'))[0] : null,
+    onClick: event => item.props.onClick(event),
+  }
+}
+const startGesture = kind => {
+  const pointerType = kind === 'mouse-drag' ? 'mouse' : 'touch'
+  touch('onPointerDown', 71, 450, 460, panTarget, pointerType)
+  if (kind === 'pinch') touch('onPointerDown', 72, 650, 460, panTarget)
+  touch('onPointerMove', 71, 480, 480, panTarget, pointerType)
+  if (kind === 'pointer-cancel') touch('onPointerCancel', 71, 900, 900, panTarget)
+  else if (kind === 'lost-capture') {
+    captured.delete(71)
+    viewport().props.onLostPointerCapture({ pointerId: 71, target: el }); render()
+  } else {
+    if (kind === 'pinch') touch('onPointerUp', 72, 650, 460, panTarget)
+    touch('onPointerUp', 71, 480, 480, panTarget, pointerType)
+  }
+  assert.equal(captured.size, 0)
+}
+for (const kind of ['mouse-drag', 'touch-drag', 'pinch', 'pointer-cancel', 'lost-capture']) {
+  for (const pointerType of ['mouse', 'touch']) {
+    for (const action of ['search-result', 'detail-close', 'edge-endpoint']) {
+      click('重置缩放为 100%')
+      props.onSelectNode(null); render()
+      startGesture(kind)
+      let item
+      if (action === 'search-result') {
+        click('查找节点')
+        all(tree, element => element.type === 'input' && element.props.type === 'search')[0]
+          .props.onChange({ target: { value: 'tail needle' } }); render()
+        item = all(tree, byClass('kg-node-search-result'))[0]
+      } else if (action === 'detail-close') {
+        assert(!touchClick(nodeTarget, 0).prevented, 'Keyboard activation remains available while click suppression is armed')
+        item = button('关闭详情')
+      } else {
+        props.onSelectEdge(1); render()
+        item = all(tree, element => element.type === 'button' && element.props['data-node-id'] === 'n64')[0]
+      }
+      const target = controlTarget(item)
+      assert(touchClick(target).prevented, kind + ': a delayed gesture click on a control must still be suppressed')
+      viewport().props.onPointerDownCapture({ button: 2, pointerType: 'mouse', target })
+      assert(touchClick(target).prevented, 'A secondary-button sequence cannot clear primary gesture suppression')
+      const beforeControl = camera()
+      touch('onPointerDown', 73, 450, 460, target, pointerType)
+      touch('onPointerUp', 73, 450, 460, target, pointerType)
+      assert.equal(camera(), beforeControl, 'An independent control press cannot pan or zoom the graph')
+      assert.equal(captured.size, 0, 'Panel contacts stay outside graph gesture tracking')
+      assert(!touchClick(target).prevented, kind + ': new ' + pointerType + ' ' + action + ' must activate')
+      if (action === 'detail-close') assert.equal(all(tree, byClass('kg-node-detail')).length, 0)
+      else {
+        assert.equal(props.selectedNodeId, 'n64')
+        assert(all(tree, byClass('kg-node-detail')).some(panel => text(panel).includes('Tail needle')))
+        assert.equal(all(tree, byClass('kg-node-search')).length, 0)
+      }
+      controlSequences++
+    }
+  }
+}
+// A contact on a panel during an active mouse pan or pinch is not a new
+// gesture. It cannot release suppression or steal the graph's captures.
+for (const pointerType of ['mouse', 'touch']) {
+  touch('onPointerDown', 81, 450, 460, panTarget, pointerType)
+  if (pointerType === 'touch') touch('onPointerDown', 82, 650, 460, panTarget)
+  touch('onPointerMove', 81, 480, 480, panTarget, pointerType)
+  click('查找节点')
+  const target = controlTarget(button('关闭查找')), beforeControl = camera(), capturesBefore = captured.size
+  for (const panelPointer of ['mouse', 'touch']) {
+    touch('onPointerDown', 83, 450, 460, target, panelPointer)
+    touch('onPointerUp', 83, 450, 460, target, panelPointer)
+    assert(touchClick(target).prevented, 'Panel contacts during an active gesture cannot clear suppression')
+    assert.equal(camera(), beforeControl)
+    assert.equal(captured.size, capturesBefore)
+  }
+  if (pointerType === 'touch') touch('onPointerCancel', 82, 0, 0, panTarget)
+  touch('onPointerCancel', 81, 0, 0, panTarget, pointerType)
+  assert.equal(captured.size, 0)
+  click('关闭查找')
+}
+assert.equal(JSON.stringify({ nodes, edges }), original, 'Control recovery never edits graph content')
+
 touch('onPointerDown', 61, 450, 460)
 touch('onPointerDown', 62, 650, 460)
 assert.equal(captured.size, 2)
@@ -515,4 +604,5 @@ console.log(JSON.stringify({ ok: true, nodeSearch: true, paginatedResults: 65, r
   cameraRestoration: true, endpointNavigation: true, parallelRelationIdentity: true,
   separateToolbarAndCanvas: true, canvasWheelAnchor: true, pointerCancellation: true,
   nodePinchZoom: true, movingPinchAnchor: true, touchTapPreserved: true, multiTouchRebase: true,
-  touchCaptureCleanup: true, touchpadContinuousZoom: true, readOnly: true, firstViews }))
+  touchCaptureCleanup: true, touchpadContinuousZoom: true, controlSequences, activeGestureControls: true,
+  readOnly: true, firstViews }))
