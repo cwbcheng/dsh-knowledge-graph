@@ -5238,6 +5238,7 @@ export default function clientPlugin() {
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
         const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [reload, setReload] = useState(0)
         const [sourceError, setSourceError] = useState('')
+        const [reviewError, setReviewError] = useState('')
         const [roles, setRoles] = useState({}), [preview, setPreview] = useState(null), [saving, setSaving] = useState(false)
         const [notice, setNotice] = useState(''), [selectedMaterial, setSelectedMaterial] = useState(initial.selectedMaterial)
         const [branchId, setBranchId] = useState(initial.branchId), [exampleOffset, setExampleOffset] = useState(initial.exampleOffset)
@@ -5263,7 +5264,8 @@ export default function clientPlugin() {
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
         const location = useConnectionModelLocation(locationScope, active)
-        const reviewLocation = useConnectionModelLocation(JSON.stringify([locationScope, saving, !!busy, importBusy]), active)
+        const reviewScope = JSON.stringify([locationScope, saving, !!busy, importBusy])
+        const reviewLocation = useConnectionModelLocation(reviewScope, active)
         const refreshContext = useRef(null), refreshMounted = useRef(true)
         if (!refreshContext.current || refreshContext.current.scope !== locationScope || refreshContext.current.active !== active
           || refreshContext.current.roles !== roles || refreshContext.current.preview !== preview
@@ -5276,6 +5278,7 @@ export default function clientPlugin() {
           return () => { refreshMounted.current = false; refreshContext.current.sequence++ }
         }, [])
         useEffect(() => { setSourceError('') }, [locationScope, active])
+        useEffect(() => { setReviewError('') }, [reviewScope, active])
         const locate = (reference, stillCurrent) => location(reference, api.current.onLocate, null, stillCurrent)
         const locateInDetail = (reference, stillCurrent) => location(reference, (value, isCurrent) => {
           // The location guard admits the attempt before it clears its own error.
@@ -5414,7 +5417,12 @@ export default function clientPlugin() {
         }
         const review = () => {
           if (saving || busy || !detail || detail.documentId !== documentId || detail.revision !== revision || detail.model?.nodeId !== modelId) return false
-          return reviewLocation(detail.model, api.current.onReview, reason => setDetailError(reason.message || '操作未完成'))
+          return reviewLocation(detail.model, (model, isCurrent) => {
+            // Only an admitted retry clears its own failure. Detail reads,
+            // direction edits and refreshes keep their independent errors.
+            setReviewError('')
+            return api.current.onReview?.(model, isCurrent)
+          }, reason => setReviewError(reason.message || '操作未完成'))
         }
         const refresh = async () => {
           const id = ++refreshOpening.sequence
@@ -5517,6 +5525,7 @@ export default function clientPlugin() {
                 h('strong', null, detail?.model.sectionTitle || '联结模型'),
                 detail ? h('span', { className: 'kg-model-meta' }, detail.model.nodeId + ' · 版本 ' + revision) : null),
               detailError ? h('p', { role: 'alert' }, detailError) : null,
+              reviewError ? h('p', { role: 'alert' }, reviewError) : null,
               sourceError ? h('p', { role: 'alert' }, sourceError) : null,
               notice ? h('p', { role: 'status' }, notice) : null,
               detailLoading ? h('p', { role: 'status' }, '正在读取模型及原文…') : null,
