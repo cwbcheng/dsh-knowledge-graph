@@ -1,7 +1,8 @@
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
-import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
+import { modelLearningHarness, learnerResponse } from './kg-model-learning-fixture-data.mjs'
+import { feedbackResponse } from './kg-model-feedback-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
@@ -18,6 +19,31 @@ if (process.argv.includes('--diagnostics')) {
   fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')
 }
 const harness = await modelLearningHarness({ fixture })
+if (process.argv.includes('--diagnosis-citation-records')) {
+  // Explicit synthetic predictions/results, including an unrevealed prediction.
+  // Browser citation checks only read these frozen records.
+  const base = { documentId: harness.document.documentId, modelId: 'taxi', expectedRevision: 1 }
+  const plan = await harness.post({ ...base, action: 'plan' })
+  if (plan.error) throw new Error(plan.error.message)
+  const stamp = Date.now() - 10000
+  for (const [index, id] of ['a', 'b', 'hidden'].entries()) {
+    const attemptId = 'diagnosis-prediction-' + id
+    const saved = await harness.post({ ...base, action: 'save', taskId: plan.tasks[0].id, attemptId, selfRating: 'uncertain',
+      response: { ...learnerResponse, scenario: id + ' · 合成情境；条件尚未独立核验' } })
+    if (saved.error) throw new Error(saved.error.message)
+    harness.store.db.prepare('UPDATE learning_attempts SET created_at = ? WHERE attempt_id = ?').run(stamp + index, attemptId)
+    const prediction = id === 'hidden' ? saved : await harness.post({ ...base, action: 'reveal', attemptId, expectedVersion: 1 })
+    if (prediction.error) throw new Error(prediction.error.message)
+    const results = id === 'a' ? ['a', 'b', 'input'] : [id]
+    for (const [position, name] of results.entries()) {
+      const resultId = 'diagnosis-result-' + id + '-' + name
+      const result = await harness.post({ ...base, action: 'save-result', predictionId: attemptId, attemptId: resultId, expectedVersion: prediction.attempt.version,
+        response: { ...feedbackResponse('reflection'), diagnosis: name === 'input' ? 'input' : 'mapping', content: resultId + ' · 个人诊断，尚未核验' } })
+      if (result.error) throw new Error(result.error.message)
+      harness.store.db.prepare('UPDATE learning_attempts SET created_at = ? WHERE attempt_id = ?').run(stamp + 100 + position, resultId)
+    }
+  }
+}
 if (process.argv.includes('--understanding-citation-records')) {
   // Explicit synthetic learner records let browser checks switch snapshots
   // without writing any personal data during citation navigation.
@@ -34,6 +60,8 @@ if (process.argv.includes('--understanding-citation-records')) {
 }
 const initial = harness.store.getDocument(harness.document.documentId)
 const initialUnderstanding = JSON.stringify(harness.store.listLearningAttempts(harness.document.documentId, 'taxi', 'understanding'))
+const initialLearning = JSON.stringify(harness.store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all())
+const initialUnits = JSON.stringify(harness.store.getDocumentSourceUnits(harness.document.documentId))
 const clientSource = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const quoteLocator = clientSource.slice(clientSource.indexOf('function exactSourceQuoteTarget('), clientSource.indexOf('function KnowledgeConsumePanel('))
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -76,6 +104,8 @@ const server = createServer(async (req, res) => {
       edgesUnchanged: JSON.stringify(graph.edges) === JSON.stringify(initial.edges),
       nodeEvidenceUnchanged: initial.nodes.every(node => isDeepStrictEqual(graph.nodes.find(saved => saved.id === node.id)?.evidence, node.evidence)),
       learningRecordsUnchanged: JSON.stringify(harness.store.listLearningAttempts(harness.document.documentId, 'taxi', 'understanding')) === initialUnderstanding,
+      diagnosisRecordsUnchanged: JSON.stringify(harness.store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()) === initialLearning,
+      sourceUnitsUnchanged: JSON.stringify(harness.store.getDocumentSourceUnits(harness.document.documentId)) === initialUnits,
       models: graph.nodes.filter(node => node.modelStructure).map(node => ({ id: node.id, structure: node.modelStructure })),
       learningCount: harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n }))
     return

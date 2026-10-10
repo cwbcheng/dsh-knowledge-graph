@@ -4860,14 +4860,18 @@
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + report.items.length >= report.total, onClick: () => setOffset(offset + 20) }, '下一页记录'))) : null)
       }
 
-      function ModelDiagnosisMaterials({ prediction, diagnosis, revision, onLocate, onUnderstanding }) {
+      function ModelDiagnosisMaterials({ prediction, diagnosis, revision, active = true, locationScope = '', onLocate, onUnderstanding }) {
         const [error, setError] = useState('')
-        useEffect(() => { setError('') }, [prediction.attemptId, diagnosis, revision])
+        const locationKey = JSON.stringify([prediction.documentId, prediction.modelId, prediction.attemptId, prediction.version,
+          prediction.baseRevision, revision, diagnosis, prediction.revealedAt, locationScope])
+        const canLocate = active && !!prediction.revealedAt && prediction.baseRevision === revision && !!onLocate
+        const locateInScope = useConnectionModelLocation(locationKey, canLocate)
+        useEffect(() => { setError('') }, [locationKey, canLocate])
         const model = prediction.task.model, role = diagnosis === 'input' ? 'inputs' : diagnosis === 'output' ? 'outputs' : ''
         const ids = new Set(role ? model[role].map(item => item.nodeId) : [])
         const references = prediction.revealedAt ? prediction.task.references.filter(item => role ? ids.has(item.nodeId) :
           ['mapping', 'calculation', 'condition'].includes(diagnosis) ? item.nodeId === model.nodeId || ['rule', 'relation_material', 'property_material'].includes(item.type) : true) : []
-        const locate = reference => Promise.resolve().then(() => onLocate?.(reference)).catch(reason => setError(reason.message || '原文定位失败'))
+        const locate = reference => locateInScope(reference, onLocate, reason => setError(reason.message || '原文定位失败'))
         return h('section', { className: 'kg-model-diagnosis-materials', 'aria-label': '诊断对应材料' },
           h('h4', null, '对应材料 · ' + (MODEL_FEEDBACK_DIAGNOSES[diagnosis] || '仍无法判断')),
           h('p', { className: 'kg-model-meta' }, '图谱第 ' + prediction.baseRevision + ' 版的有限材料快照 · 按已记录角色与类型筛选，不确认错误原因。'),
@@ -4883,8 +4887,9 @@
                 ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[item.state] || '待确认') + ' · ' +
                 ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[item.entailmentStatus] || '未核对原文支持')),
               item.citations.map((citation, index) => h('div', { key: index }, h('p', null, '当时原文 P' + (citation.paragraph + 1) + '：' + citation.quote),
-                h('button', { type: 'button', className: 'kg-secondary', disabled: prediction.baseRevision !== revision || !onLocate,
-                  onClick: () => locate({ nodeId: item.nodeId, paragraph: citation.paragraph }) }, '对照材料原文'))))),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: !canLocate,
+                  onClick: () => locate({ ...citation, nodeId: item.nodeId, documentId: prediction.documentId, revision: prediction.baseRevision,
+                    sourceQuoteOnly: true, sourceCitation: true }) }, '对照材料原文'))))),
             !references.length ? h('p', { role: 'status' }, '这份快照未保留该环节的匹配引文；材料缺失不说明模型或诊断正确。') : null,
             prediction.task.referencesLimited ? h('p', { className: 'kg-model-meta' }, '来源快照有限，未包含所有材料。') : null,
             prediction.baseRevision !== revision ? h('p', { role: 'status' }, '来源版本已更新；保留旧引文，不用旧段落编号定位当前原文。') : null),
@@ -5391,7 +5396,8 @@
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !ready || !latest.get(opened.task.rootResultId),
                 onClick: () => jumpToResult(latest.get(opened.task.rootResultId)) }, '查看最新更正')) :
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy || !ready, onClick: () => begin(opened) }, '追加结果更正')) : null,
-          materials && !draft && opened ? h(ModelDiagnosisMaterials, { prediction, revision, diagnosis: opened.response.diagnosis, onLocate, onUnderstanding }) : null,
+          materials && !draft && opened ? h(ModelDiagnosisMaterials, { prediction, revision, diagnosis: opened.response.diagnosis,
+            active: ready && !loading && !!supported, locationScope: JSON.stringify([scopeKey, opened.attemptId, reload, resultFocusToken]), onLocate, onUnderstanding }) : null,
           records.length ? h('div', { className: 'kg-learning-history' }, h('strong', null, '本次预测的结果 · 共 ' + total + ' 条（包含更正） · 最近 ' + records.length + ' 条'),
             records.map(item => h('button', { type: 'button', key: item.attemptId, className: 'kg-secondary', disabled: busy || !!draft?.submitted,
               'aria-pressed': !draft && opened?.attemptId === item.attemptId, onClick: () => { if (discard()) setOpened(item) } },
