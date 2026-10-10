@@ -4087,6 +4087,17 @@
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
         const location = useConnectionModelLocation(locationScope, active)
+        const refreshContext = useRef(null), refreshMounted = useRef(true)
+        if (!refreshContext.current || refreshContext.current.scope !== locationScope || refreshContext.current.active !== active
+          || refreshContext.current.roles !== roles || refreshContext.current.preview !== preview
+          || refreshContext.current.saving !== saving || refreshContext.current.busy !== busy || refreshContext.current.importBusy !== importBusy) {
+          refreshContext.current = { scope: locationScope, active, roles, preview, saving, busy, importBusy, sequence: 0 }
+        }
+        const refreshOpening = refreshContext.current
+        useEffect(() => {
+          refreshMounted.current = true
+          return () => { refreshMounted.current = false; refreshContext.current.sequence++ }
+        }, [])
         useEffect(() => { setSourceError('') }, [locationScope, active])
         const locate = (reference, stillCurrent) => location(reference, api.current.onLocate, null, stillCurrent)
         const locateInDetail = (reference, stillCurrent) => location(reference, (value, isCurrent) => {
@@ -4225,11 +4236,21 @@
           setFieldRequest(value => value + 1)
         }
         const act = async fn => { try { await fn() } catch (reason) { setDetailError(reason.message || '操作未完成') } }
-        const refresh = () => act(async () => {
+        const refresh = async () => {
+          const id = ++refreshOpening.sequence
+          const isCurrent = () => refreshMounted.current && refreshContext.current === refreshOpening
+            && refreshOpening.active && refreshOpening.sequence === id
+          if (!isCurrent() || saving || busy || importBusy) return
           if (Object.keys(roles).length && !window.confirm('放弃未保存的方向修改并重新读取知识图？')) return
-          if (api.current.onRefresh) await api.current.onRefresh()
-          setRoles({}); setPreview(null); setReload(value => value + 1)
-        })
+          try {
+            // Standalone callers keep the original synchronous local reload.
+            let refreshed
+            if (api.current.onRefresh) refreshed = await api.current.onRefresh(isCurrent)
+            // A newer selection or draft cancels both publication and cleanup.
+            if (refreshed === false || !isCurrent()) return
+            setRoles({}); setPreview(null); setReload(value => value + 1)
+          } catch (reason) { if (isCurrent()) setDetailError(reason.message || '操作未完成') }
+        }
         const reviewRoles = async commit => {
           if (saving || busy || !detail || !api.current.onRoles) return
           const id = ++writeSequence.current
