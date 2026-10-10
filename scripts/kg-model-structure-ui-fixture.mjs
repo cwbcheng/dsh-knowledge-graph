@@ -12,7 +12,7 @@ import { modelCitationFixture, modelCitationBrowserNavigatorSource } from './kg-
 
 const citationNavigation = process.argv.includes('--citation-navigation'), citationWindow = process.argv.includes('--citation-window')
 const fixture = citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
-  long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third') }) : process.argv.includes('--source-table')
+  long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages') }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
   : process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
 if (process.argv.includes('--diagnostics')) {
@@ -126,7 +126,7 @@ function App(){
   if(!view)return h('main',{className:'kg-root'},h('p',{role:'status'},'正在读取隔离模型…'));
   state.current.resultView=view;state.current.onSaved=setView;
   const controller=createModelReviewController(state.current,{call:rpc});
-  const locate=citationNavigator||(reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))});
+  const locate=${process.argv.includes('--citation-hold-controls') ? `async(reference,stillCurrent)=>{try{if(window.__citationPaused){await new Promise((resolve,reject)=>{(window.__citationHolds||=[]).push({resolve,reject})})}return await citationNavigator(reference,stillCurrent)}finally{window.__citationAdapterCompleted=(window.__citationAdapterCompleted||0)+1}}` : `citationNavigator||(reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))})`};
   return h('main',{className:'kg-root'},h('h1',null,'联结模型 · 结构核对'),${process.argv.includes('--citation-switch-controls') ? "h('button',{onClick:()=>setModelsActive(value=>!value)},modelsActive?'查看知识图':'返回联结模型')," : ''}
     h('div',{style:{display:modelsActive?'block':'none'}},h(KGViewer.ConnectionModelPanel,{documentId:'connection-fixture',revision:state.current.graphRevisionRef.current,active:modelsActive,
     load:(args,signal)=>rpc('connection-models',args,signal),learningCall:(args,signal)=>rpc('learning-mode',args,signal),onStructure:controller,onRoles:controller,onRefresh:refresh,onLocate:locate})),
