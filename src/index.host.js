@@ -2356,7 +2356,7 @@ function createHostPlugin(graphContractOnly) {
        const CANDIDATE_STATUSES = new Set(['candidate', 'accepted', 'rejected'])
        function candidateDocumentId(graph) {
          const source = graph && graph.source && typeof graph.source === 'object' ? graph.source : {}
-         return typeof source.documentId === 'string' && source.documentId ? source.documentId : (typeof graph.documentId === 'string' && graph.documentId ? graph.documentId : (typeof source.id === 'string' ? source.id : 'local'))
+         return typeof source.documentId === 'string' && source.documentId ? source.documentId : (typeof graph?.documentId === 'string' && graph.documentId ? graph.documentId : (typeof source.id === 'string' && source.id ? source.id : 'local'))
        }
        function candidateRowsFromGraph(graph, options = {}) {
          const documentId = candidateDocumentId(graph)
@@ -2366,8 +2366,9 @@ function createHostPlugin(graphContractOnly) {
          const entityTypes = ontEntityCandidates(graph)
          const claimTypes = ontClaimCandidates(graph)
          const rows = []
+         const reviewOnly = options.reviewOnly === true
          for (const node of Array.isArray(graph && graph.nodes) ? graph.nodes : []) {
-           if (!node || typeof node.id !== 'string' || typeof node.text !== 'string' || !node.text.trim()) continue
+           if (!node || typeof node.id !== 'string' || (!reviewOnly && (typeof node.text !== 'string' || !node.text.trim()))) continue
            const kinds = []
            if (entityTypes.has(node.type)) kinds.push('entity')
            if (claimTypes.has(node.type)) kinds.push('claim')
@@ -2381,18 +2382,31 @@ function createHostPlugin(graphContractOnly) {
                kind,
                documentId,
                nodeId: node.id,
-               text: node.text,
-               type: node.type,
                status,
-               confidence: typeof node.confidence === 'number' ? node.confidence : null,
-               evidence: Array.isArray(node.evidence) ? node.evidence : [],
-               paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
-               sectionId: typeof node.sectionId === 'string' ? node.sectionId : null,
-               sectionTitle: typeof node.sectionTitle === 'string' ? node.sectionTitle : null,
+               ...(reviewOnly ? {} : {
+                 text: node.text,
+                 type: node.type,
+                 confidence: typeof node.confidence === 'number' ? node.confidence : null,
+                 evidence: Array.isArray(node.evidence) ? node.evidence : [],
+                 paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
+                 sectionId: typeof node.sectionId === 'string' ? node.sectionId : null,
+                 sectionTitle: typeof node.sectionTitle === 'string' ? node.sectionTitle : null,
+               }),
              })
            }
          }
          return rows.slice(0, limit)
+       }
+       function updateCandidateReviewHost(args) {
+         const graph = args.graph && typeof args.graph === 'object' ? args.graph : null
+         const status = CANDIDATE_STATUSES.has(args.status) ? args.status : ''
+         const key = candidateKeyFromArgs(args)
+         if (!graph || !key || !status) return { error: { code: 'invalid_input', message: '候选更新缺少 graph、kind、nodeId 或合法 status' } }
+         const rows = candidateRowsFromGraph(graph, { kind: args.kind, limit: 500, reviewOnly: args.reviewOnly })
+         const candidate = rows.find(row => row.kind === args.kind && row.nodeId === args.nodeId)
+         if (!candidate) return { error: { code: 'not_found', message: '找不到要更新的候选' } }
+         candidateReviewState.set(key, status)
+         return { candidate: { ...candidate, status } }
        }
        function candidateKeyFromArgs(args) {
          const documentId = typeof args.documentId === 'string' && args.documentId ? args.documentId : candidateDocumentId(args.graph)
@@ -14998,21 +15012,13 @@ function createHostPlugin(graphContractOnly) {
          const documentId = typeof a.documentId === 'string' && a.documentId ? a.documentId : candidateDocumentId(a.graph)
          const canonical = documentId ? loadCanonicalDocumentHost(documentId) : null
          const graph = canonical && canonical.graph ? canonical.graph : (a.graph && typeof a.graph === 'object' ? a.graph : null)
-         if (!graph || !Array.isArray(graph.nodes)) return { candidates: [], source: 'dynamic' }
-         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit }), source: canonical ? 'dynamic-canonical' : 'dynamic' }
+         if (!graph || !Array.isArray(graph.nodes)) return { candidates: [], source: 'dynamic', requiresGraph: true }
+         return { candidates: candidateRowsFromGraph(graph, { kind: a.kind, status: a.status, limit: a.limit, reviewOnly: a.reviewOnly }), source: canonical ? 'dynamic-canonical' : 'dynamic' }
        })
 
        harness.handle('candidate-update', async (args) => {
          const a = args && typeof args === 'object' ? args : {}
-         const graph = a.graph && typeof a.graph === 'object' ? a.graph : null
-         const status = CANDIDATE_STATUSES.has(a.status) ? a.status : ''
-         const key = candidateKeyFromArgs(a)
-         if (!graph || !key || !status) return { error: { code: 'invalid_input', message: '候选更新缺少 graph、kind、nodeId 或合法 status' } }
-         const rows = candidateRowsFromGraph(graph, { kind: a.kind, limit: 500 })
-         const candidate = rows.find((row) => row.kind === a.kind && row.nodeId === a.nodeId)
-         if (!candidate) return { error: { code: 'not_found', message: '找不到要更新的候选' } }
-         candidateReviewState.set(key, status)
-         return { candidate: { ...candidate, status }, source: 'dynamic' }
+         return { ...updateCandidateReviewHost(a), source: 'dynamic' }
        })
 
        harness.handle('document-load', async (args) => {
