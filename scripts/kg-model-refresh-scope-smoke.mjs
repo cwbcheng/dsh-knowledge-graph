@@ -179,6 +179,11 @@ try {
   const compatible = await mount(); compatible.nav.paused = false
   await modelRefreshReceiver(compatible.nav.environment)()
   assert.equal(compatible.nav.published.length, 1, 'Existing refresh callers without a selection predicate still work'); cases++
+  const standalone = await mount(); standalone.props.onRefresh = undefined; standalone.render()
+  const beforeLocalReload = actualHttpRequests
+  current = standalone.owner; const refreshing = standalone.button('重新读取模型').props.onClick(); standalone.render()
+  assert.equal(actualHttpRequests, beforeLocalReload + 2, 'A standalone local retry issues the directory/detail reads synchronously')
+  await refreshing; await standalone.settle(); assert.deepEqual(alerts(standalone), []); cases++
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
