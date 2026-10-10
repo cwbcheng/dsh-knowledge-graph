@@ -22,7 +22,8 @@ const model = { ...node('model', 'connection_model', '知足知止与长久'), m
 const edges = [{ fromNodeId: 'model', toNodeId: 'input', relation: 'maps_between', role: 'input', evidence: [citation] },
   { fromNodeId: 'model', toNodeId: 'output', relation: 'maps_between', role: 'output', evidence: [citation] }]
 assert.equal(getOntology('aggregate-v1').nodeTypes.length, 8, 'extraction vocabulary remains frozen')
-assert.equal(withManualModels(getOntology('aggregate-v1')).nodeTypes.length, 9)
+assert.equal(withManualModels(getOntology('aggregate-v1')).nodeTypes.length, 10)
+assert(withManualModels(getOntology('aggregate-v1')).relationTypes.some(relation => relation.id === 'states_mapping'))
 assert.equal(hasMaterialCoordinates(withManualModels(getOntology('aggregate-v1'))), false, 'classic claims must not be relabeled as learning materials')
 const full = { ...base, nodes: [...base.nodes, model], edges }
 assert.equal(contract.validateGraphInvariants(full, sourceText, { includeQuality: false }).blockingIssues.length, 0)

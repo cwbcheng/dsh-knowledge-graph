@@ -1,5 +1,7 @@
 # 有条件的原文对应与《道德经》补全
 
+此文记录上一版历史修复。后续全篇审校已改为《学习观》既有的规律/交代映射/联结映射结构，见 [dao-learning-audit.md](dao-learning-audit.md)；`source_relation` 不用于新的整理结果。
+
 模型的 `maps_between` 与 `has_rule` 只是槽位及规律挂接，不能代替槽位之间的具体关系。聚合本体的手工模型层新增 `source_relation`（原文对应），不改变命题本体或聚合抽取器的 8 类节点、12 类基础关系。
 
 每条对应引用现存模型及分支 (`modelId`, `branchId`)，端点必须是该模型中的非否决概念。`statement` 保留该分支的逐字映射，`condition` 保留条件或原文语境，`boundary` 保留解释范围；`evidence` 同时覆盖映射和条件的出处。对应仍是阅读候选，定位到引文不代表经验因果已经获证。无条件、引证缺失、分支失效或字段与模型不一致时，Host 和 SQLite 都拒绝提交。
