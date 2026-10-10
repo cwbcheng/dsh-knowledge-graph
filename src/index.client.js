@@ -18731,7 +18731,7 @@ export default function clientPlugin() {
                     } })) : null,
                 documentIdOfGraph(resultView.graph) ? h('div', { style: { display: readMode === 'models' ? 'block' : 'none' } },
                   h(ConnectionModelPanel, { key: documentIdOfGraph(resultView.graph),
-                    documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current, active: readMode === 'models', focusRequest: connectionFocus,
+                    documentId: documentIdOfGraph(resultView.graph), revision: graphRevisionRef.current, active: workspaceTab === 'read' && readMode === 'models', focusRequest: connectionFocus,
                     restoreState: connectionPerspectiveRef.current,
                     onStateChange: state => { connectionPerspectiveRef.current = state },
                     load: (args, signal) => host.call('connection-models', args, { signal }),
