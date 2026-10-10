@@ -8,7 +8,7 @@ import { modelCitationFixture, modelCitationLocator, modelCitationLocatorSource 
 
 const source = readFileSync(new URL('../src/index.client.js', import.meta.url), 'utf8')
 const quoteSource = source.slice(source.indexOf('function exactSourceQuoteTarget('), source.indexOf('function KnowledgeConsumePanel('))
-const components = value => value.slice(value.indexOf('function ConnectionModelPanel('), value.indexOf('function ConnectionModelChain('))
+const components = value => value.slice(value.indexOf('function ConnectionModelPanel('), value.indexOf('const MODEL_FEEDBACK_TYPES'))
 assert.equal(modelCitationLocatorSource(source), modelCitationLocatorSource(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')))
 for (const file of ['../lib/client.js', '../extension/viewer.js']) assert.equal(components(source), components(readFileSync(new URL(file, import.meta.url), 'utf8')))
 const fixture = modelSourceTableFixture({ peer: true }), contract = createGraphContract(), harness = await modelLearningHarness({ fixture })
@@ -18,15 +18,16 @@ let current, cursor = 0
 const slot = initial => { const index = cursor++; return current.slots[index] ||= initial() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
-  useState(initial) { const state = slot(() => ({ value: typeof initial === 'function' ? initial() : initial }));
-    return [state.value, next => current.updates.push(() => { state.value = typeof next === 'function' ? next(state.value) : next })] },
+  useState(initial) { const owner = current, state = slot(() => ({ value: typeof initial === 'function' ? initial() : initial }));
+    return [state.value, next => owner.updates.push(() => { state.value = typeof next === 'function' ? next(state.value) : next })] },
   useRef: initial => slot(() => ({ current: initial })),
   useMemo(fn, deps) { const state = slot(() => ({})); if (!state.deps || deps.some((value, index) => !Object.is(value, state.deps[index]))) { state.value = fn(); state.deps = deps }; return state.value },
   useEffect(fn, deps) { const state = slot(() => ({})); if (!state.deps || deps.some((value, index) => !Object.is(value, state.deps[index]))) {
     current.effects.push(() => { state.cleanup?.(); state.cleanup = fn() }); state.deps = deps
   } },
 }
-const environment = { window: { React }, console, AbortController, setTimeout: () => 1, clearTimeout() {}, documentIdOfGraph: graph => graph?.source?.documentId }
+const environment = { window: { React, confirm: () => true }, console, AbortController, setTimeout: () => 1, clearTimeout() {},
+  sessionStorage: { getItem: () => null, setItem() {} }, documentIdOfGraph: graph => graph?.source?.documentId }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), environment)
 runInNewContext(quoteSource + '\nthis.target=exactSourceQuoteTarget', environment)
 const makeView = environment.window.KGViewer.makeView
@@ -111,11 +112,29 @@ try {
   assert(peer); peer.props.onClick(); await comparison.settle()
   for (const button of buttons(comparison.owner.tree)) button.props.onClick()
   await comparison.settle(); citationActions += await checkReferences()
-  for (const ui of [panel, comparison]) assert.equal(all(ui.owner.tree, node => node.props.dangerouslySetInnerHTML).length, 0)
+  const openChain = async (document = fixture, extra = {}) => {
+    const chain = mount('ConnectionModelChain', extra, document); await chain.settle(); await chain.click('查看全部第 2 步模型')
+    const peer = all(chain.owner.tree, node => node.type === 'button' && text(node).includes('taxi-peer · '))[0]
+    assert(peer); peer.props.onClick(); await chain.settle(); return chain
+  }
+  const chain = await openChain()
+  for (const step of all(chain.owner.tree, node => node.props.className === 'kg-chain-step')) {
+    for (const button of buttons(step)) button.props.onClick()
+    await chain.settle(); citationActions += await checkReferences()
+  }
+  for (const ui of [panel, comparison, chain]) assert.equal(all(ui.owner.tree, node => node.props.dangerouslySetInnerHTML).length, 0)
   const dense = modelCitationFixture({ dense: true, anchor: 2 }), densePanel = mount('ConnectionModelPanel', {}, dense)
   await densePanel.settle(); await densePanel.click('原文依据'); await densePanel.click('原文 P3')
   const denseReference = located.pop(), denseView = makeView({ ...dense.graph, revision: 1 }, dense.sourceText)
   assert.equal(denseReference.paragraph, 2); assert.equal(environment.target(denseView, denseReference).first, 3, 'Re-parsing also changes reading positions when stored ids are dense')
+  const denseChain = await openChain(dense)
+  const denseButtons = all(denseChain.owner.tree, node => node.type === 'button' && text(node) === '原文 P3')
+  assert.equal(denseButtons.length, 2)
+  for (const button of denseButtons) {
+    button.props.onClick(); await denseChain.settle()
+    const reference = located.pop()
+    assert.equal(reference.paragraph, 2); assert.equal(environment.target(denseView, reference).first, 3)
+  }
 
   const reference = { documentId: fixture.documentId, revision: 1, paragraph: 7, quote: fixture.sourceUnits[1].text,
     sourceId: 'sparse-model-source', nodeId: 'distance', sourceQuoteOnly: true, sourceCitation: true }
@@ -163,9 +182,10 @@ try {
   comparison.props.onLocate = navigation(duplicate).locate; await comparison.settle()
   buttons(comparison.owner.tree)[0].props.onClick(); await comparison.settle()
   assert(text(comparison.owner.tree).includes('多个相同片段') && text(comparison.owner.tree).includes(reference.quote), 'Comparison also keeps the quote and its visible error')
-  const long = structuredClone(fixture), longQuote = long.sourceUnits[1].text + '仅限本段条件。'.repeat(350)
-  long.sourceUnits[1].text = longQuote; long.sourceText = long.sourceUnits.map(unit => unit.text).join('\n\n')
-  long.graph.nodes[0].quote = longQuote; long.graph.nodes[0].evidence[0].quote = longQuote
+  chain.props.onLocate = navigation(duplicate).locate; await chain.settle()
+  buttons(chain.owner.tree)[0].props.onClick(); await chain.settle()
+  assert(text(chain.owner.tree).includes('多个相同片段') && text(chain.owner.tree).includes(reference.quote), 'Two-step source failures keep the quote and the current error')
+  const long = modelCitationFixture({ long: true }), longQuote = long.sourceUnits[1].text
   const oversized = mount('ConnectionModelPanel', { onLocate: reference => { located.push({ ...reference }); environment.target(makeView({ ...long.graph, revision: 1 }, long.sourceText), reference) } }, long)
   await oversized.settle(); await oversized.click('原文依据')
   buttons(all(oversized.owner.tree, node => node.props.className === 'kg-model-source')[0])[0].props.onClick(); await oversized.settle()
@@ -176,6 +196,14 @@ try {
   assert.throws(() => environment.target(longView, { ...longReference, sourceCitation: false }), /记录不完整/, 'Unmarked structure/context actions retain the original quote budget')
   assert.throws(() => environment.target(longView, { ...longReference, quote: longReference.quote + '缺失' }), /逐字匹配/)
   assert.throws(() => environment.target({ ...longView, sourceText: long.sourceText + '\n\n' + longQuote }, longReference), /多个相同片段/)
+  const longChain = await openChain(long, { onLocate: reference => { located.push({ ...reference }); environment.target(longView, reference) } })
+  for (const [index, id] of ['taxi', 'taxi-peer'].entries()) {
+    const step = all(longChain.owner.tree, node => node.props['aria-label'] === '第 ' + (index + 1) + ' 步')[0]
+    buttons(step).at(-1).props.onClick(); await longChain.settle()
+    assert.equal(located.at(-1).quote, longQuote); assert.equal(located.at(-1).nodeId, id)
+    assert.equal(environment.target(longView, located.at(-1)).first, 1)
+  }
+  assert(!text(longChain.owner.tree).includes('原文定位记录不完整'))
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)

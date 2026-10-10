@@ -4545,6 +4545,7 @@
         const pair = loadedPair?.scope === pairKey ? loadedPair : null
         const stale = current.revision !== revision
         const checked = result?.scope === pairKey && result.draftKey === JSON.stringify(draft) && !stale ? result.chain : null
+        const location = useConnectionModelLocation(JSON.stringify([pairKey, current.revision, draft.steps.map(step => step.branchId), reload]), active)
         const cancelImport = (keepNotice = false) => { importSequence.current++; importAbort.current?.abort(); setIncoming(null); setImporting(false); setImportError(''); if (!keepNotice) setImportNotice('') }
         const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); cancelImport(keepImportNotice) }
         useEffect(() => { setWork(restore()); invalidate(); setQuery(''); setSearch(''); setOffset(0); setStorageError('') }, [documentId, modelId])
@@ -4661,7 +4662,7 @@
           } catch (reason) { if (id === checkSequence.current && !abort.signal.aborted) setError(reason.message || '推测草稿未检查，文字仍保留') }
           finally { if (id === checkSequence.current && !abort.signal.aborted) { checkPending.current = false; setChecking(false) } }
         }
-        const locate = reference => Promise.resolve().then(() => api.current.onLocate?.(reference)).catch(reason => setError(reason.message || '原文定位失败'))
+        const locate = reference => location(reference, api.current.onLocate, reason => setError(reason.message || '原文定位失败'))
         const field = (label, value, onChange, maxLength = 1000) => h('label', { className: 'kg-chain-field' }, h('span', null, label),
           h('textarea', { 'aria-label': label, value, maxLength, rows: 2, onChange: event => onChange(event.target.value) }))
         const stepEditor = (detail, index) => {
@@ -4716,7 +4717,8 @@
                   outputs: value.outputs.filter(item => slots.some(slot => slot.id === item.slotId && slot.role === 'output')) }))
               } }, '移除第 ' + number + ' 步失效槽位草稿')) : null,
             h('details', null, h('summary', null, '第 ' + number + ' 步模型引文'), detail.model.citations.map((citation, i) => h('div', { key: i, className: 'kg-model-evidence' },
-              h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate(citation) }, '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote)))))
+              h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ ...citation, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) },
+                '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote)))))
         }
         if (!active) return null
         return h('section', { className: 'kg-model-chain', 'aria-label': '两步推测工作台' },
