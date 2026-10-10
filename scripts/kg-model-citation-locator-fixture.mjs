@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
 
-export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false } = {}) {
+export function modelCitationFixture({ dense = false, anchor = 1, peer = true, long = false, third = false, sourcePages = false } = {}) {
   const fixture = modelSourceTableFixture({ dense, peer })
   if (third) {
     const model = structuredClone(fixture.graph.nodes[0]); model.id = 'taxi-third'; model.text = '第三个明确选择的计价模型'
@@ -24,6 +24,20 @@ export function modelCitationFixture({ dense = false, anchor = 1, peer = true, l
     ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
       key === 'paragraph' && item === from.paragraph ? to.paragraph : key === 'quote' && item === from.text ? to.text : move(item)])) : value
   fixture.graph = move(fixture.graph)
+  if (sourcePages) {
+    // Explicit synthetic context, solely to exercise actual Host pagination.
+    // These unverified rules do not become proven field evidence.
+    for (let index = 0; index < 14; index++) {
+      const paragraph = 2000000001 + index, id = 'source-context-' + index
+      const quote = '候选原文 ' + index + '：仅供核对，不能保证其他情境成立。'
+      fixture.sourceUnits.push({ paragraph, text: quote })
+      const evidence = [{ documentId: fixture.documentId, sourceId: fixture.graph.source.id, paragraph, quote }]
+      fixture.graph.nodes.push({ id, type: 'rule', text: quote, paragraph, quote, evidence, state: 'candidate', entailmentStatus: 'unverified' })
+      fixture.graph.edges.push({ fromNodeId: 'taxi', toNodeId: id, relation: 'has_rule', evidence, state: 'candidate', entailmentStatus: 'unverified' })
+    }
+    fixture.graph.source.paragraphCount = fixture.sourceUnits.length
+    fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')
+  }
   return fixture
 }
 

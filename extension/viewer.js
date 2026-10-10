@@ -1694,7 +1694,12 @@
       function ModelSourceFieldPicker({ documentId, revision, modelId, target, load, onApply, onLocate, onClose, busy }) {
         const [page, setPage] = useState(null), [offset, setOffset] = useState(0), [reload, setReload] = useState(0)
         const [paragraph, setParagraph] = useState(null), [quote, setQuote] = useState(''), [error, setError] = useState(''), [loading, setLoading] = useState(true)
+        const [locationError, setLocationError] = useState('')
         const sequence = useRef(0), api = useRef({}), root = useRef(null); api.current = { load, onApply, onLocate }
+        const locationKey = JSON.stringify([documentId, revision, modelId, target, offset, reload, paragraph, quote])
+        const canLocate = !!page && !loading && !busy && !!onLocate
+        const locate = useConnectionModelLocation(locationKey, canLocate)
+        useEffect(() => { setLocationError('') }, [locationKey, canLocate])
         useEffect(() => {
           root.current?.focus?.({ preventScroll: true })
           root.current?.scrollIntoView?.({ block: 'start' })
@@ -1709,7 +1714,8 @@
               || result.modelDiagnosticsVersion !== 1 || result.sourceUnits?.basis !== 'stored_model_and_related_context_not_field_entailment'
               || !Array.isArray(result.sourceUnits.items) || result.sourceUnits.items.length > 12 || result.sourceUnits.offset !== offset
               || !Number.isSafeInteger(result.sourceUnits.total) || result.sourceUnits.total < result.sourceUnits.items.length
-              || result.sourceUnits.items.some(unit => !Number.isSafeInteger(unit.paragraph) || unit.paragraph < 0 || typeof unit.text !== 'string')) {
+              || result.sourceUnits.items.some(unit => !Number.isSafeInteger(unit.paragraph) || unit.paragraph < 0 || typeof unit.text !== 'string'
+                || unit.documentId != null && unit.documentId !== documentId)) {
               throw new Error('原文候选版本或身份不一致，未填入草稿。')
             }
             setPage(result.sourceUnits)
@@ -1723,11 +1729,20 @@
           h('h4', null, '选取原文 · ' + ({ condition: '适用条件', mapping: '完整映射规律', boundary: '边界与未定义情形' }[target.field])),
           h('p', { className: 'kg-model-meta' }, '这些是模型及关联材料的原文上下文，不是已认定的字段依据。选取后仍需核对限定语、出处及完整含义。'),
           loading ? h('p', { role: 'status' }, '正在读取原文候选…') : null, error ? h('p', { role: 'alert' }, error) : null,
+          locationError ? h('p', { role: 'alert' }, locationError) : null,
           page?.items.map(item => h('article', { key: item.paragraph, className: 'kg-model-gap' },
             h('div', { className: 'kg-model-toolbar' }, h('strong', null, 'P' + (item.paragraph + 1)),
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy, 'aria-pressed': paragraph === item.paragraph,
                 onClick: () => { if (busy) return; setParagraph(item.paragraph); setQuote(item.text.length <= 2000 ? item.text : ''); setError('') } }, '选取 P' + (item.paragraph + 1)),
-              onLocate ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onLocate?.({ paragraph: item.paragraph }) }, '打开原文 P' + (item.paragraph + 1)) : null),
+              onLocate ? h('button', { type: 'button', className: 'kg-secondary', disabled: !canLocate, onClick: () => {
+                if (!canLocate) return
+                setLocationError('')
+                // Browse the full context; the explicitly applied field excerpt
+                // still has its independent 2000-character limit below.
+                return locate({ documentId, revision, sourceId: item.sourceId, chunkId: item.chunkId,
+                  paragraph: item.paragraph, quote: item.text, sourceQuoteOnly: true, sourceCitation: true }, api.current.onLocate,
+                reason => setLocationError(reason.message || '原文定位失败，请重试。'))
+              } }, '打开原文 P' + (item.paragraph + 1)) : null),
             h('pre', null, item.text))),
           page && !page.items.length ? h('p', null, '未找到与当前模型定位相连的原文。可以手工整理，但不能伪造原文依据。') : null,
           unit ? h('label', null, '待选原文片段 P' + (unit.paragraph + 1), h('textarea', { 'aria-label': '待选原文片段', value: quote, maxLength: 2000, disabled: busy,
@@ -1934,7 +1949,7 @@
             section === 'branches' ? h('div', null,
               sourceTarget ? h(ModelSourceFieldPicker, { key: JSON.stringify([documentId, modelId, revision, sourceTarget]), documentId, revision, modelId, target: sourceTarget,
                 load, busy: saving || externalBusy || loading || !assistSupported || draft.revision !== revision,
-                onLocate: reference => api.current.onLocate?.(reference), onClose: () => {
+                onLocate: onLocate ? (reference, stillCurrent) => api.current.onLocate?.(reference, stillCurrent) : undefined, onClose: () => {
                   if (sourceGuard.current !== JSON.stringify([JSON.stringify([documentId, modelId, revision]), sourceTarget])) return
                   setSourceTarget(null)
                   setRequestedFocus({ section: 'branches', id: sourceTarget.id, field: sourceTarget.field })
@@ -4032,7 +4047,8 @@
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const location = useConnectionModelLocation(JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload]), active)
         const locate = (reference, stillCurrent) => location(reference, api.current.onLocate, null, stillCurrent)
-        const locateInDetail = reference => location(reference, api.current.onLocate, reason => setDetailError(reason.message || '原文定位失败'))
+        const locateInDetail = (reference, stillCurrent) => location(reference, api.current.onLocate,
+          stillCurrent ? null : reason => setDetailError(reason.message || '原文定位失败'), stillCurrent)
         const sequence = useRef(0), detailSequence = useRef(0), writeSequence = useRef(0)
         const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
         const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
