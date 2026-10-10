@@ -447,13 +447,20 @@ function createHostPlugin(graphContractOnly) {
         "summary": "按《学习观》的靶图本体抽取：知识（概念/特征/规律/判别模型/联结模型）与学习材料（判别材料/联结材料 × 上料/下料）。",
         "edgeAttributes": [
           "role",
-          "mode",
-          "modelId",
-          "branchId",
-          "statement",
-          "condition",
-          "boundary"
+          "mode"
         ],
+        "manualModels": {
+          "nodeTypes": [],
+          "relationTypes": [],
+          "edgeAttributes": [
+            "modelId",
+            "branchId",
+            "statement",
+            "condition",
+            "boundary"
+          ],
+          "edgeAttributeLabels": {}
+        },
         "nodeAttributes": [
           "stage",
           "relKind"
@@ -1622,6 +1629,7 @@ function createHostPlugin(graphContractOnly) {
           "rule"
         ],
         "manualModels": {
+          "materialCoordinates": false,
           "nodeTypes": [
             {
               "id": "connection_model",
@@ -1823,9 +1831,9 @@ function createHostPlugin(graphContractOnly) {
           renderOrder: [...profile.renderOrder, ...ids],
           evidenceRequiredTypes: [...profile.evidenceRequiredTypes, ...ids],
           consumptionTypes: [...profile.consumptionTypes, ...ids],
-          edgeAttributes: extension.edgeAttributes,
-          edgeAttributeLabels: extension.edgeAttributeLabels,
-          materialCoordinates: false,
+          edgeAttributes: [...new Set([...(profile.edgeAttributes || []), ...extension.edgeAttributes])],
+          edgeAttributeLabels: { ...(profile.edgeAttributeLabels || {}), ...extension.edgeAttributeLabels },
+          ...(extension.materialCoordinates === undefined ? {} : { materialCoordinates: extension.materialCoordinates }),
         }
       }
       const ONTOLOGY_GRAPH_PROFILES = Object.fromEntries(Object.entries(ONTOLOGY_PROFILES).map(([id, profile]) => [id, ONT_WITH_MANUAL_MODELS(profile)]))

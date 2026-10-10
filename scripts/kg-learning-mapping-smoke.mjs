@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { createGraphContract } from '../src/index.host.js'
 import { createSourceRelationTools } from '../src/kg-source-relations.mjs'
-import { getOntology,withManualModels } from '../src/kg-ontology.mjs'
+import { getOntology,withManualModels,hasMaterialCoordinates } from '../src/kg-ontology.mjs'
 import { openSqliteStore } from '../src/kg-store.mjs'
 const quote='失义而后礼。故知足不辱，知止不殆，可以长久。',sourceText=quote,units=[{paragraph:0,text:quote}]
 const evidence=[{paragraph:0,quote}],provenance={kind:'source',paragraph:0,quote,note:''},field=text=>({text,provenance})
@@ -20,6 +20,9 @@ for(const ontology of ['learning-view-v1','aggregate-v1']){
  for(const edge of graph.edges){const relation=profile.relationTypes.find(r=>r.id===edge.relation);assert(relation);assert(relation.from.includes(types.get(edge.fromNodeId)));assert(relation.to.includes(types.get(edge.toNodeId)))}
 }
 assert(!getOntology('learning-view-v1').relationTypes.some(r=>r.id==='source_relation'))
+assert.deepEqual(getOntology('learning-view-v1').edgeAttributes,['role','mode'],'automatic extraction does not invent authored branch bindings')
+assert(hasMaterialCoordinates(withManualModels(getOntology('learning-view-v1'))),'authored qualifiers must retain learning material coordinates')
+assert(!hasMaterialCoordinates(withManualModels(getOntology('aggregate-v1'))),'old classic claims must retain their own reading layer')
 assert.equal(graph.edges.filter(e=>e.relation==='source_relation').length,0)
 for(const edit of [e=>{e.condition=''},e=>{e.toNodeId='ritual'},e=>{e.relation='causes'},e=>{e.evidence=[]},e=>{e.statement='义导致礼'},e=>{e.branchId='gone'}]){
  const bad=structuredClone(graph);edit(bad.edges[0]);assert(contract.validateGraphInvariants(bad,sourceText,{sourceUnits:units}).blockingIssues.length)

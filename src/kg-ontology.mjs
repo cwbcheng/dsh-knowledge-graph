@@ -131,7 +131,14 @@ const LEARNING_VIEW = {
   // of maps_between is the input, which side of a contrast is positive, whether
   // compares_* means contrast or analogy. The proposition ontology declares none,
   // so its graphs are byte-for-byte unchanged. See docs §3.
-  edgeAttributes: ['role', 'mode', 'modelId', 'branchId', 'statement', 'condition', 'boundary'],
+  edgeAttributes: ['role', 'mode'],
+  // Qualifiers are for authored, structured model edits. Do not invite the
+  // extractor to invent branch bindings in otherwise ordinary learning edges.
+  manualModels: {
+    nodeTypes: [], relationTypes: [],
+    edgeAttributes: ['modelId', 'branchId', 'statement', 'condition', 'boundary'],
+    edgeAttributeLabels: {},
+  },
   nodeAttributes: ['stage', 'relKind'],
   // Presentation of those attribute values. Kept beside the vocabulary it
   // describes so the edge label and the prompt cannot drift apart; a profile
@@ -485,6 +492,7 @@ const AGGREGATE = {
   // An authored model layer is separate from the frozen extraction vocabulary.
   // Graph reads/edits use this extension; extraction prompts keep the 8/12 base.
   manualModels: {
+    materialCoordinates: false,
     nodeTypes: LEARNING_VIEW.nodeTypes.filter(type => ['connection_model', 'relation_material'].includes(type.id)),
     relationTypes: [...LEARNING_VIEW.relationTypes.filter(relation => ['maps_between', 'has_rule', 'states_mapping', 'builds', 'composes', 'compares_relation'].includes(relation.id)),
       { id: 'source_relation', zh: '原文对应', family: FAMILY_DIRECTIONAL, weight: 6,
@@ -509,9 +517,9 @@ export function withManualModels(profile) {
     renderOrder: [...profile.renderOrder, ...ids],
     evidenceRequiredTypes: [...profile.evidenceRequiredTypes, ...ids],
     consumptionTypes: [...profile.consumptionTypes, ...ids],
-    edgeAttributes: extension.edgeAttributes,
-    edgeAttributeLabels: extension.edgeAttributeLabels,
-    materialCoordinates: false,
+    edgeAttributes: [...new Set([...(profile.edgeAttributes || []), ...extension.edgeAttributes])],
+    edgeAttributeLabels: { ...(profile.edgeAttributeLabels || {}), ...extension.edgeAttributeLabels },
+    ...(extension.materialCoordinates === undefined ? {} : { materialCoordinates: extension.materialCoordinates }),
   }
 }
 
