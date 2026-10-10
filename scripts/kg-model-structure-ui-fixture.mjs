@@ -7,6 +7,7 @@ import { counterexampleResponse } from './kg-model-comparison-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
+import { modelSourceEvidenceFixture } from './kg-model-source-evidence-fixture-data.mjs'
 import { modelReviewControllerSource } from './kg-model-review-controller-fixture.mjs'
 import { modelCitationFixture, modelCitationBrowserNavigatorSource } from './kg-model-citation-locator-fixture.mjs'
 
@@ -14,7 +15,7 @@ const citationNavigation = process.argv.includes('--citation-navigation'), citat
 const citationDocumentId = process.argv.includes('--max-document-id') ? 'opaque-document:' + 'x'.repeat(4080)
   : process.argv.includes('--opaque-document-id') ? 'opaque-document:' + 'x'.repeat(214)
   : process.argv.includes('--padded-document-id') ? ' connection-fixture ' : undefined
-const fixture = citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
+const fixture = process.argv.includes('--source-evidence') ? modelSourceEvidenceFixture() : citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
   long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages'),
   legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages'), documentId: citationDocumentId }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
