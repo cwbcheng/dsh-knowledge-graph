@@ -75,6 +75,63 @@ const draftKey = () => 'dsh-kg-model-feedback:' + JSON.stringify([props.document
 try {
   const before = store.getDocument(document.documentId), unitsBefore = store.getDocumentSourceUnits(document.documentId)
   render(); await settle()
+  // Switching source must not silently discard an undated observation confirmation.
+  const sourceSwitchRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  const originalConfirm = context.window.confirm, sourceSwitchPrompts = []
+  let acceptSourceSwitch = false
+  context.window.confirm = message => { sourceSwitchPrompts.push(message); return acceptSourceSwitch }
+  const currentDraft = () => JSON.parse(storage.get(draftKey()))
+  const checkObservation = checked => {
+    const found = all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0]
+    assert(found && !found.props.disabled); found.props.onChange({ target: { checked } }); render()
+  }
+  const resetSourceDraft = async () => { storage.delete(draftKey()); remount(); await settle(); sourceSwitchPrompts.length = 0 }
+  for (const type of ['reference', 'derivation', 'ai_suggestion', 'reflection']) {
+    await resetSourceDraft()
+    fill('实际观察结果', '实付金额仍须核对附加收费。'); fill('观察时的实际输入与条件', '7 km；附加费尚未说明。')
+    fill('与最初预测的比较', 'inconclusive'); fill('比较依据与局限', '额外收费不等于映射被反驳。'); fill('结果诊断', 'condition')
+    checkObservation(true)
+    const savedDraft = currentDraft()
+    assert.equal(savedDraft.response.observedOn, ''); assert(savedDraft.response.observationConfirmed)
+    assert(button('保存结果记录').props.disabled, 'undated observation remains incomplete')
+    acceptSourceSwitch = false; fill('反馈来源', type)
+    assert.equal(sourceSwitchPrompts.length, 1, 'undated confirmation requires source-clear consent: ' + type)
+    assert.equal(sourceSwitchPrompts[0], '更换来源类型会清除观察日期、观察确认和引用信息；结果内容仍保留。继续？')
+    assert.deepEqual(currentDraft(), savedDraft, 'decline preserves the complete draft and request identity')
+    assert.equal(input('反馈来源').props.value, 'observation')
+    remount(); await settle(); assert.deepEqual(currentDraft(), savedDraft, 'declined draft survives remount')
+    props.prediction = store.getLearningAttempt('other-prediction'); render(); await settle()
+    assert.equal(input('实际观察结果').props.value, '')
+    props.prediction = store.getLearningAttempt('prediction'); render(); await settle()
+    assert.deepEqual(currentDraft(), savedDraft, 'each prediction retains its own confirmation and conditions')
+    acceptSourceSwitch = true; fill('反馈来源', type)
+    const switched = currentDraft()
+    assert.equal(sourceSwitchPrompts.length, 2); assert.notEqual(switched.attemptId, savedDraft.attemptId)
+    assert.deepEqual(switched, { ...savedDraft, attemptId: switched.attemptId, response: { ...savedDraft.response, type,
+      observedOn: '', observedTimeZone: '', observationConfirmed: false, sourceName: '', sourceUrl: '', sourceLocator: '', reference: null } },
+      'accept clears only source fields and preserves content, conditions, comparison and version fences')
+  }
+  await resetSourceDraft(); acceptSourceSwitch = false
+  checkObservation(true)
+  const confirmationOnly = currentDraft(); fill('反馈来源', 'reflection')
+  assert.equal(sourceSwitchPrompts.length, 1, 'confirmation alone requires source-clear consent')
+  assert.deepEqual(currentDraft(), confirmationOnly)
+  await resetSourceDraft()
+  fill('反馈来源', 'reflection'); assert.equal(sourceSwitchPrompts.length, 0, 'default time zone is not entered source information')
+  fill('反馈来源', 'observation'); fill('实际观察结果', '只有内容，不包含要清除的观察确认。')
+  fill('反馈来源', 'reflection'); assert.equal(sourceSwitchPrompts.length, 0, 'retained content alone does not trigger source-clear consent')
+  fill('反馈来源', 'observation'); checkObservation(true); checkObservation(false)
+  fill('反馈来源', 'reflection'); assert.equal(sourceSwitchPrompts.length, 0, 'an unchecked confirmation needs no source-clear consent')
+  for (const [label, value] of [['实际发生日期', feedbackResponse().observedOn], ['观察凭证名称（可选）', '账单'],
+    ['观察凭证位置（可选）', '第 1 项'], ['来源链接（可选）', 'https://example.test/receipt']]) {
+    await resetSourceDraft(); fill('实际观察结果', '原来源信息应保留。'); fill(label, value)
+    const savedDraft = currentDraft(); fill('反馈来源', 'reflection')
+    assert.equal(sourceSwitchPrompts.length, 1, label + ' retains existing clear confirmation')
+    assert.deepEqual(currentDraft(), savedDraft, 'decline retains existing source information: ' + label)
+  }
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), sourceSwitchRows, 'source switching never saves or reveals a prediction')
+  context.window.confirm = originalConfirm
+  await resetSourceDraft()
   assert(button('保存结果记录').props.disabled)
   fill('反馈来源', 'reflection'); fill('个人复盘内容', '尚未取得真实观察结果，不把计划当作证据。')
   let warned = false; events.get('beforeunload')({ preventDefault: () => { warned = true } }); assert(warned)
@@ -182,5 +239,6 @@ try {
   rootLegacy = false; click('重新读取模型'); await settle()
   assert.equal(learningPanel().props.feedbackSupported, true)
   console.log(JSON.stringify({ ok: true, generatedComponentProductionRoutes: true, lostResponseAndRemount: true, pendingEditsProtected: true,
-    correctionConflictDraftPreserved: true, oldPredictionVersionExplicit: true, oldCitationBlocked: true, scopeAndUnmountRaces: true, mixedHostBlocked: true }))
+    correctionConflictDraftPreserved: true, oldPredictionVersionExplicit: true, oldCitationBlocked: true, scopeAndUnmountRaces: true, mixedHostBlocked: true,
+    undatedObservationSourceConsent: true, sourceSwitchDraftAndConditionsPreserved: true, emptySourceNoPrompt: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
