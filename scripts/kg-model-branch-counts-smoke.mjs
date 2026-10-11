@@ -58,7 +58,7 @@ assert.equal(read(document, { modelId: 'taxi', expectedRevision: 1 }).error.code
 
 let httpRequests = 0, modelCalls = 0
 for (const structured of [false, true]) {
-  const fixture = modelBranchCountsFixture({ structured }), harness = await modelLearningHarness({ fixture,
+  const fixture = modelBranchCountsFixture({ structured, slots: structured ? 40 : 2 }), harness = await modelLearningHarness({ fixture,
     llm: { async createMessage() { modelCalls++; throw new Error('Read-only model queries must not call an LLM') } } })
   const server = createServer((req, res) => harness.handler(req, res))
   try {
@@ -67,14 +67,16 @@ for (const structured of [false, true]) {
     for (const options of modelBranchCountsModes) {
       const res = await fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/connection-models', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documentId: fixture.documentId, expectedRevision: 1, ...options }) })
-      assert.deepEqual(await res.json(), read(canonical, options)); assert.equal(res.status, 200); httpRequests++
+      const response = await res.json()
+      assert.deepEqual(response, read(canonical, options)); assert.equal(res.status, 200); httpRequests++
+      if (structured && options === modelBranchCountsModes[0]) assert.equal(response.structure.slots.length, 40)
     }
     assert.equal(JSON.stringify(harness.store.getCanonicalDocument(fixture.documentId)), before)
     assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); harness.stop() }
 }
 
-const fixture = modelBranchCountsFixture(), handlers = new Map(), previousHarness = globalThis.harness
+const fixture = modelBranchCountsFixture({ slots: 40 }), handlers = new Map(), previousHarness = globalThis.harness
 try {
   globalThis.harness = { handle: (name, handler) => handlers.set(name, handler) }
   hostPlugin().apply({ get: name => name === 'kgExtractor' ? async () => structuredClone(fixture.graph) : null, interval: () => () => {} })
@@ -105,8 +107,9 @@ for (const options of modelBranchCountsModes) {
 }
 assert.equal(read(dynamicDocument, { modelId: 'taxi' }).structure.exampleTotal, 100)
 assert.equal(read(dynamicDocument, { modelId: 'taxi' }).structure.branches.length, 40)
+assert.equal(read(dynamicDocument, { modelId: 'taxi' }).structure.slots.length, 40)
 assert.deepEqual(await handlers.get('document-export')({ documentId, includeSourceText: true }), exported)
 assert.equal(modelCalls, 0)
 console.log(JSON.stringify({ ok: true, selectedQueries, independentBranchCounts: true, completeAndIncompleteBindings: true,
   paginationConditionsEvidenceAndIdentity: true, sameObjectAndRevisionChanges: true, actualGeneratedHostHttp: true, httpRequests,
-  actualDynamicRpc: true, dynamicQueries, publicPreviewAndCommit: true, canonicalAndLearningReadOnly: true, modelCalls }))
+  actualDynamicRpc: true, dynamicQueries, publicPreviewAndCommit: true, canonicalAndLearningReadOnly: true, modelCalls, wideBindingHttpAndRpc: true }))
