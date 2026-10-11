@@ -4430,7 +4430,11 @@ function createHostPlugin(graphContractOnly) {
           return { ...citation, documentId: document.documentId, revision: document.revision,
             sourceId: citation.sourceId || provenance.sourceId, chunkId: provenance.chunkId }
         })
-        const legacyPortsOf = node => (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
+        // Cache selected model reads only; full catalogues must not retain every endpoint projection.
+        const legacyPortCache = options.modelId ? new Map() : null, portCache = options.modelId ? new Map() : null
+        const legacyPortsOf = node => {
+          if (legacyPortCache?.has(node)) return legacyPortCache.get(node)
+          const ports = (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
           .map(({ edge, index }) => {
             const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
             const valid = edge.fromNodeId === node.id && target?.type === 'concept' && edge.state !== 'rejected' && target.state !== 'rejected'
@@ -4440,6 +4444,9 @@ function createHostPlugin(graphContractOnly) {
               role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
               storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: legacyCitations(edge) }
           })
+          legacyPortCache?.set(node, ports)
+          return ports
+        }
         const structures = new Map(), structureErrors = new Map()
         const structureOf = node => {
           if (!node.modelStructure) return null
@@ -4450,12 +4457,15 @@ function createHostPlugin(graphContractOnly) {
           return structures.get(node.id)
         }
         const portsOf = node => {
+          if (portCache?.has(node)) return portCache.get(node)
           const structure = structureOf(node)
-          return structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
+          const ports = structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
             edgeKey: '', source: 'structured', editable: false, role: slot.role, storedRole: slot.role,
             unit: slot.unit, timeState: slot.state, provenance: slot.provenance,
             node: { ...reference(nodes.get(slot.conceptId)), text: slot.label || nodes.get(slot.conceptId).text },
             citations: citations(slot.provenance) })) : legacyPortsOf(node)
+          portCache?.set(node, ports)
+          return ports
         }
         const identityLabels = { assertion: '原文断言身份待核对', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明', undetermined: '内容身份尚未判定' }
         const summarize = node => {
