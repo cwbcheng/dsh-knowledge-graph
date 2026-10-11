@@ -4531,12 +4531,12 @@ function createHostPlugin(graphContractOnly) {
           if (model?.type !== 'connection_model') return fail('not_found', '找不到该联结模型')
           const ports = portsOf(model)
           const specification = structureOf(model)
-          let structure = null
+          let structure = null, branchExampleCounts = null
           if (specification) {
             if (options.branchId && !specification.branches.some(branch => branch.id === options.branchId)) return fail('invalid_input', '所选条件分支已不存在')
             const examples = specification.examples.filter(example => !options.branchId || example.branchId === options.branchId)
             const exampleOffset = Number.isSafeInteger(options.exampleOffset) && options.exampleOffset >= 0 ? options.exampleOffset : 0
-            const branchExampleCounts = new Map(specification.branches.map(branch => [branch.id, { pairedExamples: 0, incompleteExamples: 0 }]))
+            branchExampleCounts = new Map(specification.branches.map(branch => [branch.id, { pairedExamples: 0, incompleteExamples: 0 }]))
             const readExampleStatus = specification.examples.length ? MODEL_STRUCTURE_TOOLS.prepareExampleStatus(specification) : null
             const statuses = new Map(specification.examples.map(example => {
               const status = readExampleStatus(example)
@@ -4572,7 +4572,7 @@ function createHostPlugin(graphContractOnly) {
           const legacyPorts = legacyPortsOf(model)
           const diagnosis = MODEL_STRUCTURE_TOOLS.diagnose(specification, { ports: legacyPorts,
             names: Object.fromEntries(ports.map(port => [port.node.nodeId, nodes.get(port.node.nodeId)?.text || port.node.text])), invalid: structureErrors.get(model.id),
-            cautions: summarize(model).warnings.filter(warning => ['文本涉及错误示例', '可能仅为类型说明', '图片或转写待核对', '已有否决或不支持记录'].includes(warning)) })
+            cautions: summarize(model).warnings.filter(warning => ['文本涉及错误示例', '可能仅为类型说明', '图片或转写待核对', '已有否决或不支持记录'].includes(warning)) }, branchExampleCounts)
           if (options.diagnosis === true) {
             const diagnosisOffset = Number.isSafeInteger(options.diagnosisOffset) && options.diagnosisOffset >= 0 ? options.diagnosisOffset : 0
             return { ...base, model: summarize(model), diagnosis: { ...diagnosis, offset: diagnosisOffset,
@@ -7685,7 +7685,7 @@ function createHostPlugin(graphContractOnly) {
             output: structure.slots.filter(slot => slot.role === 'output') }, unknown: structure.slots.some(slot => slot.role === 'unknown') }
           return example => exampleStatus(structure, example, index)
         }
-        const diagnose = (value, context = {}) => {
+        const diagnose = (value, context = {}, branchExampleCounts) => {
           const items = [], counts = { structure: 0, examples: 0, sources: 0, review: 0 }
           const origins = { source: 0, user: 0, ai: 0, unknown: 0 }
           const text = value => typeof value === 'string' ? value.trim() : ''
@@ -7734,11 +7734,12 @@ function createHostPlugin(graphContractOnly) {
               if (!text(branch[key]?.text)) add('branch_' + key, 'structure', target('branches', branch.id, key), { name: branch.label })
               else origin(branch[key]?.provenance, target('branches', branch.id, key), branch.label + ' / ' + key)
             }
-            const paired = examples.filter(example => example.branchId === branch.id && text(example.scenario)
+            // Reuse only the Host's current, canonically validated projection; raw drafts keep defensive reads.
+            const paired = branchExampleCounts ? branchExampleCounts.get(branch.id)?.pairedExamples > 0 : examples.filter(example => example.branchId === branch.id && text(example.scenario)
               && text(branch.mapping?.text) && slots.some(slot => slot.role === 'input') && slots.some(slot => slot.role === 'output')
               && slots.every(slot => ['input', 'output'].includes(slot.role) && array(example[slot.role === 'input' ? 'inputs' : 'outputs'], 40)
-                .some(binding => binding.slotId === slot.id && text(binding.value))))
-            if (!paired.length) add('branch_no_pair', 'examples', target('examples', '', 'branchId'), { name: branch.label, branchId: branch.id })
+                .some(binding => binding.slotId === slot.id && text(binding.value)))).length > 0
+            if (!paired) add('branch_no_pair', 'examples', target('examples', '', 'branchId'), { name: branch.label, branchId: branch.id })
           }
           if (!examples.length) add('missing_example', 'examples', target('examples'))
           for (const example of examples) {

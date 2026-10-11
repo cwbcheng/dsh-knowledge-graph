@@ -1270,7 +1270,7 @@
             output: structure.slots.filter(slot => slot.role === 'output') }, unknown: structure.slots.some(slot => slot.role === 'unknown') }
           return example => exampleStatus(structure, example, index)
         }
-        const diagnose = (value, context = {}) => {
+        const diagnose = (value, context = {}, branchExampleCounts) => {
           const items = [], counts = { structure: 0, examples: 0, sources: 0, review: 0 }
           const origins = { source: 0, user: 0, ai: 0, unknown: 0 }
           const text = value => typeof value === 'string' ? value.trim() : ''
@@ -1319,11 +1319,12 @@
               if (!text(branch[key]?.text)) add('branch_' + key, 'structure', target('branches', branch.id, key), { name: branch.label })
               else origin(branch[key]?.provenance, target('branches', branch.id, key), branch.label + ' / ' + key)
             }
-            const paired = examples.filter(example => example.branchId === branch.id && text(example.scenario)
+            // Reuse only the Host's current, canonically validated projection; raw drafts keep defensive reads.
+            const paired = branchExampleCounts ? branchExampleCounts.get(branch.id)?.pairedExamples > 0 : examples.filter(example => example.branchId === branch.id && text(example.scenario)
               && text(branch.mapping?.text) && slots.some(slot => slot.role === 'input') && slots.some(slot => slot.role === 'output')
               && slots.every(slot => ['input', 'output'].includes(slot.role) && array(example[slot.role === 'input' ? 'inputs' : 'outputs'], 40)
-                .some(binding => binding.slotId === slot.id && text(binding.value))))
-            if (!paired.length) add('branch_no_pair', 'examples', target('examples', '', 'branchId'), { name: branch.label, branchId: branch.id })
+                .some(binding => binding.slotId === slot.id && text(binding.value)))).length > 0
+            if (!paired) add('branch_no_pair', 'examples', target('examples', '', 'branchId'), { name: branch.label, branchId: branch.id })
           }
           if (!examples.length) add('missing_example', 'examples', target('examples'))
           for (const example of examples) {
