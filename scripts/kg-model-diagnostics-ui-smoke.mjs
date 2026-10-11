@@ -88,7 +88,7 @@ try {
   assert.equal(focused, '补齐输入槽位', 'an absent binding must navigate to its explicit repair action')
   assert(text(editor.tree).includes('尚缺距离的情境'))
   editor.click('补齐输入槽位'); await editor.settle()
-  assert.equal(focused, '行驶距离的实例状态', 'adding a blank binding must focus the missing value of the correct case')
+  assert.equal(focused, '行驶距离的实例状态 distance-slot', 'adding a blank binding must focus the missing value of the correct case')
   assert.equal(JSON.parse(cache.values().next().value).spec.examples.find(example => example.id === 'missing-distance').inputs[0].value, '', 'repair must not invent a concrete input state')
 
   editor.click('条件分支 (3)'); editor.click('预览结构修改'); await editor.settle()
