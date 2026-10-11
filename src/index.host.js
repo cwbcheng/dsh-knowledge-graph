@@ -4531,14 +4531,14 @@ function createHostPlugin(graphContractOnly) {
           if (model?.type !== 'connection_model') return fail('not_found', '找不到该联结模型')
           const ports = portsOf(model)
           const specification = structureOf(model)
-          let structure = null, branchExampleCounts = null
+          let structure = null, branchExampleCounts = null, exampleStatuses = null
           if (specification) {
             if (options.branchId && !specification.branches.some(branch => branch.id === options.branchId)) return fail('invalid_input', '所选条件分支已不存在')
             const examples = specification.examples.filter(example => !options.branchId || example.branchId === options.branchId)
             const exampleOffset = Number.isSafeInteger(options.exampleOffset) && options.exampleOffset >= 0 ? options.exampleOffset : 0
             branchExampleCounts = new Map(specification.branches.map(branch => [branch.id, { pairedExamples: 0, incompleteExamples: 0 }]))
             const readExampleStatus = specification.examples.length ? MODEL_STRUCTURE_TOOLS.prepareExampleStatus(specification) : null
-            const statuses = new Map(specification.examples.map(example => {
+            exampleStatuses = new Map(specification.examples.map(example => {
               const status = readExampleStatus(example)
               const counts = branchExampleCounts.get(example.branchId)
               if (counts) counts[status.complete ? 'pairedExamples' : 'incompleteExamples']++
@@ -4546,7 +4546,7 @@ function createHostPlugin(graphContractOnly) {
             }))
             structure = { identity: specification.identity, slots: specification.slots.map(slot => ({ ...slot, conceptText: nodes.get(slot.conceptId).text })),
               branches: specification.branches.map(branch => ({ ...branch, ...branchExampleCounts.get(branch.id) })),
-              examples: examples.slice(exampleOffset, exampleOffset + 20).map(example => ({ ...example, ...statuses.get(example.id) })),
+              examples: examples.slice(exampleOffset, exampleOffset + 20).map(example => ({ ...example, ...exampleStatuses.get(example.id) })),
               exampleTotal: specification.examples.length, filteredTotal: examples.length, exampleOffset,
               branchId: options.branchId || '', origin: 'reviewed_structure_not_verified_truth' }
           }
@@ -4572,7 +4572,7 @@ function createHostPlugin(graphContractOnly) {
           const legacyPorts = legacyPortsOf(model)
           const diagnosis = MODEL_STRUCTURE_TOOLS.diagnose(specification, { ports: legacyPorts,
             names: Object.fromEntries(ports.map(port => [port.node.nodeId, nodes.get(port.node.nodeId)?.text || port.node.text])), invalid: structureErrors.get(model.id),
-            cautions: summarize(model).warnings.filter(warning => ['文本涉及错误示例', '可能仅为类型说明', '图片或转写待核对', '已有否决或不支持记录'].includes(warning)) }, branchExampleCounts)
+            cautions: summarize(model).warnings.filter(warning => ['文本涉及错误示例', '可能仅为类型说明', '图片或转写待核对', '已有否决或不支持记录'].includes(warning)) }, branchExampleCounts, exampleStatuses)
           if (options.diagnosis === true) {
             const diagnosisOffset = Number.isSafeInteger(options.diagnosisOffset) && options.diagnosisOffset >= 0 ? options.diagnosisOffset : 0
             return { ...base, model: summarize(model), diagnosis: { ...diagnosis, offset: diagnosisOffset,
@@ -7685,7 +7685,7 @@ function createHostPlugin(graphContractOnly) {
             output: structure.slots.filter(slot => slot.role === 'output') }, unknown: structure.slots.some(slot => slot.role === 'unknown') }
           return example => exampleStatus(structure, example, index)
         }
-        const diagnose = (value, context = {}, branchExampleCounts) => {
+        const diagnose = (value, context = {}, branchExampleCounts, exampleStatuses) => {
           const items = [], counts = { structure: 0, examples: 0, sources: 0, review: 0 }
           const origins = { source: 0, user: 0, ai: 0, unknown: 0 }
           const text = value => typeof value === 'string' ? value.trim() : ''
@@ -7745,9 +7745,11 @@ function createHostPlugin(graphContractOnly) {
           for (const example of examples) {
             if (!text(example.scenario)) add('example_scenario', 'examples', target('examples', example.id, 'scenario'), { name: example.title })
             if (!branches.some(branch => branch.id === example.branchId)) add('example_branch', 'examples', target('examples', example.id, 'branchId'), { name: example.title })
+            // Only the current validated Host projection supplies missing IDs; drafts keep defensive reads.
+            const missingIds = exampleStatuses?.get(example.id)?.missing
             for (const [key, role] of [['inputs', 'input'], ['outputs', 'output']]) {
-              const bindings = array(example[key], 40)
-              const missing = slots.filter(slot => slot.role === role && !bindings.some(binding => binding.slotId === slot.id && text(binding.value)))
+              const bindings = missingIds ? null : array(example[key], 40)
+              const missing = slots.filter(slot => slot.role === role && (missingIds ? missingIds.includes(slot.id) : !bindings.some(binding => binding.slotId === slot.id && text(binding.value))))
               if (missing.length) add('example_' + key, 'examples', target('examples', example.id, key), { name: example.title,
                 missing: missing.map(slot => ({ slotId: slot.id, name: nameOf(slot) })) })
             }

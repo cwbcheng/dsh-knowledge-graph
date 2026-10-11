@@ -2446,7 +2446,7 @@ export default function clientPlugin() {
             output: structure.slots.filter(slot => slot.role === 'output') }, unknown: structure.slots.some(slot => slot.role === 'unknown') }
           return example => exampleStatus(structure, example, index)
         }
-        const diagnose = (value, context = {}, branchExampleCounts) => {
+        const diagnose = (value, context = {}, branchExampleCounts, exampleStatuses) => {
           const items = [], counts = { structure: 0, examples: 0, sources: 0, review: 0 }
           const origins = { source: 0, user: 0, ai: 0, unknown: 0 }
           const text = value => typeof value === 'string' ? value.trim() : ''
@@ -2506,9 +2506,11 @@ export default function clientPlugin() {
           for (const example of examples) {
             if (!text(example.scenario)) add('example_scenario', 'examples', target('examples', example.id, 'scenario'), { name: example.title })
             if (!branches.some(branch => branch.id === example.branchId)) add('example_branch', 'examples', target('examples', example.id, 'branchId'), { name: example.title })
+            // Only the current validated Host projection supplies missing IDs; drafts keep defensive reads.
+            const missingIds = exampleStatuses?.get(example.id)?.missing
             for (const [key, role] of [['inputs', 'input'], ['outputs', 'output']]) {
-              const bindings = array(example[key], 40)
-              const missing = slots.filter(slot => slot.role === role && !bindings.some(binding => binding.slotId === slot.id && text(binding.value)))
+              const bindings = missingIds ? null : array(example[key], 40)
+              const missing = slots.filter(slot => slot.role === role && (missingIds ? missingIds.includes(slot.id) : !bindings.some(binding => binding.slotId === slot.id && text(binding.value))))
               if (missing.length) add('example_' + key, 'examples', target('examples', example.id, key), { name: example.title,
                 missing: missing.map(slot => ({ slotId: slot.id, name: nameOf(slot) })) })
             }
