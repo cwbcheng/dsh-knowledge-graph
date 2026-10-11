@@ -7,6 +7,7 @@ import { counterexampleResponse } from './kg-model-comparison-fixture-data.mjs'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 import { modelBindingFocusFixture } from './kg-model-binding-focus-fixture-data.mjs'
 import { modelBranchCountsFixture } from './kg-model-branch-counts-fixture-data.mjs'
+import { modelNameReuseFixture } from './kg-model-name-reuse-fixture.mjs'
 import { modelSourceContextFixture } from './kg-model-source-context-fixture-data.mjs'
 import { modelSourceTableFixture } from './kg-model-source-table-fixture-data.mjs'
 import { modelSourceEvidenceFixture } from './kg-model-source-evidence-fixture-data.mjs'
@@ -17,7 +18,8 @@ const citationNavigation = process.argv.includes('--citation-navigation'), citat
 const citationDocumentId = process.argv.includes('--max-document-id') ? 'opaque-document:' + 'x'.repeat(4080)
   : process.argv.includes('--opaque-document-id') ? 'opaque-document:' + 'x'.repeat(214)
   : process.argv.includes('--padded-document-id') ? ' connection-fixture ' : undefined
-const fixture = process.argv.includes('--draft-diagnosis') ? modelBranchCountsFixture({ slots: 40, branches: 40, examples: 100 }) : process.argv.includes('--binding-focus') ? modelBindingFocusFixture() : process.argv.includes('--source-evidence') ? modelSourceEvidenceFixture() : citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
+const nameReuse = process.argv.includes('--name-reuse')
+const fixture = nameReuse ? modelNameReuseFixture() : process.argv.includes('--draft-diagnosis') ? modelBranchCountsFixture({ slots: 40, branches: 40, examples: 100 }) : process.argv.includes('--binding-focus') ? modelBindingFocusFixture() : process.argv.includes('--source-evidence') ? modelSourceEvidenceFixture() : citationNavigation ? modelCitationFixture({ dense: process.argv.includes('--dense'), anchor: process.argv.includes('--second-fragment') ? 2 : 1,
   long: process.argv.includes('--long-citation'), third: process.argv.includes('--citation-third'), sourcePages: process.argv.includes('--citation-source-pages'),
   legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages'), documentId: citationDocumentId }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
@@ -126,6 +128,7 @@ ${modelReviewControllerSource()}
 ${citationNavigation ? modelCitationBrowserNavigatorSource() : ''}
 function App(){
   const [view,setView]=React.useState(null),[reference,setReference]=React.useState(null),[modelsActive,setModelsActive]=React.useState(true);
+  const [renamed,setRenamed]=React.useState(false);
   const state=React.useRef({graphCommitQueueRef:{current:Promise.resolve()},currentResultRef:{current:null},graphRevisionRef:{current:0},verifyBusyRef:{current:false}});
   const refresh=async()=>{const result=await rpc('document-export',{documentId:${JSON.stringify(fixture.documentId)},includeSourceText:true});if(result.error)throw new Error(result.error.message);const next={graph:result.graph,sourceText:result.sourceText};state.current.currentResultRef.current=next;state.current.graphRevisionRef.current=result.revision;setView(next)};
   React.useEffect(()=>{refresh().catch(reason=>setReference({error:reason.message}))},[]);
@@ -135,8 +138,9 @@ function App(){
   const controller=createModelReviewController(state.current,{call:rpc});
   const locate=${process.argv.includes('--citation-hold-controls') ? `async(reference,stillCurrent)=>{try{if(window.__citationPaused){await new Promise((resolve,reject)=>{(window.__citationHolds||=[]).push({resolve,reject})})}return await citationNavigator(reference,stillCurrent)}finally{window.__citationAdapterCompleted=(window.__citationAdapterCompleted||0)+1}}` : `citationNavigator||(reference=>{const target=reference.sourceQuoteOnly?exactSourceQuoteTarget(KGViewer.makeView(view.graph,view.sourceText),reference):null;setReference(previous=>({...reference,sequence:(previous?.sequence||0)+1,readingParagraph:target?.first??reference.paragraph}))})`};
   return h('main',{className:'kg-root'},h('h1',null,'联结模型 · 结构核对'),${process.argv.includes('--citation-switch-controls') ? "h('button',{onClick:()=>setModelsActive(value=>!value)},modelsActive?'查看知识图':'返回联结模型')," : ''}
+    ${nameReuse ? "h('button',{onClick:()=>setRenamed(value=>!value)},renamed?'恢复原读取名称':'使用测试读取名称'),h('p',null,renamed?'隔离读取名称：读取后的距离名称':'隔离读取名称：原始名称')," : ''}
     h('div',{style:{display:modelsActive?'block':'none'}},h(KGViewer.ConnectionModelPanel,{documentId:${JSON.stringify(fixture.documentId)},revision:state.current.graphRevisionRef.current,active:modelsActive,
-    load:(args,signal)=>rpc('connection-models',args,signal),learningCall:(args,signal)=>rpc('learning-mode',args,signal),onStructure:controller,onRoles:controller,onRefresh:refresh,onLocate:locate})),
+    load:${nameReuse ? "async(args,signal)=>{const result=await rpc('connection-models',args,signal);return args.concepts&&renamed&&result.items?{...result,items:result.items.map(item=>item.nodeId==='distance'?{...item,text:'读取后的距离名称'}:item)}:result}" : "(args,signal)=>rpc('connection-models',args,signal)"},learningCall:(args,signal)=>rpc('learning-mode',args,signal),onStructure:controller,onRoles:controller,onRefresh:refresh,onLocate:locate})),
     h('p',{role:'status'},reference?JSON.stringify(reference):''), ${citationNavigation ? `h('section',{'aria-label':'原文定位结果'},KGViewer.makeView(view.graph,view.sourceText).paragraphs.map((span,index)=>h('p',{key:index,id:'kg-para-'+index,'data-located':reference?.readingParagraph===index},view.sourceText.slice(span.start,span.end))))` : 'null'});
 }
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
