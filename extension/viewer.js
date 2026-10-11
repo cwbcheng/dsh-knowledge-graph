@@ -5385,7 +5385,7 @@
           setDraft(next); remember(storageKey, next); setMessage('结果草稿 · 尚未保存')
         }
         const changeType = type => {
-          if ([draft.response.observedOn, draft.response.sourceName, draft.response.sourceUrl, draft.response.sourceLocator, draft.response.reference].some(Boolean) &&
+          if ([draft.response.observedOn, draft.response.observationConfirmed, draft.response.sourceName, draft.response.sourceUrl, draft.response.sourceLocator, draft.response.reference].some(Boolean) &&
               !window.confirm('更换来源类型会清除观察日期、观察确认和引用信息；结果内容仍保留。继续？')) return
           update({ type, observedOn: '', observedTimeZone: type === 'observation' ? timeZone() : '', observationConfirmed: false, sourceName: '', sourceUrl: '', sourceLocator: '', reference: null })
         }
