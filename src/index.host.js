@@ -4806,8 +4806,14 @@ function createHostPlugin(graphContractOnly) {
           const detail = connectionModelsHost(document, { modelId: options.modelId, expectedRevision: options.expectedRevision })
           if (detail?.error) return detail
           const { model, ports, related, relatedTotal } = detail
+          const seenReferences = new Set()
           const references = [model, ...ports.map(port => port.node), ...related]
-            .filter((item, index, all) => item.citations.length && all.findIndex(other => other.nodeId === item.nodeId) === index)
+            .filter(item => {
+              if (seenReferences.has(item.nodeId)) return false
+              // The first identity keeps priority even when it has no citation.
+              seenReferences.add(item.nodeId)
+              return item.citations.length
+            })
             .slice(0, 40).map(item => ({ nodeId: item.nodeId, type: item.type, label: item.label, text: item.text,
               state: item.state, entailmentStatus: item.entailmentStatus, citations: item.citations }))
           const challenge = options.exercise === 'counterexample'
