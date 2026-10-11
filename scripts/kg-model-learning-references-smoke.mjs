@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { createGraphContract } from '../src/index.host.js'
+import { getOntology } from '../src/kg-ontology.mjs'
 import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { modelPortReuseFixture } from './kg-model-port-reuse-fixture-data.mjs'
 
@@ -33,9 +34,18 @@ for (const [structured, slots] of [[false, 8192], [true, 40], [false, 4]]) {
   }
   for (let index = 0; index < 25; index++) {
     document.graph.nodes.push({ ...structuredClone(document.graph.nodes[0]), id: 'material-' + index, type: 'factor_material' })
-    document.graph.edges.push({ fromNodeId: 'left', toNodeId: 'material-' + index, relation: 'requires_condition' })
+    document.graph.edges.push({ fromNodeId: 'material-' + index, toNodeId: 'left', relation: 'builds',
+      evidence: structuredClone(document.graph.nodes[0].evidence) })
   }
-  document.graph.edges.push({ fromNodeId: 'left', toNodeId: 'port-0', relation: 'requires_condition' })
+  document.graph.edges.push({ fromNodeId: 'port-0', toNodeId: 'left', relation: 'transfers_from',
+    evidence: structuredClone(document.graph.nodes[0].evidence) })
+  const nodeTypes = new Map(document.graph.nodes.map(node => [node.id, node.type]))
+  const relations = new Map(getOntology(document.graph.ontology).relationTypes.map(relation => [relation.id, relation]))
+  for (const edge of document.graph.edges) {
+    const relation = relations.get(edge.relation)
+    assert(relation, 'Test materials must use the document ontology')
+    assert(relation.from.includes(nodeTypes.get(edge.fromNodeId)) && relation.to.includes(nodeTypes.get(edge.toNodeId)), 'Material/model endpoints must match the ontology')
+  }
   if (slots === 4) document.graph.nodes.find(node => node.id === 'material-1').evidence.forEach(item => { item.sourceId = 'wrong-source' })
   const before = JSON.stringify(document), args = { modelId: 'left', expectedRevision: 1 }
   const detail = contracts.connectionModels(document, args), expectedReferences = referencesOf(detail)

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { createGraphContract } from '../src/index.host.js'
+import { getOntology } from '../src/kg-ontology.mjs'
 import { modelPortReuseFixture } from './kg-model-port-reuse-fixture-data.mjs'
 
 assert(process.argv[2], 'Usage: node scripts/kg-model-learning-references-benchmark.mjs <baseline-commit>')
@@ -29,6 +30,12 @@ const stats = values => {
 const rows = []
 for (const [structured, slots] of [[false, 40], [false, 512], [false, 4096], [false, 8192], [true, 40]]) {
   const document = modelPortReuseFixture({ chunks: 8, slots, structured }), before = JSON.stringify(document)
+  const relations = new Map(getOntology(document.graph.ontology).relationTypes.map(relation => [relation.id, relation]))
+  const nodeTypes = new Map(document.graph.nodes.map(node => [node.id, node.type]))
+  for (const edge of document.graph.edges) {
+    const relation = relations.get(edge.relation)
+    assert(relation && relation.from.includes(nodeTypes.get(edge.fromNodeId)) && relation.to.includes(nodeTypes.get(edge.toNodeId)))
+  }
   for (const exercise of ['prediction', 'counterexample', 'understanding']) {
     const options = { modelId: 'left', expectedRevision: 1, exercise }, expected = baseline(document, options)
     assert.equal(expected.error, undefined)
@@ -67,8 +74,10 @@ for (const structured of [false, true]) for (const change of [
   document => { const model = document.graph.nodes.find(node => node.id === 'left'); if (model.modelStructure) model.modelStructure.slots[0].role = 'unknown' },
   document => { for (let index = 0; index < 25; index++) {
     document.graph.nodes.push({ ...structuredClone(document.graph.nodes[0]), id: 'material-' + index, type: 'factor_material' })
-    document.graph.edges.push({ fromNodeId: 'left', toNodeId: 'material-' + index, relation: 'requires_condition' })
-  } document.graph.edges.push({ fromNodeId: 'left', toNodeId: 'port-0', relation: 'requires_condition' }) },
+    document.graph.edges.push({ fromNodeId: 'material-' + index, toNodeId: 'left', relation: 'builds',
+      evidence: structuredClone(document.graph.nodes[0].evidence) })
+  } document.graph.edges.push({ fromNodeId: 'port-0', toNodeId: 'left', relation: 'transfers_from',
+    evidence: structuredClone(document.graph.nodes[0].evidence) }) },
 ]) {
   const document = modelPortReuseFixture({ chunks: 8, structured }); change(document)
   const before = JSON.stringify(document)
