@@ -5820,6 +5820,7 @@ export default function clientPlugin() {
         const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false)
         const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
         const [sourceError, setSourceError] = useState('')
+        const [pairError, setPairError] = useState('')
         const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
         const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
         const importInput = useRef(null), importSequence = useRef(0), importAbort = useRef(null)
@@ -5866,7 +5867,7 @@ export default function clientPlugin() {
         }, [scope, revision, active, search, candidatesOnly, offset, reload])
         useEffect(() => {
           const id = ++pairSequence.current, abort = new AbortController()
-          setPair(null); invalidate(true); setLoading(active && !!peerId)
+          setPair(null); setPairError(''); invalidate(true); setLoading(active && !!peerId)
           if (!active || !peerId) return () => { abort.abort(); pairSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: peerId }, abort.signal).then(value => {
             if (id !== pairSequence.current || abort.signal.aborted) return
@@ -5874,7 +5875,7 @@ export default function clientPlugin() {
             if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision
               || value.left?.model?.nodeId !== modelId || value.right?.model?.nodeId !== peerId) throw new Error('两步推测模型版本或身份不一致')
             setPair({ ...value, scope: pairKey })
-          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setError(reason.message || '模型读取失败') })
+          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setPairError(reason.message || '模型读取失败') })
             .finally(() => { if (id === pairSequence.current && !abort.signal.aborted) setLoading(false) })
           return () => { abort.abort(); pairSequence.current++; checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false }
         }, [scope, revision, peerId, active, reload])
@@ -6053,6 +6054,7 @@ export default function clientPlugin() {
               h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页第 2 步模型'))) : null,
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
+          pairError ? h('p', { role: 'alert' }, pairError) : null,
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
