@@ -5821,6 +5821,7 @@ export default function clientPlugin() {
         const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
         const [sourceError, setSourceError] = useState('')
         const [pairError, setPairError] = useState('')
+        const [exportError, setExportError] = useState('')
         const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
         const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
         const importInput = useRef(null), importSequence = useRef(0), importAbort = useRef(null)
@@ -5840,7 +5841,7 @@ export default function clientPlugin() {
         const location = useConnectionModelLocation(locationScope, active)
         useEffect(() => { setSourceError('') }, [locationScope, active])
         const cancelImport = (keepNotice = false) => { importSequence.current++; importAbort.current?.abort(); setIncoming(null); setImporting(false); setImportError(''); if (!keepNotice) setImportNotice('') }
-        const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); cancelImport(keepImportNotice) }
+        const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); setExportError(''); cancelImport(keepImportNotice) }
         useEffect(() => { setWork(restore()); invalidate(); setQuery(''); setSearch(''); setOffset(0); setStorageError('') }, [documentId, modelId])
         useEffect(() => {
           cancelImport()
@@ -5930,7 +5931,8 @@ export default function clientPlugin() {
               modelIds: draft.steps.map(step => step.modelId), draft }
             MODEL_CHAIN_TOOLS.validateDraft(value.draft)
             if (!downloadBrowserBlob(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }), 'model-chain-draft.json')) throw new Error('当前浏览器无法导出草稿')
-          } catch (reason) { setError(reason.message + '，页面文字仍保留') }
+            setExportError('')
+          } catch (reason) { setExportError(reason.message + '，页面文字仍保留') }
         }
         const check = async () => {
           if (!pair || stale || checkPending.current) return
@@ -6056,6 +6058,7 @@ export default function clientPlugin() {
           loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
           pairError ? h('p', { role: 'alert' }, pairError) : null,
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
+          exportError ? h('p', { role: 'alert' }, exportError) : null,
           pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: !peerId, onClick: exportDraft }, '导出推测草稿')),
