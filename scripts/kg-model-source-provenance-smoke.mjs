@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
-import { createGraphContract } from '../src/index.host.js'
+import hostPlugin, { createGraphContract } from '../src/index.host.js'
 import { modelMaterialPageFixture } from './kg-model-material-page-fixture-data.mjs'
 import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 
@@ -59,13 +59,32 @@ for (const structured of [false, true]) for (const distributed of [false, true])
 
 const invalid = modelMaterialPageFixture({ materials: 25, chunks: 64, distributed: true })
 const material = invalid.graph.nodes.find(node => node.id === 'material-0')
-material.evidence.push(...Array.from({ length: 4096 }, (_, index) => ({ paragraph: 1e9 + index, quote: 'not stored' })),
+const validWork = observe(invalid, { structureSources: true })
+const validResponses = modes.map(mode => read(invalid, mode))
+material.evidence.unshift(...Array.from({ length: 4096 }, (_, index) => ({ paragraph: 1e9 + index, quote: 'not stored' })))
+material.evidence.push(
   ...[-1, 7.5, '7', null, NaN, Infinity, undefined].map(paragraph => ({ paragraph, quote: '' })), null, false)
 const invalidBefore = JSON.stringify(invalid), invalidWork = observe(invalid, { structureSources: true })
-assert(invalidWork.sourceLookups > 4096, 'Unknown integer identities retain the original uncached validation')
+assert.deepEqual(invalidWork, validWork, 'Rejected source identities must not add provenance searches or retained entries')
+for (const [index, mode] of modes.entries()) assert.deepEqual(read(invalid, mode), validResponses[index], 'Invalid records preserve the complete valid response')
 assert(invalidWork.retainedEntries <= invalid.sourceUnits.length)
 assert.equal(read(invalid).related[0].citations.length, 1, 'Invalid records cannot crowd out the valid full quotation')
 assert.equal(JSON.stringify(invalid), invalidBefore)
+
+// Filtering before the eight-citation cap must preserve order, deduplication and source/document checks.
+const mixed = modelMaterialPageFixture({ materials: 25, chunks: 64, distributed: true })
+const mixedMaterial = mixed.graph.nodes.find(node => node.id === 'material-0')
+const validCitations = mixed.sourceUnits.slice(0, 10).map(unit => ({ paragraph: unit.paragraph, quote: unit.text,
+  documentId: mixed.documentId, sourceId: mixed.graph.source.id }))
+const rejected = [{ paragraph: 1e9, quote: 'absent paragraph' }, { ...validCitations[0], documentId: 'wrong-document' },
+  { ...validCitations[0], sourceId: 'wrong-source' }, { ...validCitations[0], quote: 'not in the source unit' }, { ...validCitations[0], quote: '' }]
+mixedMaterial.evidence = [...rejected, ...validCitations, ...rejected, ...validCitations]
+const mixedBefore = JSON.stringify(mixed)
+assert.deepEqual(read(mixed).related[0].citations, validCitations.slice(0, 8).map(({ paragraph, quote, sourceId }) =>
+  ({ paragraph, quote, nodeId: mixedMaterial.id, sourceId })))
+const mixedWork = observe(mixed, { structureSources: true })
+assert.equal(mixedWork.sourceLookups, mixedWork.retainedEntries)
+assert.equal(JSON.stringify(mixed), mixedBefore)
 
 const catalogue = modelMaterialPageFixture({ materials: 0, chunks: 64 }), template = catalogue.graph.nodes.find(node => node.id === 'left')
 const templateEdges = catalogue.graph.edges.filter(edge => edge.fromNodeId === 'left')
@@ -113,12 +132,16 @@ for (const structured of [false, true]) {
 }
 
 const fixture = modelMaterialPageFixture({ materials: 25, chunks: 64, distributed: true, rules: true })
+for (const item of [...fixture.graph.nodes, ...fixture.graph.edges]) {
+  item.evidence.push(...Array.from({ length: 32 }, (_, index) => ({ paragraph: 1e9 + index, quote: 'absent stored paragraph' })))
+}
 let modelCalls = 0, httpRequests = 0
 const harness = await modelLearningHarness({ fixture, llm: { async createMessage() { modelCalls++; throw new Error('No model calls') } } })
 const server = createServer((req, res) => harness.handler(req, res))
 try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   const canonical = harness.store.getCanonicalDocument(fixture.documentId), before = JSON.stringify(canonical)
+  assert(canonical.graph.nodes.some(node => node.evidence.some(citation => citation.paragraph >= 1e9)), 'Persistent queries must exercise stored absent-paragraph evidence')
   for (const options of [...modes, { structureSources: true, sourceOffset: 12 }, { offset: 20 }, { structureEdit: true }, { expectedRevision: 0 }]) {
     httpRequests++
     const response = await fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/connection-models', {
@@ -132,6 +155,42 @@ try {
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   assert.equal(modelCalls, 0)
 } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); harness.stop() }
+
+// Real dynamic RPCs use public extraction and confirmed structure commits, never private canonical maps.
+const rpcFixture = modelMaterialPageFixture({ materials: 25, chunks: 64, rules: true })
+for (const item of [...rpcFixture.graph.nodes, ...rpcFixture.graph.edges]) item.evidence.push({ paragraph: 1e9, quote: 'absent stored paragraph' })
+const handlers = new Map(), previousHarness = globalThis.harness
+try {
+  globalThis.harness = { handle: (name, handler) => handlers.set(name, handler) }
+  hostPlugin().apply({ get: name => name === 'kgExtractor' ? async () => structuredClone(rpcFixture.graph) : null, interval: () => () => {} })
+} finally { globalThis.harness = previousHarness }
+const started = await handlers.get('extract')({ documentId: rpcFixture.documentId, text: rpcFixture.sourceText,
+  title: 'Source identity regression', ontology: rpcFixture.graph.ontology })
+assert.equal(started.error, undefined)
+let status
+for (let index = 0; index < 300; index++) {
+  status = await handlers.get('task-status')({ taskId: started.taskId })
+  if (status.status !== 'running') break
+  await new Promise(resolve => setTimeout(resolve, 5))
+}
+assert.equal(status.status, 'succeeded', JSON.stringify(status))
+const documentId = status.result.source.documentId
+const loaded = await handlers.get('document-export')({ documentId, includeSourceText: true })
+const structures = rpcFixture.graph.nodes.filter(node => node.modelStructure)
+const request = { documentId, expectedRevision: loaded.revision, baseNodeIds: structures.map(node => node.id), baseEdgeKeys: [],
+  graph: { nodes: structures.map(node => ({ ...loaded.graph.nodes.find(item => item.id === node.id), modelStructure: node.modelStructure })), edges: [] } }
+assert.equal((await handlers.get('graph-commit-preview')(request)).valid, true)
+assert.equal((await handlers.get('graph-commit')(request)).revision, loaded.revision + 1)
+const exported = await handlers.get('document-export')({ documentId, includeSourceText: true })
+const rpcAdmissionRemovedAbsentEvidence = !exported.graph.nodes.some(node => node.evidence.some(citation => citation.paragraph === 1e9))
+const rpcDocument = { documentId, revision: exported.revision, graph: exported.graph, sourceText: exported.sourceText,
+  sourceUnits: createGraphContract().splitParagraphs(exported.sourceText).map((text, paragraph) => ({ paragraph, text })) }
+let dynamicQueries = 0
+for (const options of [...modes, { structureSources: true, sourceOffset: 12 }, { offset: 20 }, { structureEdit: true }, { expectedRevision: 0 }]) {
+  assert.deepEqual(await handlers.get('connection-models')({ documentId, modelId: 'left', expectedRevision: rpcDocument.revision, ...options }), read(rpcDocument, options))
+  dynamicQueries++
+}
+assert.deepEqual(await handlers.get('document-export')({ documentId, includeSourceText: true }), exported)
 console.log(JSON.stringify({ ok: true, boundedQueries: measurements.length, measurements, knownIdentityRetentionOnly: true, invalidWork,
   catalogueModels: 128, catalogueAndConceptRetainedEntries: 0, independentCallsAndSourceOrder: true, fullConditionsAndEvidence: true,
-  actualGeneratedHostHttp: true, httpRequests, canonicalAndLearningReadOnly: true, modelCalls }))
+  actualGeneratedHostHttp: true, httpRequests, canonicalAndLearningReadOnly: true, modelCalls, actualDynamicRpc: true, dynamicQueries, rpcAdmissionRemovedAbsentEvidence }))

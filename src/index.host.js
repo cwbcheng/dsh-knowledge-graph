@@ -4409,6 +4409,8 @@ function createHostPlugin(graphContractOnly) {
           const seen = new Set()
           return records.filter(record => {
             const { paragraph, quote } = record || {}
+            // A quotation cannot belong to a missing or invalid source identity.
+            if (!Number.isInteger(paragraph) || paragraph < 0 || !unitMap.has(paragraph)) return false
             const provenance = modelSourceProvenance(paragraph)
             const key = paragraph + ':' + quote
             if (!Number.isInteger(paragraph) || paragraph < 0 || typeof quote !== 'string' || !quote.trim()
