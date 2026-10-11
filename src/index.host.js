@@ -4536,11 +4536,15 @@ function createHostPlugin(graphContractOnly) {
             if (options.branchId && !specification.branches.some(branch => branch.id === options.branchId)) return fail('invalid_input', '所选条件分支已不存在')
             const examples = specification.examples.filter(example => !options.branchId || example.branchId === options.branchId)
             const exampleOffset = Number.isSafeInteger(options.exampleOffset) && options.exampleOffset >= 0 ? options.exampleOffset : 0
-            const statuses = new Map(specification.examples.map(example => [example.id, MODEL_STRUCTURE_TOOLS.exampleStatus(specification, example)]))
+            const branchExampleCounts = new Map(specification.branches.map(branch => [branch.id, { pairedExamples: 0, incompleteExamples: 0 }]))
+            const statuses = new Map(specification.examples.map(example => {
+              const status = MODEL_STRUCTURE_TOOLS.exampleStatus(specification, example)
+              const counts = branchExampleCounts.get(example.branchId)
+              if (counts) counts[status.complete ? 'pairedExamples' : 'incompleteExamples']++
+              return [example.id, status]
+            }))
             structure = { identity: specification.identity, slots: specification.slots.map(slot => ({ ...slot, conceptText: nodes.get(slot.conceptId).text })),
-              branches: specification.branches.map(branch => ({ ...branch,
-                pairedExamples: specification.examples.filter(example => example.branchId === branch.id && statuses.get(example.id).complete).length,
-                incompleteExamples: specification.examples.filter(example => example.branchId === branch.id && !statuses.get(example.id).complete).length })),
+              branches: specification.branches.map(branch => ({ ...branch, ...branchExampleCounts.get(branch.id) })),
               examples: examples.slice(exampleOffset, exampleOffset + 20).map(example => ({ ...example, ...statuses.get(example.id) })),
               exampleTotal: specification.examples.length, filteredTotal: examples.length, exampleOffset,
               branchId: options.branchId || '', origin: 'reviewed_structure_not_verified_truth' }
