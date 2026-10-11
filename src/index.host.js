@@ -4430,10 +4430,10 @@ function createHostPlugin(graphContractOnly) {
           return { ...citation, documentId: document.documentId, revision: document.revision,
             sourceId: citation.sourceId || provenance.sourceId, chunkId: provenance.chunkId }
         })
-        // Reuse endpoint projections only within this canonical read, never across requests or revisions.
-        const legacyPortCache = new Map(), portCache = new Map()
+        // Cache selected model reads only; full catalogues must not retain every endpoint projection.
+        const legacyPortCache = options.modelId ? new Map() : null, portCache = options.modelId ? new Map() : null
         const legacyPortsOf = node => {
-          if (legacyPortCache.has(node)) return legacyPortCache.get(node)
+          if (legacyPortCache?.has(node)) return legacyPortCache.get(node)
           const ports = (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
           .map(({ edge, index }) => {
             const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
@@ -4444,7 +4444,7 @@ function createHostPlugin(graphContractOnly) {
               role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
               storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: legacyCitations(edge) }
           })
-          legacyPortCache.set(node, ports)
+          legacyPortCache?.set(node, ports)
           return ports
         }
         const structures = new Map(), structureErrors = new Map()
@@ -4457,14 +4457,14 @@ function createHostPlugin(graphContractOnly) {
           return structures.get(node.id)
         }
         const portsOf = node => {
-          if (portCache.has(node)) return portCache.get(node)
+          if (portCache?.has(node)) return portCache.get(node)
           const structure = structureOf(node)
           const ports = structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
             edgeKey: '', source: 'structured', editable: false, role: slot.role, storedRole: slot.role,
             unit: slot.unit, timeState: slot.state, provenance: slot.provenance,
             node: { ...reference(nodes.get(slot.conceptId)), text: slot.label || nodes.get(slot.conceptId).text },
             citations: citations(slot.provenance) })) : legacyPortsOf(node)
-          portCache.set(node, ports)
+          portCache?.set(node, ports)
           return ports
         }
         const identityLabels = { assertion: '原文断言身份待核对', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明', undetermined: '内容身份尚未判定' }

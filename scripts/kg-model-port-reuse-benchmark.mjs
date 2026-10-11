@@ -69,5 +69,18 @@ for (const structured of [false, true]) for (const change of [
   }
   assert.equal(JSON.stringify(document), before)
 }
+const catalogue = modelPortReuseFixture({ chunks: 64 }), template = catalogue.graph.nodes.find(node => node.id === 'left')
+const templateEdges = catalogue.graph.edges.filter(edge => edge.fromNodeId === 'left')
+catalogue.graph.nodes = catalogue.graph.nodes.filter(node => node.type === 'concept'); catalogue.graph.edges = []
+for (let index = 0; index < 128; index++) {
+  const model = structuredClone(template); model.id = 'catalogue-' + index
+  catalogue.graph.nodes.push(model)
+  catalogue.graph.edges.push(...templateEdges.map(edge => ({ ...structuredClone(edge), fromNodeId: model.id })))
+}
+const catalogueBefore = JSON.stringify(catalogue)
+const catalogueOptions = [{}, { offset: 120 }, { query: '对象、时间与条件' }, { peerOf: 'catalogue-0' },
+  { chainOf: 'catalogue-0' }, { conceptId: 'port-0', role: 'input' }]
+for (const options of catalogueOptions) assert.deepEqual(current(catalogue, { expectedRevision: 1, ...options }), baseline(catalogue, { expectedRevision: 1, ...options }))
+assert.equal(JSON.stringify(catalogue), catalogueBefore)
 console.log(JSON.stringify({ ok: true, baselineCommit, node: process.version, timedScope: 'source contract only; excludes HTTP, SQLite and browser rendering',
-  alternatedImplementations: true, completeResponseCases: rows.length, edgeCases, readOnly: true, rows }, null, 2))
+  alternatedImplementations: true, completeResponseCases: rows.length, edgeCases, catalogueCases: catalogueOptions.length, catalogueModels: 128, readOnly: true, rows }, null, 2))

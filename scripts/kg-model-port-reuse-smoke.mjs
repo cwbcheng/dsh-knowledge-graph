@@ -64,6 +64,26 @@ for (const structured of [false, true]) {
   }
 }
 
+const catalogue = modelPortReuseFixture({ chunks: 64 }), template = catalogue.graph.nodes.find(node => node.id === 'left')
+const templateEdges = catalogue.graph.edges.filter(edge => edge.fromNodeId === 'left')
+catalogue.graph.nodes = catalogue.graph.nodes.filter(node => node.type === 'concept'); catalogue.graph.edges = []
+for (let index = 0; index < 128; index++) {
+  const model = structuredClone(template); model.id = 'catalogue-' + index
+  catalogue.graph.nodes.push(model)
+  catalogue.graph.edges.push(...templateEdges.map(edge => ({ ...structuredClone(edge), fromNodeId: model.id })))
+}
+const catalogueBefore = JSON.stringify(catalogue), set = Map.prototype.set
+let retainedEndpoints = 0
+// Observe endpoint projections retained in request-local maps during the full directory read.
+Map.prototype.set = function (key, value) {
+  if (key?.type === 'connection_model' && Array.isArray(value)) retainedEndpoints += value.length
+  return set.call(this, key, value)
+}
+try { assert.equal(query(catalogue, { expectedRevision: 1 }).total, 128) }
+finally { Map.prototype.set = set }
+assert.equal(retainedEndpoints, 0, 'A full catalogue query must not retain per-model endpoint projection caches')
+assert.equal(JSON.stringify(catalogue), catalogueBefore)
+
 const fixture = modelPortReuseFixture({ chunks: 64 }), harness = await modelLearningHarness({ fixture })
 const server = createServer((req, res) => harness.handler(req, res))
 let httpRequests = 0
@@ -87,5 +107,5 @@ try {
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); harness.stop()
 }
-console.log(JSON.stringify({ ok: true, endpointCitationBudget: true, measurements, independentRequestsAndModels: true,
+console.log(JSON.stringify({ ok: true, endpointCitationBudget: true, measurements, catalogueModels: 128, retainedEndpoints, independentRequestsAndModels: true,
   revisionConflict: true, invalidStructureFallback: true, fullConditionsEvidenceAndIdentity: true, actualHostHttp: true, httpRequests, readOnly: true }))
