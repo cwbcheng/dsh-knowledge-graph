@@ -12,7 +12,7 @@ for (const slots of [2, 40]) for (const branches of [0, 2, 40]) for (const examp
   for (const options of modelBranchCountsModes.slice(0, 4)) {
     const expected = read(document, options), measured = countFullExampleFilters(() => read(document, options))
     assert.deepEqual(measured.response, expected); assert.equal(expected.error, undefined)
-    assert.equal(measured.visits, (branches + 2) * examples, 'Branch counts do not repeatedly filter the entire example list')
+    assert.equal(measured.visits, 2 * examples, 'Branch counts and validated diagnostics do not repeatedly filter the entire example list')
     selectedQueries++
   }
   const detail = read(document, { modelId: 'taxi' }), structure = detail.structure

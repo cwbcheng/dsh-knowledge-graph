@@ -25,7 +25,7 @@ export const modelBranchCountsModes = [
   { modelId: 'taxi', exampleOffset: -1 }, { modelId: 'taxi', exampleOffset: '20' }, { modelId: 'missing' },
 ]
 
-// Count actual full-example filtering across the whole query, including unchanged diagnostics.
+// Count actual full-example filtering across the whole query, including diagnostic defensive arrays.
 export function countFullExampleFilters(query) {
   const filter = Array.prototype.filter
   let calls = 0, visits = 0

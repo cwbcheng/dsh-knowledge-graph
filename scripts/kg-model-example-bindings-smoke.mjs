@@ -21,7 +21,7 @@ for (const slots of [2, 16, 18, 40]) for (const branches of [0, 1, 40]) for (con
   for (const options of modelBranchCountsModes.slice(0, 4)) {
     const expected = read(document, options), measured = countExampleBindingReads(() => read(document, options))
     assert.equal(expected.error, undefined); assert.deepEqual(measured.response, expected)
-    if (slots === 40 && examples === 100 && branches === 40) assert.equal(measured.bindingSomeVisits, 58232, 'unchanged diagnostics remain in the whole-query budget')
+    if (slots === 40 && examples === 100 && branches === 40) assert.equal(measured.bindingSomeVisits, 38660, 'all per-example diagnostics remain; validated branch pairing reuses counts')
     selectedQueries++
   }
   const view = read(document, { modelId: 'taxi' }).structure
