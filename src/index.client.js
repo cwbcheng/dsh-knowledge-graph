@@ -6093,16 +6093,19 @@ export default function clientPlugin() {
                 result.documentId !== documentId || result.modelId !== modelId || result.revision !== revision ||
                 result.offset !== offset || result.limit !== 20 || !count(result.total) ||
                 Object.keys(filters).some(key => result.filters?.[key] !== filters[key]) ||
-                !result.summary || Object.values(result.summary).some(value => !count(value)) ||
+                !result.summary || ['predictions', 'currentRevision', 'olderRevision', 'unrevealed', 'seenSource', 'unseenSourceReported',
+                  'withReview', 'withFeedback', 'feedbackRows', 'feedbackRoots', 'corrections'].some(key => !count(result.summary[key])) ||
+                Object.values(result.summary).some(value => !count(value)) ||
                 !Array.isArray(result.sourceCounts) || result.sourceCounts.length !== 5 ||
                 Object.keys(MODEL_FEEDBACK_TYPES).some(type => !result.sourceCounts.some(item => item.type === type)) ||
-                result.sourceCounts.some(item => Object.entries(item).some(([key, value]) => key !== 'type' && !count(value))) ||
+                result.sourceCounts.some(item => ['roots', 'predictions', 'consistent', 'different', 'inconclusive', 'notCompared', 'mixed']
+                  .some(key => !count(item[key])) || Object.entries(item).some(([key, value]) => key !== 'type' && !count(value))) ||
                 !Array.isArray(result.items) || result.items.length > 20 || result.items.some(item =>
                   !['prediction', 'counterexample'].includes(item.exercise) || typeof item.attemptId !== 'string' ||
                   !item.response || !count(item.resultTotal) || !Array.isArray(item.results) || item.results.length > 5 ||
                   item.results.some(record => !MODEL_FEEDBACK_TYPES[record.type] || !MODEL_FEEDBACK_DIAGNOSES[record.diagnosis] ||
                     !MODEL_FEEDBACK_COMPARISONS[record.comparison] || typeof record.attemptId !== 'string' || typeof record.content !== 'string'))) {
-              throw new Error('学习记录统计的范围、版本或来源不一致；未显示计数。')
+              throw new Error('学习记录统计不完整，或范围、版本与来源不一致；请重新读取，未显示计数。')
             }
             setReport(result)
           }).catch(reason => { if (id === sequence.current && !abort.signal.aborted) setError(reason.message || '学习记录读取失败') })

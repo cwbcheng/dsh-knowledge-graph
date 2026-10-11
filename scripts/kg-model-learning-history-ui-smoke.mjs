@@ -81,6 +81,50 @@ try {
   newReads.forEach(item => item.resolve()); await settle(); oldReads.forEach(item => item.resolve()); await settle()
   assert(text(tree).includes('本模型全部 0 次预测'), 'late model reads cannot replace the selected scope')
   paused = false
+  // A versioned history response must supply every count from its canonical contract.
+  const summaryKeys = ['predictions', 'currentRevision', 'olderRevision', 'unrevealed', 'seenSource', 'unseenSourceReported',
+    'withReview', 'withFeedback', 'feedbackRows', 'feedbackRoots', 'corrections']
+  const sourceKeys = ['roots', 'predictions', 'consistent', 'different', 'inconclusive', 'notCompared', 'mixed']
+  const sourceTypes = ['observation', 'reference', 'derivation', 'ai_suggestion', 'reflection']
+  const rowsBeforeCounts = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  const graphBeforeCounts = store.getDocument(base.documentId), unitsBeforeCounts = store.getDocumentSourceUnits(base.documentId)
+  let omitCount = null, invalidCount = null
+  const countCall = async (args, signal) => {
+    const result = await call(args, signal)
+    if (omitCount?.summary) delete result.summary[omitCount.summary]
+    if (omitCount?.type) delete result.sourceCounts.find(item => item.type === omitCount.type)[omitCount.key]
+    if (invalidCount) result.summary.feedbackRows = invalidCount.value
+    return result
+  }
+  mount('ModelLearningHistoryPanel', { ...base, revision: 1, call: countCall }); await settle()
+  const completeCountsText = text(tree)
+  assert(completeCountsText.includes('本模型全部 126 次预测'))
+  const missingCounts = [...summaryKeys.map(summary => ({ summary })),
+    ...sourceTypes.flatMap(type => sourceKeys.map(key => ({ type, key })))]
+  for (const missing of missingCounts) {
+    omitCount = missing; click('重新读取学习记录'); await settle()
+    assert(text(tree).includes('未显示计数'), 'Missing history count is rejected: ' + JSON.stringify(missing))
+    assert(!text(tree).includes('本模型全部')); assert(!all(tree, el => el.type === 'table').length)
+    assert(!text(tree).includes('undefined'))
+    omitCount = null; click('重新读取学习记录'); await settle()
+    assert.equal(text(tree), completeCountsText, 'Restoring the complete response recovers every original count and record')
+  }
+  for (const value of [null, '0', -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    invalidCount = { value }; click('重新读取学习记录'); await settle()
+    assert(text(tree).includes('未显示计数')); assert(!all(tree, el => el.type === 'table').length)
+  }
+  invalidCount = null; click('重新读取学习记录'); await settle(); assert.equal(text(tree), completeCountsText)
+  paused = true; omitCount = { summary: 'feedbackRows' }; click('重新读取学习记录')
+  const cancelledCounts = deferred.splice(0)
+  omitCount = null; props.modelId = 'multi'; render(); const currentCounts = deferred.splice(0)
+  currentCounts.forEach(item => item.resolve()); await settle()
+  omitCount = { summary: 'feedbackRows' }; cancelledCounts.forEach(item => item.resolve()); await settle()
+  assert(text(tree).includes('本模型全部 0 次预测'), 'A late incomplete response cannot hide valid counts in the selected model')
+  assert(!all(tree, el => el.props.role === 'alert').length)
+  paused = false; omitCount = null
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), rowsBeforeCounts)
+  assert.deepEqual(store.getDocument(base.documentId), graphBeforeCounts)
+  assert.deepEqual(store.getDocumentSourceUnits(base.documentId), unitsBeforeCounts)
   mount('ModelLearningPanel', { ...base, revision: 1, call, onUnderstanding: value => linked.push(value) }); await settle()
   fill('具体的新情境', '保留未保存的预测情境。')
   props.focusRequest = { ...opened[0], nonce: 1 }; render(); await settle()
@@ -148,5 +192,6 @@ try {
   assert(text(tree).includes('待关联的预测身份不一致'))
   assert(!all(tree, el => el.type === 'button' && text(el) === '关联这次预测并修订').length)
   console.log(JSON.stringify({ ok: true, actualComponentsSqliteRoutes: true, traceBeyondRecent100: true, correctionAwareResultGet: true,
-    hiddenReferences: true, roleMaterials: true, oldSourceBlocked: true, linkPreservesDraft: true, typedCountsNoWrites: true, scopeRaces: true }))
+    hiddenReferences: true, roleMaterials: true, oldSourceBlocked: true, linkPreservesDraft: true, typedCountsNoWrites: true, scopeRaces: true,
+    requiredCounts: missingCounts.length, incompleteCountsRecovery: true, incompleteCountsScopeRace: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
