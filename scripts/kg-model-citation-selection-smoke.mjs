@@ -192,6 +192,49 @@ try {
     assert(text(ui.owner.tree).includes(fixture.sourceUnits[1].text), 'A failed lookup keeps the full evidence')
     assert.deepEqual(nav.changes, []); assert.deepEqual(nav.nodes, [])
   }
+  // A failed comparison citation is retried through the real workbench
+  // receiver and canonical node-window route, without changing its evidence.
+  const retryNav = navigation(), retryComparison = await open('ConnectionModelComparison', retryNav)
+  await clickCitation(retryComparison)
+  retryNav.pending[0].failure = '比较原文首次读取失败'
+  retryNav.pending[0].resolve(); await retryNav.completed[0]; await retryComparison.settle()
+  assert(text(retryComparison.owner.tree).includes('比较原文首次读取失败'))
+  await clickCitation(retryComparison)
+  assert.equal(retryNav.pending.length, 2)
+  assert(!text(retryComparison.owner.tree).includes('比较原文首次读取失败'), 'An admitted citation retry clears only its own prior failure')
+  assert(text(retryComparison.owner.tree).includes(fixture.sourceUnits[1].text))
+  assert.deepEqual(retryNav.nodes, [], 'Retry waits for the actual canonical response')
+  retryNav.pending[1].resolve(); await retryNav.completed[1]; await retryComparison.settle()
+  assert(!text(retryComparison.owner.tree).includes('比较原文首次读取失败'))
+  assert.deepEqual(retryNav.nodes, ['taxi']); assert.deepEqual(retryNav.paragraphs, [1])
+  assert.deepEqual(retryNav.references[1], retryNav.references[0], 'Retry preserves complete identity, condition and quote')
+  const orderedNav = navigation(), orderedComparison = await open('ConnectionModelComparison', orderedNav)
+  await clickCitation(orderedComparison); await clickCitation(orderedComparison)
+  orderedNav.pending[1].failure = '当前比较引文读取失败'
+  orderedNav.pending[1].resolve(); await orderedNav.completed[1]; await orderedComparison.settle()
+  assert(text(orderedComparison.owner.tree).includes('当前比较引文读取失败'))
+  orderedNav.pending[0].resolve(); await orderedNav.completed[0]; await orderedComparison.settle()
+  assert(text(orderedComparison.owner.tree).includes('当前比较引文读取失败'), 'A superseded success cannot clear the latest failure')
+  assert.deepEqual(orderedNav.nodes, []); assert.deepEqual(orderedNav.changes, [])
+  for (const transition of ['selection', 'inactive', 'reload']) {
+    const nav = navigation(), comparison = await open('ConnectionModelComparison', nav)
+    await clickCitation(comparison); nav.pending[0].failure = '上一比较范围的原文错误'
+    nav.pending[0].resolve(); await nav.completed[0]; await comparison.settle()
+    assert(text(comparison.owner.tree).includes('上一比较范围的原文错误'))
+    if (transition === 'selection') await comparison.click('taxi-third · ', true)
+    else if (transition === 'inactive') { comparison.props.active = false; await comparison.settle(); comparison.props.active = true; await comparison.settle() }
+    else await comparison.click('↻')
+    assert(!text(comparison.owner.tree).includes('上一比较范围的原文错误'), 'Completed source failures belong only to their active selection')
+    assert(text(comparison.owner.tree).includes(fixture.sourceUnits[1].text), 'Switching error scope preserves the canonical condition and full quote')
+  }
+  const isolatedNav = navigation(), isolatedComparison = await open('ConnectionModelComparison', isolatedNav)
+  const oldCitation = all(isolatedComparison.owner.tree, item => item.type === 'button' && text(item) === '原文 P8')[0]
+  isolatedComparison.props.load = args => args.compareModelId ? Promise.resolve({ error: { message: '当前比较模型读取失败' } }) : Promise.resolve(contract.connectionModels(fixture, args))
+  await isolatedComparison.click('↻')
+  assert(text(isolatedComparison.owner.tree).includes('当前比较模型读取失败'))
+  current = isolatedComparison.owner; oldCitation.props.onClick(); await isolatedComparison.settle()
+  assert(text(isolatedComparison.owner.tree).includes('当前比较模型读取失败'), 'An obsolete source action cannot erase an independent model-read failure')
+  assert.deepEqual(isolatedNav.loads, []); assert.deepEqual(isolatedNav.nodes, []); assert.deepEqual(isolatedNav.changes, [])
   // Declining the existing replacement confirmation keeps the selection,
   // both steps and scenario; accepting clears only step two and cancels it.
   const chainNav = navigation(), chain = await open('ConnectionModelChain', chainNav)
@@ -220,7 +263,7 @@ try {
   assert.equal(JSON.stringify(harness.store.getDocument(fixture.documentId)), before)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
-  console.log(JSON.stringify({ ok: true, cancelledCases, newerClickWins: true, currentFailuresVisible: true,
+  console.log(JSON.stringify({ ok: true, cancelledCases, newerClickWins: true, currentFailuresVisible: true, comparisonSourceRetry: true, comparisonErrorOwnership: true,
     productionComponents: true, productionWorkbenchReceiver: true, actualNodeWindowRoute: true,
     originalIdentityAndFullQuote: true, lateFailuresQuiet: true, readOnly: true }))
 } finally { for (const owner of owners) for (const state of owner.slots) state.cleanup?.(); harness.stop() }
