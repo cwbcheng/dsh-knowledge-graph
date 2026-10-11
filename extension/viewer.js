@@ -1828,6 +1828,11 @@
         const uuid = () => 's-' + (globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random().toString(36).slice(2))
         const source = () => ({ kind: 'unknown', paragraph: null, quote: '', note: '' })
         const emptyField = () => ({ text: '', provenance: source() })
+        const mergeEndpointNames = entries => setEndpointNames(current => {
+          const names = Object.fromEntries(entries)
+          return Object.keys(names).every(id => Object.prototype.hasOwnProperty.call(current, id) && current[id] === names[id])
+            ? current : { ...current, ...names }
+        })
         const remember = value => {
           try { value ? globalThis.sessionStorage?.setItem(key, JSON.stringify(value)) : globalThis.sessionStorage?.removeItem(key) }
           catch { setError('草稿缓存不可用；当前结构尚未保存，请保留本页。') }
@@ -1853,7 +1858,7 @@
             if (result.modelStructureVersion !== 1 || !Array.isArray(result.legacyPorts)) throw new Error('当前服务尚未部署结构核对版本；草稿未改写，请等待同版本部署。')
             setSupported(true)
             setAssistSupported(result.modelDiagnosticsVersion === 1); setLegacyPorts(result.legacyPorts)
-            setEndpointNames(current => ({ ...current, ...Object.fromEntries(result.ports.map(port => [port.node.nodeId, port.node.text])) }))
+            mergeEndpointNames(result.ports.map(port => [port.node.nodeId, port.node.text]))
             let cached = null
             try { cached = JSON.parse(globalThis.sessionStorage?.getItem(key) || 'null') } catch {}
             let valid = false
@@ -1879,7 +1884,7 @@
             if (result.documentId !== documentId || result.revision !== revision || !Array.isArray(result.items)) throw new Error('概念目录身份或版本不一致')
             if (result.modelStructureVersion !== 1) throw new Error('当前服务尚未部署结构核对版本；概念选择和结构写入不可用。')
             setConceptPage(result)
-            setEndpointNames(current => ({ ...current, ...Object.fromEntries(result.items.map(item => [item.nodeId, item.text])) }))
+            mergeEndpointNames(result.items.map(item => [item.nodeId, item.text]))
           }).catch(reason => { if (!abort.signal.aborted && id === conceptSequence.current) setError(reason.message || '概念目录读取失败') })
           return () => { abort.abort(); conceptSequence.current++ }
         }, [documentId, revision, active, section, search, offset, reload])
