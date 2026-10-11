@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { createGraphContract } from '../src/index.host.js'
 import { connectionFixture } from './kg-connection-model-fixture-data.mjs'
+import { directionIdentityFixture } from './kg-model-direction-identity-fixture.mjs'
+import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
+import { createModelReviewController } from './kg-model-review-controller-fixture.mjs'
 
 const doc = connectionFixture(), query = createGraphContract().connectionModels
 let current, cursor = 0
@@ -116,5 +119,92 @@ const pending = requests.filter(request => !request.signal.aborted)
 for (const state of owner.slots) state.cleanup?.()
 assert(pending.every(request => request.signal.aborted), 'unmount aborts outstanding reads')
 assert.equal(writes.length, 3, 'retries and navigation may never trigger another write')
+
+// Two meanings of the same word must remain distinguishable at approval time.
+// Use the actual production controller and canonical SQLite HTTP validation.
+const identityDoc = directionIdentityFixture(), harness = await modelLearningHarness({ fixture: identityDoc })
+try {
+  const original = structuredClone(harness.store.getDocument(identityDoc.documentId))
+  const sourceUnitsBefore = JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId))
+  const windowed = await harness.post({ documentId: identityDoc.documentId, nodeLimit: 1, query: 'raw-mass', includeSourceText: false }, 'document-load')
+  const openingView = { graph: windowed.graph, sourceText: identityDoc.sourceText }
+  const state = { resultView: openingView, currentResultRef: { current: openingView }, graphRevisionRef: { current: 1 },
+    graphCommitQueueRef: { current: Promise.resolve() }, verifyBusyRef: { current: false } }
+  const calls = [], previews = []
+  const controller = createModelReviewController(state, { call: (method, args) => { calls.push({ method, args }); return harness.post(args, method) } })
+  owner.slots = []; owner.effects = []; updates.splice(0); requests.splice(0); timers.clear()
+  Object.assign(props, { documentId: identityDoc.documentId, revision: 1, focusRequest: null, onRoles: async request => {
+    const result = await controller(request); if (!request.preview) previews.push(result); return result
+  } })
+  const resolveIdentity = async request => { request.resolve(await harness.post(request.args, 'connection-models')); await settle() }
+  const settleCanonical = async () => { for (let index = 0; index < 8; index++) { await new Promise(setImmediate); await settle() } }
+  const roleSelect = id => all(tree, el => el.type === 'select' && el.props['aria-label'] === '端点角色 ' + id)[0]
+  const editRole = (id, value) => { const select = roleSelect(id); assert(select); select.props.onChange({ target: { value } }); render() }
+  const approvalBlock = () => all(tree, el => el.type === 'div' && el.props.children?.some(child => child?.type === 'h4' && text(child) === '待确认的方向修改')).at(-1)
+  const unchanged = () => {
+    assert.deepEqual(harness.store.getDocument(identityDoc.documentId), original, 'preview and cancellation must preserve canonical graph, identities, conditions and full evidence')
+    assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId)), sourceUnitsBefore)
+    assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
+  }
+  render(); await resolveIdentity(requests[0]); await resolveIdentity(requests.find(request => request.args.modelId === 'mass-quality'))
+  click('核对方向')
+  for (const id of ['raw-mass', 'product-quality']) {
+    const label = all(tree, el => el.type === 'label' && all(el, child => child === roleSelect(id)).length)[0]
+    assert(text(label).includes(id), 'Same-name role selector must visibly identify its concept: ' + id)
+  }
+  editRole('raw-mass', 'input'); click('预览方向修改'); await settleCanonical()
+  const rawPreview = previews.at(-1), rawBlock = approvalBlock()
+  assert.equal(rawPreview.diff[0].nodeId, 'raw-mass')
+  assert.equal(rawPreview.diff[0].edgeKey, 'mass-quality>raw-mass:maps_between')
+  assert(text(rawBlock).includes('raw-mass') && text(rawBlock).includes(identityDoc.sourceUnits[1].text))
+  assert(!text(rawBlock).includes(identityDoc.sourceUnits[2].text), 'Approval cannot borrow the other same-name concept evidence')
+  const rawReference = all(rawBlock, el => el.type === 'button' && text(el) === '原文 P8')[0]
+  assert(rawReference); const previousLocated = located.length
+  rawReference.props.onClick(); await settle()
+  assert.equal(located[previousLocated].nodeId, null, 'Mapping evidence must stay a source citation rather than borrowing a node locator')
+  assert.equal(located[previousLocated].documentId, identityDoc.documentId); assert.equal(located[previousLocated].revision, 1)
+  assert.equal(located[previousLocated].sourceId, identityDoc.graph.source.id); assert.equal(located[previousLocated].sourceQuoteOnly, true)
+  assert.equal(located[previousLocated].paragraph, 7)
+  assert.equal(located[previousLocated].quote, identityDoc.sourceUnits[1].text)
+  unchanged(); click('取消预览'); editRole('raw-mass', '')
+  editRole('product-quality', 'input'); click('预览方向修改'); await settleCanonical()
+  const qualityPreview = previews.at(-1), qualityBlock = approvalBlock()
+  assert.equal(qualityPreview.diff[0].nodeId, 'product-quality')
+  assert(text(qualityBlock).includes('product-quality') && text(qualityBlock).includes(identityDoc.sourceUnits[2].text))
+  assert(!text(qualityBlock).includes(identityDoc.sourceUnits[1].text))
+  assert.notEqual(rawPreview.signature, qualityPreview.signature, 'Two different canonical endpoint changes must keep different approvals')
+  assert.notEqual(text(rawBlock), text(qualityBlock), 'Two different endpoint approvals must be distinguishable to the reader')
+  editRole('raw-mass', 'input'); editRole('product-quality', 'output'); click('预览方向修改'); await settleCanonical()
+  const together = previews.at(-1), combinedBlock = approvalBlock()
+  assert.deepEqual(together.diff.map(item => item.nodeId).sort(), ['product-quality', 'raw-mass'])
+  for (const item of together.diff) {
+    const card = all(combinedBlock, el => el.type === 'div' && el.props.key === item.edgeKey)[0]
+    const own = identityDoc.sourceUnits[item.nodeId === 'raw-mass' ? 1 : 2].text, other = identityDoc.sourceUnits[item.nodeId === 'raw-mass' ? 2 : 1].text
+    assert(text(card).includes(item.nodeId) && text(card).includes(own) && !text(card).includes(other), 'Each simultaneous same-name change keeps its own mapping evidence')
+  }
+  unchanged(); editRole('raw-mass', '')
+  const changes = { 'mass-quality>product-quality:maps_between': 'output' }
+  editRole('product-quality', 'output')
+  assert(!all(tree, el => el.type === 'button' && text(el) === '确认保存方向').length, 'A new role edit invalidates the visible approval')
+  await assert.rejects(controller({ modelId: 'mass-quality', revision: 1, changes, preview: qualityPreview }), /重新预览/)
+  unchanged(); assert(!calls.some(call => call.method === 'graph-commit'), 'Browsing, previewing, cancellation and stale approval must never commit')
+  click('预览方向修改'); await settleCanonical(); const accepted = previews.at(-1)
+  click('确认保存方向'); await settleCanonical()
+  const commits = calls.filter(call => call.method === 'graph-commit')
+  assert.equal(commits.length, 1, 'Only explicit UI confirmation may write the single selected endpoint')
+  assert.equal(JSON.stringify(commits[0].args), accepted.signature)
+  assert.equal(commits[0].args.graph.nodes.length, 0)
+  assert.equal(commits[0].args.graph.edges.length, 1)
+  assert.equal(commits[0].args.graph.edges[0].toNodeId, 'product-quality')
+  const saved = harness.store.getDocument(identityDoc.documentId)
+  assert.equal(saved.revision, 2); assert.deepEqual(saved.nodes, original.nodes)
+  assert.deepEqual(saved.edges, original.edges.map(edge => edge.toNodeId === 'product-quality' ? { ...edge, role: 'output' } : edge))
+  assert.equal(saved.sourceText, original.sourceText); assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId)), sourceUnitsBefore)
+  assert.equal((await harness.post(commits[0].args, 'graph-commit')).error.code, 'revision_conflict', 'Old approval still requires canonical version CAS')
+  assert.equal(harness.store.getDocumentRevision(identityDoc.documentId), 2)
+  assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
+  for (const state of owner.slots) state.cleanup?.()
+} finally { harness.stop() }
 console.log(JSON.stringify({ ok: true, staleResponsesRejected: true, previewApprovalInvalidation: true,
-  errorRetry: true, wholeGraphSearch: true, sourceNavigation: true, unmountAborts: true }))
+  errorRetry: true, wholeGraphSearch: true, sourceNavigation: true, unmountAborts: true,
+  sameNameDirectionIdentity: true, exactApprovalEvidence: true, actualCanonicalPreviewAndConfirmation: true, conditionsAndSourcePreserved: true }))

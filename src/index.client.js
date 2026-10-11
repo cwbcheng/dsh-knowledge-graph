@@ -2698,7 +2698,7 @@ export default function clientPlugin() {
           if (role) next.role = role
           else delete next.role
           updates.set(edge, next)
-          diff.push({ text: nodes.get(edge.toNodeId).text, before: edge.role || '', after: role })
+          diff.push({ nodeId: edge.toNodeId, edgeKey: key, text: nodes.get(edge.toNodeId).text, before: edge.role || '', after: role })
         }
         if (!diff.length) throw new Error('没有需要保存的方向修改')
         return { graph: { ...graph, edges: graph.edges.map(edge => updates.get(edge) || edge),
@@ -5476,6 +5476,7 @@ export default function clientPlugin() {
         const examples = detail?.related.filter(item => ['positive_example', 'negative_example', 'segment_example_group', 'verification_material', 'data_or_experience'].includes(item.type)) || []
         const rules = detail?.related.filter(item => ['rule', 'relation_material', 'property_material'].includes(item.type)) || []
         const others = detail?.related.filter(item => !examples.includes(item) && !rules.includes(item)) || []
+        const previewPorts = preview ? new Map((detail?.ports || []).map(item => [item.edgeKey, item])) : null
         return h('section', { className: 'kg-models', 'aria-label': '联结模型工作台' },
           h('div', { className: 'kg-model-toolbar' },
             h('input', { type: 'search', value: query, maxLength: 200, placeholder: '输入、输出或模型', 'aria-label': '搜索联结模型', onChange: event => setQuery(event.target.value) }),
@@ -5632,7 +5633,8 @@ export default function clientPlugin() {
                   h('h4', null, '相关原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: locateInDetail })) : null,
                 tab === 'review' ? h('div', null,
                   h('p', { className: 'kg-model-meta' }, '方向核对不代表事实成立；错误示例和转写内容仍需分别复核。'),
-                  detail.ports.filter(item => item.editable).map(item => h('div', { key: item.edgeIndex }, h('label', { className: 'kg-model-review-row' }, item.node.text,
+                  detail.ports.filter(item => item.editable).map(item => h('div', { key: item.edgeIndex }, h('label', { className: 'kg-model-review-row' },
+                    h('span', null, item.node.text, h('span', { className: 'kg-model-meta' }, ' · ' + item.node.nodeId)),
                     h('select', { 'aria-label': '端点角色 ' + item.node.nodeId, disabled: saving || busy, value: roles[item.edgeKey] ?? (['input', 'output'].includes(item.storedRole) ? item.storedRole : ''),
                       onChange: event => { setRoles(current => ({ ...current, [item.edgeKey]: event.target.value })); setPreview(null) } },
                       h('option', { value: '' }, '待核对'), h('option', { value: 'input' }, '输入'), h('option', { value: 'output' }, '输出'))),
@@ -5641,7 +5643,9 @@ export default function clientPlugin() {
                   h('div', { className: 'kg-model-toolbar' },
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy || !Object.keys(roles).length || !onRoles, onClick: () => reviewRoles(false) }, '预览方向修改'),
                     onReview ? h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: review }, '审阅模型与相关关系') : null),
-                  preview ? h('div', null, h('h4', null, '待确认的方向修改'), preview.diff.map((item, index) => h('p', { key: index }, item.text + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对'))),
+                  preview ? h('div', null, h('h4', null, '待确认的方向修改'), preview.diff.map((item, index) => h('div', { key: item.edgeKey || index },
+                    h('p', null, item.text + (item.nodeId ? ' · ' + item.nodeId : '') + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对')),
+                    h('details', null, h('summary', null, '本次修改的映射原文'), evidence(previewPorts.get(item.edgeKey) || {})))),
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null)))
       }
