@@ -4422,9 +4422,21 @@ function createHostPlugin(graphContractOnly) {
           }).slice(0, 8).map(record => ({ paragraph: record.paragraph, quote: record.quote,
             nodeId: item.id || null, sourceId: record.sourceId || null }))
         }
-        const reference = node => ({ nodeId: node.id, type: node.type, label: typeLabels.get(node.type) || node.type, text: String(node.text || ''),
+        // Reuse slot concept citations only within a selected-model query; return independent records.
+        const slotCitationCache = options.modelId && options.concepts !== true ? new Map() : null
+        const referenceCitations = (node, cacheSlot) => {
+          if (!slotCitationCache || node.type !== 'concept') return citations(node)
+          let validated = slotCitationCache.get(node)
+          if (!validated) {
+            validated = citations(node)
+            if (cacheSlot !== true || !validated.length) return validated
+            slotCitationCache.set(node, validated)
+          }
+          return validated.map(citation => ({ ...citation }))
+        }
+        const reference = (node, cacheSlot = false) => ({ nodeId: node.id, type: node.type, label: typeLabels.get(node.type) || node.type, text: String(node.text || ''),
           paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
-          state: node.state || 'candidate', entailmentStatus: node.entailmentStatus || 'unverified', citations: citations(node) })
+          state: node.state || 'candidate', entailmentStatus: node.entailmentStatus || 'unverified', citations: referenceCitations(node, cacheSlot) })
         if (options.concepts === true) {
           const query = normalize(options.query).slice(0, 200)
           const concepts = graph.nodes.filter(node => node.type === 'concept' && node.state !== 'rejected'
@@ -4475,7 +4487,7 @@ function createHostPlugin(graphContractOnly) {
           const ports = structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
             edgeKey: '', source: 'structured', editable: false, role: slot.role, storedRole: slot.role,
             unit: slot.unit, timeState: slot.state, provenance: slot.provenance,
-            node: { ...(withCitations ? reference(nodes.get(slot.conceptId)) : { nodeId: slot.conceptId }), text: slot.label || nodes.get(slot.conceptId).text },
+            node: { ...(withCitations ? reference(nodes.get(slot.conceptId), true) : { nodeId: slot.conceptId }), text: slot.label || nodes.get(slot.conceptId).text },
             citations: withCitations ? citations(slot.provenance) : [] })) : legacyPortsOf(node, withCitations)
           if (withCitations) portCache?.set(node, ports)
           return ports
