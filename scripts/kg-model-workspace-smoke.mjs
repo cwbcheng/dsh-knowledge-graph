@@ -39,9 +39,11 @@ const server = createServer((request, response) => {
 try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   const before = JSON.stringify(harness.store.getDocument(fixture.documentId)), unitsBefore = JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId))
+  // Rendering and loopback HTTP share this process. Use a request-owned
+  // connection so these UI guards do not depend on idle connection reuse.
   const post = (method, args) => {
     actualHttpRequests++
-    const request = fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/' + method, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) })
+    const request = fetch('http://127.0.0.1:' + server.address().port + '/api/dsh-knowledge-graph/' + method, { method: 'POST', headers: { 'Content-Type': 'application/json', Connection: 'close' }, body: JSON.stringify(args) })
       .then(async response => { const body = await response.json(); if (!response.ok) throw new Error(body.error?.message || 'HTTP ' + response.status); return body })
     requests.add(request); request.finally(() => requests.delete(request)).catch(() => {}); return request
   }
