@@ -5819,6 +5819,7 @@ export default function clientPlugin() {
         const [loadedPair, setPair] = useState(null), [result, setResult] = useState(null), [reload, setReload] = useState(0)
         const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false)
         const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
+        const [sourceError, setSourceError] = useState('')
         const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
         const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
         const importInput = useRef(null), importSequence = useRef(0), importAbort = useRef(null)
@@ -5834,7 +5835,9 @@ export default function clientPlugin() {
         const pair = loadedPair?.scope === pairKey ? loadedPair : null
         const stale = current.revision !== revision
         const checked = result?.scope === pairKey && result.draftKey === JSON.stringify(draft) && !stale ? result.chain : null
-        const location = useConnectionModelLocation(JSON.stringify([pairKey, current.revision, draft.steps.map(step => step.branchId), reload]), active)
+        const locationScope = JSON.stringify([pairKey, current.revision, draft.steps.map(step => step.branchId), reload])
+        const location = useConnectionModelLocation(locationScope, active)
+        useEffect(() => { setSourceError('') }, [locationScope, active])
         const cancelImport = (keepNotice = false) => { importSequence.current++; importAbort.current?.abort(); setIncoming(null); setImporting(false); setImportError(''); if (!keepNotice) setImportNotice('') }
         const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); cancelImport(keepImportNotice) }
         useEffect(() => { setWork(restore()); invalidate(); setQuery(''); setSearch(''); setOffset(0); setStorageError('') }, [documentId, modelId])
@@ -5951,7 +5954,10 @@ export default function clientPlugin() {
           } catch (reason) { if (id === checkSequence.current && !abort.signal.aborted) setError(reason.message || '推测草稿未检查，文字仍保留') }
           finally { if (id === checkSequence.current && !abort.signal.aborted) { checkPending.current = false; setChecking(false) } }
         }
-        const locate = reference => location(reference, api.current.onLocate, reason => setError(reason.message || '原文定位失败'))
+        const locate = reference => location(reference, (value, isCurrent) => {
+          setSourceError('')
+          return api.current.onLocate?.(value, isCurrent)
+        }, reason => setSourceError(reason.message || '原文定位失败'))
         const field = (label, value, onChange, maxLength = 1000) => h('label', { className: 'kg-chain-field' }, h('span', null, label),
           h('textarea', { 'aria-label': label, value, maxLength, rows: 2, onChange: event => onChange(event.target.value) }))
         const stepEditor = (detail, index) => {
@@ -6047,6 +6053,7 @@ export default function clientPlugin() {
               h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页第 2 步模型'))) : null,
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
+          sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: !peerId, onClick: exportDraft }, '导出推测草稿')),

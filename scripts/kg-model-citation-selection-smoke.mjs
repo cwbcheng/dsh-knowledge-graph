@@ -235,6 +235,79 @@ try {
   current = isolatedComparison.owner; oldCitation.props.onClick(); await isolatedComparison.settle()
   assert(text(isolatedComparison.owner.tree).includes('当前比较模型读取失败'), 'An obsolete source action cannot erase an independent model-read failure')
   assert.deepEqual(isolatedNav.loads, []); assert.deepEqual(isolatedNav.nodes, []); assert.deepEqual(isolatedNav.changes, [])
+  // Two-step source retries preserve personal drafts and independent check
+  // errors; they still use the real receiver and canonical node-window route.
+  const chainRetryNav = navigation(), retryChain = await open('ConnectionModelChain', chainRetryNav)
+  await retryChain.fill('具体情境', '白天、同一次行程；只是我的预测，未核验')
+  await retryChain.fill('第 1 步适用条件与边界依据', '不能外推到夜间；保留原文条件')
+  await retryChain.fill('第 2 步应用过程', '我的第二步推测仍须核对')
+  const retryKey = 'dsh-kg-model-chain:' + JSON.stringify([fixture.documentId, 'taxi'])
+  const retryDraft = retryChain.owner.storage.get(retryKey)
+  await clickCitation(retryChain); chainRetryNav.pending[0].failure = '两步原文首次读取失败'
+  chainRetryNav.pending[0].resolve(); await chainRetryNav.completed[0]; await retryChain.settle()
+  assert(text(retryChain.owner.tree).includes('两步原文首次读取失败'))
+  await clickCitation(retryChain)
+  assert(!text(retryChain.owner.tree).includes('两步原文首次读取失败'), 'An admitted chain retry clears its own prior source failure')
+  assert.deepEqual(chainRetryNav.nodes, [], 'Source retry waits for the actual canonical response')
+  assert.equal(retryChain.owner.storage.get(retryKey), retryDraft)
+  chainRetryNav.pending[1].resolve(); await chainRetryNav.completed[1]; await retryChain.settle()
+  assert(!text(retryChain.owner.tree).includes('两步原文首次读取失败'))
+  assert.deepEqual(chainRetryNav.nodes, ['taxi-peer']); assert.deepEqual(chainRetryNav.paragraphs, [1])
+  assert.deepEqual(chainRetryNav.references[1], chainRetryNav.references[0])
+  assert.equal(chainRetryNav.references[1].quote, fixture.sourceUnits[1].text)
+  assert.equal(retryChain.owner.storage.get(retryKey), retryDraft, 'Full source identity and evidence do not mutate a personal draft')
+  const checkNav = navigation(), checkChain = await open('ConnectionModelChain', checkNav)
+  checkChain.props.load = args => args.chainDraft ? Promise.resolve({ error: { message: '当前推测检查失败' } }) : Promise.resolve(contract.connectionModels(fixture, args))
+  await checkChain.settle()
+  await checkChain.click('检查推测缺口'); assert(text(checkChain.owner.tree).includes('当前推测检查失败'))
+  await clickCitation(checkChain); checkNav.pending[0].failure = '当前两步原文读取失败'
+  checkNav.pending[0].resolve(); await checkNav.completed[0]; await checkChain.settle()
+  assert(text(checkChain.owner.tree).includes('当前推测检查失败'), 'A source failure cannot overwrite a check failure')
+  assert(text(checkChain.owner.tree).includes('当前两步原文读取失败'))
+  await clickCitation(checkChain)
+  assert(text(checkChain.owner.tree).includes('当前推测检查失败'), 'Source retry clears only its own error')
+  assert(!text(checkChain.owner.tree).includes('当前两步原文读取失败'))
+  checkNav.pending[1].resolve(); await checkNav.completed[1]; await checkChain.settle()
+  assert(text(checkChain.owner.tree).includes('当前推测检查失败'), 'Source success is not successful draft checking')
+  const sourceNav = navigation(), sourceChain = await open('ConnectionModelChain', sourceNav)
+  await clickCitation(sourceChain); sourceNav.pending[0].failure = '尚未恢复的两步来源错误'
+  sourceNav.pending[0].resolve(); await sourceNav.completed[0]; await sourceChain.settle()
+  await sourceChain.click('检查推测缺口')
+  assert(text(sourceChain.owner.tree).includes('尚未恢复的两步来源错误'), 'Draft checking does not erase an unresolved source error')
+  const orderedChainNav = navigation(), orderedChain = await open('ConnectionModelChain', orderedChainNav)
+  await clickCitation(orderedChain); await clickCitation(orderedChain)
+  orderedChainNav.pending[1].failure = '最新两步引文读取失败'
+  orderedChainNav.pending[1].resolve(); await orderedChainNav.completed[1]; await orderedChain.settle()
+  orderedChainNav.pending[0].resolve(); await orderedChainNav.completed[0]; await orderedChain.settle()
+  assert(text(orderedChain.owner.tree).includes('最新两步引文读取失败'), 'An older successful source load cannot clear a newer failure')
+  assert.deepEqual(orderedChainNav.nodes, []); assert.deepEqual(orderedChainNav.changes, [])
+  for (const transition of ['selection', 'inactive', 'reload', 'first-branch', 'second-branch', 'branch-back-to-same']) {
+    const nav = navigation(), chain = await open('ConnectionModelChain', nav)
+    await clickCitation(chain); nav.pending[0].failure = '上一两步来源范围的错误'
+    nav.pending[0].resolve(); await nav.completed[0]; await chain.settle()
+    assert(text(chain.owner.tree).includes('上一两步来源范围的错误'))
+    if (transition === 'selection') await chain.click('taxi-third · ', true)
+    else if (transition === 'inactive') { chain.props.active = false; await chain.settle(); chain.props.active = true; await chain.settle() }
+    else if (transition === 'reload') await chain.click('↻')
+    else { const label = transition === 'first-branch' ? '第 1 步分支' : '第 2 步分支'; await chain.fill(label, 'base'); if (transition === 'branch-back-to-same') await chain.fill(label, '') }
+    assert(!text(chain.owner.tree).includes('上一两步来源范围的错误'), 'Completed source errors belong only to the current two-step selection')
+    assert(text(chain.owner.tree).includes(fixture.sourceUnits[1].text))
+  }
+  const callbackNav = navigation(), callbackChain = await open('ConnectionModelChain', callbackNav)
+  const oldChainCitation = all(callbackChain.owner.tree, item => item.type === 'button' && text(item) === '原文 P8')[0]
+  await callbackChain.fill('第 1 步分支', 'base')
+  await clickCitation(callbackChain); callbackNav.pending[0].failure = '当前分支引文读取失败'
+  callbackNav.pending[0].resolve(); await callbackNav.completed[0]; await callbackChain.settle()
+  current = callbackChain.owner; oldChainCitation.props.onClick(); await callbackChain.settle()
+  assert(text(callbackChain.owner.tree).includes('当前分支引文读取失败'), 'An obsolete source callback cannot erase a current source error')
+  assert.equal(callbackNav.loads.length, 1); assert.deepEqual(callbackNav.changes, [])
+  const pairNav = navigation(), pairChain = await open('ConnectionModelChain', pairNav)
+  const oldPairCitation = all(pairChain.owner.tree, item => item.type === 'button' && text(item) === '原文 P8')[0]
+  pairChain.props.load = args => args.compareModelId ? Promise.resolve({ error: { message: '当前两步模型读取失败' } }) : Promise.resolve(contract.connectionModels(fixture, args))
+  await pairChain.click('↻'); assert(text(pairChain.owner.tree).includes('当前两步模型读取失败'))
+  current = pairChain.owner; oldPairCitation.props.onClick(); await pairChain.settle()
+  assert(text(pairChain.owner.tree).includes('当前两步模型读取失败'))
+  assert.deepEqual(pairNav.loads, []); assert.deepEqual(pairNav.changes, [])
   // Declining the existing replacement confirmation keeps the selection,
   // both steps and scenario; accepting clears only step two and cancels it.
   const chainNav = navigation(), chain = await open('ConnectionModelChain', chainNav)
@@ -264,6 +337,7 @@ try {
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   console.log(JSON.stringify({ ok: true, cancelledCases, newerClickWins: true, currentFailuresVisible: true, comparisonSourceRetry: true, comparisonErrorOwnership: true,
+    chainSourceRetry: true, chainErrorOwnership: true, chainPersonalDraftPreserved: true,
     productionComponents: true, productionWorkbenchReceiver: true, actualNodeWindowRoute: true,
     originalIdentityAndFullQuote: true, lateFailuresQuiet: true, readOnly: true }))
 } finally { for (const owner of owners) for (const state of owner.slots) state.cleanup?.(); harness.stop() }
