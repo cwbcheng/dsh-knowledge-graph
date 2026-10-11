@@ -308,6 +308,72 @@ try {
   current = pairChain.owner; oldPairCitation.props.onClick(); await pairChain.settle()
   assert(text(pairChain.owner.tree).includes('当前两步模型读取失败'))
   assert.deepEqual(pairNav.loads, []); assert.deepEqual(pairNav.changes, [])
+  // Personal draft edits cannot recover a missing model pair. Keep the read
+  // failure separate from validation, export and obsolete checking results.
+  const readChain = await open('ConnectionModelChain', navigation())
+  await readChain.fill('具体情境', '白天、同一次行程；只是我的预测，未核验')
+  await readChain.fill('推测目标', '核对条件后推测，不表示已经成立')
+  await readChain.fill('第 1 步适用条件与边界依据', '不能外推到夜间；保留原文条件')
+  await readChain.fill('第 2 步应用过程', '我的第二步推测仍须核对')
+  const readKey = 'dsh-kg-model-chain:' + JSON.stringify([fixture.documentId, 'taxi'])
+  const readBefore = JSON.parse(readChain.owner.storage.get(readKey))
+  readChain.props.load = args => Promise.resolve(args.compareModelId
+    ? { error: { message: '尚未恢复的两步模型读取错误' } } : contract.connectionModels(fixture, args))
+  await readChain.click('↻')
+  assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  const checkingDisabled = ui => all(ui.owner.tree, item => item.type === 'button' && text(item) === '检查推测缺口')[0].props.disabled
+  assert(checkingDisabled(readChain)); assert(!text(readChain.owner.tree).includes('第 2 步 · taxi-peer'))
+  for (const [label, value] of [['具体情境', '白天、同一次行程；补充个人文字，未核验'], ['推测目标', '我的推测目标仍须核对']]) {
+    await readChain.fill(label, value)
+    assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'), 'Personal text is not recovery of the model read')
+    assert(checkingDisabled(readChain))
+    const after = JSON.parse(readChain.owner.storage.get(readKey))
+    assert.deepEqual(after.draft.steps, readBefore.draft.steps); assert.equal(after.peerId, readBefore.peerId); assert.equal(after.revision, readBefore.revision)
+  }
+  const edited = readChain.owner.storage.get(readKey)
+  await readChain.fill('具体情境', 'x'.repeat(2100))
+  assert(text(readChain.owner.tree).includes('本次输入未覆盖原草稿'))
+  assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'), 'Validation failure cannot overwrite a model-read failure')
+  assert.equal(readChain.owner.storage.get(readKey), edited)
+  await readChain.fill('具体情境', '合法补充，但模型仍未读取')
+  assert(!text(readChain.owner.tree).includes('本次输入未覆盖原草稿')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  await readChain.click('导出推测草稿')
+  assert(text(readChain.owner.tree).includes('页面文字仍保留')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  await readChain.fill('推测目标', '导出未恢复模型；继续保留自己的目标')
+  assert(!text(readChain.owner.tree).includes('页面文字仍保留')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  const recovery = deferred(), recoveryDraft = readChain.owner.storage.get(readKey)
+  readChain.props.load = args => args.compareModelId ? recovery.promise : Promise.resolve(contract.connectionModels(fixture, args))
+  await readChain.click('↻')
+  assert(!text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'), 'An admitted model reload clears its own previous error')
+  assert(text(readChain.owner.tree).includes('正在读取两步模型')); assert(checkingDisabled(readChain)); assert.equal(readChain.owner.storage.get(readKey), recoveryDraft)
+  recovery.resolve(contract.connectionModels(fixture, { documentId: fixture.documentId, expectedRevision: 1, modelId: 'taxi', compareModelId: 'taxi-peer' }))
+  await readChain.settle(); assert(!checkingDisabled(readChain)); assert(text(readChain.owner.tree).includes('第 2 步 · taxi-peer'))
+  assert.equal(readChain.owner.storage.get(readKey), recoveryDraft, 'Recovery does not overwrite conditions, evidence or personal steps')
+  readChain.props.load = args => Promise.resolve(args.chainDraft ? { error: { message: '当前检查失败，须随文字编辑失效' } } : contract.connectionModels(fixture, args))
+  await readChain.settle(); await readChain.click('检查推测缺口'); assert(text(readChain.owner.tree).includes('当前检查失败，须随文字编辑失效'))
+  await readChain.fill('具体情境', '新文字使旧检查失效，不能当作验证成功')
+  assert(!text(readChain.owner.tree).includes('当前检查失败，须随文字编辑失效')); assert(!checkingDisabled(readChain))
+  let chainPairRaceCases = 0
+  for (const transition of ['reload', 'selection', 'back-to-same', 'inactive', 'revision']) for (const failure of [false, true]) {
+    const ui = await open('ConnectionModelChain', navigation()), pending = deferred(); let first = true
+    ui.props.load = args => {
+      if (!args.compareModelId) return Promise.resolve(contract.connectionModels(fixture, args))
+      if (first) { first = false; return pending.promise }
+      return Promise.resolve({ error: { message: '当前选择的模型读取失败' } })
+    }
+    await ui.click('↻')
+    if (transition === 'reload') await ui.click('↻')
+    else if (transition === 'selection' || transition === 'back-to-same') { await ui.click('taxi-third · ', true); if (transition === 'back-to-same') await ui.click('taxi-peer · ', true) }
+    else if (transition === 'inactive') { ui.props.active = false; await ui.settle(); assert(!text(ui.owner.tree).includes('当前选择的模型读取失败')); ui.props.active = true; await ui.settle() }
+    else { ui.props.revision = 2; await ui.settle() }
+    assert(text(ui.owner.tree).includes('当前选择的模型读取失败'))
+    pending.resolve(failure ? { error: { message: '过期模型读取失败' } }
+      : contract.connectionModels(fixture, { documentId: fixture.documentId, expectedRevision: 1, modelId: 'taxi', compareModelId: 'taxi-peer' }))
+    await ui.settle()
+    assert(text(ui.owner.tree).includes('当前选择的模型读取失败'), 'An obsolete success or failure cannot clear or replace the current pair-read error')
+    assert(!text(ui.owner.tree).includes('过期模型读取失败')); assert(checkingDisabled(ui)); assert(!text(ui.owner.tree).includes('第 2 步 · taxi-peer'))
+    chainPairRaceCases++
+  }
   // Declining the existing replacement confirmation keeps the selection,
   // both steps and scenario; accepting clears only step two and cancels it.
   const chainNav = navigation(), chain = await open('ConnectionModelChain', chainNav)
@@ -338,6 +404,7 @@ try {
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   console.log(JSON.stringify({ ok: true, cancelledCases, newerClickWins: true, currentFailuresVisible: true, comparisonSourceRetry: true, comparisonErrorOwnership: true,
     chainSourceRetry: true, chainErrorOwnership: true, chainPersonalDraftPreserved: true,
+    chainPairReadErrorOwnership: true, chainPairDraftPreserved: true, chainPairRaceCases,
     productionComponents: true, productionWorkbenchReceiver: true, actualNodeWindowRoute: true,
     originalIdentityAndFullQuote: true, lateFailuresQuiet: true, readOnly: true }))
 } finally { for (const owner of owners) for (const state of owner.slots) state.cleanup?.(); harness.stop() }
