@@ -4528,7 +4528,7 @@ function createHostPlugin(graphContractOnly) {
           const add = (id, relation, via) => {
             const node = nodes.get(id)
             if (!node || id === model.id) return
-            if (!related.has(id)) related.set(id, { ...reference(node), links: [] })
+            if (!related.has(id)) related.set(id, { node, links: [] })
             related.get(id).links.push({ relation, label: relationLabels.get(relation) || relation, via })
           }
           for (const { edge } of direct) {
@@ -4542,7 +4542,6 @@ function createHostPlugin(graphContractOnly) {
               }
             }
           }
-          const allRelated = [...related.values()]
           const legacyPorts = legacyPortsOf(model)
           const diagnosis = MODEL_STRUCTURE_TOOLS.diagnose(specification, { ports: legacyPorts,
             names: Object.fromEntries(ports.map(port => [port.node.nodeId, nodes.get(port.node.nodeId)?.text || port.node.text])), invalid: structureErrors.get(model.id),
@@ -4553,9 +4552,12 @@ function createHostPlugin(graphContractOnly) {
               items: diagnosis.items.slice(diagnosisOffset, diagnosisOffset + 20) } }
           }
           const offset = Number.isSafeInteger(materialOffset) && materialOffset >= 0 ? materialOffset : 0
-          const page = allRelated.slice(offset, offset + 20)
+          const allRelated = [...related.values()]
+          // Source selection still needs context from every related node.
+          const selectedRelated = options.structureSources === true ? allRelated : allRelated.slice(offset, offset + 20)
+          const page = selectedRelated.map(({ node, links }) => ({ ...reference(node), links }))
           const contexts = new Map()
-          for (const item of [reference(model), ...ports.map(port => port.node), ...(options.structureSources === true ? allRelated : page)]) {
+          for (const item of [reference(model), ...ports.map(port => port.node), ...page]) {
             const anchors = new Set(item.citations.map(citation => citation.paragraph))
             if (Number.isInteger(item.paragraph)) anchors.add(item.paragraph)
             for (const p of anchors) {
