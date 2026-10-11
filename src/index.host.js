@@ -4381,6 +4381,13 @@ function createHostPlugin(graphContractOnly) {
         const unitMap = new Map(Array.isArray(document.sourceUnits) && document.sourceUnits.length
           ? document.sourceUnits.map(unit => [unit.paragraph, unit.text])
           : splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+        // Reuse only known source identities in a selected-model request.
+        const sourceProvenanceCache = options.modelId && options.concepts !== true ? new Map() : null
+        const modelSourceProvenance = paragraph => {
+          if (!sourceProvenanceCache || !Number.isInteger(paragraph) || !unitMap.has(paragraph)) return provenanceForParagraphHost(graph, paragraph)
+          if (!sourceProvenanceCache.has(paragraph)) sourceProvenanceCache.set(paragraph, provenanceForParagraphHost(graph, paragraph))
+          return sourceProvenanceCache.get(paragraph)
+        }
         let sourceContextIndex = null
         const addSourceContext = (contexts, paragraph) => {
           if (!unitMap.has(paragraph)) return
@@ -4402,7 +4409,7 @@ function createHostPlugin(graphContractOnly) {
           const seen = new Set()
           return records.filter(record => {
             const { paragraph, quote } = record || {}
-            const provenance = provenanceForParagraphHost(graph, paragraph)
+            const provenance = modelSourceProvenance(paragraph)
             const key = paragraph + ':' + quote
             if (!Number.isInteger(paragraph) || paragraph < 0 || typeof quote !== 'string' || !quote.trim()
               || record.documentId && record.documentId !== document.documentId
@@ -4429,7 +4436,7 @@ function createHostPlugin(graphContractOnly) {
           && node.paragraph >= section.startParagraph && node.paragraph <= section.endParagraph)
         const modelNodes = graph.nodes.filter(node => node.type === 'connection_model')
         const legacyCitations = item => citations(item).map(citation => {
-          const provenance = provenanceForParagraphHost(graph, citation.paragraph)
+          const provenance = modelSourceProvenance(citation.paragraph)
           return { ...citation, documentId: document.documentId, revision: document.revision,
             sourceId: citation.sourceId || provenance.sourceId, chunkId: provenance.chunkId }
         })
@@ -4577,7 +4584,7 @@ function createHostPlugin(graphContractOnly) {
             const units = [...contexts.values()].sort((a, b) => a.paragraph - b.paragraph)
             return { ...base, model: summarize(model), sourceUnits: { total: units.length, offset: sourceOffset,
               basis: 'stored_model_and_related_context_not_field_entailment',
-              items: units.slice(sourceOffset, sourceOffset + 12).map(unit => ({ ...unit, ...provenanceForParagraphHost(graph, unit.paragraph) })) } }
+              items: units.slice(sourceOffset, sourceOffset + 12).map(unit => ({ ...unit, ...modelSourceProvenance(unit.paragraph) })) } }
           }
           return { ...base, model: summarize(model), ports, related: page, relatedTotal: allRelated.length, offset,
             diagnosisSummary: { total: diagnosis.total, counts: diagnosis.counts, origins: diagnosis.origins },
