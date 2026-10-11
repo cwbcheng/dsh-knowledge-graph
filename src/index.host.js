@@ -4437,7 +4437,7 @@ function createHostPlugin(graphContractOnly) {
         const sectionOf = node => sections.find(section => Number.isInteger(node.paragraph)
           && node.paragraph >= section.startParagraph && node.paragraph <= section.endParagraph)
         const modelNodes = graph.nodes.filter(node => node.type === 'connection_model')
-        const legacyCitations = item => citations(item).map(citation => {
+        const legacyCitations = (item, validated = citations(item)) => validated.map(citation => {
           const provenance = modelSourceProvenance(citation.paragraph)
           return { ...citation, documentId: document.documentId, revision: document.revision,
             sourceId: citation.sourceId || provenance.sourceId, chunkId: provenance.chunkId }
@@ -4451,8 +4451,9 @@ function createHostPlugin(graphContractOnly) {
             const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
             const valid = edge.fromNodeId === node.id && target?.type === 'concept' && edge.state !== 'rejected' && target.state !== 'rejected'
             const edgeKey = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
+            const targetReference = target ? reference(target) : null
             return { edgeIndex: index, edgeKey,
-              node: target ? { ...reference(target), citations: legacyCitations(target) } : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
+              node: target ? { ...targetReference, citations: legacyCitations(target, targetReference.citations) } : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
               role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
               storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: legacyCitations(edge) }
           })
