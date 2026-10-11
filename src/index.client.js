@@ -2427,8 +2427,11 @@ export default function clientPlugin() {
           const missing = []
           for (const role of ['input', 'output']) {
             const bindings = example[role === 'input' ? 'inputs' : 'outputs']
+            // Wide validated bindings are read once; small or sparse roles retain direct reads.
+            const populated = index && index.slots[role].length > 8 && bindings.length > 8 ? new Set() : null
+            if (populated) for (const binding of bindings) if (binding.value.trim()) populated.add(binding.slotId)
             for (const slot of index ? index.slots[role] : structure.slots.filter(item => item.role === role)) {
-              if (!bindings.some(binding => binding.slotId === slot.id && binding.value.trim())) missing.push(slot.id)
+              if (populated ? !populated.has(slot.id) : !bindings.some(binding => binding.slotId === slot.id && binding.value.trim())) missing.push(slot.id)
             }
           }
           return { missing, complete: !!branch?.mapping.text.trim() && (index ? index.slots.input.length > 0 : structure.slots.some(slot => slot.role === 'input'))
