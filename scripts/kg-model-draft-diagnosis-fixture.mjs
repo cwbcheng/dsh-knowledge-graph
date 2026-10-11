@@ -7,7 +7,7 @@ export const draftDiagnosisJson = value => JSON.parse(JSON.stringify(value))
 
 // Exercise the generated editor and real Host reads. Observers and manual
 // debounce timers are test controls; neither is included in benchmark timings.
-export function draftDiagnosisView(source, harness, { observe, transform } = {}) {
+export function draftDiagnosisView(source, harness, { observe, transform, console: runtimeConsole = console } = {}) {
   const owner = { states: [], effects: [] }, updates = [], cache = new Map(), timers = new Map()
   let cursor = 0, tree, focused = null, timerId = 0
   const slot = init => { const index = cursor++; return owner.states[index] ||= init() }
@@ -17,7 +17,7 @@ export function draftDiagnosisView(source, harness, { observe, transform } = {})
     useRef(initial) { return slot(() => ({ current: initial })) },
     useEffect(fn, deps) { const state = slot(() => ({})); if (!state.deps || deps.some((value, index) => !Object.is(value, state.deps[index]))) { owner.effects.push(() => { state.cleanup?.(); state.cleanup = fn() }); state.deps = deps } },
   }
-  const context = { window: { React, confirm: () => true }, console, AbortController,
+  const context = { window: { React, confirm: () => true }, console: runtimeConsole, AbortController,
     sessionStorage: { getItem: key => cache.get(key) || null, setItem: (key, value) => cache.set(key, value), removeItem: key => cache.delete(key) },
     setTimeout: fn => { timers.set(++timerId, fn); return timerId }, clearTimeout: id => timers.delete(id),
     __observeDraft: (spec, ports, names, report) => { observe({ spec, ports, names, report }); return report } }
