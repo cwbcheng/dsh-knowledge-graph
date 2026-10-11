@@ -3074,7 +3074,7 @@ export default function clientPlugin() {
             mergeEndpointNames(result.items.map(item => [item.nodeId, item.text]))
           }).catch(reason => { if (!abort.signal.aborted && id === conceptSequence.current) setError(reason.message || '概念目录读取失败') })
           return () => { abort.abort(); conceptSequence.current++ }
-        }, [documentId, revision, active, section, search, offset, reload])
+        }, [documentId, revision, modelId, active, section, search, offset, reload])
         useEffect(() => {
           if (active && focusRequest && focusRequest !== lastFocusRequest.current && focusRequest.documentId === documentId && focusRequest.modelId === modelId && focusRequest.revision === revision) {
             lastFocusRequest.current = focusRequest; setRequestedFocus(focusRequest)
@@ -3198,7 +3198,8 @@ export default function clientPlugin() {
             h('div', { className: 'kg-model-toolbar', role: 'group', 'aria-label': '结构编辑区域' }, [['slots', '变量槽位'], ['branches', '条件分支'], ['examples', '成对实例']].map(([id, label]) =>
               h('button', { key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': section === id, onClick: () => setSection(id) }, label + ' (' + spec[id].length + ')'))),
             section === 'slots' ? h('div', null,
-              spec.slots.map(slot => h('fieldset', { key: slot.id }, h('legend', null, slot.label || endpointNames[slot.conceptId] || slot.conceptId),
+              spec.slots.map(slot => h('fieldset', { key: slot.id }, h('legend', null, slot.label ||
+                (Object.hasOwn(endpointNames, slot.conceptId) ? endpointNames[slot.conceptId] : '') || slot.conceptId),
                 h('div', { className: 'kg-model-toolbar' }, h('span', { className: 'kg-model-meta' }, slot.conceptId + ' · ' + slot.id), deleteButton('slots', slot.id, '删除槽位 ' + slot.id)),
                 h('div', { className: 'kg-model-structure-grid' }, text('槽位名称', slot.label, value => edit(next => { next.slots.find(item => item.id === slot.id).label = value }), 200, false, slot.id),
                   h('label', null, '角色', h('select', { 'aria-label': '槽位角色 ' + slot.id, value: slot.role, disabled: saving, onChange: event => {

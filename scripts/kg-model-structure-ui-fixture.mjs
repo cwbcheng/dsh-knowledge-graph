@@ -24,6 +24,12 @@ const fixture = nameReuse ? modelNameReuseFixture() : process.argv.includes('--d
   legacyGaps: process.argv.includes('--gap-citations'), gapPages: process.argv.includes('--gap-citation-pages'), documentId: citationDocumentId }) : process.argv.includes('--source-table')
   ? modelSourceTableFixture({ dense: process.argv.includes('--dense'), gap: process.argv.includes('--gap'), peer: process.argv.includes('--peer') })
   : process.argv.includes('--source-context') ? modelSourceContextFixture() : modelStructureFixture()
+if (process.argv.includes('--literal-concepts')) {
+  const template = fixture.graph.nodes.find(node => node.id === 'distance')
+  for (const id of ['__proto__', 'constructor', 'spaced/id:opaque identity']) {
+    if (!fixture.graph.nodes.some(node => node.id === id)) fixture.graph.nodes.push({ ...structuredClone(template), id, text: '同名目录概念' })
+  }
+}
 if (process.argv.includes('--diagnostics')) {
   fixture.sourceUnits[0].text += ' 此处结果往往成立，但不保证必然成立。'
   fixture.sourceText = fixture.sourceUnits.map(unit => unit.text).join('\n\n')
