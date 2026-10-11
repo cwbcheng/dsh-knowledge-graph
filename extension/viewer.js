@@ -1813,7 +1813,7 @@
         const [sourceTarget, setSourceTarget] = useState(null), [requestedFocus, setRequestedFocus] = useState(null), [gapOffset, setGapOffset] = useState(0)
         const [gapLocationError, setGapLocationError] = useState(''), gapContext = useRef(null)
         const root = useRef(null), sourceSession = useRef(0), sourceGuard = useRef('')
-        const completedFocus = useRef(null), lastFocusRequest = useRef(null)
+        const completedFocus = useRef(null), lastFocusRequest = useRef(null), draftDiagnosis = useRef(null)
         const sequence = useRef(0), conceptSequence = useRef(0), operation = useRef(0), lock = useRef(false), api = useRef({}), scope = useRef('')
         scope.current = JSON.stringify([documentId, modelId, revision])
         sourceGuard.current = active && sourceTarget ? JSON.stringify([scope.current, sourceTarget]) : ''
@@ -1973,7 +1973,15 @@
         if (!active) return null
         const spec = draft?.spec, example = spec?.examples.find(item => item.id === selectedExample) || spec?.examples[0]
         const updateExample = change => edit(next => change(next.examples.find(item => item.id === example.id)))
-        const gaps = spec ? MODEL_STRUCTURE_TOOLS.diagnose(spec, { ports: legacyPorts, names: endpointNames }) : null
+        // Edits replace the specification; reads replace ports/names. Unrelated
+        // navigation and search renders can reuse this one scoped draft report.
+        if (!spec) draftDiagnosis.current = null
+        else if (!draftDiagnosis.current || draftDiagnosis.current.spec !== spec || draftDiagnosis.current.ports !== legacyPorts ||
+          draftDiagnosis.current.names !== endpointNames || draftDiagnosis.current.scope !== scope.current) {
+          const report = MODEL_STRUCTURE_TOOLS.diagnose(spec, { ports: legacyPorts, names: endpointNames })
+          draftDiagnosis.current = { spec, ports: legacyPorts, names: endpointNames, scope: scope.current, report }
+        }
+        const gaps = draftDiagnosis.current?.report || null
         const visibleGapOffset = gaps ? Math.min(gapOffset, Math.max(0, Math.floor((gaps.total - 1) / 20) * 20)) : 0
         return h('section', { ref: root, className: 'kg-model-structure', 'aria-label': '整理模型结构' },
           h('h4', null, '整理输入、输出、条件和实例'),
