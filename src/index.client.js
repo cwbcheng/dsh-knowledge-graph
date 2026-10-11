@@ -3061,13 +3061,22 @@ export default function clientPlugin() {
         useEffect(() => {
           if (active && focusRequest?.documentId === documentId && focusRequest.modelId === modelId && focusRequest.revision === revision) setRequestedFocus(focusRequest)
         }, [active, documentId, revision, modelId, focusRequest])
+        const focusScopeMatches = requestedFocus && (requestedFocus.documentId === undefined || requestedFocus.documentId === documentId) &&
+          (requestedFocus.modelId === undefined || requestedFocus.modelId === modelId) && (requestedFocus.revision === undefined || requestedFocus.revision === revision)
+        const focusItems = ['slots', 'branches', 'examples'].includes(requestedFocus?.section) ? draft?.spec[requestedFocus.section] : null
+        const missingFocusTarget = requestedFocus?.id && focusItems && !focusItems.some(item => item.id === requestedFocus.id)
+        const canFocus = active && !loading && !!draft && draft.revision === revision && !!focusScopeMatches && !missingFocusTarget
+        const focusTargetName = { slots: '槽位', branches: '分支', examples: '实例' }[requestedFocus?.section]
+        const focusTargetError = focusScopeMatches && !loading && draft?.revision === revision && missingFocusTarget
+          ? '该' + focusTargetName + '不在当前草稿中；草稿已保留，请选择要核对的' + focusTargetName + '。' : ''
         useEffect(() => {
-          if (!active || !draft || !requestedFocus) return
+          if (!canFocus) return
           if (requestedFocus.section !== 'identity') setSection(requestedFocus.section)
           if (requestedFocus.section === 'examples' && requestedFocus.id) setSelectedExample(requestedFocus.id)
-        }, [active, !!draft, requestedFocus])
+        }, [canFocus, requestedFocus])
         useEffect(() => {
-          if (!active || loading || !draft || !requestedFocus || requestedFocus.section !== 'identity' && requestedFocus.section !== section) return
+          if (!canFocus || requestedFocus.section !== 'identity' && requestedFocus.section !== section ||
+            requestedFocus.section === 'examples' && requestedFocus.id && requestedFocus.id !== selectedExample) return
           const labels = { role: '槽位角色', state: '时间或对象状态', condition: '适用条件', mapping: '完整映射规律', boundary: '边界与未定义情形',
             scenario: '具体情境', branchId: '实例适用分支', reasoning: '推测过程' }
           let label = requestedFocus.section === 'identity' ? '模型内容性质' : labels[requestedFocus.field]
@@ -3084,7 +3093,7 @@ export default function clientPlugin() {
             (['inputs', 'outputs'].includes(requestedFocus.field) ? elements.find(item => item.getAttribute('aria-label') === '补齐' + (requestedFocus.field === 'inputs' ? '输入' : '输出') + '槽位') : null)
           const details = element?.closest('details'); if (details) details.open = true
           element?.focus?.()
-        }, [active, loading, !!draft, requestedFocus, section, selectedExample])
+        }, [canFocus, requestedFocus, section, selectedExample])
         const edit = change => {
           if (lock.current || saving || !draft) return
           const next = { ...draft, spec: JSON.parse(JSON.stringify(draft.spec)) }
@@ -3140,6 +3149,7 @@ export default function clientPlugin() {
           h('h4', null, '整理输入、输出、条件和实例'),
           h('p', { className: 'kg-model-meta' }, '草稿不等于原文断言；确认保存会修改正式模型结构，不会自动生成图谱关系。'),
           error ? h('p', { role: 'alert' }, error) : null, notice ? h('p', { role: 'status' }, notice) : null,
+          focusTargetError ? h('p', { role: 'alert' }, focusTargetError) : null,
           loading ? h('p', { role: 'status' }, '正在读取模型结构…') : null,
           draft?.revision !== revision && draft ? h('p', { role: 'alert' }, '草稿基于第 ' + draft.revision + ' 版，当前为第 ' + revision + ' 版；草稿保留，不能覆盖新图。') : null,
           spec ? h(React.Fragment, null,
