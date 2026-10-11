@@ -4444,20 +4444,20 @@ function createHostPlugin(graphContractOnly) {
         })
         // Cache selected model reads only; full catalogues must not retain every endpoint projection.
         const legacyPortCache = options.modelId ? new Map() : null, portCache = options.modelId ? new Map() : null
-        const legacyPortsOf = node => {
-          if (legacyPortCache?.has(node)) return legacyPortCache.get(node)
+        const legacyPortsOf = (node, withCitations = true) => {
+          if (withCitations && legacyPortCache?.has(node)) return legacyPortCache.get(node)
           const ports = (incident.get(node.id) || []).filter(({ edge }) => edge.relation === 'maps_between')
           .map(({ edge, index }) => {
             const target = nodes.get(edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId)
             const valid = edge.fromNodeId === node.id && target?.type === 'concept' && edge.state !== 'rejected' && target.state !== 'rejected'
             const edgeKey = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
-            const targetReference = target ? reference(target) : null
+            const targetReference = target ? withCitations ? reference(target) : { nodeId: target.id, text: String(target.text || '') } : null
             return { edgeIndex: index, edgeKey,
-              node: target ? { ...targetReference, citations: legacyCitations(target, targetReference.citations) } : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
+              node: target ? { ...targetReference, citations: withCitations ? legacyCitations(target, targetReference.citations) : [] } : { nodeId: edge.toNodeId, text: '端点已缺失', type: 'missing', citations: [] },
               role: valid && ['input', 'output'].includes(edge.role) ? edge.role : 'unknown',
-              storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: legacyCitations(edge) }
+              storedRole: edge.role || '', editable: valid && identities.get(edgeKey) === 1, citations: withCitations ? legacyCitations(edge) : [] }
           })
-          legacyPortCache?.set(node, ports)
+          if (withCitations) legacyPortCache?.set(node, ports)
           return ports
         }
         const structures = new Map(), structureErrors = new Map()
@@ -4469,15 +4469,15 @@ function createHostPlugin(graphContractOnly) {
           }
           return structures.get(node.id)
         }
-        const portsOf = node => {
-          if (portCache?.has(node)) return portCache.get(node)
+        const portsOf = (node, withCitations = true) => {
+          if (withCitations && portCache?.has(node)) return portCache.get(node)
           const structure = structureOf(node)
           const ports = structure ? structure.slots.map(slot => ({ slotId: slot.id, edgeIndex: 'slot:' + slot.id,
             edgeKey: '', source: 'structured', editable: false, role: slot.role, storedRole: slot.role,
             unit: slot.unit, timeState: slot.state, provenance: slot.provenance,
-            node: { ...reference(nodes.get(slot.conceptId)), text: slot.label || nodes.get(slot.conceptId).text },
-            citations: citations(slot.provenance) })) : legacyPortsOf(node)
-          portCache?.set(node, ports)
+            node: { ...(withCitations ? reference(nodes.get(slot.conceptId)) : { nodeId: slot.conceptId }), text: slot.label || nodes.get(slot.conceptId).text },
+            citations: withCitations ? citations(slot.provenance) : [] })) : legacyPortsOf(node, withCitations)
+          if (withCitations) portCache?.set(node, ports)
           return ports
         }
         const identityLabels = { assertion: '原文断言身份待核对', hypothesis: '假设', wrong_example: '错误示例', type_definition: '类型说明', undetermined: '内容身份尚未判定' }
@@ -4660,11 +4660,16 @@ function createHostPlugin(graphContractOnly) {
         const fieldMatches = new Map()
         const matches = summaries.filter(model => {
           if (model.nodeId === options.excludeModelId) return false
-          if (peerPorts && (model.nodeId === peer.id || !portsOf(nodes.get(model.nodeId)).some(port => usablePort(port) && peerPorts.has(port.node.nodeId)))) return false
-          if (chainOutputs && (model.nodeId === chainFrom.id || !portsOf(nodes.get(model.nodeId)).some(port => usablePort(port) && port.role === 'input' && chainOutputs.has(port.node.nodeId)))) return false
+          const node = nodes.get(model.nodeId)
+          let selectorPorts
+          // Summaries already validate every model; selectors need identities, roles and text only.
+          // A duplicate ID may resolve to a non-model not covered by those summaries.
+          const selectPorts = () => selectorPorts ??= portsOf(node, node.type !== 'connection_model')
+          if (peerPorts && (model.nodeId === peer.id || !selectPorts().some(port => usablePort(port) && peerPorts.has(port.node.nodeId)))) return false
+          if (chainOutputs && (model.nodeId === chainFrom.id || !selectPorts().some(port => usablePort(port) && port.role === 'input' && chainOutputs.has(port.node.nodeId)))) return false
           if (options.sectionId && model.sectionId !== options.sectionId) return false
           if (options.needsReview && !model.warnings.length) return false
-          if (options.conceptId && !portsOf(nodes.get(model.nodeId)).some(port => port.node.nodeId === options.conceptId
+          if (options.conceptId && !selectPorts().some(port => port.node.nodeId === options.conceptId
             && (!options.role || port.role === options.role))) return false
           if (!query) return true
           const structure = structureOf(nodes.get(model.nodeId))
@@ -4672,7 +4677,7 @@ function createHostPlugin(graphContractOnly) {
           if (matched) fieldMatches.set(model.nodeId, matched.fieldMatches)
           return !!matched || normalize([model.nodeId, model.text, model.sectionTitle,
             ...model.inputs.map(node => node.text), ...model.outputs.map(node => node.text),
-            ...portsOf(nodes.get(model.nodeId)).map(port => port.node.text)].join(' ')).includes(query)
+            ...selectPorts().map(port => port.node.text)].join(' ')).includes(query)
         }).sort((a, b) => (a.paragraph ?? Infinity) - (b.paragraph ?? Infinity) || a.nodeId.localeCompare(b.nodeId))
         const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
         const topics = new Map()
