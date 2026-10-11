@@ -5689,6 +5689,7 @@ export default function clientPlugin() {
         const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [sharedOnly, setSharedOnly] = useState(true)
         const [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null), [peerId, setPeerId] = useState(''), [loadedPair, setPair] = useState(null)
         const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [error, setError] = useState(''), [pairError, setPairError] = useState('')
+        const [sourceError, setSourceError] = useState('')
         const [reload, setReload] = useState(0)
         const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
@@ -5696,7 +5697,9 @@ export default function clientPlugin() {
           && loadedPair.right?.model?.nodeId === peerId ? loadedPair : null
         const api = useRef({ load, onLocate, onOpen, onChallenge }), catalogSequence = useRef(0), pairSequence = useRef(0)
         api.current = { load, onLocate, onOpen, onChallenge }
-        const location = useConnectionModelLocation(JSON.stringify([documentId, revision, modelId, peerId, reload]), active)
+        const locationScope = JSON.stringify([documentId, revision, modelId, peerId, reload])
+        const location = useConnectionModelLocation(locationScope, active)
+        useEffect(() => { setSourceError('') }, [locationScope, active])
         useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
         useEffect(() => { setPeerId(''); setOffset(0); setQuery(''); setSearch('') }, [documentId, modelId])
         useEffect(() => {
@@ -5725,7 +5728,10 @@ export default function clientPlugin() {
             .finally(() => { if (id === pairSequence.current && !abort.signal.aborted) setComparing(false) })
           return () => { abort.abort(); pairSequence.current++ }
         }, [documentId, revision, modelId, peerId, active, reload])
-        const locate = reference => location(reference, api.current.onLocate, reason => setPairError(reason.message || '原文定位失败'))
+        const locate = reference => location(reference, (value, isCurrent) => {
+          setSourceError('')
+          return api.current.onLocate?.(value, isCurrent)
+        }, reason => setSourceError(reason.message || '原文定位失败'))
         const roleLabels = { input: '输入', output: '输出', unknown: '待核对' }
         const citations = item => item.citations.length ? item.citations.map((citation, index) => h('div', { key: index, className: 'kg-model-evidence' },
           h('button', { type: 'button', className: 'kg-secondary', onClick: () => locate({ ...citation, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) }, '原文 P' + (citation.paragraph + 1)), h('p', null, citation.quote))) :
@@ -5762,6 +5768,7 @@ export default function clientPlugin() {
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页比较模型'),
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页比较模型'))) : null,
           pairError ? h('p', { role: 'alert' }, pairError) : null,
+          sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           comparing ? h('p', { role: 'status' }, '正在对照两个模型…') : null,
           pair ? h('div', null,
             h('div', { className: 'kg-model-compare-grid' }, [pair.left, pair.right].map((detail, index) => h('div', { key: detail.model.nodeId },
