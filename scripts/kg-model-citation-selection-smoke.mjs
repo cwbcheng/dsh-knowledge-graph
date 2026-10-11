@@ -374,6 +374,78 @@ try {
     assert(!text(ui.owner.tree).includes('过期模型读取失败')); assert(checkingDisabled(ui)); assert(!text(ui.owner.tree).includes('第 2 步 · taxi-peer'))
     chainPairRaceCases++
   }
+  // A completed personal export recovers only its own failure. Preserve
+  // unrelated errors, the cached draft and the qualified checked envelope.
+  const downloadEnvironment = ['Blob', 'URL', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(environment, key)])
+  let exportErrorCases = 0, rejectExport = false
+  const exportBlobs = [], exportDownloads = []
+  environment.Blob = Blob
+  environment.URL = { createObjectURL: blob => {
+    if (rejectExport) throw new Error('受控草稿导出失败')
+    exportBlobs.push(blob); return 'fixture:personal-draft'
+  }, revokeObjectURL() {} }
+  environment.document = { createElement: () => ({ style: {}, click() { exportDownloads.push('model-chain-draft.json') }, remove() {} }), body: { appendChild() {} } }
+  try {
+    for (const kind of ['none', 'check', 'validation', 'pair', 'source']) {
+      const nav = navigation(), ui = await open('ConnectionModelChain', nav)
+      await ui.fill('具体情境', '白天、同一次行程；只是个人预测，未核验')
+      await ui.fill('第 1 步适用条件与边界依据', '不能外推到夜间；保留原文条件')
+      await ui.fill('第 2 步应用过程', '第二步个人推测仍须核对')
+      const cached = ui.owner.storage.get(readKey), original = JSON.parse(cached), count = exportDownloads.length
+      if (kind === 'check') {
+        ui.props.load = args => Promise.resolve(args.chainDraft ? { error: { message: '尚未恢复的推测检查错误' } } : contract.connectionModels(fixture, args))
+        await ui.settle()
+        await ui.click('检查推测缺口')
+      } else if (kind === 'validation') await ui.fill('具体情境', 'x'.repeat(2100))
+      else if (kind === 'pair') {
+        ui.props.load = args => Promise.resolve(args.compareModelId ? { error: { message: '尚未恢复的模型读取错误' } } : contract.connectionModels(fixture, args))
+        await ui.click('↻'); assert(checkingDisabled(ui))
+      } else if (kind === 'source') {
+        await clickCitation(ui); nav.pending[0].failure = '尚未恢复的原文定位错误'; nav.pending[0].resolve(); await nav.completed[0]; await ui.settle()
+      }
+      const independent = all(ui.owner.tree, item => item.props.role === 'alert').map(text)
+      assert.equal(independent.length, kind === 'none' ? 0 : 1, kind + ' has its own operation error before export')
+      rejectExport = true
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await ui.click('导出推测草稿'); assert(text(ui.owner.tree).includes('受控草稿导出失败，页面文字仍保留'))
+        for (const message of independent) assert(text(ui.owner.tree).includes(message), 'Export failure cannot replace another error')
+        assert.equal(exportDownloads.length, count); assert.equal(ui.owner.storage.get(readKey), cached)
+      }
+      rejectExport = false; await ui.click('导出推测草稿')
+      assert.equal(exportDownloads.length, count + 1); assert(!text(ui.owner.tree).includes('受控草稿导出失败'), 'A completed export clears its own previous failure')
+      for (const message of independent) assert(text(ui.owner.tree).includes(message), 'A completed export does not recover another operation')
+      const exported = JSON.parse(await exportBlobs.at(-1).text())
+      assert.equal(exported.documentId, fixture.documentId); assert.equal(exported.revision, original.revision)
+      assert.deepEqual(exported.modelIds, original.draft.steps.map(step => step.modelId)); assert.deepEqual(exported.draft, original.draft)
+      assert.equal(ui.owner.storage.get(readKey), cached)
+      if (kind === 'pair') assert(checkingDisabled(ui))
+      // A browser without a download API remains a failed export; an actual
+      // retry succeeds without modifying the independent error or draft.
+      environment.URL.createObjectURL = null; await ui.click('导出推测草稿')
+      assert(text(ui.owner.tree).includes('当前浏览器无法导出草稿')); assert.equal(exportDownloads.length, count + 1)
+      environment.URL.createObjectURL = blob => { exportBlobs.push(blob); return 'fixture:personal-draft' }
+      await ui.click('导出推测草稿'); assert.equal(exportDownloads.length, count + 2)
+      assert(!text(ui.owner.tree).includes('当前浏览器无法导出草稿'))
+      for (const message of independent) assert(text(ui.owner.tree).includes(message))
+      assert.equal(ui.owner.storage.get(readKey), cached)
+      environment.URL.createObjectURL = blob => { if (rejectExport) throw new Error('受控草稿导出失败'); exportBlobs.push(blob); return 'fixture:personal-draft' }
+      rejectExport = true; await ui.click('导出推测草稿'); await ui.fill('推测目标', '新草稿使旧导出操作失效，仍不是验证成功')
+      assert(!text(ui.owner.tree).includes('受控草稿导出失败'))
+      if (kind === 'pair' || kind === 'source') for (const message of independent) assert(text(ui.owner.tree).includes(message))
+      exportErrorCases++
+    }
+    const ui = await open('ConnectionModelChain', navigation()); let checkedEnvelope
+    ui.props.load = args => { const value = contract.connectionModels(fixture, args); if (args.chainDraft) checkedEnvelope = value.chain; return Promise.resolve(value) }
+    await ui.settle()
+    await ui.click('检查推测缺口'); assert(checkedEnvelope)
+    rejectExport = true; await ui.click('导出推测草稿'); rejectExport = false; await ui.click('导出推测草稿')
+    const exported = JSON.parse(await exportBlobs.at(-1).text())
+    assert.deepEqual(exported, JSON.parse(JSON.stringify(checkedEnvelope))); assert.equal(exported.persisted, false)
+    assert.equal(exported.basis, 'recorded_fields_and_learner_reports_not_semantic_validity')
+    assert(!text(ui.owner.tree).includes('受控草稿导出失败')); exportErrorCases++
+  } finally {
+    for (const [key, descriptor] of downloadEnvironment) { if (descriptor) Object.defineProperty(environment, key, descriptor); else delete environment[key] }
+  }
   // Declining the existing replacement confirmation keeps the selection,
   // both steps and scenario; accepting clears only step two and cancels it.
   const chainNav = navigation(), chain = await open('ConnectionModelChain', chainNav)
@@ -405,6 +477,7 @@ try {
   console.log(JSON.stringify({ ok: true, cancelledCases, newerClickWins: true, currentFailuresVisible: true, comparisonSourceRetry: true, comparisonErrorOwnership: true,
     chainSourceRetry: true, chainErrorOwnership: true, chainPersonalDraftPreserved: true,
     chainPairReadErrorOwnership: true, chainPairDraftPreserved: true, chainPairRaceCases,
+    chainExportErrorOwnership: true, chainExportDraftPreserved: true, exportErrorCases,
     productionComponents: true, productionWorkbenchReceiver: true, actualNodeWindowRoute: true,
     originalIdentityAndFullQuote: true, lateFailuresQuiet: true, readOnly: true }))
 } finally { for (const owner of owners) for (const state of owner.slots) state.cleanup?.(); harness.stop() }
