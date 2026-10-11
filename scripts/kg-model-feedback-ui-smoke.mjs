@@ -15,6 +15,7 @@ for (const attemptId of ['prediction', 'other-prediction']) await post({ ...base
 let owner = { slots: [], effects: [] }, cursor = 0, tree
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = []
 let paused = false, loseSave = true, legacy = false, forged = false, confirm = true
+let diagnosisTransform = null
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -43,6 +44,7 @@ const props = { ...base, revision: 1, prediction: store.getLearningAttempt('pred
       const result = await post(args)
       if (legacy) delete result.modelFeedbackVersion
       if (forged && args.action === 'results' && result.attempts[0]) result.attempts[0].task.predictionSnapshot.model.nodeId = 'wrong-model'
+      diagnosisTransform?.(result, args)
       if (args.action === 'save-result' && loseSave) { loseSave = false; throw new Error('Lost result acknowledgement') }
       return result
     }
@@ -221,6 +223,92 @@ try {
   unmountedWrite.forEach(item => item.resolve()); await settle()
   assert.equal(JSON.parse(storage.get(draftKey())).attemptId, newerId, 'unmounted receipt must not clear a newer sessionStorage draft')
   paused = false
+  // Stored feedback must carry a known diagnosis before it can be opened or used as a correction basis.
+  const originalPrediction = props.prediction, originalDraft = storage.get(draftKey()), diagnosisRequestsStart = requests.length
+  const diagnosisLabels = { input: '输入判别需核对', mapping: '映射或推理需核对', condition: '条件漏判或边界需核对', calculation: '计算需核对',
+    output: '输出判别需核对', evidence: '依据不足', no_change: '暂未发现需修改之处', unsure: '仍无法判断' }
+  const sourceTypes = ['observation', 'reference', 'derivation', 'ai_suggestion', 'reflection']
+  for (const [index, diagnosis] of Object.keys(diagnosisLabels).entries()) {
+    const result = await post({ ...base, action: 'save-result', predictionId: 'other-prediction', expectedRevision: 1, expectedVersion: 1,
+      attemptId: 'diagnosis-' + diagnosis, response: { ...feedbackResponse(sourceTypes[index % sourceTypes.length]), diagnosis } })
+    assert(!result.error); assert.equal(result.attempt.response.diagnosis, diagnosis)
+  }
+  const diagnosisRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
+  props.prediction = store.getLearningAttempt('other-prediction'); render(); await settle()
+  const storedDiagnoses = store.listModelFeedback(document.documentId, 'taxi', 'other-prediction').attempts
+  let diagnosisFault = null
+  diagnosisTransform = (result, args) => {
+    if (!diagnosisFault || args.action !== diagnosisFault.action ||
+        args.action === 'results' && args.predictionId !== 'other-prediction' ||
+        diagnosisFault.attemptId && args.attemptId !== diagnosisFault.attemptId) return
+    const item = args.action === 'results' ? result.attempts[0] : result.attempt
+    assert(item)
+    if (diagnosisFault.value === undefined) delete item.response.diagnosis
+    else item.response.diagnosis = diagnosisFault.value
+  }
+  const invalidDiagnoses = [['missing', undefined], ['null', null], ['empty', ''], ['unknown', 'wrong-diagnosis'], ['boundary', 'boundary'],
+    ['prototype-function', 'toString'], ['prototype-constructor', 'constructor'], ['prototype-object', '__proto__'], ['number', 7], ['boolean', true],
+    ['object', {}], ['array', []], ['coercible-array', ['unsure']]]
+  for (const [name, value] of invalidDiagnoses) {
+    diagnosisFault = { action: 'results', value }; remount(); await settle()
+    assert(all(tree, el => el.props.role === 'alert').length, 'reject incomplete or invalid stored diagnosis: ' + name)
+    assert(text(tree).includes('请重新读取验证结果')); assert(text(tree).includes('草稿保留'))
+    assert(!text(tree).includes('自述诊断：undefined'))
+    assert(button('保存结果记录').props.disabled)
+    assert(!all(tree, el => el.type === 'button' && text(el) === '追加结果更正').length)
+    diagnosisFault = null; click('重新读取验证结果'); await settle()
+    assert(!all(tree, el => el.props.role === 'alert').length); assert(!button('追加结果更正').props.disabled)
+  }
+  for (const [diagnosis, label] of Object.entries(diagnosisLabels)) {
+    const record = storedDiagnoses.find(item => item.response.diagnosis === diagnosis)
+    const entry = all(tree, el => el.type === 'button' && el.props.key === record.attemptId)[0]
+    assert(entry && !entry.props.disabled); entry.props.onClick(); render()
+    assert(text(tree).includes('自述诊断：' + label)); assert(text(tree).includes(record.response.context)); assert(text(tree).includes(record.response.rationale))
+    assert(text(tree).includes('未独立核验'))
+  }
+  click('追加结果更正'); fill('结果更正理由', '条件和来源仍须核对；保留原记录。')
+  const correctionDraft = storage.get(draftKey()), correctionParent = JSON.parse(correctionDraft).response.parentResultId
+  for (const [name, value] of invalidDiagnoses) {
+    diagnosisFault = { action: 'results', value }; click('重新读取验证结果'); await settle()
+    assert(all(tree, el => el.props.role === 'alert').length, name); assert(button('保存结果记录').props.disabled)
+    assert.equal(storage.get(draftKey()), correctionDraft, 'malformed reread preserves the entire correction draft: ' + name)
+    diagnosisFault = null; click('重新读取验证结果'); await settle()
+    assert(!all(tree, el => el.props.role === 'alert').length); assert.equal(storage.get(draftKey()), correctionDraft)
+    assert(!button('保存结果记录').props.disabled)
+  }
+  diagnosisFault = { action: 'get', attemptId: correctionParent, value: undefined }
+  click('重新读取验证结果'); await settle()
+  assert(text(tree).includes('更正基准的身份不一致')); assert(button('保存结果记录').props.disabled)
+  assert.equal(storage.get(draftKey()), correctionDraft)
+  diagnosisFault = null; click('重新读取验证结果'); await settle(); assert.equal(storage.get(draftKey()), correctionDraft)
+  click('放弃结果草稿')
+  diagnosisFault = { action: 'get', attemptId: 'diagnosis-input', value: undefined }
+  props.focusRequest = { resultId: 'diagnosis-input', nonce: 'invalid-diagnosis-focus' }; render(); await settle()
+  assert(text(tree).includes('所选结果的预测身份或更正链不一致')); assert(button('追加结果更正').props.disabled)
+  assert(text(tree).includes('自述诊断：仍无法判断'), 'failed focus retains only the previously accepted record')
+  diagnosisFault = null; click('重新读取验证结果'); await settle()
+  assert(text(tree).includes('自述诊断：输入判别需核对')); assert(!button('追加结果更正').props.disabled)
+  delete props.focusRequest
+  const savedCondition = storedDiagnoses.find(item => item.attemptId === 'diagnosis-condition')
+  const pendingDiagnosis = { attemptId: savedCondition.attemptId, expectedVersion: 1, expectedRevision: 1, started: true,
+    submitted: true, sourceMode: 'external', response: savedCondition.response }
+  storage.set(draftKey(), JSON.stringify(pendingDiagnosis))
+  diagnosisFault = { action: 'get', attemptId: savedCondition.attemptId, value: undefined }; remount(); await settle()
+  assert(text(tree).includes('此前保存的结果与草稿身份或内容不一致'))
+  assert.equal(storage.get(draftKey()), JSON.stringify(pendingDiagnosis), 'an invalid receipt cannot clear the submitted draft')
+  diagnosisFault = null; click('重新读取验证结果'); await settle()
+  assert(text(tree).includes('已确认此前保存的结果；未重复写入。')); assert(!storage.has(draftKey()))
+  assert(text(tree).includes('自述诊断：条件漏判或边界需核对'))
+  paused = true; diagnosisFault = { action: 'results', value: undefined }
+  click('重新读取验证结果'); const lateDiagnosisReads = deferred.splice(0)
+  props.prediction = originalPrediction; render(); const currentDiagnosisReads = deferred.splice(0)
+  currentDiagnosisReads.forEach(item => item.resolve()); await settle()
+  lateDiagnosisReads.forEach(item => item.resolve()); await settle()
+  assert(!all(tree, el => el.props.role === 'alert').length, 'late malformed reads cannot affect another prediction')
+  assert.equal(storage.get(draftKey()), originalDraft, 'another prediction retains its exact private draft')
+  paused = false; diagnosisFault = null; diagnosisTransform = null
+  assert(requests.slice(diagnosisRequestsStart).every(item => ['results', 'get'].includes(item.args.action)), 'diagnosis reads and recovery never save or reveal')
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all(), diagnosisRows)
   assert.deepEqual(store.getDocument(document.documentId).nodes, before.nodes)
   assert.deepEqual(store.getDocument(document.documentId).edges, before.edges)
   assert.deepEqual(store.getDocumentSourceUnits(document.documentId), unitsBefore)
@@ -239,6 +327,7 @@ try {
   rootLegacy = false; click('重新读取模型'); await settle()
   assert.equal(learningPanel().props.feedbackSupported, true)
   console.log(JSON.stringify({ ok: true, generatedComponentProductionRoutes: true, lostResponseAndRemount: true, pendingEditsProtected: true,
+    feedbackDiagnosisAdmission: { invalidValues: 13, validDiagnoses: 8, completeDraftPreserved: true, focusedParentAndReceiptGuarded: true, lateScopeReadIgnored: true },
     correctionConflictDraftPreserved: true, oldPredictionVersionExplicit: true, oldCitationBlocked: true, scopeAndUnmountRaces: true, mixedHostBlocked: true,
     undatedObservationSourceConsent: true, sourceSwitchDraftAndConditionsPreserved: true, emptySourceNoPrompt: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }

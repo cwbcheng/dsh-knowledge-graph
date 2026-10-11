@@ -6487,6 +6487,7 @@ export default function clientPlugin() {
           item.task.origin === 'learner_reported_feedback_not_verification' && typeof item.task.rootResultId === 'string' &&
           item.task.predictionSnapshot?.attemptId === prediction.attemptId && item.task.predictionSnapshot.model?.nodeId === modelId &&
           MODEL_FEEDBACK_TYPES[item.response?.type] && MODEL_FEEDBACK_COMPARISONS[item.response?.comparison] &&
+          typeof item.response.diagnosis === 'string' && Object.hasOwn(diagnoses, item.response.diagnosis) &&
           Object.entries(limits).every(([key, limit]) => typeof item.response[key] === 'string' && item.response[key].length <= limit)
         const sameResponse = (actual, expected) => Object.keys(expected).every(key => key === 'reference' ?
           expected[key] === null ? actual[key] === null : actual[key]?.nodeId === expected[key].nodeId && actual[key].paragraph === expected[key].paragraph && actual[key].quote === expected[key].quote.trim() :
@@ -6517,7 +6518,7 @@ export default function clientPlugin() {
             if (result?.error) throw new Error(result.error.message)
             if (result?.modelFeedbackVersion !== 1) throw new Error('结果记录版本尚未就绪；当前服务不支持保存。')
             if (result.predictionId !== prediction.attemptId || !Number.isSafeInteger(result.total) || result.total < 0 ||
-                !Array.isArray(result.attempts) || result.attempts.some(item => !matches(item))) throw new Error('结果记录与当前预测身份不一致')
+                !Array.isArray(result.attempts) || result.attempts.some(item => !matches(item))) throw new Error('结果记录的预测身份不一致或诊断无效；请重新读取验证结果，草稿保留。')
             if (confirmed?.error && confirmed.error.code !== 'not_found') throw new Error(confirmed.error.message)
             if (confirmed?.attempt && !receipt(confirmed.attempt, cached)) throw new Error('此前保存的结果与草稿身份或内容不一致')
             if (focused?.error) throw new Error(focused.error.message)
