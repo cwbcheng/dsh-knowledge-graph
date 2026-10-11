@@ -4359,6 +4359,9 @@ function createHostPlugin(graphContractOnly) {
         if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision !== document.revision) {
           return { error: { code: 'revision_conflict', message: '知识图版本已变化，请重新载入联结模型', currentRevision: document.revision } }
         }
+        if (options.compareModelId && (options.diagnosis === true || options.structureSources === true || options.concepts === true)) {
+          return fail('invalid_input', '模型比较不能同时查询诊断、来源或概念，请选择一种查询')
+        }
         const graph = document.graph
         const profile = ontProfile(graph)
         const typeLabels = new Map(profile.nodeTypes.map(type => [type.id, type.zh]))
