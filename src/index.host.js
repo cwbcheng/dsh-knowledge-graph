@@ -4801,7 +4801,9 @@ function createHostPlugin(graphContractOnly) {
         if (!graph || !Array.isArray(graph.nodes)) return null
         if (options.modelId) {
           if (options.exercise && !['prediction', 'counterexample', 'understanding'].includes(options.exercise)) return { error: { code: 'invalid_input', message: '模型练习类型无效' } }
-          const detail = connectionModelsHost(document, options)
+          // Learning needs a full model detail; catalogue/diagnosis/comparison
+          // options must not replace or filter its ports, branches and evidence.
+          const detail = connectionModelsHost(document, { modelId: options.modelId, expectedRevision: options.expectedRevision })
           if (detail?.error) return detail
           const { model, ports, related, relatedTotal } = detail
           const references = [model, ...ports.map(port => port.node), ...related]

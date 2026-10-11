@@ -637,6 +637,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 
 ### 关键设计
 
+- **联结模型学习计划查询隔离**：学习任务只按所选 `modelId` 与 `expectedRevision` 读取完整模型，不让目录、诊断、来源或比较参数替换详情。临时 Host 与常驻 Host 保持相同学习计划、版本校验和引文展示边界。`node scripts/kg-model-learning-query-smoke.mjs` 通过真实临时 RPC、常驻 HTTP 及共享契约核对三类练习、已整理/旧端点/未知方向、完整条件与证据，并检查计划读取没有写入正式图或个人记录。
+
 - **联结模型比较查询校验**：`connection-models` 的双模型比较不可同时指定 `diagnosis: true`、`structureSources: true` 或 `concepts: true`，冲突请求返回 `invalid_input`，避免内部错误或悄悄返回另一类结果。分别查询仍可正常使用；比较的 `structureEdit`、条件、边界、完整引文、内容身份及原有文档/版本与推测草稿校验保持。`node scripts/kg-model-query-mode-smoke.mjs` 通过实际常驻 Host HTTP 核对 14 种冲突组合和独立查询，检查完整响应与源代码契约一致，以及正式图谱和学习记录未被写入。
 
 - **联结模型端点按次复用**：已选模型的详情、诊断、来源与双模型比较在同一次 canonical 读取内按明确节点身份复用端点投影，保留结构槽位和原有关系的区别，以及角色、条件、边界与完整证据；每次新查询重新读取，不跨版本缓存，目录全图查询不保留端点投影缓存。`node scripts/kg-model-port-reuse-benchmark.mjs 1fad21c` 在同一进程交替对照真实前后实现：40 个端点、每节点和关系 8 条引文，覆盖 64/512/4096 个来源块的 24 组完整响应、100 组异常或空端点响应，以及 128 模型目录的分页和筛选。512 块旧边详情的来源查找 6424 → 1624，结构模型 5947 → 2027；计时只含源代码契约计算，不含 SQLite、HTTP 或浏览器绘制。性能回归还检查独立请求、模型和版本、错误结构回退、原文身份与实际常驻 Host HTTP 的完整响应一致。
