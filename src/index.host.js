@@ -4581,10 +4581,13 @@ function createHostPlugin(graphContractOnly) {
               branchId: options.branchId || '', origin: 'reviewed_structure_not_verified_truth' }
           }
           const direct = incident.get(model.id) || []
-          const related = new Map()
+          // Diagnoses return no material links. Keep traversal and identity reads;
+          // accessor options retain their original evaluation order and collection.
+          const related = Object.getOwnPropertyDescriptor(options, 'diagnosis')?.value === true ? null : new Map()
           const add = (id, relation, via) => {
             const node = nodes.get(id)
             if (!node || id === model.id) return
+            if (!related) return
             if (!related.has(id)) related.set(id, { node, links: [] })
             related.get(id).links.push({ relation, label: relationLabels.get(relation) || relation, via })
           }
