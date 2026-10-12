@@ -4583,13 +4583,26 @@ function createHostPlugin(graphContractOnly) {
           const direct = incident.get(model.id) || []
           // Diagnoses return no material links. Keep traversal and identity reads;
           // accessor options retain their original evaluation order and collection.
-          const related = Object.getOwnPropertyDescriptor(options, 'diagnosis')?.value === true ? null : new Map()
+          const diagnosisOption = Object.getOwnPropertyDescriptor(options, 'diagnosis')
+          const related = diagnosisOption?.value === true ? null : new Map()
+          const offset = Number.isSafeInteger(materialOffset) && materialOffset >= 0 ? materialOffset : 0
+          const sourceOption = related && Object.getOwnPropertyDescriptor(options, 'structureSources')
+          // Count every distinct identity in encounter order, but allocate links
+          // only for the returned page. Source and accessor modes keep all links.
+          const pageLinksOnly = related
+            && (diagnosisOption ? 'value' in diagnosisOption : !('diagnosis' in options))
+            && (sourceOption ? 'value' in sourceOption && sourceOption.value !== true : !('structureSources' in options))
           const add = (id, relation, via) => {
             const node = nodes.get(id)
             if (!node || id === model.id) return
             if (!related) return
-            if (!related.has(id)) related.set(id, { node, links: [] })
-            related.get(id).links.push({ relation, label: relationLabels.get(relation) || relation, via })
+            let item = related.get(id)
+            if (!item) {
+              const position = related.size
+              item = { node, links: !pageLinksOnly || position >= offset && position < offset + 20 ? [] : null }
+              related.set(id, item)
+            }
+            if (item.links) item.links.push({ relation, label: relationLabels.get(relation) || relation, via })
           }
           for (const { edge } of direct) {
             const id = edge.fromNodeId === model.id ? edge.toNodeId : edge.fromNodeId
@@ -4611,7 +4624,6 @@ function createHostPlugin(graphContractOnly) {
             return { ...base, model: summarize(model), diagnosis: { ...diagnosis, offset: diagnosisOffset,
               items: diagnosis.items.slice(diagnosisOffset, diagnosisOffset + 20) } }
           }
-          const offset = Number.isSafeInteger(materialOffset) && materialOffset >= 0 ? materialOffset : 0
           const allRelated = [...related.values()]
           // Source selection still needs context from every related node.
           const selectedRelated = options.structureSources === true ? allRelated : allRelated.slice(offset, offset + 20)

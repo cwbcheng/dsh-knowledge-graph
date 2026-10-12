@@ -21,7 +21,7 @@ export function diagnosisRelatedWork(query, document, options, expected) {
   const nodes = new Set(document.graph.nodes), descriptor = Object.getOwnPropertyDescriptor(Map.prototype, 'set')
   let relatedEntries = 0
   Map.prototype.set = function (key, value) {
-    if (nodes.has(value?.node) && Array.isArray(value.links)) relatedEntries++
+    if (nodes.has(value?.node) && Object.hasOwn(value, 'links')) relatedEntries++
     return descriptor.value.call(this, key, value)
   }
   try { assert.deepEqual(query(document, options), expected) }
