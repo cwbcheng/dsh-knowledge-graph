@@ -4383,9 +4383,23 @@ function createHostPlugin(graphContractOnly) {
         const profile = ontProfile(graph)
         const typeLabels = new Map(profile.nodeTypes.map(type => [type.id, type.zh]))
         const normalize = value => String(value || '').normalize('NFKC').toLowerCase().trim()
-        const unitMap = new Map(Array.isArray(document.sourceUnits) && document.sourceUnits.length
+        const unitEntries = Array.isArray(document.sourceUnits) && document.sourceUnits.length
           ? document.sourceUnits.map(unit => [unit.paragraph, unit.text])
-          : splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text]))
+          : splitParagraphsHost(document.sourceText || '').map((text, paragraph) => [paragraph, text])
+        let conceptPage = null, conceptResult = null
+        if (options.concepts === true) {
+          // Keep source-entry reads and Map's sparse-entry error before filtering.
+          if (unitEntries.includes(undefined)) new Map(unitEntries)
+          const query = normalize(options.query).slice(0, 200)
+          const concepts = graph.nodes.filter(node => node.type === 'concept' && node.state !== 'rejected'
+            && (!query || normalize(node.id + ' ' + node.text).includes(query)))
+          const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
+          conceptPage = concepts.slice(offset, offset + 20)
+          conceptResult = { documentId: document.documentId, revision: document.revision, modelStructureVersion: 1, total: concepts.length, offset }
+          // An empty page has no quotations to resolve against a source index.
+          if (!conceptPage.length) return { ...conceptResult, items: [] }
+        }
+        const unitMap = new Map(unitEntries)
         // Reuse only known source identities in a selected-model request.
         const sourceProvenanceCache = options.modelId && options.concepts !== true ? new Map() : null
         const modelSourceProvenance = paragraph => {
@@ -4442,14 +4456,7 @@ function createHostPlugin(graphContractOnly) {
         const reference = (node, cacheSlot = false) => ({ nodeId: node.id, type: node.type, label: typeLabels.get(node.type) || node.type, text: String(node.text || ''),
           paragraph: Number.isInteger(node.paragraph) ? node.paragraph : null,
           state: node.state || 'candidate', entailmentStatus: node.entailmentStatus || 'unverified', citations: referenceCitations(node, cacheSlot) })
-        if (options.concepts === true) {
-          const query = normalize(options.query).slice(0, 200)
-          const concepts = graph.nodes.filter(node => node.type === 'concept' && node.state !== 'rejected'
-            && (!query || normalize(node.id + ' ' + node.text).includes(query)))
-          const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
-          return { documentId: document.documentId, revision: document.revision, modelStructureVersion: 1, total: concepts.length,
-            offset, items: concepts.slice(offset, offset + 20).map(reference) }
-        }
+        if (conceptResult) return { ...conceptResult, items: conceptPage.map(reference) }
         // Concept selection needs names and validated quotations, not model or
         // relation indexes. Prepare those only for the model queries below.
         const relationLabels = new Map(profile.relationTypes.map(relation => [relation.id, relation.zh]))
