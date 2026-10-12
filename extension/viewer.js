@@ -1813,7 +1813,7 @@
         const [sourceTarget, setSourceTarget] = useState(null), [requestedFocus, setRequestedFocus] = useState(null), [gapOffset, setGapOffset] = useState(0)
         const [gapLocationError, setGapLocationError] = useState(''), gapContext = useRef(null)
         const root = useRef(null), sourceSession = useRef(0), sourceGuard = useRef('')
-        const completedFocus = useRef(null), lastFocusRequest = useRef(null), draftDiagnosis = useRef(null), cachedDraft = useRef(null)
+        const completedFocus = useRef(null), lastFocusRequest = useRef(null), draftDiagnosis = useRef(null), cachedDraft = useRef(null), loadedStructureScope = useRef('')
         const sequence = useRef(0), conceptSequence = useRef(0), operation = useRef(0), lock = useRef(false), api = useRef({}), scope = useRef('')
         scope.current = JSON.stringify([documentId, modelId, revision])
         sourceGuard.current = active && sourceTarget ? JSON.stringify([scope.current, sourceTarget]) : ''
@@ -1849,6 +1849,7 @@
         useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
         useEffect(() => {
           const id = ++sequence.current, abort = new AbortController()
+          loadedStructureScope.current = ''
           setPreview(null); setError(''); setLoading(active); setSupported(false); setAssistSupported(false); setSourceTarget(null)
           if (!active) return () => abort.abort()
           api.current.load({ documentId, expectedRevision: revision, modelId, structureEdit: true }, abort.signal).then(result => {
@@ -1856,6 +1857,7 @@
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || result.model?.nodeId !== modelId) throw new Error('结构读取身份或版本不一致')
             if (result.modelStructureVersion !== 1 || !Array.isArray(result.legacyPorts)) throw new Error('当前服务尚未部署结构核对版本；草稿未改写，请等待同版本部署。')
+            loadedStructureScope.current = scope.current
             setSupported(true)
             setAssistSupported(result.modelDiagnosticsVersion === 1)
             setLegacyPorts(current => JSON.stringify(current) === JSON.stringify(result.legacyPorts) ? current : result.legacyPorts)
@@ -1899,6 +1901,29 @@
           }).catch(reason => { if (!abort.signal.aborted && id === conceptSequence.current) setError(reason.message || '概念目录读取失败') })
           return () => { abort.abort(); conceptSequence.current++ }
         }, [documentId, revision, modelId, active, section, search, offset, reload])
+        const draftConceptIds = JSON.stringify([...new Set(draft?.spec.slots.map(slot => slot.conceptId) || [])])
+        useEffect(() => {
+          const abort = new AbortController(), capturedScope = scope.current
+          if (!active || loading || !supported || draft?.revision !== revision || loadedStructureScope.current !== capturedScope) return () => abort.abort()
+          // A restored private slot may be outside both saved endpoints and the
+          // first catalogue page. Names remain a current read, never cache authority.
+          const ids = JSON.parse(draftConceptIds).filter(id => !Object.prototype.hasOwnProperty.call(endpointNames, id))
+          if (!ids.length) return () => abort.abort()
+          api.current.load({ documentId, expectedRevision: revision, modelId, conceptNames: ids }, abort.signal).then(result => {
+            if (abort.signal.aborted || scope.current !== capturedScope) return
+            if (result?.error) throw new Error(result.error.message)
+            if (result?.modelConceptNamesVersion !== 1) throw new Error('概念名称读取版本尚未部署；私有槽位暂用概念ID，草稿已保留。')
+            const seen = new Set()
+            if (result.documentId !== documentId || result.revision !== revision || result.modelId !== modelId
+              || JSON.stringify(result.conceptIds) !== JSON.stringify(ids) || !Array.isArray(result.items)
+              || result.items.some(item => {
+                if (typeof item?.nodeId !== 'string' || !ids.includes(item.nodeId) || seen.has(item.nodeId) || typeof item.text !== 'string') return true
+                seen.add(item.nodeId); return false
+              })) throw new Error('概念名称身份或版本不一致')
+            mergeEndpointNames(result.items.map(item => [item.nodeId, item.text]))
+          }).catch(reason => { if (!abort.signal.aborted && scope.current === capturedScope) setError(reason.message || '概念名称读取失败') })
+          return () => abort.abort()
+        }, [documentId, revision, modelId, active, loading, supported, draft?.revision, draftConceptIds, reload])
         useEffect(() => {
           if (active && focusRequest && focusRequest !== lastFocusRequest.current && focusRequest.documentId === documentId && focusRequest.modelId === modelId && focusRequest.revision === revision) {
             lastFocusRequest.current = focusRequest; setRequestedFocus(focusRequest)
