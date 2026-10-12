@@ -4372,7 +4372,11 @@ function createHostPlugin(graphContractOnly) {
           }
           // Private slots are not part of the saved model. Resolve their names
           // against this revision without paging, edge scans or source projection.
-          const nodes = new Map(graph.nodes.map(node => [node.id, node]))
+          const entries = graph.nodes.map(node => [node.id, node])
+          // Preserve all identity reads and Map's sparse-entry error before model validation.
+          if (entries.includes(undefined)) new Map(entries)
+          const wanted = new Set([options.modelId, ...ids])
+          const nodes = new Map(entries.filter(([id]) => wanted.has(id)))
           if (nodes.get(options.modelId)?.type !== 'connection_model') return fail('not_found', '找不到联结模型')
           return { documentId: document.documentId, revision: document.revision, modelId: options.modelId,
             modelConceptNamesVersion: 1, conceptIds: [...ids], items: ids.flatMap(id => {
