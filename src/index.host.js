@@ -4382,18 +4382,6 @@ function createHostPlugin(graphContractOnly) {
         }
         const profile = ontProfile(graph)
         const typeLabels = new Map(profile.nodeTypes.map(type => [type.id, type.zh]))
-        const relationLabels = new Map(profile.relationTypes.map(relation => [relation.id, relation.zh]))
-        const nodes = new Map(graph.nodes.map(node => [node.id, node]))
-        const edges = Array.isArray(graph.edges) ? graph.edges : []
-        const incident = new Map(), identities = new Map()
-        edges.forEach((edge, index) => {
-          const key = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
-          identities.set(key, (identities.get(key) || 0) + 1)
-          for (const id of new Set([edge.fromNodeId, edge.toNodeId])) {
-            if (!incident.has(id)) incident.set(id, [])
-            incident.get(id).push({ edge, index })
-          }
-        })
         const normalize = value => String(value || '').normalize('NFKC').toLowerCase().trim()
         const unitMap = new Map(Array.isArray(document.sourceUnits) && document.sourceUnits.length
           ? document.sourceUnits.map(unit => [unit.paragraph, unit.text])
@@ -4462,6 +4450,20 @@ function createHostPlugin(graphContractOnly) {
           return { documentId: document.documentId, revision: document.revision, modelStructureVersion: 1, total: concepts.length,
             offset, items: concepts.slice(offset, offset + 20).map(reference) }
         }
+        // Concept selection needs names and validated quotations, not model or
+        // relation indexes. Prepare those only for the model queries below.
+        const relationLabels = new Map(profile.relationTypes.map(relation => [relation.id, relation.zh]))
+        const nodes = new Map(graph.nodes.map(node => [node.id, node]))
+        const edges = Array.isArray(graph.edges) ? graph.edges : []
+        const incident = new Map(), identities = new Map()
+        edges.forEach((edge, index) => {
+          const key = edge.fromNodeId + '>' + edge.toNodeId + ':' + edge.relation
+          identities.set(key, (identities.get(key) || 0) + 1)
+          for (const id of new Set([edge.fromNodeId, edge.toNodeId])) {
+            if (!incident.has(id)) incident.set(id, [])
+            incident.get(id).push({ edge, index })
+          }
+        })
         const sections = Array.isArray(graph.source?.sections) ? graph.source.sections : []
         const sectionOf = node => sections.find(section => Number.isInteger(node.paragraph)
           && node.paragraph >= section.startParagraph && node.paragraph <= section.endParagraph)
