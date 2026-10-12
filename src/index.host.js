@@ -4351,7 +4351,7 @@ function createHostPlugin(graphContractOnly) {
       function connectionModelsHost(document, options = {}) {
         const fail = (code, message) => ({ error: { code, message } })
         if (options.chainDraft !== undefined) {
-          if (!options.modelId || !options.compareModelId || options.diagnosis || options.structureSources || options.concepts) return fail('invalid_chain_draft', '推测草稿必须绑定两个明确模型，不可混用其他查询')
+          if (!options.modelId || !options.compareModelId || options.diagnosis || options.structureSources || options.concepts || options.conceptNames !== undefined) return fail('invalid_chain_draft', '推测草稿必须绑定两个明确模型，不可混用其他查询')
           try { MODEL_CHAIN_TOOLS.validateDraft(options.chainDraft) }
           catch (error) { return fail(error.code || 'invalid_chain_draft', error.message) }
         }
@@ -4363,6 +4363,23 @@ function createHostPlugin(graphContractOnly) {
           return fail('invalid_input', '模型比较不能同时查询诊断、来源或概念，请选择一种查询')
         }
         const graph = document.graph
+        if (options.conceptNames !== undefined) {
+          const ids = options.conceptNames
+          if (!Array.isArray(ids) || ids.length > 40 || ids.some(id => typeof id !== 'string' || !id.trim() || id.length > 160)
+            || new Set(ids).size !== ids.length || options.compareModelId || options.diagnosis === true || options.structureSources === true
+            || options.concepts === true || options.structureEdit === true || options.query !== undefined || options.offset !== undefined) {
+            return fail('invalid_input', '概念名称读取必须使用最多40个独立字面ID，不可混用其他查询')
+          }
+          // Private slots are not part of the saved model. Resolve their names
+          // against this revision without paging, edge scans or source projection.
+          const nodes = new Map(graph.nodes.map(node => [node.id, node]))
+          if (nodes.get(options.modelId)?.type !== 'connection_model') return fail('not_found', '找不到联结模型')
+          return { documentId: document.documentId, revision: document.revision, modelId: options.modelId,
+            modelConceptNamesVersion: 1, conceptIds: [...ids], items: ids.flatMap(id => {
+              const node = nodes.get(id)
+              return node?.type === 'concept' && node.state !== 'rejected' ? [{ nodeId: id, text: String(node.text || '') }] : []
+            }) }
+        }
         const profile = ontProfile(graph)
         const typeLabels = new Map(profile.nodeTypes.map(type => [type.id, type.zh]))
         const relationLabels = new Map(profile.relationTypes.map(relation => [relation.id, relation.zh]))

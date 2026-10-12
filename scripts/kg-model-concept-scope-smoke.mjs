@@ -16,6 +16,12 @@ const pending = [], retainedDrafts = new Map()
 let delay = false, invalid = ''
 const view = draftDiagnosisView(generated, harness, { observe: value => calls.push(value),
   transform(args, result, signal) {
+    if (args.conceptNames) {
+      if (invalid === 'document') result.documentId = 'another-document'
+      if (invalid === 'version') result.revision = 2
+      if (invalid === 'unsupported') delete result.modelConceptNamesVersion
+      return result
+    }
     if (!args.concepts) return result
     reads.push(json(result))
     if (invalid === 'document') result.documentId = 'another-document'
@@ -46,9 +52,9 @@ const add = (conceptId, canonicalName) => {
 // A restored private slot can be absent from the model's saved endpoints.
 // While the real concept read waits, its legal ID must be rendered literally.
 async function cachedLiteralFallback() {
-  let late = null
+  const late = []
   const restored = draftDiagnosisView(generated, harness, { transform(args, result, signal) {
-    return args.concepts ? new Promise(resolve => { late = { signal, resolve: () => resolve(result) } }) : result
+    return args.concepts || args.conceptNames ? new Promise(resolve => { late.push({ signal, resolve: () => resolve(result) }) }) : result
   } })
   restored.props.modelId = 'unknown'
   const key = 'dsh-kg-model-structure:' + JSON.stringify([fixture.documentId, 'unknown'])
@@ -56,10 +62,10 @@ async function cachedLiteralFallback() {
     label: '', role: 'unknown', unit: '', state: '', provenance: { kind: 'unknown', paragraph: null, quote: '', note: '' } }], branches: [], examples: [] } }
   const raw = JSON.stringify(cached); restored.cache.set(key, raw)
   try {
-    restored.render(); await restored.settle(); assert(late && !late.signal.aborted)
+    restored.render(); await restored.settle(); assert(late.length && late.every(read => !read.signal.aborted))
     const fieldset = find(restored.tree, element => element.type === 'fieldset')[0]; assert(fieldset)
     assert.equal(fieldset.props.children[0].props.children[0], '__proto__', 'pending canonical names must render a literal ID, not its inherited prototype')
-    late.resolve(); await restored.settle(); await restored.flushDebounce()
+    late.forEach(read => read.resolve()); await restored.settle(); await restored.flushDebounce()
     assert.equal(find(restored.tree, element => element.type === 'fieldset')[0].props.children[0].props.children[0], '同名目录概念')
     assert.equal(restored.cache.get(key), raw); assert.deepEqual(json(restored.report()), tools.diagnose(cached.spec,
       { ports: (await harness.post({ documentId: fixture.documentId, expectedRevision: 1, modelId: 'unknown', structureEdit: true }, 'connection-models')).legacyPorts,
@@ -107,7 +113,7 @@ try {
     invalid = mode; await switchTo(mode === 'version' ? 'taxi' : 'unknown')
     assert(!text(view.field('选择槽位概念')).includes('同名目录概念'))
     assert.equal(Object.hasOwn(full().names, 'constructor'), false)
-    assert(text(view.tree).includes(mode === 'unsupported' ? '当前服务尚未部署结构核对版本' : '概念目录身份或版本不一致'))
+    assert(mode === 'unsupported' ? text(view.tree).includes('尚未部署') : /概念(?:目录|名称)身份或版本不一致/.test(text(view.tree)))
     assert.deepEqual(json(full().spec), retainedDrafts.get(view.props.modelId))
     invalid = ''; view.props.active = false; view.render(); await view.settle()
     view.props.active = true; view.render(); await view.settle(); await view.flushDebounce()
