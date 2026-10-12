@@ -18,7 +18,7 @@ for (const structured of [false, true]) for (const materials of [25, 4096]) {
   }
   const detail = query(document)
   assert.equal(detail.relatedTotal, materials + 5)
-  assert.equal(diagnosisRelatedWork(query, document, {}, detail).relatedEntries, materials + 5, 'Material pages still collect all distinct identities and links')
+  assert.equal(diagnosisRelatedWork(query, document, {}, detail).relatedEntries, materials + 5, 'Material pages still count all distinct identities')
   const source = query(document, { structureSources: true })
   assert.equal(diagnosisRelatedWork(query, document, { structureSources: true }, source).relatedEntries, materials + 5)
   assert.equal(source.sourceUnits.basis, 'stored_model_and_related_context_not_field_entailment')
