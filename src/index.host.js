@@ -4526,12 +4526,20 @@ function createHostPlugin(graphContractOnly) {
         const summarize = node => {
           const ports = portsOf(node)
           const structure = structureOf(node)
-          const inputs = ports.filter(port => port.role === 'input').map(port => port.node)
-          const outputs = ports.filter(port => port.role === 'output').map(port => port.node)
+          const inputs = [], outputs = []
+          let unknownRole = false
+          // Ports are query-owned projections. Read their explicit role once;
+          // retain order and separate references for slots sharing a concept.
+          for (const port of ports) {
+            const role = port.role
+            if (role === 'input') inputs.push(port.node)
+            else if (role === 'output') outputs.push(port.node)
+            else if (role === 'unknown') unknownRole = true
+          }
           const warnings = []
           if (!inputs.length) warnings.push('输入待核对')
           if (!outputs.length) warnings.push('输出待核对')
-          if (ports.some(port => port.role === 'unknown')) warnings.push('存在未定角色或异常端点')
+          if (unknownRole) warnings.push('存在未定角色或异常端点')
           if (structureErrors.has(node.id)) warnings.push('结构记录需重新核对：' + structureErrors.get(node.id))
           if (structure) {
             if (structure.identity !== 'assertion') warnings.push(identityLabels[structure.identity])
@@ -4550,7 +4558,7 @@ function createHostPlugin(graphContractOnly) {
           if (node.state === 'rejected' || node.entailmentStatus === 'unsupported') warnings.push('已有否决或不支持记录')
           const section = sectionOf(node)
           return { ...reference(node), inputs, outputs, warnings, portCount: ports.length,
-            structureComplete: inputs.length > 0 && outputs.length > 0 && ports.every(port => port.role !== 'unknown'),
+            structureComplete: inputs.length > 0 && outputs.length > 0 && !unknownRole,
             contentIdentity: structure?.identity || 'undetermined', hasStructure: !!structure,
             sectionId: section?.id || '', sectionTitle: section?.title || '未分章' }
         }
