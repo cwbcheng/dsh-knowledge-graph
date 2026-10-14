@@ -4602,9 +4602,11 @@ function createHostPlugin(graphContractOnly) {
               const position = related.size
               item = { node, links: !pageLinksOnly || position >= offset && position < offset + 20 ? [] : null }
               related.set(id, item)
-              if (relatedPage && item.links) relatedPage.push(item)
             }
-            if (item.links) item.links.push({ relation, label: relationLabels.get(relation) || relation, via })
+            if (item.links) {
+              if (relatedPage && !item.links.length) relatedPage.push(item)
+              item.links.push({ relation, label: relationLabels.get(relation) || relation, via })
+            }
           }
           for (const { edge } of direct) {
             const id = edge.fromNodeId === model.id ? edge.toNodeId : edge.fromNodeId
