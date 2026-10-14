@@ -4548,8 +4548,10 @@ function createHostPlugin(graphContractOnly) {
             const legacy = legacyPortsOf(node)
             if (legacy.some(port => port.role === 'unknown' || !port.editable)) warnings.push('原有图谱端点仍有未定角色或异常关系')
             const slotSignature = structure.slots.map(slot => slot.conceptId + ':' + slot.role).sort()
-            const edgeSignature = legacy.map(port => port.node.nodeId + ':' + port.role).sort()
-            if (JSON.stringify(slotSignature) !== JSON.stringify(edgeSignature)) warnings.push('结构槽位与原有图谱端点并不一一对应')
+            // Read every identity and role before comparing counts. Unequal
+            // lengths need no sort or JSON copy of the owned string arrays.
+            const edgeSignature = legacy.map(port => port.node.nodeId + ':' + port.role)
+            if (slotSignature.length !== edgeSignature.length || JSON.stringify(slotSignature) !== JSON.stringify(edgeSignature.sort())) warnings.push('结构槽位与原有图谱端点并不一一对应')
           }
           // These are textual cautions, never automatic truth classifications.
           if (/错误模型|错误知识|学偏/.test(node.text || '')) warnings.push('文本涉及错误示例')
