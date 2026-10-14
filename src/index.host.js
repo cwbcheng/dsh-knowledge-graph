@@ -4592,6 +4592,7 @@ function createHostPlugin(graphContractOnly) {
           const pageLinksOnly = related
             && (diagnosisOption ? 'value' in diagnosisOption : !('diagnosis' in options))
             && (sourceOption ? 'value' in sourceOption && sourceOption.value !== true : !('structureSources' in options))
+          const relatedPage = pageLinksOnly ? [] : null
           const add = (id, relation, via) => {
             const node = nodes.get(id)
             if (!node || id === model.id) return
@@ -4601,6 +4602,7 @@ function createHostPlugin(graphContractOnly) {
               const position = related.size
               item = { node, links: !pageLinksOnly || position >= offset && position < offset + 20 ? [] : null }
               related.set(id, item)
+              if (relatedPage && item.links) relatedPage.push(item)
             }
             if (item.links) item.links.push({ relation, label: relationLabels.get(relation) || relation, via })
           }
@@ -4624,9 +4626,10 @@ function createHostPlugin(graphContractOnly) {
             return { ...base, model: summarize(model), diagnosis: { ...diagnosis, offset: diagnosisOffset,
               items: diagnosis.items.slice(diagnosisOffset, diagnosisOffset + 20) } }
           }
-          const allRelated = [...related.values()]
-          // Source selection still needs context from every related node.
-          const selectedRelated = options.structureSources === true ? allRelated : allRelated.slice(offset, offset + 20)
+          // Ordinary pages already hold their entries in encounter order. Source
+          // and accessor modes retain the complete collection before mode reads.
+          const allRelated = pageLinksOnly ? null : [...related.values()]
+          const selectedRelated = options.structureSources === true ? allRelated || [...related.values()] : relatedPage || allRelated.slice(offset, offset + 20)
           const page = selectedRelated.map(({ node, links }) => ({ ...reference(node), links }))
           const contexts = new Map()
           for (const item of [reference(model), ...ports.map(port => port.node), ...page]) {
@@ -4651,7 +4654,7 @@ function createHostPlugin(graphContractOnly) {
               basis: 'stored_model_and_related_context_not_field_entailment',
               items: units.slice(sourceOffset, sourceOffset + 12).map(unit => ({ ...unit, ...modelSourceProvenance(unit.paragraph) })) } }
           }
-          return { ...base, model: summarize(model), ports, related: page, relatedTotal: allRelated.length, offset,
+          return { ...base, model: summarize(model), ports, related: page, relatedTotal: related.size, offset,
             diagnosisSummary: { total: diagnosis.total, counts: diagnosis.counts, origins: diagnosis.origins },
             structure, ...(specification || options.structureEdit === true ? { legacyPorts } : {}),
             ...(options.structureEdit === true ? { modelStructure: specification } : {}),
