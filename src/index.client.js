@@ -5803,36 +5803,38 @@ export default function clientPlugin() {
                 detail.modelChainVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '两步推测版本尚未就绪；当前服务不支持槽位承接检查，现有阅读与比较仍可使用。') : null,
                 detail.modelStructureVersion !== 1 ? h('p', { className: 'kg-model-warning', role: 'status' }, '结构核对版本尚未就绪：当前服务与前端版本不匹配。') : null,
                 detail.modelStructureVersion === 1 && detail.modelDiagnosticsVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '待补充内容与原文选取版本尚未就绪；现有阅读和手工核对仍可使用。') : null,
-                h(ModelGapPanel, { documentId, revision, modelId, active: tab === 'gaps', load, busy: busy || saving,
+                // Keep child state mounted, but suspend its reads and focus when
+                // another workbench view hides the entire model workspace.
+                h(ModelGapPanel, { documentId, revision, modelId, active: active && tab === 'gaps', load, busy: busy || saving,
                   onLocate: locateInDetail, onEdit: target => {
                     if (busy || saving) return
                     setStructureFocus({ ...target, documentId, revision, modelId }); setTab('structure')
                   } }),
-                h(ConnectionModelComparison, { documentId, revision, modelId, active: tab === 'compare', load,
+                h(ConnectionModelComparison, { documentId, revision, modelId, active: active && tab === 'compare', load,
                   onLocate: locate,
                   onOpen: id => select(id),
                   onChallenge: id => {
                     if (select(id, 'learn')) setExercise('counterexample')
                   } }),
-                h(ConnectionModelChain, { documentId, revision, modelId, active: tab === 'chain' && detail.modelChainVersion === 1, load,
+                h(ConnectionModelChain, { documentId, revision, modelId, active: active && tab === 'chain' && detail.modelChainVersion === 1, load,
                   onLocate: locate, onOpen: id => select(id),
                   onStructure: id => select(id, 'structure') }),
                 tab === 'learn' ? h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '模型练习类型' },
                   [['prediction', '新情境预测'], ['counterexample', '反例挑战']].map(([id, label]) => h('button', { key: id, type: 'button', className: 'kg-secondary',
                     'aria-pressed': exercise === id, onClick: () => setExercise(id) }, label))) : null,
-                h(ModelLearningHistoryPanel, { documentId, revision, modelId, active: tab === 'history' && detail.modelLearningHistoryVersion === 1, call: learningCall,
+                h(ModelLearningHistoryPanel, { documentId, revision, modelId, active: active && tab === 'history' && detail.modelLearningHistoryVersion === 1, call: learningCall,
                   onOpen: item => { setExercise(item.exercise); setPracticeRequest({ ...item, nonce: Date.now() + Math.random() }); setTab('learn') } }),
-                h(ModelUnderstandingPanel, { documentId, revision, modelId, active: tab === 'understanding' && detail.modelUnderstandingVersion === 1, call: learningCall,
+                h(ModelUnderstandingPanel, { documentId, revision, modelId, active: active && tab === 'understanding' && detail.modelUnderstandingVersion === 1, call: learningCall,
                   practiceRequest: understandingRequest?.modelId === modelId ? understandingRequest : null,
                   onLocate: locate, onPractice: value => { setExercise(value); setTab('learn') } }),
-                h(ModelLearningPanel, { documentId, revision, modelId, exercise, active: tab === 'learn', call: learningCall,
+                h(ModelLearningPanel, { documentId, revision, modelId, exercise, active: active && tab === 'learn', call: learningCall,
                   focusRequest: practiceRequest?.modelId === modelId ? practiceRequest : null,
                   feedbackSupported: detail.modelFeedbackVersion === 1,
                   onUnderstanding: detail.modelUnderstandingVersion === 1 ? item => {
                     setUnderstandingRequest(item ? { attemptId: item.attemptId, exercise: item.task.exercise || 'prediction', modelId, nonce: Date.now() + Math.random() } : null)
                     setTab('understanding')
                   } : undefined, onLocate: locate }),
-                h(ModelStructureEditor, { documentId, revision, modelId, active: tab === 'structure', load, onCommit: onStructure, busy,
+                h(ModelStructureEditor, { documentId, revision, modelId, active: active && tab === 'structure', load, onCommit: onStructure, busy,
                   focusRequest: structureFocus, onLocate: locateInDetail,
                   onBusy: setSaving, onRefresh: () => api.current.onRefresh?.() }),
                 tab === 'materials' ? h('div', null,

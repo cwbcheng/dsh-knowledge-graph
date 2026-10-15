@@ -37,6 +37,7 @@ const mount = (options = {}) => {
   const owner = { slots: [], updates: [], effects: [], requests: [], snapshots: [], focus: [] }
   owner.props = { documentId: fixture.documentId, revision: 1, ...options,
     load: (args, signal) => new Promise(resolve => owner.requests.push({ args, signal, resolve })),
+    learningCall: (args, signal) => new Promise(resolve => owner.requests.push({ args, signal, resolve })),
     onStateChange: state => owner.snapshots.push(state),
     onRoles: async args => { writes++; assert.equal(args.preview, null); return { signature: 'test-preview', diff: [] } },
   }
@@ -239,10 +240,62 @@ for (const next of [{ revision: 2 }, { documentId: 'different-document' }]) {
   assert(!text(scoped.source()).includes('边界仍需逐项核对'), 'Old document/revision handlers remain inert')
   scoped.unmount()
 }
+
+// Exercise the child hooks with props from the actual mounted parent. Testing
+// the children alone misses a parent that never tells them it became hidden.
+const followChild = (parent, name) => {
+  const child = { slots: [], updates: [], effects: [] }
+  child.render = () => {
+    for (let index = 0; index < 30; index++) {
+      child.updates.splice(0).forEach(fn => fn()); current = child; cursor = 0
+      const element = parent.child(name)
+      assert(element, 'Keep the child mounted to preserve its private state')
+      child.tree = element.type(element.props)
+      child.effects.splice(0).forEach(fn => fn())
+      if (!child.updates.length) return
+    }
+    throw new Error(name + ' render loop')
+  }
+  child.settle = async () => { for (let index = 0; index < 8; index++) { await Promise.resolve(); child.render() } }
+  child.unmount = () => child.slots.forEach(state => state.cleanup?.())
+  child.render(); return child
+}
+const activityCases = [
+  ['gaps', 'ModelGapPanel'], ['compare', 'ConnectionModelComparison'], ['chain', 'ConnectionModelChain'],
+  ['history', 'ModelLearningHistoryPanel'], ['understanding', 'ModelUnderstandingPanel'],
+  ['learn', 'ModelLearningPanel'], ['structure', 'ModelStructureEditor'],
+]
+for (const [tab, name] of activityCases) {
+  const panel = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi', tab } })
+  await panel.resolve(panel.requests.find(item => item.args.modelId === 'taxi'))
+  const readCount = panel.requests.length, child = followChild(panel, name)
+  const pending = panel.requests.slice(readCount)
+  assert(pending.length, name + ' must actually have a pending read')
+  assert(pending.every(item => item.signal && !item.signal.aborted))
+  panel.props.active = false; panel.render(); child.render()
+  assert(pending.every(item => item.signal.aborted), name + ': leaving the model workspace must cancel child reads')
+  assert.equal(child.tree, null, name + ': hidden child controls cannot receive focus')
+  assert.equal(panel.snapshots.at(-1).tab, tab, 'Hiding keeps the chosen task')
+  const hiddenCount = panel.requests.length
+  await child.settle()
+  assert.equal(panel.requests.length, hiddenCount, 'Hidden child does not restart its reads')
+  panel.props.active = true; panel.render(); child.render()
+  const fresh = panel.requests.slice(hiddenCount)
+  assert(fresh.length, name + ': returning must start a fresh child read')
+  pending.forEach(item => item.resolve({ error: { message: 'discarded hidden read' } }))
+  await child.settle()
+  assert(!text(child.tree).includes('discarded hidden read'), 'Late replies cannot revive after hide -> show')
+  fresh.forEach(item => item.resolve({ error: { message: 'current read failure' } }))
+  await child.settle()
+  assert(text(child.tree).includes('current read failure'), 'A current read failure remains actionable')
+  assert.equal(panel.child(name).props.modelId, 'taxi')
+  child.unmount(); panel.unmount()
+}
 assert.equal(JSON.stringify(fixture), before)
 assert.equal(writes, 1, 'Only the explicit preview callback ran; no browsing writes')
 console.log(JSON.stringify({ groupedVisibleActions: true, learningAndEditorStayActive: true, directionPreviewRetained: true,
   fieldEvidenceInPlace: true, exactFieldIdentityAndQuote: true, fieldChangeCancelsNavigation: true, noCachedFieldPayload: true,
   fieldProvenanceAdjacent: true, sourceFollowsSelection: true, staleEvidenceHiddenBeforeEffects: true,
   sourceCloseCancelsNavigation: true, unknownRolesSeparate: true, sourcePreferenceRestoredWithoutPayload: true,
+  hiddenChildReadsCancelled: activityCases.length, reactivationFencesLateReplies: true,
   keyboardFocus: true, canonicalDataUnchanged: true, browserGeometryNotTested: true }))
