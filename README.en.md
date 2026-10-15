@@ -10,6 +10,8 @@
 
 ## What it does
 
+- The connection-model directory shows a labeled search bar and removable filters for the query, chapter, review status, concept and role. Clear one or all filters without changing the current model, task, evidence pane or unsaved edits. Chapter names remain stable while filtering the same document revision. Result ranges and distinct empty states offer recovery from unmatched filters, outdated page positions and documents without models. Text matches do not establish applicability or factual correctness.
+
 - Connection-model conditions, mappings and boundaries offer “旁侧核对” to show the selected field's complete stored quote and note in the evidence pane without changing the current task. Model/revision and branch identity remain visible, including for identically named branches. Full-source navigation is a separate explicit action and retains exact-quote and ambiguity checks. Changing the field cancels an earlier pending jump; changing the model, revision or loaded detail retires the old field selection. Inspecting a quotation neither verifies its meaning nor writes graph data.
 
 - Connection-model details group actions into Reading, Learning and Checking while retaining the Chinese ontology terms, including “下上对照”. Larger titles and body text separate inputs, mappings/conditions and outputs; each boundary stays next to its provenance, and unknown-role endpoints remain separate. An independent evidence pane keeps the current exercise or review open and follows the selected model/revision, with a stacked layout in narrow panes. Opening evidence does not submit or discard a direction preview; quoted source remains evidence to check, not proof of the mapping.
