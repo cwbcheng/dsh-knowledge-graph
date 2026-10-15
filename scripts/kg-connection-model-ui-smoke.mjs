@@ -130,10 +130,23 @@ try {
   const openingView = { graph: windowed.graph, sourceText: identityDoc.sourceText }
   const state = { resultView: openingView, currentResultRef: { current: openingView }, graphRevisionRef: { current: 1 },
     graphCommitQueueRef: { current: Promise.resolve() }, verifyBusyRef: { current: false } }
-  const calls = [], previews = []
-  const controller = createModelReviewController(state, { call: (method, args) => { calls.push({ method, args }); return harness.post(args, method) } })
+  const calls = [], previews = [], admissions = []
+  let failNextPreview = false, failNextCommit = false
+  const controller = createModelReviewController(state, { call: (method, args) => {
+    calls.push({ method, args })
+    if (method === 'graph-commit-preview' && failNextPreview) {
+      failNextPreview = false
+      return Promise.reject(new Error('fixture preview transport failure'))
+    }
+    if (method === 'graph-commit' && failNextCommit) {
+      failNextCommit = false
+      return Promise.reject(new Error('fixture commit transport failure'))
+    }
+    return harness.post(args, method)
+  } })
   owner.slots = []; owner.effects = []; updates.splice(0); requests.splice(0); timers.clear()
   Object.assign(props, { documentId: identityDoc.documentId, revision: 1, focusRequest: null, onRoles: async request => {
+    admissions.push(request)
     const result = await controller(request); if (!request.preview) previews.push(result); return result
   } })
   const resolveIdentity = async request => { request.resolve(await harness.post(request.args, 'connection-models')); await settle() }
@@ -152,7 +165,15 @@ try {
     const label = all(tree, el => el.type === 'label' && all(el, child => child === roleSelect(id)).length)[0]
     assert(text(label).includes(id), 'Same-name role selector must visibly identify its concept: ' + id)
   }
-  editRole('raw-mass', 'input'); click('预览方向修改'); await settleCanonical()
+  editRole('raw-mass', 'input')
+  const previewClick = button('预览方向修改').props.onClick
+  previewClick(); previewClick(); render()
+  assert.equal(admissions.length, 1, 'Repeated preview activation before the disabled render must admit one request')
+  assert(button('预览方向修改').props.disabled)
+  previewClick()
+  assert.equal(admissions.length, 1, 'A retained callback cannot bypass an in-flight preview')
+  await settleCanonical()
+  assert.equal(calls.filter(call => call.method === 'graph-commit-preview').length, 1)
   const rawPreview = previews.at(-1), rawBlock = approvalBlock()
   assert.equal(rawPreview.diff[0].nodeId, 'raw-mass')
   assert.equal(rawPreview.diff[0].edgeKey, 'mass-quality>raw-mass:maps_between')
@@ -167,7 +188,15 @@ try {
   assert.equal(located[previousLocated].paragraph, 7)
   assert.equal(located[previousLocated].quote, identityDoc.sourceUnits[1].text)
   unchanged(); click('取消预览'); editRole('raw-mass', '')
-  editRole('product-quality', 'input'); click('预览方向修改'); await settleCanonical()
+  editRole('product-quality', 'input')
+  failNextPreview = true
+  click('预览方向修改'); await settleCanonical()
+  assert(text(tree).includes('fixture preview transport failure'))
+  assert.equal(roleSelect('product-quality').props.value, 'input', 'A failed preview preserves the selected role')
+  assert(!button('预览方向修改').props.disabled, 'A failed request releases admission for an explicit retry')
+  unchanged()
+  click('预览方向修改'); await settleCanonical()
+  assert(!text(tree).includes('fixture preview transport failure'))
   const qualityPreview = previews.at(-1), qualityBlock = approvalBlock()
   assert.equal(qualityPreview.diff[0].nodeId, 'product-quality')
   assert(text(qualityBlock).includes('product-quality') && text(qualityBlock).includes(identityDoc.sourceUnits[2].text))
@@ -188,8 +217,23 @@ try {
   assert(!all(tree, el => el.type === 'button' && text(el) === '确认保存方向').length, 'A new role edit invalidates the visible approval')
   await assert.rejects(controller({ modelId: 'mass-quality', revision: 1, changes, preview: qualityPreview }), /重新预览/)
   unchanged(); assert(!calls.some(call => call.method === 'graph-commit'), 'Browsing, previewing, cancellation and stale approval must never commit')
-  click('预览方向修改'); await settleCanonical(); const accepted = previews.at(-1)
+  click('预览方向修改'); await settleCanonical()
+  failNextCommit = true
   click('确认保存方向'); await settleCanonical()
+  assert(text(tree).includes('fixture commit transport failure'))
+  assert.equal(roleSelect('product-quality').props.value, 'output')
+  assert(!all(tree, el => el.type === 'button' && text(el) === '确认保存方向').length, 'A failed confirmation requires a new explicit preview')
+  unchanged()
+  const failedCalls = calls.splice(0)
+  assert.equal(failedCalls.filter(call => call.method === 'graph-commit').length, 1)
+  click('预览方向修改'); await settleCanonical(); const accepted = previews.at(-1)
+  const confirmClick = button('确认保存方向').props.onClick, beforeCommit = admissions.length
+  confirmClick(); confirmClick(); render()
+  assert.equal(admissions.length - beforeCommit, 1, 'Repeated confirmation must not queue a second canonical write')
+  confirmClick()
+  assert.equal(admissions.length - beforeCommit, 1)
+  await settleCanonical()
+  assert(!text(tree).includes('页面、版本或任务状态已变化'), 'Successful confirmation must not be replaced by a duplicate version failure')
   const commits = calls.filter(call => call.method === 'graph-commit')
   assert.equal(commits.length, 1, 'Only explicit UI confirmation may write the single selected endpoint')
   assert.equal(JSON.stringify(commits[0].args), accepted.signature)
@@ -207,4 +251,5 @@ try {
 } finally { harness.stop() }
 console.log(JSON.stringify({ ok: true, staleResponsesRejected: true, previewApprovalInvalidation: true,
   errorRetry: true, wholeGraphSearch: true, sourceNavigation: true, unmountAborts: true,
+  singleDirectionPreviewAndConfirmation: true, failedDirectionPreviewAndCommitRetry: true,
   sameNameDirectionIdentity: true, exactApprovalEvidence: true, actualCanonicalPreviewAndConfirmation: true, conditionsAndSourcePreserved: true }))
