@@ -4298,6 +4298,29 @@
         const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
         const directoryReadScope = JSON.stringify([directoryScope, reload])
         const page = loadedPage?.scope === directoryReadScope ? loadedPage.value : null
+        const searchRef = useRef(null), topicCache = useRef(null)
+        const topicScope = JSON.stringify([documentId, revision, reload])
+        // Chapter options describe the whole document, not the filtered page.
+        // Reuse only this version's metadata while its next page is pending.
+        if (page) topicCache.current = { scope: topicScope, topics: page.topics }
+        const topics = topicCache.current?.scope === topicScope ? topicCache.current.topics || [] : []
+        const clearFilter = kind => {
+          if (!active) return
+          if (kind === 'all' || kind === 'query') { setQuery(''); setSearch('') }
+          if (kind === 'all' || kind === 'section') setSection('')
+          if (kind === 'all' || kind === 'review') setNeedsReview(false)
+          if (kind === 'all' || kind === 'concept') { setConcept(null); setRole('') }
+          if (kind === 'role') setRole('')
+          setOffset(0)
+          searchRef.current?.focus?.({ preventScroll: true })
+        }
+        const filters = [
+          ...(query ? [{ id: 'query', name: '关键词', value: '“' + query + '”' }] : []),
+          ...(section ? [{ id: 'section', name: '章节', value: topics.find(topic => topic.id === section)?.title || section }] : []),
+          ...(needsReview ? [{ id: 'review', name: '待核对', value: '' }] : []),
+          ...(concept ? [{ id: 'concept', name: '概念', value: (concept.text || concept.nodeId) + (concept.text && concept.text !== concept.nodeId ? '（' + concept.nodeId + '）' : '') }] : []),
+          ...(concept && role ? [{ id: 'role', name: '作用', value: { input: '输入', output: '输出', unknown: '角色待核对' }[role] }] : []),
+        ]
         const publishBrowseState = () => {
           const state = connectionModelBrowseState({ documentId, revision, query, search, section, offset, needsReview, concept, role,
             modelId, materialOffset, tab, sourceOpen, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial,
@@ -4522,14 +4545,19 @@
           understanding: detail?.modelUnderstandingVersion, history: detail?.modelLearningHistoryVersion, chain: detail?.modelChainVersion }[id] ??
           (['materials', 'compare', 'learn', 'review'].includes(id) ? 1 : 0)) !== 1
         return h('section', { className: 'kg-models', 'aria-label': '联结模型工作台' },
+          h('div', { className: 'kg-model-finder', role: 'search', 'aria-label': '查找联结模型' },
           h('div', { className: 'kg-model-toolbar' },
-            h('input', { type: 'search', value: query, maxLength: 200, placeholder: '输入、输出或模型', 'aria-label': '搜索联结模型', onChange: event => setQuery(event.target.value) }),
-            h('select', { value: section, 'aria-label': '模型章节', onChange: event => { setSection(event.target.value); setOffset(0) } },
-              h('option', { value: '' }, '全部章节'), (page?.topics || []).filter(topic => topic.id).map(topic => h('option', { key: topic.id, value: topic.id }, topic.title + ' (' + topic.count + ')'))),
-            h('label', null, h('input', { type: 'checkbox', checked: needsReview, onChange: event => { setNeedsReview(event.target.checked); setOffset(0) } }), ' 待核对'),
+            h('label', { className: 'kg-model-search-field' }, h('span', null, '查找联结模型'),
+              h('input', { ref: searchRef, type: 'search', value: query, maxLength: 200, placeholder: '模型、概念、条件、映射或边界', 'aria-label': '搜索联结模型', onChange: event => setQuery(event.target.value) })),
+            h('label', { className: 'kg-model-chapter-field' }, h('span', null, '章节'),
+              h('select', { value: section, 'aria-label': '模型章节', onChange: event => { setSection(event.target.value); setOffset(0) } },
+                h('option', { value: '' }, '全部章节'), topics.filter(topic => topic.id).map(topic => h('option', { key: topic.id, value: topic.id }, topic.title + ' (' + topic.count + ')')),
+                section && !topics.some(topic => topic.id === section) ? h('option', { value: section }, section) : null)),
+            h('label', { className: 'kg-model-review-filter' }, h('input', { type: 'checkbox', checked: needsReview, onChange: event => { setNeedsReview(event.target.checked); setOffset(0) } }), ' 待核对'),
             h('button', { type: 'button', className: 'kg-secondary', title: '重新读取模型', 'aria-label': '重新读取模型', disabled: saving || busy || importBusy, onClick: refresh }, '↻'),
             onImport ? h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy || importBusy,
               onClick: () => setImportOpen(value => !value) }, '导入联结模型') : null),
+          h('p', { className: 'kg-model-meta' }, '搜索已记录文字；命中不代表模型适用于当前情境。')),
           importOpen ? h('section', { className: 'kg-model-material', 'aria-label': '导入联结模型' },
             h('p', null, '粘贴包含 nodes、edges 的 JSON。仅新增联结模型、概念和规则；原文摘录、结构引用及当前版本须通过校验。'),
             h('textarea', { value: importText, rows: 8, maxLength: 2000000, 'aria-label': '联结模型 JSON', disabled: importBusy,
@@ -4547,12 +4575,17 @@
           concept ? h('div', { className: 'kg-model-toolbar' }, h('strong', null, concept.text),
             h('select', { 'aria-label': '概念在模型中的作用', value: role, onChange: event => { setRole(event.target.value); setOffset(0) } },
               h('option', { value: '' }, '全部关联模型'), h('option', { value: 'input' }, '由它能推测什么'),
-              h('option', { value: 'output' }, '它可由什么推测'), h('option', { value: 'unknown' }, '角色待核对')),
-            h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setConcept(null); setRole(''); setOffset(0) } }, '清除概念筛选')) : null,
+              h('option', { value: 'output' }, '它可由什么推测'), h('option', { value: 'unknown' }, '角色待核对'))) : null,
+          filters.length ? h('div', { className: 'kg-model-filter-summary', role: 'group', 'aria-label': '已选模型筛选' },
+            h('span', { className: 'kg-model-meta' }, '已选条件 ' + filters.length),
+            filters.map(filter => h('button', { key: filter.id, type: 'button', className: 'kg-model-filter-chip',
+              'data-model-filter': filter.id, 'aria-label': '清除' + filter.name + '筛选' + (filter.value ? '：' + filter.value : ''), onClick: () => clearFilter(filter.id) },
+              h('span', null, filter.name + (filter.value ? '：' + filter.value : '')), h('span', { 'aria-hidden': true }, '×'))),
+            h('button', { type: 'button', className: 'kg-secondary', onClick: () => clearFilter('all') }, '清除全部筛选')) : null,
           error ? h('p', { role: 'alert' }, error) : null,
-          h('div', { className: 'kg-model-meta', role: 'status' }, loading ? '正在读取全图模型…' : page ? '全图 ' + page.totalModels + ' 个模型 · 筛选 ' + page.total + ' 个 · 当前 ' + page.items.length + ' 个' : ''),
+          h('div', { className: 'kg-model-meta kg-model-directory-summary', role: 'status' }, query !== search ? '正在更新筛选…' : loading ? '正在读取全图模型…' : page ? '全图 ' + page.totalModels + ' 个模型 · 筛选 ' + page.total + ' 个 · 当前 ' + (page.items.length ? offset + 1 : 0) + '–' + (page.items.length ? offset + page.items.length : 0) + ' 个' : ''),
           h('div', { className: 'kg-model-workspace' },
-            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', ref: directoryRef, onScroll: rememberDirectory },
+            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', 'aria-busy': loading || query !== search, ref: directoryRef, onScroll: rememberDirectory },
               page?.items.map(model => h('div', { key: model.nodeId, 'data-model-catalogue-row': model.nodeId }, h('button', { type: 'button', className: 'kg-model-list-item', 'aria-current': modelId === model.nodeId,
                 onClick: () => select(model.nodeId) }, h('strong', null, title(model)), h('small', null, model.sectionTitle),
                 h('small', null, model.warnings.join(' · ') || '角色已记录 · 结论待核对')),
@@ -4565,7 +4598,11 @@
                     h('small', null, '分支 ' + item.branchId + ' · ' + ({ source: '原文记录', user: '个人表述', ai: 'AI 建议', unknown: '来源未判定' }[item.provenanceKind] || '来源未判定')))),
                   Number.isSafeInteger(model.modelFieldMatches.omitted) && model.modelFieldMatches.omitted > 0
                     ? h('small', { className: 'kg-model-meta' }, '另有 ' + model.modelFieldMatches.omitted + ' 处命中未显示') : null) : null)),
-              page && !page.items.length ? h('p', null, '没有匹配的联结模型') : null,
+              page && !page.items.length && !loading && query === search && !error ? h('div', { className: 'kg-model-empty' },
+                h('strong', null, !page.totalModels ? '这份资料尚无联结模型' : page.total ? '当前页没有模型' : '没有匹配的联结模型'),
+                h('p', { className: 'kg-model-meta' }, !page.totalModels ? '可继续阅读知识图与原文。' : page.total ? '模型目录已变化，可返回第一页继续查看。' : '试试减少筛选条件，或换一个关键词。'),
+                page.total ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setOffset(0); searchRef.current?.focus?.({ preventScroll: true }) } }, '返回第一页')
+                  : page.totalModels && filters.length ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => clearFilter('all') }, '查看全部模型') : null) : null,
               h('div', { className: 'kg-model-toolbar' },
                 h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页'),
                 h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !page || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页'))),
