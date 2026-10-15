@@ -10,6 +10,8 @@
 
 ## What it does
 
+- Connection-model conditions, mappings and boundaries offer “旁侧核对” to show the selected field's complete stored quote and note in the evidence pane without changing the current task. Model/revision and branch identity remain visible, including for identically named branches. Full-source navigation is a separate explicit action and retains exact-quote and ambiguity checks. Changing the field cancels an earlier pending jump; changing the model, revision or loaded detail retires the old field selection. Inspecting a quotation neither verifies its meaning nor writes graph data.
+
 - Connection-model details group actions into Reading, Learning and Checking while retaining the Chinese ontology terms, including “下上对照”. Larger titles and body text separate inputs, mappings/conditions and outputs; each boundary stays next to its provenance, and unknown-role endpoints remain separate. An independent evidence pane keeps the current exercise or review open and follows the selected model/revision, with a stacked layout in narrow panes. Opening evidence does not submit or discard a direction preview; quoted source remains evidence to check, not proof of the mapping.
 
 - Connection-model structure drafts reopen with unfinished example scenarios, example/branch names and source quote/paragraph fields intact. Recovery still checks field types, size limits, distinct identities and compatible bindings; malformed cache bytes remain untouched. These unfinished required fields stay in the diagnosis and block formal preview until completed. Saving still requires a fresh preview, explicit confirmation and the original graph revision; restoring a draft does not verify its mappings or evidence.
