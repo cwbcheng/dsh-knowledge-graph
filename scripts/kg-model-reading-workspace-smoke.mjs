@@ -5,6 +5,9 @@ import { createGraphContract } from '../src/index.host.js'
 import { modelStructureFixture } from './kg-model-structure-fixture-data.mjs'
 
 const fixture = modelStructureFixture(), query = createGraphContract().connectionModels
+const branches = fixture.graph.nodes.find(node => node.id === 'taxi').modelStructure.branches
+branches[0].label = branches[1].label = '同名分支'
+branches[0].boundary.provenance = { kind: 'source', paragraph: 1, quote: fixture.sourceUnits[1].text, note: '边界仍需逐项核对' }
 const before = JSON.stringify(fixture)
 let current, cursor = 0
 const slot = init => { const index = cursor++; return current.slots[index] ||= init() }
@@ -98,6 +101,85 @@ assert.equal(boundaries.length, 3)
 assert(boundaries.every(node => all(node, child => child.props.label === '边界来源').length === 1), 'Every boundary keeps its own provenance next to its text')
 assert(text(boundaries[2]).includes('尚未核对'))
 
+// A field's stored citation can be inspected beside the current task without
+// navigating away or substituting the model's broader citation for that field.
+let fieldNavigations = 0, fieldFinish, fieldAdmitted
+owner.props.onLocate = async (reference, stillCurrent) => {
+  fieldNavigations++
+  assert.equal(reference.documentId, fixture.documentId); assert.equal(reference.revision, 1)
+  assert.equal(reference.nodeId, 'taxi'); assert.equal(reference.sourceQuoteOnly, true)
+  if (fieldFinish === 'delay') {
+    await new Promise(resolve => { fieldFinish = resolve }); fieldAdmitted = stillCurrent(); return fieldAdmitted
+  }
+  throw new Error('原文包含多个相同片段，无法唯一定位')
+}
+owner.render()
+const inspect = (branchId, field, panel = owner) => {
+  const label = '旁侧核对' + ({ condition: '条件', mapping: '映射', boundary: '边界' }[field]) + '来源：同名分支（' + branchId + '）'
+  const evidence = all(panel.tree, node => node.props.inspectLabel === label)[0]
+  assert(evidence, 'The selected field needs an in-place evidence action')
+  const tree = evidence.type(evidence.props)
+  const button = all(tree, node => node.type === 'button' && text(node) === '旁侧核对')[0]
+  assert(button && !button.props.disabled)
+  button.props.onClick(); panel.render(); return button
+}
+const fieldCard = () => all(owner.source(), node => node.props['aria-label'] === '所选字段引用')[0]
+const fieldJump = () => all(fieldCard(), node => node.type === 'button')[0]
+const fieldEvidence = all(owner.tree, node => node.props.inspectLabel)[0]
+for (const value of [
+  { kind: 'source', paragraph: -1, quote: '无段落身份' },
+  { kind: 'source', paragraph: 0, quote: '' },
+  { kind: 'source', paragraph: 0, quote: '长'.repeat(2001) },
+  { kind: 'user', paragraph: 0, quote: '个人理解' },
+  { kind: 'ai', paragraph: 0, quote: 'AI 建议' },
+]) {
+  const tree = fieldEvidence.type({ ...fieldEvidence.props, value, onInspect: () => assert.fail('Invalid field inspection') })
+  const button = all(tree, node => node.type === 'button' && text(node) === '旁侧核对')[0]
+  assert(!button || button.props.disabled, 'Non-source and invalid evidence must not offer a usable source action')
+  button?.props.onClick()
+}
+for (const [branchId, field] of [['base', 'condition'], ['extra', 'mapping'], ['base', 'boundary']]) {
+  const expected = branches.find(item => item.id === branchId)[field]
+  inspect(branchId, field)
+  assert(fieldCard()); assert(text(fieldCard()).includes(branchId))
+  assert(text(fieldCard()).includes(expected.text)); assert(text(fieldCard()).includes(expected.provenance.note))
+  assert.equal(text(all(fieldCard(), node => node.type === 'blockquote')[0]), expected.provenance.quote)
+  assert(text(fieldCard()).includes('语义待核对'))
+  assert.equal(owner.snapshots.at(-1).tab, 'materials')
+  assert.equal(fieldNavigations, 0, 'Inspecting a citation must not leave the current task')
+}
+assert.equal(owner.requests.length, reads, 'Field inspection uses the already loaded canonical detail')
+await fieldJump().props.onClick(); await owner.settle()
+assert(text(owner.tree).includes('无法唯一定位'), 'The existing exact locator still owns ambiguity handling')
+assert(fieldCard(), 'Failed full-source navigation keeps the chosen field available')
+fieldFinish = 'delay'; const pendingField = fieldJump().props.onClick()
+inspect('extra', 'condition'); fieldFinish(); await pendingField; await owner.settle()
+assert.equal(fieldAdmitted, false, 'A different field cancels the earlier field navigation')
+assert(!text(owner.tree).includes('无法唯一定位'))
+owner.click('学习'); owner.click('情境预测')
+inspect('base', 'condition'); assert(owner.child('ModelLearningPanel').props.active)
+owner.click('核对'); owner.click('核对结构')
+inspect('base', 'boundary'); assert(owner.child('ModelStructureEditor').props.active)
+owner.click('收起原文'); owner.click('原文依据')
+assert(fieldCard(), 'Closing and reopening the same current detail retains the chosen field')
+owner.click('阅读')
+const staleInspect = inspect('extra', 'mapping')
+owner.select('unknown'); owner.render(false)
+assert(!fieldCard(), 'Hide the old field before the new detail effect')
+staleInspect.props.onClick(); owner.render()
+assert(!fieldCard(), 'A stale field handler cannot reopen old evidence')
+await owner.resolve(owner.requests.at(-1))
+owner.select('taxi'); owner.render(); await owner.resolve(owner.requests.at(-1))
+assert(!fieldCard(), 'Returning to a model requires a fresh field selection')
+inspect('base', 'boundary')
+const selectedSnapshot = owner.snapshots.at(-1)
+assert(!JSON.stringify(selectedSnapshot).includes('边界仍需逐项核对'), 'Browse preferences never cache field citation payloads')
+owner.props.active = false; owner.render(false); assert(!fieldCard())
+owner.props.active = true; owner.render(); assert(!fieldCard(), 'Reactivation does not revive a previous field selection')
+inspect('base', 'condition')
+owner.click('对照原文'); assert(!fieldCard(), 'Selecting related material retires the previous field citation')
+inspect('base', 'boundary')
+
 owner.select('unknown'); owner.render(false)
 assert(!text(owner.source()).includes('taxi ·'), 'Old evidence is hidden during render, before effects run')
 assert(!owner.child('ModelStructureEditor'), 'Old detail controls are unavailable until the selected model is read')
@@ -146,9 +228,21 @@ assert(restored.source()); assert(!all(restored.source(), node => node.props.cla
 await restored.resolve(restored.requests.find(item => item.args.modelId === 'unknown'))
 assert(text(restored.source()).includes('unknown · 版本 1'))
 restored.unmount()
+for (const next of [{ revision: 2 }, { documentId: 'different-document' }]) {
+  const scoped = mount({ restoreState: selectedSnapshot })
+  await scoped.resolve(scoped.requests.find(item => item.args.modelId === 'taxi'))
+  const oldAction = inspect('base', 'boundary', scoped)
+  assert(text(scoped.source()).includes('边界仍需逐项核对'))
+  Object.assign(scoped.props, next); scoped.render(false)
+  assert(!text(scoped.source()).includes('边界仍需逐项核对'), 'Retire field content before document/revision effects')
+  oldAction.props.onClick(); scoped.render()
+  assert(!text(scoped.source()).includes('边界仍需逐项核对'), 'Old document/revision handlers remain inert')
+  scoped.unmount()
+}
 assert.equal(JSON.stringify(fixture), before)
 assert.equal(writes, 1, 'Only the explicit preview callback ran; no browsing writes')
 console.log(JSON.stringify({ groupedVisibleActions: true, learningAndEditorStayActive: true, directionPreviewRetained: true,
+  fieldEvidenceInPlace: true, exactFieldIdentityAndQuote: true, fieldChangeCancelsNavigation: true, noCachedFieldPayload: true,
   fieldProvenanceAdjacent: true, sourceFollowsSelection: true, staleEvidenceHiddenBeforeEffects: true,
   sourceCloseCancelsNavigation: true, unknownRolesSeparate: true, sourcePreferenceRestoredWithoutPayload: true,
   keyboardFocus: true, canonicalDataUnchanged: true, browserGeometryNotTested: true }))

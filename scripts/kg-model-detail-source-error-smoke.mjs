@@ -120,12 +120,41 @@ try {
     const node = all(ui.owner.tree, node => typeof node.type === 'function' && node.type.name === 'ModelStructureEvidence'
       && node.props.value?.quote.startsWith(key === 'condition' ? 'FIELD DUPLICATE:' : 'FIELD MAPPING:'))[0]
     assert(node, 'Missing field evidence ' + key)
-    const tree = node.type(node.props), button = all(tree, node => node.type === 'button')[0]
+    const tree = node.type(node.props), button = all(tree, node => node.type === 'button' && /^原文 P\d+$/.test(text(node)))[0]
     assert(button && !button.props.disabled)
     return { node, button }
   }
   const clickField = async (ui, key) => { current = ui.owner; field(ui, key).button.props.onClick(); await ui.settle() }
   const fail = async ui => { await clickField(ui, 'condition'); assert(alerts(ui).some(value => value.includes('多个相同片段'))) }
+  const paneNav = navigation(), pane = await mount(paneNav)
+  const inspect = async key => {
+    const evidence = field(pane, key).node
+    const button = all(evidence.type(evidence.props), node => node.type === 'button' && text(node) === '旁侧核对')[0]
+    assert(button && !button.props.disabled); current = pane.owner; button.props.onClick(); await pane.settle()
+  }
+  const fieldCard = () => all(pane.owner.tree, node => node.props['aria-label'] === '所选字段引用')[0]
+  const jump = async () => { current = pane.owner; all(fieldCard(), node => node.type === 'button')[0].props.onClick(); await pane.settle() }
+  await inspect('condition')
+  assert.deepEqual(paneNav.references, []); assert.deepEqual(paneNav.modes, [])
+  await jump()
+  assert(alerts(pane).some(value => value.includes('多个相同片段')))
+  assert.deepEqual(paneNav.modes, []); assert(fieldCard())
+  await inspect('mapping')
+  assert.deepEqual(alerts(pane), [])
+  const fieldValue = field(pane, 'mapping').node.props.value
+  assert.equal(text(all(fieldCard(), node => node.type === 'blockquote')[0]), fieldValue.quote)
+  await jump()
+  assert.deepEqual(paneNav.modes, ['graph'])
+  assert.equal(paneNav.references.at(-1).nodeId, 'source-duplicate')
+  assert.equal(paneNav.references.at(-1).quote, fieldValue.quote)
+  assert.equal(paneNav.references.at(-1).paragraph, fieldValue.paragraph)
+  assert.equal(paneNav.references.at(-1).documentId, fixture.documentId)
+  assert.equal(paneNav.references.at(-1).revision, 1)
+  paneNav.paused = true; await jump()
+  await inspect('condition'); paneNav.holds[0].resolve()
+  await Promise.allSettled(paneNav.completed); await pane.settle()
+  assert.deepEqual(paneNav.modes, ['graph'], 'A changed field cancels the pending real receiver')
+  assert.deepEqual(alerts(pane), []); cases += 3
   const nav = navigation(), ui = await mount(nav)
   await fail(ui)
   assert.deepEqual(nav.paragraphs, []); assert.deepEqual(nav.modes, [])
@@ -195,6 +224,7 @@ try {
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   console.log(JSON.stringify({ ok: true, cases, actualHttpRequests, productionPanel: true, productionWorkbenchReceiver: true,
     realDuplicateQuoteFailure: true, retryRecovery: true, unrelatedErrorsRetained: true, nestedCallerErrorOwnership: true,
+    fieldPaneExplicitNavigation: true, fieldChangeCancelsRealReceiver: true,
     currentFailuresVisible: true, latestClickAndScopeGuards: true, fullQuoteAndIdentity: true, readOnly: true }))
 } finally {
   for (const owner of owners) for (const state of owner.slots) state.cleanup?.()
