@@ -133,7 +133,7 @@ try {
   assert.equal(failedRetry.nav.reads.length, readCount); assert.deepEqual(failedRetry.alerts(), ['隔离工作区模型审阅读取失败']); cases++
   for (const transition of ['tab', 'model', 'workspace']) {
     const scoped = await mount(); await attempt(scoped)
-    if (transition === 'tab') { await scoped.click('原文依据'); await scoped.click('核对方向') }
+    if (transition === 'tab') { await scoped.click('下上对照'); await scoped.click('核对方向') }
     else if (transition === 'model') { await scoped.select('taxi-peer'); await scoped.select('taxi'); await scoped.click('核对方向') }
     else { await scoped.switchWorkspace('source'); await scoped.switchWorkspace('read') }
     assert.deepEqual(scoped.alerts(), [], transition + ' removes only the old review failure'); cases++

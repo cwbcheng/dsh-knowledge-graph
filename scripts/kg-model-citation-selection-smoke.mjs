@@ -148,7 +148,7 @@ try {
           await ui.fill(label, 'base')
           if (transition === 'branch-back-to-same') await ui.fill(label, '')
         }
-        else if (name === 'ConnectionModelPanel') await ui.click('下上对照')
+        else if (name === 'ConnectionModelPanel') await ui.click('核对方向')
         else await ui.click('↻')
         if (failure) nav.pending[0].failure = '旧请求的窗口读取失败'
         nav.pending[0].resolve(); await nav.completed[0]; await ui.settle()

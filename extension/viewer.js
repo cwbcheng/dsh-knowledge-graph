@@ -4132,13 +4132,14 @@
           branchId: string(item.branchId), exampleOffset: offset(item.exampleOffset),
           focusField: ['condition', 'mapping', 'boundary'].includes(item.focusField) ? item.focusField : '',
           selectedSlot: string(item.selectedSlot), selectedExample: string(item.selectedExample), selectedMaterial: string(item.selectedMaterial),
-          tab: tabs.includes(item.tab) ? item.tab : 'materials',
+          tab: tabs.includes(item.tab) && item.tab !== 'source' ? item.tab : 'materials',
         })
         const query = string(saved.query)
         // Only browsing intent is cached. Current responses, edits and approvals
         // must be read or checked again after the history panel unmounts us.
         const state = { documentId, revision, query, search: query, section: string(saved.section),
-          needsReview: saved.needsReview === true, exercise: saved.exercise === 'counterexample' ? 'counterexample' : 'prediction',
+          needsReview: saved.needsReview === true, sourceOpen: saved.sourceOpen === true || saved.tab === 'source',
+          exercise: saved.exercise === 'counterexample' ? 'counterexample' : 'prediction',
           ...location(saved), offset: query === string(saved.search) ? offset(saved.offset) : 0,
           history: Array.isArray(saved.history) ? saved.history.filter(item => item && typeof item === 'object').slice(-30).map(location) : [],
           focusRequest: same ? saved.focusRequest : null }
@@ -4185,12 +4186,14 @@
         const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search)
         const [section, setSection] = useState(initial.section), [offset, setOffset] = useState(initial.offset)
         const [needsReview, setNeedsReview] = useState(initial.needsReview), [concept, setConcept] = useState(initial.concept), [role, setRole] = useState(initial.role)
-        const [page, setPage] = useState(null), [modelId, setModelId] = useState(initial.modelId), [detail, setDetail] = useState(null)
+        const [page, setPage] = useState(null), [modelId, setModelId] = useState(initial.modelId), [loadedDetail, setDetail] = useState(null)
         const [materialOffset, setMaterialOffset] = useState(initial.materialOffset), [tab, setTab] = useState(initial.tab)
         const [exercise, setExercise] = useState(initial.exercise)
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
         const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [reload, setReload] = useState(0)
+        const [sourceOpen, setSourceOpen] = useState(initial.sourceOpen)
+        const sourceRef = useRef(null), sourceTriggerRef = useRef(null), sourceContentRef = useRef(null), sourceFocus = useRef(false)
         const [sourceError, setSourceError] = useState('')
         const [reviewError, setReviewError] = useState('')
         const [refreshError, setRefreshError] = useState('')
@@ -4201,6 +4204,24 @@
         const [fieldRequest, setFieldRequest] = useState(0)
         const [selectedSlot, setSelectedSlot] = useState(initial.selectedSlot), [selectedExample, setSelectedExample] = useState(initial.selectedExample)
         const [structureFocus, setStructureFocus] = useState(null)
+        const detailReadScope = JSON.stringify([documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
+        // Hide the previous selection during render, before an effect starts the next read.
+        const detail = loadedDetail?.scope === detailReadScope ? loadedDetail.value : null
+        const focusSource = () => {
+          sourceRef.current?.focus?.({ preventScroll: true })
+          sourceRef.current?.scrollIntoView?.({ block: 'nearest' })
+        }
+        const openSource = () => {
+          if (sourceOpen) { focusSource(); return }
+          sourceFocus.current = true; setSourceOpen(true)
+        }
+        const closeSource = () => { setSourceOpen(false); sourceTriggerRef.current?.focus?.() }
+        useEffect(() => {
+          if (!sourceOpen || !sourceFocus.current) return
+          sourceFocus.current = false
+          focusSource()
+        }, [sourceOpen])
+        useEffect(() => { if (sourceContentRef.current) sourceContentRef.current.scrollTop = 0 }, [detail, selectedMaterial, sourceOpen])
         const [importOpen, setImportOpen] = useState(false), [importText, setImportText] = useState('')
         const [importPreview, setImportPreview] = useState(null), [importError, setImportError] = useState(''), [importBusy, setImportBusy] = useState(false)
         const importModels = async commit => {
@@ -4219,6 +4240,7 @@
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
         const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
         const location = useConnectionModelLocation(locationScope, active)
+        const sourceLocation = useConnectionModelLocation(JSON.stringify([locationScope, sourceOpen]), active && sourceOpen)
         const reviewScope = JSON.stringify([locationScope, saving, !!busy, importBusy])
         const reviewLocation = useConnectionModelLocation(reviewScope, active)
         const refreshContext = useRef(null), refreshMounted = useRef(true)
@@ -4241,13 +4263,17 @@
           if (!stillCurrent) setSourceError('')
           return api.current.onLocate?.(value, isCurrent)
         }, stillCurrent ? null : reason => setSourceError(reason.message || '原文定位失败'), stillCurrent)
+        const locateInSource = (reference, stillCurrent) => sourceLocation(reference, (value, isCurrent) => {
+          setSourceError('')
+          return locateInDetail(value, isCurrent)
+        }, reason => setSourceError(reason.message || '原文定位失败'), stillCurrent)
         const sequence = useRef(0), detailSequence = useRef(0), writeSequence = useRef(0)
         const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
         const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
         const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
         const publishBrowseState = () => {
           const state = connectionModelBrowseState({ documentId, revision, query, search, section, offset, needsReview, concept, role,
-            modelId, materialOffset, tab, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial,
+            modelId, materialOffset, tab, sourceOpen, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial,
             history: history.current, focusRequest: lastFocus.current, directoryPosition: directoryPositionRef.current }, documentId, revision)
           directoryPositionRef.current = state.directoryPosition
           api.current.onStateChange?.({ ...state, search })
@@ -4279,7 +4305,7 @@
           else { setConcept({ nodeId: focusRequest.nodeId, text: focusRequest.text }); setRole(''); setOffset(0); setFocusField('') }
         }, [focusRequest])
         useEffect(publishBrowseState, [documentId, revision, query, search, section, offset, needsReview, concept, role, modelId, materialOffset,
-          tab, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial, focusRequest])
+          tab, sourceOpen, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial, focusRequest])
         useEffect(() => {
           const id = ++sequence.current, abort = new AbortController()
           setLoading(true); setError(''); setPage(null)
@@ -4323,7 +4349,7 @@
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || result.model?.nodeId !== modelId) throw new Error('模型详情版本不一致')
             if (result.structure && !Array.isArray(result.legacyPorts)) throw new Error('原有图谱端点记录读取不完整，请重新读取模型。')
-            setDetail(result)
+            setDetail({ scope: detailReadScope, value: result })
           }).catch(reason => { if (id === detailSequence.current && !abort.signal.aborted) setDetailError(reason.message || '模型详情读取失败') })
             .finally(() => { if (id === detailSequence.current && !abort.signal.aborted) setDetailLoading(false) })
           return () => { abort.abort(); detailSequence.current++; writeSequence.current++ }
@@ -4409,10 +4435,10 @@
           } catch (reason) { if (id === writeSequence.current) { setPreview(null); setDetailError(reason.message || '方向未保存') } }
           finally { setSaving(false) }
         }
-        const refButton = reference => h('button', { type: 'button', className: 'kg-secondary',
-          onClick: () => locateInDetail({ ...reference, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) }, '原文 P' + (reference.paragraph + 1))
-        const evidence = item => item.citations?.length ? item.citations.map((citation, index) => h('div', { key: index, className: 'kg-model-evidence' },
-          refButton(citation), h('p', null, citation.quote))) : h('p', { className: 'kg-model-meta' }, '尚无可匹配当前原文的引用')
+        const refButton = (reference, onLocate) => h('button', { type: 'button', className: 'kg-secondary',
+          onClick: () => onLocate({ ...reference, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) }, '原文 P' + (reference.paragraph + 1))
+        const evidence = (item, onLocate = locateInDetail) => item.citations?.length ? item.citations.map((citation, index) => h('div', { key: index, className: 'kg-model-evidence' },
+          refButton(citation, onLocate), h('p', null, citation.quote))) : h('p', { className: 'kg-model-meta' }, '尚无可匹配当前原文的引用')
         const title = model => model.inputs.length && model.outputs.length
           ? model.inputs.map(node => node.text).join(' + ') + ' → ' + model.outputs.map(node => node.text).join(' + ')
           : model.text
@@ -4425,12 +4451,22 @@
           h('div', { className: 'kg-model-meta' }, (item.label || TYPE_META[item.type]?.label || item.type) + ' · ' + item.nodeId),
           h('p', null, item.text),
           h('div', { className: 'kg-model-meta' }, item.links.map(link => (link.label || REL_LABEL[link.relation] || link.relation) + ' · ' + link.via).join('；')),
-          h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSelectedMaterial(item.nodeId); setTab('source') } }, '对照原文'),
+          h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSelectedMaterial(item.nodeId); openSource() } }, '对照原文'),
           h('details', null, h('summary', null, '来源引用'), evidence(item)))
         const examples = detail?.related.filter(item => ['positive_example', 'negative_example', 'segment_example_group', 'verification_material', 'data_or_experience'].includes(item.type)) || []
         const rules = detail?.related.filter(item => ['rule', 'relation_material', 'property_material'].includes(item.type)) || []
         const others = detail?.related.filter(item => !examples.includes(item) && !rules.includes(item)) || []
         const previewPorts = preview ? new Map((detail?.ports || []).map(item => [item.edgeKey, item])) : null
+        const sourceMaterial = detail?.related.find(item => item.nodeId === selectedMaterial)
+        const taskGroups = [
+          { id: 'read', label: '阅读', items: [['materials', '下上对照'], ['compare', '模型比较']] },
+          { id: 'learn', label: '学习', items: [['understanding', '我的理解'], ['learn', '情境预测'], ['chain', '两步推测'], ['history', '学习记录']] },
+          { id: 'check', label: '核对', items: [['gaps', '待补充内容'], ['review', '核对方向'], ['structure', '核对结构']] },
+        ]
+        const activeGroup = taskGroups.find(group => group.items.some(([id]) => id === tab))?.id || 'read'
+        const unavailable = id => ({ structure: detail?.modelStructureVersion, gaps: detail?.modelDiagnosticsVersion,
+          understanding: detail?.modelUnderstandingVersion, history: detail?.modelLearningHistoryVersion, chain: detail?.modelChainVersion }[id] ??
+          (['materials', 'compare', 'learn', 'review'].includes(id) ? 1 : 0)) !== 1
         return h('section', { className: 'kg-models', 'aria-label': '联结模型工作台' },
           h('div', { className: 'kg-model-toolbar' },
             h('input', { type: 'search', value: query, maxLength: 200, placeholder: '输入、输出或模型', 'aria-label': '搜索联结模型', onChange: event => setQuery(event.target.value) }),
@@ -4489,10 +4525,22 @@
               sourceError ? h('p', { role: 'alert' }, sourceError) : null,
               notice ? h('p', { role: 'status' }, notice) : null,
               detailLoading ? h('p', { role: 'status' }, '正在读取模型及原文…') : null,
+              h('div', { className: 'kg-model-task-nav' },
+                h('div', { role: 'group', 'aria-label': '联结模型任务' }, taskGroups.map(group => h('button', {
+                  key: group.id, type: 'button', className: 'kg-secondary', 'aria-pressed': activeGroup === group.id,
+                  disabled: !detail, onClick: () => { if (activeGroup !== group.id) setTab(group.items.find(([id]) => !unavailable(id))?.[0] || 'materials') } },
+                  group.label))),
+                h('button', { ref: sourceTriggerRef, type: 'button', className: 'kg-secondary', 'aria-pressed': sourceOpen,
+                  'aria-expanded': sourceOpen, disabled: !modelId, onClick: () => sourceOpen ? closeSource() : openSource() }, '原文依据')),
+              h('div', { className: 'kg-model-detail-layout', 'data-source-open': sourceOpen },
+              h('div', { className: 'kg-model-content' },
+              detail ? taskGroups.map(group => h('div', { key: group.id, className: 'kg-model-task-links', role: 'group',
+                'aria-label': group.label + '功能', hidden: activeGroup !== group.id }, group.items.map(([id, label]) => h('button', {
+                  key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': tab === id, disabled: unavailable(id), onClick: () => setTab(id) }, label)))) : null,
               detail ? h(React.Fragment, null,
                 page && !page.items.some(item => item.nodeId === modelId) ? h('p', { className: 'kg-model-meta' }, '当前模型不在本页目录中') : null,
                 tab !== 'understanding' && tab !== 'history' && tab !== 'chain' ? h(React.Fragment, null,
-                h('h3', null, detail.model.inputs.length && detail.model.outputs.length ? title(detail.model) : '模型表述'),
+                h('h3', null, title(detail.model)),
                 h('p', { className: 'kg-model-meta' }, '图谱抽取表述 · ' + (detail.model.entailmentStatus === 'unverified' ? '语义未独立核验' : detail.model.entailmentStatus)),
                 chosenHit && !activeField ? h('p', { role: 'status', className: 'kg-model-warning' }, '命中字段未能与本次模型详情对应，请重新读取。') : null,
                 detail.model.warnings.length ? h('div', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
@@ -4508,32 +4556,29 @@
                         const hit = activeField === key && branchId === branch.id
                         const label = { condition: '条件', mapping: '映射', boundary: '边界' }[key]
                         const value = branch[key].text || (key === 'mapping' ? '尚未整理' : '尚未核对')
-                        return h('p', { key, ...(hit ? { ref: fieldRef, tabIndex: -1, 'data-model-field-hit': key } : {}) },
+                        return h('div', { key, className: key === 'boundary' ? 'kg-model-boundary' : undefined },
+                          h('p', { ...(hit ? { ref: fieldRef, tabIndex: -1, 'data-model-field-hit': key } : {}) },
                           hit ? h('mark', null, label) : label, '：',
-                          hit && query === search ? renderLiteralQueryText(value, search) : value)
+                          hit && query === search ? renderLiteralQueryText(value, search) : value),
+                          h(ModelStructureEvidence, { value: branch[key].provenance, documentId, revision,
+                            label: { condition: '条件来源', mapping: '规律来源', boundary: '边界来源' }[key], onLocate: locateInDetail }))
                       }),
                       h('p', { className: 'kg-model-meta' }, branch.pairedExamples ? '已有完整配对实例 ' + branch.pairedExamples + ' 个 · 不代表验证通过' : '暂未找到完整配对实例'),
-                      branch.incompleteExamples ? h('p', { className: 'kg-model-meta' }, '另有未完整配对实例 ' + branch.incompleteExamples + ' 个') : null,
-                      ['condition', 'mapping', 'boundary'].map(key => h(ModelStructureEvidence, { key, value: branch[key].provenance, documentId, revision,
-                        label: { condition: '条件来源', mapping: '规律来源', boundary: '边界来源' }[key], onLocate: locateInDetail })))),
+                      branch.incompleteExamples ? h('p', { className: 'kg-model-meta' }, '另有未完整配对实例 ' + branch.incompleteExamples + ' 个') : null)),
                       !detail.structure.branches.length ? h('p', null, '条件分支尚未整理') : null) :
                       h('p', { className: 'kg-model-meta' }, '条件未单独结构化，需核对完整表述'),
-                    h('button', { type: 'button', className: 'kg-secondary', onClick: () => setTab('source') }, '核对原文')),
+                    h('button', { type: 'button', className: 'kg-secondary', onClick: openSource }, '核对原文')),
                   h('span', { className: 'kg-model-arrow', 'aria-hidden': true }, '→'),
                   h('section', null, h('h4', null, '输出'), detail.ports.filter(item => item.role === 'output').map(port),
                     !detail.model.outputs.length ? h('p', null, '输出尚未明确') : null)),
-                detail.ports.some(item => item.role === 'unknown') ? h('section', null, h('h4', null, '未定角色的端点'), detail.ports.filter(item => item.role === 'unknown').map(port)) : null,
+                detail.ports.some(item => item.role === 'unknown') ? h('section', { className: 'kg-model-unknown' }, h('h4', null, '未定角色的端点'),
+                  h('p', { className: 'kg-model-meta' }, '尚未确定输入或输出角色，需结合原文核对。'), detail.ports.filter(item => item.role === 'unknown').map(port)) : null,
                 detail.structure ? h('details', { className: 'kg-model-structure' }, h('summary', null, '原有图谱端点记录 (' + detail.legacyPorts.length + ') · 未改写'),
                   detail.legacyPorts.map(item => h('div', { key: item.edgeIndex, className: 'kg-model-branch' },
                     h('button', { type: 'button', className: 'kg-secondary', onClick: () => locateInDetail(item.node) }, item.node.text),
                     h('p', null, '图谱角色：' + ({ input: '输入', output: '输出', unknown: '待核对或异常' }[item.role]) + ' · ' + item.node.type +
                       (item.role === 'unknown' && item.storedRole ? ' · 原记录值：' + item.storedRole : '')),
                     evidence(item))), !detail.legacyPorts.length ? h('p', null, '尚无 maps_between 端点记录') : null) : null) : h('h3', null, detail.model.text),
-                h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '联结模型详情' },
-                  [['materials', '下上对照'], ['source', '原文依据'], ['understanding', '我的理解'], ['gaps', '待补充内容'], ['compare', '模型比较'], ['chain', '两步推测'], ['learn', '情境预测'], ['history', '学习记录'], ['review', '核对方向'], ['structure', '核对结构']].map(([id, label]) => h('button', {
-                    key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': tab === id,
-                    disabled: id === 'structure' && detail.modelStructureVersion !== 1 || id === 'gaps' && detail.modelDiagnosticsVersion !== 1 ||
-                      id === 'understanding' && detail.modelUnderstandingVersion !== 1 || id === 'history' && detail.modelLearningHistoryVersion !== 1 || id === 'chain' && detail.modelChainVersion !== 1, onClick: () => setTab(id) }, label))),
                 detail.modelUnderstandingVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '个人表述版本尚未就绪：当前服务不支持保存我的理解；现有阅读与练习仍可使用。') : null,
                 detail.modelLearningHistoryVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '学习记录统计版本尚未就绪；当前服务未支持可追溯统计，现有预测和结果记录仍可使用。') : null,
                 detail.modelChainVersion !== 1 ? h('p', { className: 'kg-model-meta', role: 'status' }, '两步推测版本尚未就绪；当前服务不支持槽位承接检查，现有阅读与比较仍可使用。') : null,
@@ -4581,10 +4626,6 @@
                   h('div', { className: 'kg-model-toolbar' }, h('span', null, '关联材料 ' + (detail.relatedTotal ? materialOffset + 1 : 0) + '–' + (materialOffset + detail.related.length) + ' / ' + detail.relatedTotal),
                     h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset === 0, onClick: () => setMaterialOffset(Math.max(0, materialOffset - 20)) }, '上一页材料'),
                     h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset + detail.related.length >= detail.relatedTotal, onClick: () => setMaterialOffset(materialOffset + 20) }, '下一页材料'))) : null,
-                tab === 'source' ? h('div', { className: 'kg-model-source' },
-                  h('h4', null, '模型引用'), evidence(detail.model),
-                  selectedMaterial ? evidence(detail.related.find(item => item.nodeId === selectedMaterial) || { citations: [] }) : null,
-                  h('h4', null, '相关原文上下文'), h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: locateInDetail })) : null,
                 tab === 'review' ? h('div', null,
                   h('p', { className: 'kg-model-meta' }, '方向核对不代表事实成立；错误示例和转写内容仍需分别复核。'),
                   detail.ports.filter(item => item.editable).map(item => h('div', { key: item.edgeIndex }, h('label', { className: 'kg-model-review-row' },
@@ -4601,7 +4642,21 @@
                     h('p', null, item.text + (item.nodeId ? ' · ' + item.nodeId : '') + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对')),
                     h('details', null, h('summary', null, '本次修改的映射原文'), evidence(previewPorts.get(item.edgeKey) || {})))),
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null)))
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null),
+              sourceOpen ? h('aside', { className: 'kg-model-source-pane', 'aria-label': '当前模型的原文依据', tabIndex: -1, ref: sourceRef },
+                h('div', { className: 'kg-model-toolbar' }, h('h4', null, '原文依据'),
+                  h('button', { type: 'button', className: 'kg-secondary', onClick: closeSource }, '收起原文')),
+                detail ? h(React.Fragment, null,
+                  h('p', { className: 'kg-model-meta' }, detail.model.nodeId + ' · 版本 ' + revision),
+                  h('p', { className: 'kg-model-meta' }, '摘录及上下文供核对，不代表映射已验证。点击段号可在知识图与原文中定位。'),
+                  h('div', { className: 'kg-model-source', ref: sourceContentRef, tabIndex: 0, role: 'region', 'aria-label': '模型引文与原文上下文' },
+                    sourceMaterial ? h('section', { 'aria-label': '所选材料引用' }, h('h4', null, '所选材料引用'),
+                      h('p', { className: 'kg-model-meta' }, sourceMaterial.nodeId), evidence(sourceMaterial, locateInSource)) : null,
+                    h('h4', null, '模型引用'), evidence(detail.model, locateInSource),
+                    h('h4', null, '相关原文上下文'),
+                    detail.sourceUnits?.length ? h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: locateInSource })
+                      : h('p', { className: 'kg-model-meta' }, '当前模型暂无可展示的原文上下文'))) :
+                  h('p', { role: 'status' }, detailError ? '当前模型的依据未能读取，请重新读取模型。' : modelId ? '正在读取当前模型的依据…' : '选择模型后查看依据')) : null))))
       }
 
       function ConnectionSourceUnits({ units, documentId, revision, onLocate }) {
