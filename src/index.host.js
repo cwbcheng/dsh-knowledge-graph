@@ -7650,21 +7650,21 @@ function createHostPlugin(graphContractOnly) {
           }
           return found
         }
-        const provenance = (value, units, path) => {
+        const provenance = (value, units, path, unfinished = false) => {
           object(value, ['kind', 'paragraph', 'quote', 'note'], path)
           if (!['unknown', 'source', 'user', 'ai'].includes(value.kind)) fail(path, 'invalid provenance kind')
           string(value.quote, 2000, path + '.quote')
           string(value.note, 1000, path + '.note')
           if (value.paragraph !== null && (!Number.isSafeInteger(value.paragraph) || value.paragraph < 0)) fail(path, 'invalid paragraph')
-          if (value.kind === 'source' && (!value.quote.trim() || value.paragraph === null)) fail(path, 'source fields need a quote and paragraph')
+          if (!unfinished && value.kind === 'source' && (!value.quote.trim() || value.paragraph === null)) fail(path, 'source fields need a quote and paragraph')
           if (value.quote && units && !units.get(value.paragraph)?.includes(value.quote)) fail(path, 'quote does not match the stored source unit')
         }
-        const field = (value, units, path) => {
+        const field = (value, units, path, unfinished) => {
           object(value, ['text', 'provenance'], path)
           string(value.text, 2000, path + '.text')
-          provenance(value.provenance, units, path + '.provenance')
+          provenance(value.provenance, units, path + '.provenance', unfinished)
         }
-        const validate = (value, nodes, units, shapeOnly = false) => {
+        const validateStructure = (value, nodes, units, shapeOnly, unfinished = false) => {
           if (!shapeOnly && (!nodes?.get || !units?.get)) fail('modelStructure', 'canonical node and source indexes are required')
           object(value, ['version', 'identity', 'slots', 'branches', 'examples'], 'modelStructure')
           if (JSON.stringify(value).length > 200000) fail('modelStructure', 'payload exceeds 200000 characters')
@@ -7681,19 +7681,19 @@ function createHostPlugin(graphContractOnly) {
             if (!shapeOnly && (concept?.type !== 'concept' || concept.state === 'rejected')) fail(path, 'endpoint must reference an existing non-rejected concept')
             if (!['input', 'output', 'unknown'].includes(slot.role)) fail(path, 'invalid role')
             string(slot.label, 200, path + '.label'); string(slot.unit, 80, path + '.unit'); string(slot.state, 200, path + '.state')
-            provenance(slot.provenance, units, path + '.provenance')
+            provenance(slot.provenance, units, path + '.provenance', unfinished)
           }
           for (const branch of value.branches) {
             const path = 'branch ' + branch.id
             object(branch, ['id', 'label', 'condition', 'mapping', 'boundary'], path)
-            string(branch.label, 200, path + '.label', true)
-            for (const key of ['condition', 'mapping', 'boundary']) field(branch[key], units, path + '.' + key)
+            string(branch.label, 200, path + '.label', !unfinished)
+            for (const key of ['condition', 'mapping', 'boundary']) field(branch[key], units, path + '.' + key, unfinished)
           }
           for (const example of value.examples) {
             const path = 'example ' + example.id
             object(example, ['id', 'title', 'scenario', 'branchId', 'inputs', 'outputs', 'reasoning', 'provenance'], path)
-            string(example.title, 200, path + '.title', true)
-            string(example.scenario, 2000, path + '.scenario', true)
+            string(example.title, 200, path + '.title', !unfinished)
+            string(example.scenario, 2000, path + '.scenario', !unfinished)
             string(example.reasoning, 2000, path + '.reasoning')
             string(example.branchId, 80, path + '.branchId')
             if (example.branchId && !branchIds.has(example.branchId)) fail(path, 'branch no longer exists')
@@ -7706,10 +7706,14 @@ function createHostPlugin(graphContractOnly) {
                 seen.add(binding.slotId); string(binding.value, 1000, path + '.value')
               }
             }
-            provenance(example.provenance, units, path + '.provenance')
+            provenance(example.provenance, units, path + '.provenance', unfinished)
           }
           return value
         }
+        const validate = (value, nodes, units, shapeOnly = false) => validateStructure(value, nodes, units, shapeOnly)
+        // Cache recovery may retain unfinished text/source fields, never malformed
+        // containers, identities or bindings. Diagnosis and canonical writes stay strict.
+        const validateDraft = value => validateStructure(value, null, null, true, true)
         const errors = (graph, units) => {
           const nodes = new Map((graph.nodes || []).map(node => [node.id, node])), out = []
           for (const node of nodes.values()) {
@@ -7866,7 +7870,7 @@ function createHostPlugin(graphContractOnly) {
         }
         // Only for the editor's owned JSON data, not raw canonical objects or getters.
         const diagnoseOwnedDraft = (value, context) => diagnose(value, context, null, null, true)
-        return { validate, validateShape: value => validate(value, null, null, true), errors, exampleStatus, prepareExampleStatus, diagnose, diagnoseOwnedDraft, fieldFromSource }
+        return { validate, validateShape: value => validate(value, null, null, true), validateDraft, errors, exampleStatus, prepareExampleStatus, diagnose, diagnoseOwnedDraft, fieldFromSource }
       })()
       // <<< END MODEL STRUCTURE TOOLS <<<
 
