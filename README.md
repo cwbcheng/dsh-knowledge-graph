@@ -11,6 +11,8 @@
 
 ## 它能做什么
 
+- 联结模型结构草稿编辑后，格式校验通过的较大草稿在本次诊断内共享例子绑定状态；缺少输入输出、未配对分支、来源及条件边界提示保持完整。40 槽位、40 分支、100 例子的重复绑定匹配读取从 58232 降至 0，改用一次例子状态计算；无效、小型草稿和原始对象保留原诊断路径。`node scripts/kg-model-draft-bindings-benchmark.mjs 19bd4ec` 比较完整报告、原始读取/异常顺序及生成编辑器的编辑事件与渲染耗时（含草稿复制和存储，不含真实浏览器 DOM）。索引不跨编辑保留，写入仍需预览、明确确认及版本校验。
+
 - 联结模型诊断保留端点身份的类型，缺失 ID、`null`、数字和对象不会再与同名字符串概念相等；身份或角色中含分隔符也不会掩盖差异。差异只提示分别核对，不自动补边或证明映射。`node scripts/kg-model-diagnostic-identities-compare.mjs c2c37bc` 比较原始读取与异常顺序、完整诊断和 25 次交替源码计时；新增回归覆盖生成草稿、Host/SQLite HTTP、版本和只读学习边界。
 
 - **后台生成知识图**：输入任意正文（章节、技术文档、学习笔记…），后台任务模式调用 LLM，完成后保存知识图。支持最长约 100 万字符的书级正文；`documentId` 是随机稳定的逻辑文档 UUID，`sourceId` 是全文 SHA-256 的不可变版本身份，`chunkId` 绑定 sourceId + batch + paragraph range，因此不同文档/追加版本不会因局部 `chunk-0001` 重号而覆盖。常驻模式把全文、canonical graph 与无损 checkpoint 保存在 SQLite；刷新后浏览器只凭 `documentId/runId` 恢复，只有 Host 重启遗留的 `running` 任务才允许从 checkpoint 续跑，显式 `failed/cancelled` 任务绝不自动重试。
