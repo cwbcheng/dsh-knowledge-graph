@@ -21,7 +21,8 @@ export function draftDiagnosisView(source, harness, { observe, transform, consol
     sessionStorage: { getItem: key => cache.get(key) || null, setItem: (key, value) => cache.set(key, value), removeItem: key => cache.delete(key) },
     setTimeout: fn => { timers.set(++timerId, fn); return timerId }, clearTimeout: id => timers.delete(id),
     __observeDraft: (spec, ports, names, report) => { observe({ spec, ports, names, report }); return report } }
-  const call = 'MODEL_STRUCTURE_TOOLS.diagnose(spec, { ports: legacyPorts, names: endpointNames })'
+  const method = source.includes('MODEL_STRUCTURE_TOOLS.diagnoseOwnedDraft(spec,') ? 'diagnoseOwnedDraft' : 'diagnose'
+  const call = 'MODEL_STRUCTURE_TOOLS.' + method + '(spec, { ports: legacyPorts, names: endpointNames })'
   if (observe) { assert.equal(source.split(call).length, 2); source = source.replace(call, '__observeDraft(spec, legacyPorts, endpointNames, ' + call + ')') }
   runInNewContext(source, context)
   const { ModelStructureEditor, ModelGapList } = context.window.KGViewer
