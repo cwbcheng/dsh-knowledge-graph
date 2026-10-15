@@ -341,6 +341,44 @@ writing.props.active = true; writing.render()
 assert.equal(writing.requests.length, 4, 'Returning after a confirmed write cannot reuse its pre-write responses')
 writing.unmount()
 
+// Direction choices and their old evidence survive an external revision; a
+// late preview (success or failure) cannot approve them for the new version.
+for (const outcome of ['success', 'failure']) {
+  const stale = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'wrong', tab: 'review' } })
+  for (const request of stale.requests.slice()) await stale.resolve(request)
+  const pendingWrites = []
+  stale.props.onRoles = args => new Promise((resolve, reject) => pendingWrites.push({ args, resolve, reject }))
+  stale.render()
+  const oldSelect = all(stale.tree, node => node.props['aria-label'] === '端点角色 distance')[0]
+  oldSelect.props.onChange({ target: { value: 'output' } }); stale.render()
+  const oldPreview = stale.control('预览方向修改')
+  stale.click('预览方向修改')
+  stale.props.revision = 2; stale.render(false)
+  oldPreview.props.onClick(); oldSelect.props.onChange({ target: { value: 'input' } })
+  assert.equal(pendingWrites.length, 1, 'Old-version callbacks are fenced during render, before effect cleanup')
+  stale.render()
+  const newer = structuredClone(fixture)
+  newer.revision = 2
+  newer.graph.edges = newer.graph.edges.filter(edge => !(edge.fromNodeId === 'wrong' && edge.toNodeId === 'distance'))
+  for (const request of stale.requests.filter(request => request.args.expectedRevision === 2)) {
+    request.resolve(query(newer, request.args)); await stale.settle()
+  }
+  assert(!all(stale.tree, node => node.props['aria-label'] === '端点角色 distance').length, 'The old endpoint was actually removed')
+  if (outcome === 'success') pendingWrites[0].resolve({ signature: 'old-version-approval', diff: [] })
+  else pendingWrites[0].reject(new Error('late old direction failure'))
+  await stale.settle()
+  const retained = all(stale.tree, node => node.props['aria-label'] === '旧版方向修改')[0]
+  assert(retained && text(retained).includes('distance') && text(retained).includes('输出'), 'A deleted endpoint remains identifiable in the old draft')
+  assert(!text(stale.tree).includes('late old direction failure'))
+  assert(!all(stale.tree, node => node.type === 'button' && text(node) === '确认保存方向').length)
+  assert(stale.control('预览方向修改').props.disabled)
+  assert(!stale.control('放弃旧版方向修改').props.disabled, 'Settling an obsolete request releases the discard action')
+  stale.click('放弃旧版方向修改')
+  assert(!all(stale.tree, node => node.props['aria-label'] === '旧版方向修改').length)
+  assert.equal(pendingWrites.length, 1, 'Discarding never writes or automatically re-previews')
+  stale.unmount()
+}
+
 // Exercise the child hooks with props from the actual mounted parent. Testing
 // the children alone misses a parent that never tells them it became hidden.
 const followChild = (parent, name) => {
@@ -401,4 +439,5 @@ console.log(JSON.stringify({ groupedVisibleActions: true, learningAndEditorStayA
   hiddenParentReadsDeferred: true, parentPartialCompletionCases: 4, completedDetailMountPreserved: true,
   parentFailuresRetried: true, explicitRefreshAndRevisionReadAgain: true,
   hiddenDebounceDeferred: true, explicitDirectionWriteLifecyclePreserved: true,
+  staleDirectionDraftRetained: true, removedEndpointRetained: true, lateDirectionResultsFenced: true,
   keyboardFocus: true, canonicalDataUnchanged: true, browserGeometryNotTested: true }))

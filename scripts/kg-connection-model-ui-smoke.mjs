@@ -248,8 +248,71 @@ try {
   assert.equal(harness.store.getDocumentRevision(identityDoc.documentId), 2)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   for (const state of owner.slots) state.cleanup?.()
+
+  // An external revision must not silently rebase unsaved role choices, even
+  // when the same canonical endpoint still exists under the same name.
+  owner.slots = []; owner.effects = []; updates.splice(0); requests.splice(0); timers.clear()
+  const latestController = async () => {
+    const loaded = await harness.post({ documentId: identityDoc.documentId, includeSourceText: false }, 'document-export')
+    const view = { graph: loaded.graph, sourceText: identityDoc.sourceText }
+    return createModelReviewController({ resultView: view, currentResultRef: { current: view },
+      graphRevisionRef: { current: loaded.revision }, graphCommitQueueRef: { current: Promise.resolve() }, verifyBusyRef: { current: false } },
+    { call: (method, args) => harness.post(args, method) })
+  }
+  let currentController = await latestController()
+  const scopedRequests = []
+  Object.assign(props, { revision: 2, focusRequest: null, onRoles: args => { scopedRequests.push(args); return currentController(args) } })
+  render(); await resolveIdentity(requests[0]); await resolveIdentity(requests.find(request => request.args.modelId === 'mass-quality'))
+  click('核对方向'); editRole('raw-mass', 'input')
+  const oldEdit = roleSelect('raw-mass').props.onChange, oldPreview = button('预览方向修改').props.onClick
+  click('预览方向修改'); await settleCanonical()
+  assert(button('确认保存方向'))
+  const external = await latestController(), externalChanges = { 'mass-quality>raw-mass:maps_between': 'output' }
+  const externalPreview = await external({ modelId: 'mass-quality', revision: 2, changes: externalChanges, preview: null })
+  await external({ modelId: 'mass-quality', revision: 2, changes: externalChanges, preview: externalPreview })
+  const externalSaved = structuredClone(harness.store.getDocument(identityDoc.documentId))
+  assert.equal(externalSaved.revision, 3)
+  currentController = await latestController(); props.revision = 3; render()
+  await resolveIdentity(requests.filter(request => !request.args.modelId).at(-1))
+  await resolveIdentity(requests.filter(request => request.args.modelId).at(-1))
+  assert(button('预览方向修改').props.disabled, 'A direction draft based on revision 2 must not be previewed against revision 3')
+  assert.equal(roleSelect('raw-mass').props.value, 'output', 'Current controls must display the current canonical role, not the stale choice')
+  assert(roleSelect('raw-mass').props.disabled)
+  const staleDraft = all(tree, el => el.props['aria-label'] === '旧版方向修改')[0]
+  assert(staleDraft && text(staleDraft).includes('第 2 版') && text(staleDraft).includes('第 3 版'))
+  assert(text(staleDraft).includes('raw-mass') && text(staleDraft).includes('输入'))
+  assert(text(staleDraft).includes(identityDoc.sourceUnits[1].text), 'Retain the exact old mapping evidence')
+  assert(text(staleDraft).includes('原文 P8') && text(staleDraft).includes(identityDoc.graph.source.id), 'Old evidence keeps its paragraph and source identity')
+  assert(!all(staleDraft, el => el.type === 'button' && text(el).startsWith('原文 P')).length, 'Old evidence must not navigate the current source')
+  const scopedBefore = scopedRequests.length
+  oldEdit({ target: { value: 'output' } }); oldPreview(); render(); await settleCanonical()
+  assert.equal(scopedRequests.length, scopedBefore, 'Retired version handlers cannot rebase or publish a draft')
+  assert.deepEqual(harness.store.getDocument(identityDoc.documentId), externalSaved)
+  context.window.confirm = () => false
+  click('放弃旧版方向修改')
+  assert(all(tree, el => el.props['aria-label'] === '旧版方向修改').length)
+  context.window.confirm = () => true
+  click('放弃旧版方向修改')
+  assert(!all(tree, el => el.props['aria-label'] === '旧版方向修改').length)
+  assert(!roleSelect('raw-mass').props.disabled)
+  assert.equal(roleSelect('raw-mass').props.value, 'output')
+  oldEdit({ target: { value: 'input' } }); oldPreview(); render(); await settleCanonical()
+  assert.equal(scopedRequests.length, scopedBefore, 'Discarding does not revive an old-version callback')
+  assert(button('预览方向修改').props.disabled)
+  editRole('raw-mass', 'input'); click('预览方向修改'); await settleCanonical()
+  assert.equal(scopedRequests.at(-1).revision, 3)
+  click('确认保存方向'); await settleCanonical()
+  const resaved = harness.store.getDocument(identityDoc.documentId)
+  assert.equal(resaved.revision, 4)
+  assert.deepEqual(resaved.nodes, externalSaved.nodes)
+  assert.deepEqual(resaved.edges, externalSaved.edges.map(edge => edge.toNodeId === 'raw-mass' ? { ...edge, role: 'input' } : edge))
+  assert.equal(resaved.sourceText, original.sourceText)
+  assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId)), sourceUnitsBefore)
+  assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
+  for (const state of owner.slots) state.cleanup?.()
 } finally { harness.stop() }
 console.log(JSON.stringify({ ok: true, staleResponsesRejected: true, previewApprovalInvalidation: true,
   errorRetry: true, wholeGraphSearch: true, sourceNavigation: true, unmountAborts: true,
   singleDirectionPreviewAndConfirmation: true, failedDirectionPreviewAndCommitRetry: true,
+  versionedDirectionDraft: true, oldDirectionEvidenceRetained: true, explicitCurrentVersionRecheck: true,
   sameNameDirectionIdentity: true, exactApprovalEvidence: true, actualCanonicalPreviewAndConfirmation: true, conditionsAndSourcePreserved: true }))
