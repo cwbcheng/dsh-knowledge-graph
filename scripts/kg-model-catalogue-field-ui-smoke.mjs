@@ -113,6 +113,12 @@ try {
     assert.equal(owner.requests.length, requestCount, 'Repeated focus does not need to refetch unchanged canonical detail')
     assert.equal(owner.fieldNavigation.at(-1).field, location.field)
     assert.equal(owner.fieldNavigation.at(-1).focus.preventScroll, true)
+    const beforeHide = owner.fieldNavigation.length
+    owner.props.active = false; owner.render()
+    assert.equal(owner.fieldNavigation.length, beforeHide, 'Hidden fields cannot steal focus')
+    owner.props.active = true; owner.render()
+    assert.equal(owner.fieldNavigation.length, beforeHide + 2, 'Returning restores the selected field focus and scroll')
+    assert.equal(owner.requests.length, requestCount, 'Returning reuses only the same version and field scope')
     assert(text(owner.tree).includes('记录文字命中，非适用性验证'))
     assert(!text(owner.tree).includes('条件已满足') && !text(owner.tree).includes('已掌握'))
     assert.equal(all(owner.tree, node => Object.hasOwn(node.props, 'dangerouslySetInnerHTML')).length, 0)
