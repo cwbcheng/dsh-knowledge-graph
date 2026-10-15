@@ -70,6 +70,82 @@ const mount = (options = {}) => {
   owner.unmount = () => owner.slots.forEach(state => state.cleanup?.())
   owner.render(); return owner
 }
+// The workbench mounts this panel before it is visible. An unopened workspace
+// must not read every model catalogue or let a late reply choose a model.
+const unopened = mount({ active: false })
+assert.equal(unopened.requests.length, 0, 'An unopened model workspace must not start catalogue/detail reads')
+unopened.props.revision = 2; unopened.render()
+assert.equal(unopened.requests.length, 0, 'Hidden revision changes must not start reads')
+unopened.props.active = true; unopened.render()
+assert.equal(unopened.requests.length, 1)
+assert.equal(unopened.requests[0].args.expectedRevision, 2)
+unopened.unmount()
+
+const beforeCleanup = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi' } })
+beforeCleanup.props.active = false; beforeCleanup.render(false)
+for (const request of beforeCleanup.requests) request.resolve(query(fixture, request.args))
+await Promise.resolve(); beforeCleanup.render(false)
+assert(!beforeCleanup.child('ModelStructureEditor'), 'A reply after the hidden render is retired even before effect cleanup')
+assert.equal(all(beforeCleanup.tree, node => node.props['data-model-catalogue-row']).length, 0)
+beforeCleanup.render(); beforeCleanup.unmount()
+
+// Cover partial completion as well as both pending/completed. Reuse only a
+// successful response for the identical read scope, keeping child drafts mounted.
+for (const completed of [[], ['catalogue'], ['detail'], ['catalogue', 'detail']]) {
+  const panel = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi', tab: 'structure' } })
+  const initialRequests = panel.requests.slice()
+  assert.equal(initialRequests.length, 2)
+  for (const request of initialRequests) {
+    if (completed.includes(request.args.modelId ? 'detail' : 'catalogue')) await panel.resolve(request)
+  }
+  const childBefore = panel.child('ModelStructureEditor')
+  panel.props.active = false; panel.render()
+  assert(initialRequests.every(request => request.signal.aborted), 'Hiding aborts both parent readers')
+  assert.equal(panel.requests.length, 2, 'Hiding cannot start another read')
+  for (const request of initialRequests) request.resolve({ error: { message: 'obsolete hidden parent reply' } })
+  await panel.settle()
+  assert(!text(panel.tree).includes('obsolete hidden parent reply'))
+  if (childBefore) assert.equal(panel.child('ModelStructureEditor').type, childBefore.type, 'Keep completed detail mounted while hidden')
+  panel.props.active = true; panel.render()
+  const resumed = panel.requests.slice(2)
+  assert.equal(resumed.length, 2 - completed.length, 'Resume exactly the incomplete parent reads')
+  if (childBefore) assert.equal(panel.child('ModelStructureEditor').type, childBefore.type, 'Returning cannot unmount an existing draft')
+  for (const request of resumed) await panel.resolve(request)
+  assert(panel.child('ModelStructureEditor')); assert.equal(panel.snapshots.at(-1).tab, 'structure')
+  const refresh = all(panel.tree, node => node.props['aria-label'] === '重新读取模型')[0]
+  refresh.props.onClick(); panel.render()
+  assert.equal(panel.requests.length, 6 - completed.length, 'Explicit refresh must bypass completed responses')
+  panel.unmount()
+}
+
+const retry = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi' } })
+retry.requests.forEach(request => request.resolve({ error: { message: 'current parent read failed' } }))
+await retry.settle(); assert(text(retry.tree).includes('current parent read failed'))
+retry.props.active = false; retry.render(); retry.props.active = true; retry.render()
+assert.equal(retry.requests.length, 4, 'Failed reads retry on return')
+for (const request of retry.requests.slice(2)) await retry.resolve(request)
+assert(!text(retry.tree).includes('current parent read failed'))
+retry.props.active = false; retry.render(); retry.props.revision = 2; retry.render(false)
+assert(!retry.child('ModelStructureEditor'), 'A new version cannot reuse mounted old-version detail')
+retry.render(); assert.equal(retry.requests.length, 4)
+retry.props.active = true; retry.render()
+assert.equal(retry.requests.length, 6)
+assert(retry.requests.slice(4).every(request => request.args.expectedRevision === 2))
+retry.unmount()
+
+const debounced = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi' } })
+for (const request of debounced.requests.slice()) await debounced.resolve(request)
+all(debounced.tree, node => node.props['aria-label'] === '搜索联结模型')[0].props.onChange({ target: { value: 'new search' } })
+debounced.render(); debounced.props.active = false; debounced.render()
+await new Promise(resolve => setTimeout(resolve, 240)); await debounced.settle()
+assert.equal(debounced.requests.length, 2, 'A pending debounce must not fetch a hidden catalogue')
+assert.equal(all(debounced.tree, node => node.props['data-model-catalogue-row']).length, 0, 'Old filter results cannot stand in for the new scope')
+debounced.props.active = true; debounced.render()
+assert.equal(debounced.requests.length, 3)
+assert.equal(debounced.requests.at(-1).args.query, 'new search')
+assert(debounced.child('ModelStructureEditor'), 'Changing the catalogue filter cannot discard the current detail')
+debounced.unmount()
+
 const owner = mount()
 await owner.resolve(owner.requests[0]); await owner.resolve(owner.requests.find(item => item.args.modelId === 'taxi'))
 assert(owner.control('阅读').props['aria-pressed'])
@@ -241,6 +317,30 @@ for (const next of [{ revision: 2 }, { documentId: 'different-document' }]) {
   scoped.unmount()
 }
 
+// A hide/show retires only readers. A user-requested write still publishes its
+// preview/result for the same read scope, with the existing explicit confirmation.
+const writing = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'wrong', tab: 'review' } })
+for (const request of writing.requests.slice()) await writing.resolve(request)
+const explicitWrites = []
+writing.props.onRoles = args => new Promise(resolve => explicitWrites.push({ args, resolve }))
+writing.render()
+all(writing.tree, node => node.props['aria-label'] === '端点角色 distance')[0].props.onChange({ target: { value: 'output' } })
+writing.render(); writing.click('预览方向修改')
+writing.props.active = false; writing.render()
+const previewResult = { signature: 'retained-preview', diff: [], revision: 1 }
+assert.equal(explicitWrites[0].args.preview, null)
+explicitWrites[0].resolve(previewResult); await writing.settle()
+writing.props.active = true; writing.render()
+assert.equal(explicitWrites.length, 1, 'Visibility cannot auto-confirm a direction preview')
+writing.click('确认保存方向')
+assert.equal(explicitWrites[1].args.preview, previewResult)
+writing.props.active = false; writing.render()
+explicitWrites[1].resolve({ revision: 2 }); await writing.settle()
+assert.equal(writing.requests.length, 2, 'A confirmed hidden write defers its refresh read')
+writing.props.active = true; writing.render()
+assert.equal(writing.requests.length, 4, 'Returning after a confirmed write cannot reuse its pre-write responses')
+writing.unmount()
+
 // Exercise the child hooks with props from the actual mounted parent. Testing
 // the children alone misses a parent that never tells them it became hidden.
 const followChild = (parent, name) => {
@@ -298,4 +398,7 @@ console.log(JSON.stringify({ groupedVisibleActions: true, learningAndEditorStayA
   fieldProvenanceAdjacent: true, sourceFollowsSelection: true, staleEvidenceHiddenBeforeEffects: true,
   sourceCloseCancelsNavigation: true, unknownRolesSeparate: true, sourcePreferenceRestoredWithoutPayload: true,
   hiddenChildReadsCancelled: activityCases.length, reactivationFencesLateReplies: true,
+  hiddenParentReadsDeferred: true, parentPartialCompletionCases: 4, completedDetailMountPreserved: true,
+  parentFailuresRetried: true, explicitRefreshAndRevisionReadAgain: true,
+  hiddenDebounceDeferred: true, explicitDirectionWriteLifecyclePreserved: true,
   keyboardFocus: true, canonicalDataUnchanged: true, browserGeometryNotTested: true }))

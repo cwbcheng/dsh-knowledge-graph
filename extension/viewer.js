@@ -4189,7 +4189,7 @@
         const [query, setQuery] = useState(initial.query), [search, setSearch] = useState(initial.search)
         const [section, setSection] = useState(initial.section), [offset, setOffset] = useState(initial.offset)
         const [needsReview, setNeedsReview] = useState(initial.needsReview), [concept, setConcept] = useState(initial.concept), [role, setRole] = useState(initial.role)
-        const [page, setPage] = useState(null), [modelId, setModelId] = useState(initial.modelId), [loadedDetail, setDetail] = useState(null)
+        const [loadedPage, setPage] = useState(null), [modelId, setModelId] = useState(initial.modelId), [loadedDetail, setDetail] = useState(null)
         const [materialOffset, setMaterialOffset] = useState(initial.materialOffset), [tab, setTab] = useState(initial.tab)
         const [exercise, setExercise] = useState(initial.exercise)
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
@@ -4209,6 +4209,8 @@
         const [fieldRequest, setFieldRequest] = useState(0)
         const [selectedSlot, setSelectedSlot] = useState(initial.selectedSlot), [selectedExample, setSelectedExample] = useState(initial.selectedExample)
         const [structureFocus, setStructureFocus] = useState(null)
+        const readActivity = useRef({ active })
+        if (readActivity.current.active !== active) readActivity.current = { active }
         const detailReadScope = JSON.stringify([documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
         // Hide the previous selection during render, before an effect starts the next read.
         const detail = loadedDetail?.scope === detailReadScope ? loadedDetail.value : null
@@ -4292,6 +4294,8 @@
         const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
         const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
         const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
+        const directoryReadScope = JSON.stringify([directoryScope, reload])
+        const page = loadedPage?.scope === directoryReadScope ? loadedPage.value : null
         const publishBrowseState = () => {
           const state = connectionModelBrowseState({ documentId, revision, query, search, section, offset, needsReview, concept, role,
             modelId, materialOffset, tab, sourceOpen, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial,
@@ -4328,20 +4332,25 @@
         useEffect(publishBrowseState, [documentId, revision, query, search, section, offset, needsReview, concept, role, modelId, materialOffset,
           tab, sourceOpen, exercise, branchId, exampleOffset, focusField, selectedSlot, selectedExample, selectedMaterial, focusRequest])
         useEffect(() => {
+          // A completed response belongs to this exact version/query. Keeping
+          // it mounted across a hide/show also preserves private child drafts.
+          if (!active || page) { setLoading(false); return }
           const id = ++sequence.current, abort = new AbortController()
+          const opening = readActivity.current
+          const isCurrent = () => id === sequence.current && !abort.signal.aborted && readActivity.current === opening
           setLoading(true); setError(''); setPage(null)
           api.current.load({ documentId, expectedRevision: revision, query: search, sectionId: section,
             offset, needsReview, conceptId: concept?.nodeId || '', role }, abort.signal).then(result => {
-            if (id !== sequence.current || abort.signal.aborted) return
+            if (!isCurrent()) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision) throw new Error('模型目录版本不一致')
             directoryPageScope.current = directoryScope
-            setPage(result)
+            setPage({ scope: directoryReadScope, value: result })
             setModelId(current => current || result.items[0]?.nodeId || '')
-          }).catch(reason => { if (id === sequence.current && !abort.signal.aborted) setError(reason.message || '模型目录读取失败') })
-            .finally(() => { if (id === sequence.current && !abort.signal.aborted) setLoading(false) })
+          }).catch(reason => { if (isCurrent()) setError(reason.message || '模型目录读取失败') })
+            .finally(() => { if (isCurrent()) setLoading(false) })
           return () => { abort.abort(); sequence.current++ }
-        }, [documentId, revision, search, section, offset, needsReview, concept?.nodeId, role, reload])
+        }, [documentId, revision, search, section, offset, needsReview, concept?.nodeId, role, reload, active])
         useEffect(() => {
           const element = directoryRef.current
           if (!element || loading || error || !page || directoryPageScope.current !== directoryScope || query !== search) return
@@ -4361,20 +4370,27 @@
           return () => { active = false; observer.disconnect() }
         }, [page, loading, error, directoryScope, query])
         useEffect(() => {
+          // Do not clear a valid detail on reactivation: unmounting its editor
+          // would discard an in-memory draft when session storage is unavailable.
+          if (!active || detail) { setDetailLoading(false); return }
           const id = ++detailSequence.current, abort = new AbortController()
+          const opening = readActivity.current
+          const isCurrent = () => id === detailSequence.current && !abort.signal.aborted && readActivity.current === opening
           setDetail(null); setDetailError(''); setRefreshError(''); setPreview(null); setNotice('')
           if (!modelId) { setDetailLoading(false); return () => abort.abort() }
           setDetailLoading(true)
           api.current.load({ documentId, expectedRevision: revision, modelId, offset: materialOffset, branchId, exampleOffset }, abort.signal).then(result => {
-            if (id !== detailSequence.current || abort.signal.aborted) return
+            if (!isCurrent()) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || result.model?.nodeId !== modelId) throw new Error('模型详情版本不一致')
             if (result.structure && !Array.isArray(result.legacyPorts)) throw new Error('原有图谱端点记录读取不完整，请重新读取模型。')
             setDetail({ scope: detailReadScope, value: result })
-          }).catch(reason => { if (id === detailSequence.current && !abort.signal.aborted) setDetailError(reason.message || '模型详情读取失败') })
-            .finally(() => { if (id === detailSequence.current && !abort.signal.aborted) setDetailLoading(false) })
-          return () => { abort.abort(); detailSequence.current++; writeSequence.current++ }
-        }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
+          }).catch(reason => { if (isCurrent()) setDetailError(reason.message || '模型详情读取失败') })
+            .finally(() => { if (isCurrent()) setDetailLoading(false) })
+          return () => { abort.abort(); detailSequence.current++ }
+        }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, active])
+        // Visibility cancels reads, not an explicitly requested direction write.
+        useEffect(() => () => { writeSequence.current++ }, [detailReadScope])
         useEffect(() => { setRoles({}) }, [documentId, modelId])
         const select = (id, nextTab = 'materials') => {
           if (id === modelId) { setTab(nextTab); setFocusField(''); return true }
@@ -4408,10 +4424,10 @@
         const activeField = chosenHit && detail.structure?.branches?.some(branch => branch.id === chosenHit.branchId
           && branch[chosenHit.field]?.provenance?.kind === chosenHit.provenanceKind) ? focusField : ''
         useEffect(() => {
-          if (!activeField || tab !== 'materials') return
+          if (!active || !activeField || tab !== 'materials') return
           fieldRef.current?.scrollIntoView?.({ block: 'nearest' })
           fieldRef.current?.focus?.({ preventScroll: true })
-        }, [detail, page, modelId, branchId, focusField, tab, activeField, fieldRequest])
+        }, [detail, page, modelId, branchId, focusField, tab, activeField, fieldRequest, active])
         const openField = (id, item) => {
           if (saving || !select(id)) return
           setBranchId(item.branchId); setExampleOffset(0); setFocusField(item.field)
