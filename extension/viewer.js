@@ -4290,7 +4290,7 @@
           setSourceError('')
           return locateInDetail(value, isCurrent)
         }, reason => setSourceError(reason.message || '原文定位失败'), stillCurrent)
-        const sequence = useRef(0), detailSequence = useRef(0), writeSequence = useRef(0)
+        const sequence = useRef(0), detailSequence = useRef(0), writeSequence = useRef(0), writePending = useRef(false)
         const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
         const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
         const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
@@ -4461,7 +4461,10 @@
           } catch (reason) { if (isCurrent()) setRefreshError(reason.message || '操作未完成') }
         }
         const reviewRoles = async commit => {
-          if (saving || busy || !detail || !api.current.onRoles) return
+          if (writePending.current || saving || busy || !detail || !api.current.onRoles) return
+          // Admit once before React publishes the disabled buttons. A duplicate
+          // confirmation would otherwise queue behind a successful version CAS.
+          writePending.current = true
           const id = ++writeSequence.current
           setSaving(true); setDetailError(''); setNotice('')
           try {
@@ -4470,7 +4473,7 @@
             if (commit) { setPreview(null); setRoles({}); setNotice('方向已保存'); setReload(value => value + 1) }
             else setPreview(result)
           } catch (reason) { if (id === writeSequence.current) { setPreview(null); setDetailError(reason.message || '方向未保存') } }
-          finally { setSaving(false) }
+          finally { writePending.current = false; setSaving(false) }
         }
         const refButton = (reference, onLocate) => h('button', { type: 'button', className: 'kg-secondary',
           onClick: () => onLocate({ ...reference, documentId, revision, sourceQuoteOnly: true, sourceCitation: true }) }, '原文 P' + (reference.paragraph + 1))
