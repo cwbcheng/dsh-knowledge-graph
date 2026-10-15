@@ -112,6 +112,7 @@
 .kg-models .kg-consume-tabs { border-radius: 6px; flex-wrap: wrap; }
 .kg-models .kg-consume-tabs button { border-radius: 4px; }
 .kg-model-toolbar button[aria-pressed=true], .kg-models button[aria-pressed=true] { background: rgba(8,145,178,.12); color: #08738c; border-color: #0891b2; }
+@media (prefers-color-scheme: dark) { .kg-models button[aria-pressed=true] { color: #67e8f9; border-color: #22d3ee; } }
 .kg-models summary { cursor: pointer; }
 .kg-model-workspace { display: grid; grid-template-columns: minmax(0,1fr); min-height: 430px; }
 .kg-model-directory { border-bottom: 1px solid var(--kg-border); max-height: 220px; overflow: auto; }
@@ -127,10 +128,26 @@
 .kg-model-detail [data-model-field-hit] mark { background: #fef3c7; color: inherit; }
 .kg-query-literal-hit { background: #fef3c7; color: inherit; padding: 0; }
 .kg-model-detail { container: kg-model-detail / inline-size; padding: 12px 0 16px; min-width: 0; overflow-wrap: anywhere; }
-.kg-model-detail h3, .kg-model-detail h4 { font-size: 14px; margin: 8px 0; }
-.kg-model-detail p { margin: 6px 0; }
+.kg-model-detail h3 { font-size: 22px; line-height: 1.4; margin: 12px 0; }
+.kg-model-detail h4 { font-size: 15px; line-height: 1.5; margin: 10px 0; }
+.kg-model-detail p { margin: 8px 0; }
+.kg-model-detail-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 20px; align-items: start; }
+.kg-model-content { container: kg-model-detail / inline-size; min-width: 0; font-size: 15px; line-height: 1.65; }
+.kg-model-task-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-block: 1px solid var(--kg-border); padding: 10px 0; margin-bottom: 12px; }
+.kg-model-task-nav [role=group] { display: flex; flex-wrap: wrap; gap: 6px; }
+.kg-model-task-nav button, .kg-model-task-links button { min-height: 36px; padding: 7px 12px; font-size: 14px; }
+.kg-model-task-nav > button { margin-left: auto; }
+.kg-model-task-links { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 12px; }
+.kg-model-task-links[hidden] { display: none; }
+.kg-models button:focus-visible, .kg-models summary:focus-visible, .kg-model-source-pane:focus-visible, .kg-model-source-pane [role=region]:focus-visible { outline: 2px solid #0891b2; outline-offset: 3px; }
+.kg-model-source-pane { min-width: 0; border: 1px solid var(--kg-border); border-radius: 8px; padding: 14px; background: var(--kg-edge-label-bg); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.kg-model-source-pane .kg-model-toolbar { padding-top: 0; justify-content: space-between; }
+.kg-model-source-pane h4 { margin-top: 0; }
+.kg-model-source-pane .kg-model-source { max-height: 60vh; overflow: auto; scrollbar-gutter: stable; }
+.kg-model-unknown { border: 1px dashed var(--kg-border); padding: 12px; margin-block: 14px; }
+.kg-model-boundary { border-left: 3px solid #b87b15; padding-left: 10px; }
 .kg-model-flow { display: grid; grid-template-columns: minmax(0,1fr); gap: 6px; margin: 14px 0; align-items: start; }
-.kg-model-flow section { min-width: 0; border-top: 3px solid #0891b2; padding: 8px 0; }
+.kg-model-flow section { min-width: 0; border-top: 3px solid #0891b2; padding: 12px 0; }
 .kg-model-flow section:nth-of-type(2) { border-color: #be5677; }
 .kg-model-flow section:nth-of-type(3) { border-color: #27885e; }
 .kg-model-arrow { align-self: center; justify-self: center; width: 20px; height: 27px; line-height: 27px; text-align: center; font-size: 18px; transform: rotate(90deg); pointer-events: none; }
@@ -206,6 +223,10 @@
   .kg-model-arrow { transform: none; }
   .kg-models .kg-model-learning-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .kg-models .kg-model-understanding .kg-model-learning-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@container kg-model-detail (min-width: 800px) {
+  .kg-model-detail-layout[data-source-open=true] { grid-template-columns: minmax(0,1fr) minmax(280px,.7fr); }
+  .kg-model-source-pane { position: sticky; top: 12px; }
 }
 .kg-learning-feedback ul { margin: 6px 0; padding-left: 20px; }
 .kg-section-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }

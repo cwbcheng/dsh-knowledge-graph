@@ -152,7 +152,7 @@ try {
 
   for (const transition of ['tab', 'model', 'branch', 'revision', 'document', 'inactive-return']) {
     const scoped = await mount(navigation()); await fail(scoped)
-    if (transition === 'tab') await scoped.click('原文依据')
+    if (transition === 'tab') await scoped.click('模型比较')
     else if (transition === 'model') await scoped.select('source-fields')
     else if (transition === 'branch') {
       await scoped.click('Recorded qualified branch')
@@ -177,7 +177,7 @@ try {
   for (const transition of ['tab', 'model-return', 'inactive-return', 'revision', 'document', 'unmount']) {
     const pendingNav = navigation(), pending = await mount(pendingNav)
     pendingNav.paused = true; await clickField(pending, 'condition')
-    if (transition === 'tab') await pending.click('原文依据')
+    if (transition === 'tab') await pending.click('模型比较')
     else if (transition === 'model-return') { await pending.select('source-fields'); await pending.select('source-duplicate') }
     else if (transition === 'inactive-return') { pending.props.active = false; await pending.settle(); pending.props.active = true; await pending.settle() }
     else if (transition === 'unmount') pending.unmount()

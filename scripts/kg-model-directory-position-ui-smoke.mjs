@@ -177,7 +177,8 @@ try {
   observers.filter(item => !item.disconnected).forEach(item => item.fn())
   assertAnchor(helperContext.read(owner.element), position)
   assert.equal(owner.snapshots.at(-1).modelId, newlySelected, 'Resize observer cannot publish an older selected model')
-  assert.equal(owner.snapshots.at(-1).tab, 'source', 'Resize observer cannot publish an older detail tab')
+  assert.equal(owner.snapshots.at(-1).tab, 'materials', 'Opening the source pane preserves the active detail task')
+  assert.equal(owner.snapshots.at(-1).sourceOpen, true, 'Resize observer cannot publish an older source-pane preference')
   const beforeHidden = owner.snapshots.at(-1).directoryPosition
   owner.element.visible = false
   observers.filter(item => !item.disconnected).forEach(item => item.fn())
