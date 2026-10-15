@@ -1843,9 +1843,10 @@
         const [sourceTarget, setSourceTarget] = useState(null), [requestedFocus, setRequestedFocus] = useState(null), [gapOffset, setGapOffset] = useState(0)
         const [gapLocationError, setGapLocationError] = useState(''), gapContext = useRef(null)
         const root = useRef(null), sourceSession = useRef(0), sourceGuard = useRef('')
-        const completedFocus = useRef(null), lastFocusRequest = useRef(null), draftDiagnosis = useRef(null), cachedDraft = useRef(null), loadedStructureScope = useRef('')
+        const completedFocus = useRef(null), lastFocusRequest = useRef(null), draftCopy = useRef(null), draftDiagnosis = useRef(null), cachedDraft = useRef(null), loadedStructureScope = useRef('')
         const sequence = useRef(0), conceptSequence = useRef(0), operation = useRef(0), lock = useRef(false), api = useRef({}), scope = useRef('')
         scope.current = JSON.stringify([documentId, modelId, revision])
+        if (draftCopy.current && (draftCopy.current.draft !== draft || draftCopy.current.scope !== scope.current)) draftCopy.current = null
         sourceGuard.current = active && sourceTarget ? JSON.stringify([scope.current, sourceTarget]) : ''
         api.current = { load, onCommit, onBusy, onRefresh, onLocate }
         const gapKey = JSON.stringify([scope.current, active, section, gapOffset, reload, selectedExample])
@@ -1864,7 +1865,15 @@
             ? current : { ...current, ...names }
         })
         const remember = value => {
-          try { value ? globalThis.sessionStorage?.setItem(key, JSON.stringify(value)) : globalThis.sessionStorage?.removeItem(key) }
+          try {
+            if (value) {
+              const raw = JSON.stringify(value)
+              // Reuse our own serialization only for this exact private draft.
+              // Storage can fail or change independently; it is never a copy source.
+              draftCopy.current = { scope: scope.current, draft: value, raw }
+              globalThis.sessionStorage?.setItem(key, raw)
+            } else { draftCopy.current = null; globalThis.sessionStorage?.removeItem(key) }
+          }
           catch { setError('草稿缓存不可用；当前结构尚未保存，请保留本页。') }
         }
         useEffect(() => {
@@ -1997,7 +2006,8 @@
         }, [canFocus, requestedFocus, section, selectedExample])
         const edit = change => {
           if (lock.current || saving || !draft) return
-          const next = { ...draft, spec: JSON.parse(JSON.stringify(draft.spec)) }
+          const next = { ...draft, spec: draftCopy.current?.draft === draft && draftCopy.current.scope === scope.current
+            ? JSON.parse(draftCopy.current.raw).spec : JSON.parse(JSON.stringify(draft.spec)) }
           change(next.spec); setDraft(next); remember(next); setPreview(null); setNotice('')
         }
         const remove = (name, id) => {
