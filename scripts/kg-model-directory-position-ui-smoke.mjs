@@ -117,6 +117,11 @@ const read = async args => { httpQueries++; return (await fetch(url, { method: '
 const canonicalBefore = JSON.stringify(harness.store.getDocument(fixture.documentId, { includeSource: true }))
 const mount = options => {
   const owner = { slots: [], effects: [], updates: [], requests: [], snapshots: [], element: dom() }
+  owner.navigation = []
+  const target = name => ({ focus: options => owner.navigation.push([name, 'focus', options]),
+    scrollIntoView: options => owner.navigation.push([name, 'scroll', options]) })
+  owner.detailTarget = target('detail'); owner.selectedTarget = target('selected'); owner.searchTarget = target('search')
+  owner.element.querySelector = selector => { assert.equal(selector, 'button[aria-current="true"]'); return owner.selectedTarget }
   const props = { documentId: fixture.documentId, revision: 1, ...options,
     load: (args, signal) => new Promise(resolve => {
       const request = { args, signal, settled: false, resolve: value => { request.settled = true; resolve(value) } }
@@ -133,6 +138,8 @@ const mount = options => {
       const ids = all(directory, node => node.props?.['data-model-catalogue-row'] != null).map(node => node.props['data-model-catalogue-row'])
       owner.element.populate(ids, owner.rowHeight || 100)
       if (directory.props.ref) directory.props.ref.current = owner.element
+      all(owner.tree, node => node.props?.className === 'kg-model-detail')[0].props.ref.current = owner.detailTarget
+      all(owner.tree, node => node.props?.['aria-label'] === '搜索联结模型')[0].props.ref.current = owner.searchTarget
       owner.effects.splice(0).forEach(fn => fn())
       if (!owner.updates.length) return
     }
@@ -179,6 +186,19 @@ try {
   assert.equal(owner.snapshots.at(-1).modelId, newlySelected, 'Resize observer cannot publish an older selected model')
   assert.equal(owner.snapshots.at(-1).tab, 'materials', 'Opening the source pane preserves the active detail task')
   assert.equal(owner.snapshots.at(-1).sourceOpen, true, 'Resize observer cannot publish an older source-pane preference')
+  const beforeNavigation = JSON.stringify(owner.snapshots.at(-1)), requestsBeforeNavigation = owner.requests.length
+  owner.control('阅读当前模型 →').props.onClick()
+  owner.control('返回模型目录').props.onClick()
+  assert.deepEqual(plain(owner.navigation), [
+    ['detail', 'focus', { preventScroll: true }], ['detail', 'scroll', { block: 'start', inline: 'nearest' }],
+    ['selected', 'focus', { preventScroll: true }], ['selected', 'scroll', { block: 'nearest', inline: 'nearest' }],
+  ], 'Explicit pane navigation moves keyboard focus along with the reading position')
+  owner.selectedTarget = null
+  owner.control('返回模型目录').props.onClick()
+  assert.equal(owner.navigation.at(-2)[0], 'search', 'A model outside the current page returns to search without changing filters')
+  owner.render()
+  assert.equal(JSON.stringify(owner.snapshots.at(-1)), beforeNavigation, 'Pane navigation preserves model, source, task and directory state')
+  assert.equal(owner.requests.length, requestsBeforeNavigation, 'Pane navigation cannot trigger model queries or writes')
   const beforeHidden = owner.snapshots.at(-1).directoryPosition
   owner.element.visible = false
   observers.filter(item => !item.disconnected).forEach(item => item.fn())
