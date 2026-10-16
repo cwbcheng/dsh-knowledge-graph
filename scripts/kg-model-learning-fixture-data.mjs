@@ -33,9 +33,9 @@ export async function modelLearningHarness({ legacy = false, fixture = connectio
   const previousDb = process.env.DSH_KG_DB
   process.env.DSH_KG_DB = database
   const host = await import('../lib/index.js')
-  const routes = []
+  const routes = [], disposers = []
   host.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : name === 'llm' ? llm : null,
-    effect: fn => fn(), interval: () => () => {} })
+    effect: fn => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose); return dispose }, interval: () => () => {} })
   const handler = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const post = (body, method = 'learning-mode') => new Promise((resolve, reject) => {
     const req = new EventEmitter()
@@ -45,6 +45,8 @@ export async function modelLearningHarness({ legacy = false, fixture = connectio
     process.nextTick(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') })
   })
   const stop = () => {
+    // Close the Host's own lazily opened SQLite handle before deleting the directory (Windows locks open files).
+    for (const dispose of disposers.splice(0)) dispose()
     store.close()
     if (previousDb === undefined) delete process.env.DSH_KG_DB
     else process.env.DSH_KG_DB = previousDb

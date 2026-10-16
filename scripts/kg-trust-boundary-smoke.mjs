@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import hostPlugin from '../src/index.host.js'
 import * as persistentHost from '../lib/index.js'
@@ -34,7 +35,7 @@ async function waitTask(handlers, taskId) {
   throw new Error('task did not finish: ' + taskId)
 }
 
-const dir = mkdtempSync('/tmp/dsh-kg-trust-boundary-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-trust-boundary-'))
 const dbPath = join(dir, 'trust.sqlite')
 process.env.DSH_KG_DB = dbPath
 const documentId = 'document-trust-boundary'
@@ -75,7 +76,7 @@ const routes = []
 const webServer = { register(spec) { routes.push(spec); return () => {} } }
 persistentHost.apply({
   get(name) { return name === 'webServer' ? webServer : null },
-  effect(fn) { return fn() },
+  effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
   interval() { return () => {} },
 })
 const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
@@ -192,5 +193,6 @@ try {
     safeRelationSeed: safe.result.edges[0].relation,
   }))
 } finally {
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(dir, { recursive: true, force: true })
 }

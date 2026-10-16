@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as persistentHost from '../lib/index.js'
 
@@ -41,7 +42,7 @@ function get(handler, endpoint, params) {
   })
 }
 
-const dir = mkdtempSync('/tmp/dsh-kg-revision-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-revision-'))
 const dbPath = join(dir, 'revision.sqlite')
 process.env.DSH_KG_DB = dbPath
 const documentId = 'document-append-revision'
@@ -87,7 +88,7 @@ persistentHost.apply({
     if (name === 'kgExtractor') return kgExtractor
     return null
   },
-  effect(fn) { return fn() },
+  effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
   interval() { return () => {} },
 })
 const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
@@ -187,6 +188,8 @@ for (let i = 0; i < 200; i++) {
   await new Promise((resolve) => setTimeout(resolve, 5))
 }
 assert(admissionTerminal && admissionTerminal.status === 'succeeded', 'admitted concurrent extraction did not complete')
+
+for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
 
 rmSync(dir, { recursive: true, force: true })
 console.log(JSON.stringify({ ok: true, baseRevision: 1, appendConcurrentRevision: 2, replacementConcurrentRevision: 3, appendStatus: terminal.error.code, replacementStatus: replacementTerminal.error.code, staleCheckpointStatus: staleCheckpointResponse.error.code, concurrentAdmitted: admitted.length, concurrentBusy: rejected.length }))

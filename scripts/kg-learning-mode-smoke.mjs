@@ -61,7 +61,7 @@ try {
   const host = await import('../lib/index.js')
   const routes = []
   host.apply({ get(name) { return name === 'webServer' ? { register(route) { routes.push(route); return () => {} } } : null },
-    effect(fn) { return fn() }, interval() { return () => {} } })
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval() { return () => {} } })
   const route = routes.find(item => item.path === '/api/dsh-knowledge-graph')
   assert(route)
   const post = body => new Promise((resolve, reject) => {
@@ -104,5 +104,5 @@ try {
     taskId: apiPlan.tasks[0].id, attemptId: 'stale-attempt', answer: 'old graph',
     selfRating: 'needs_work' })).error.code, 'revision_conflict')
   delete process.env.DSH_KG_DB
-} finally { delete process.env.DSH_KG_DB; rmSync(dir, { recursive: true, force: true }) }
+} finally { delete process.env.DSH_KG_DB; for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose(); rmSync(dir, { recursive: true, force: true }) }
 console.log(JSON.stringify({ groundedTasks: 3, fabricatedQuoteExcluded: true, independentProgress: true }))

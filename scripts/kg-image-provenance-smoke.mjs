@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { createImageNodeTools } from '../src/kg-image-nodes.mjs'
 import { createGraphContract } from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
@@ -89,7 +89,7 @@ assert(inspection.nodes.every(node => node.paragraph >= 2 && node.paragraph <= 3
 assert.equal(inspect(canonical, { ...args, expectedRevision: 0 }).error.code, 'revision_conflict')
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-image-provenance-'))
-assert(resolve(directory).startsWith(resolve(tmpdir()) + '/kg-image-provenance-'))
+assert(resolve(directory).startsWith(resolve(tmpdir()) + sep + 'kg-image-provenance-'))
 const previousDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(directory, 'graph.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)

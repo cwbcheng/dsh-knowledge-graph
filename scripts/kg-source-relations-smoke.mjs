@@ -51,7 +51,7 @@ try {
   store = await openSqliteStore(process.env.DSH_KG_DB)
   store.saveGraph({ ...graph, edges: [] }, { sourceText, sourceUnits: units })
   const routes = [], { apply } = await import('../lib/index.js')
-  apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null, effect: fn => fn(), interval: () => () => {} })
+  apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null, effect: fn => { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval: () => () => {} })
   const route = routes.find(item => item.path === '/api/dsh-knowledge-graph')
   const post = (method, body) => new Promise((resolve, reject) => {
     const req = new EventEmitter(); Object.assign(req, { method: 'POST', url: '/api/dsh-knowledge-graph/' + method, headers: {} })
@@ -77,6 +77,7 @@ try {
   assert.equal(store.getDocumentRevision(request.documentId), 2)
 } finally {
   store?.close(); if (previousDb === undefined) delete process.env.DSH_KG_DB; else process.env.DSH_KG_DB = previousDb
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(directory, { recursive: true, force: true })
 }
 console.log(JSON.stringify({ ok: true, sourceConditions: true, longBoundariesPreserved: true, staleWritesRejected: true, missingBindingsRejected: true, hypothesesPreserved: true, classicalCoverage: true }))

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as persistentHost from '../lib/index.js'
 
@@ -49,7 +50,7 @@ async function waitTask(api, taskId) {
   throw new Error('task did not finish: ' + taskId)
 }
 
-const dir = mkdtempSync('/tmp/dsh-kg-provenance-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-provenance-'))
 const dbPath = join(dir, 'provenance.sqlite')
 process.env.DSH_KG_DB = dbPath
 const documentId = 'document-evidence-provenance'
@@ -101,7 +102,7 @@ persistentHost.apply({
     if (name === 'kgExtractor') return kgExtractor
     return null
   },
-  effect(fn) { return fn() },
+  effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
   interval() { return () => {} },
 })
 const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
@@ -146,5 +147,6 @@ try {
     entailmentStatus: node.entailmentStatus,
   }))
 } finally {
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(dir, { recursive: true, force: true })
 }

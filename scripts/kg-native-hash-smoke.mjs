@@ -10,7 +10,7 @@ async function loadHash(source, dynamic = false) {
   assert.equal(source.split(marker).length, 2)
   const instrumented = source.replace(marker, '      return { sha256HexHost, stableHashHost }\n' + marker)
   const module = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
-  return (dynamic ? module.default() : module).apply({ get() { return null } })
+  return (dynamic ? module.default() : module).apply({ get() { return null }, effect(fn) { return fn() } })
 }
 const dynamic = await loadHash(dynamicSource, true)
 // The server path must actually bypass the interpreted implementation, not

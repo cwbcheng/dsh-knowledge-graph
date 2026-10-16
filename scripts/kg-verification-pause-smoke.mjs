@@ -12,6 +12,7 @@ const oldDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(dir, 'graph.sqlite')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const store = await openSqliteStore(process.env.DSH_KG_DB)
+const hostDisposers = []
 function createHost(stream, availableModels = []) {
   let handler
   host.apply({
@@ -19,7 +20,7 @@ function createHost(stream, availableModels = []) {
       if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
       return name === 'llm' ? { stream, listModels: async () => availableModels } : null
     },
-    effect(fn) { fn() }, interval() { return () => {} },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') hostDisposers.push(dispose); return dispose }, interval() { return () => {} },
   })
   return (endpoint, body = {}, method = 'POST') => new Promise((resolve, reject) => {
     const req = new EventEmitter()
@@ -261,6 +262,7 @@ try {
   assert.equal(store.loadCheckpoint(cancelledRun.taskId).status, 'cancelled', 'cancel is not pause')
   assert.equal((await cancelHost('resume-verify', { runId: cancelledRun.taskId, resumePaused: true })).error.code, 'not_recoverable')
 } finally {
+  for (const dispose of hostDisposers.splice(0)) dispose()
   store.close()
   if (oldDb === undefined) delete process.env.DSH_KG_DB
   else process.env.DSH_KG_DB = oldDb

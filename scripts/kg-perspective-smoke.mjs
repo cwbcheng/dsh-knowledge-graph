@@ -73,7 +73,7 @@ try {
   const routes = []
   persistentHost.apply({
     get(name) { return name === 'webServer' ? { register(route) { routes.push(route); return () => {} } } : null },
-    effect(fn) { return fn() }, interval() { return () => {} },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval() { return () => {} },
   })
   const route = routes.find(item => item.path === '/api/dsh-knowledge-graph')
   assert(route, 'persistent HTTP Host did not register the API')
@@ -97,6 +97,7 @@ try {
   delete process.env.DSH_KG_DB
 } finally {
   delete process.env.DSH_KG_DB
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(directory, { recursive: true, force: true })
 }
 console.log(JSON.stringify({ durable: true, independentOfGraphRevision: true, staleWritesRejected: true, graphCopiesRejected: true }))

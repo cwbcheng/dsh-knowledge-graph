@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import hostPlugin, { createGraphContract } from '../src/index.host.js'
 import { prepareMarkdownBundle, localAssetPath } from '../src/kg-markdown.mjs'
 import { openSqliteStore } from '../src/kg-store.mjs'
@@ -116,7 +117,7 @@ for(const attempt of [
 assert.equal(visualCalls,callsAfterSuccess,'invalid or duplicate selections must not spend a vision request')
 
 async function persistentVisualAppend() {
-  const dir = mkdtempSync('/tmp/dsh-kg-markdown-vision-')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-markdown-vision-'))
   const dbPath = join(dir, 'graph.sqlite')
   const previousDb = process.env.DSH_KG_DB
   process.env.DSH_KG_DB = dbPath

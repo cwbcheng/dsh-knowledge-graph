@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as persistentHost from '../lib/index.js'
 
@@ -50,7 +51,7 @@ async function waitTrajectory(api, taskId) {
   throw new Error('trajectory task did not finish: ' + taskId)
 }
 
-const dir = mkdtempSync('/tmp/dsh-kg-trajectory-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-trajectory-'))
 const dbPath = join(dir, 'trajectory.sqlite')
 process.env.DSH_KG_DB = dbPath
 const sessionId = 'session-trajectory-persistence'
@@ -94,7 +95,7 @@ persistentHost.apply({
     if (name === 'kgExtractor') return kgExtractor
     return null
   },
-  effect(fn) { return fn() },
+  effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
   interval() { return () => {} },
 })
 const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
@@ -157,5 +158,6 @@ try {
     logicalDocuments: 1,
   }))
 } finally {
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(dir, { recursive: true, force: true })
 }

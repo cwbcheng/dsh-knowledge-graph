@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as host from '../lib/index.js'
 
-const dir = mkdtempSync('/tmp/kg-postprocess-')
+const dir = mkdtempSync(join(tmpdir(), 'kg-postprocess-'))
 const previousDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(dir, 'test.sqlite')
 const cleanups = []

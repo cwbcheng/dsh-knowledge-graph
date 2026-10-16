@@ -111,7 +111,7 @@ try {
   assert.deepEqual(store.getDocument(document.documentId).nodes.find(node => node.id === 'multi').modelStructure, nodes.get('multi').modelStructure, 'slot identities and time states must survive SQLite reopen')
   const routes = [], persistent = await import('../lib/index.js')
   persistent.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null,
-    effect: fn => fn(), interval: () => () => {} })
+    effect: fn => { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval: () => () => {} })
   const route = routes.find(item => item.path === '/api/dsh-knowledge-graph')
   const post = (method, body) => new Promise((resolve, reject) => {
     const req = new EventEmitter(); req.method = 'POST'; req.url = '/api/dsh-knowledge-graph/' + method; req.headers = {}
@@ -176,6 +176,7 @@ try {
   store.close()
 } finally {
   if (oldDb === undefined) delete process.env.DSH_KG_DB; else process.env.DSH_KG_DB = oldDb
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(directory, { recursive: true, force: true })
 }
 console.log(JSON.stringify({ ok: true, independentSlotIdentity: true, sqliteReopen: true, sourceKindSeparated: true,

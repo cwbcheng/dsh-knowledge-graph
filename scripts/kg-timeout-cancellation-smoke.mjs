@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import hostPlugin from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
 
@@ -283,7 +284,7 @@ async function pollingClockSmoke() {
 }
 
 async function persistentSmoke() {
-  const dir = mkdtempSync('/tmp/dsh-kg-timeout-')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-timeout-'))
   const dbPath = join(dir, 'timeout.sqlite')
   process.env.DSH_KG_DB = dbPath
   const fx = fixture(true)

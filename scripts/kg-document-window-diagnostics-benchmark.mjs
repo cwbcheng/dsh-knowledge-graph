@@ -76,9 +76,9 @@ export function countHydration(Store, database) {
 export async function startDiagnosticHost(database, host) {
   const previous = process.env.DSH_KG_DB
   process.env.DSH_KG_DB = database
-  const routes = []
+  const routes = [], disposers = []
   host.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null,
-    effect: fn => fn(), interval: () => () => {} })
+    effect: fn => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose); return dispose }, interval: () => () => {} })
   const handler = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const server = createServer((req, res) => handler(req, res))
   server.listen(0, '127.0.0.1')
@@ -90,6 +90,8 @@ export async function startDiagnosticHost(database, host) {
     assert.equal(response.status, 200)
     return response.json()
   }, stop: async () => {
+    // Release the Host's lazily opened SQLite handle before callers delete its directory.
+    for (const dispose of disposers.splice(0)) dispose()
     await new Promise(resolve => server.close(resolve))
     if (previous === undefined) delete process.env.DSH_KG_DB
     else process.env.DSH_KG_DB = previous

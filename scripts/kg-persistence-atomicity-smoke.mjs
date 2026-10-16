@@ -16,6 +16,7 @@ async function check(name, run) {
   try { await run(); console.log('PASS ' + name) }
   catch (error) { failures.push(error); console.error('FAIL ' + name + ': ' + error.message) }
 }
+const hostDisposers = []
 function createHost(onExtract = () => {}) {
   let handler
   host.apply({
@@ -29,7 +30,7 @@ function createHost(onExtract = () => {}) {
       }
       return null
     },
-    effect(fn) { return fn() },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') hostDisposers.push(dispose); return dispose },
     interval() { return () => {} },
   })
   return (endpoint, body = {}, method = 'POST') => new Promise((resolve, reject) => {
@@ -203,6 +204,7 @@ if (process.argv[2] === 'commit-worker') {
       assert.equal(calls, 0)
     })
   } finally {
+    for (const dispose of hostDisposers.splice(0)) dispose()
     for (const store of stores) store.close()
     if (previousDb === undefined) delete process.env.DSH_KG_DB
     else process.env.DSH_KG_DB = previousDb

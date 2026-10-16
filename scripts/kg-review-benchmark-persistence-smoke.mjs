@@ -60,7 +60,7 @@ try {
   persistentHost.apply({ get(name) { return name === 'webServer' ? { register(spec) {
     routes.push(spec)
     return () => {}
-  } } : null }, effect(fn) { return fn() }, interval() { return () => {} } })
+  } } : null }, effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval() { return () => {} } })
   const api = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   for (const item of approved) {
     const documentId = 'document-' + item.id
@@ -143,5 +143,6 @@ try {
   console.log(JSON.stringify({ approvedRepairsPersisted: approved.length, relationRepair: true, previewReadOnly: true,
     revisionFence: true, syntheticOnly: true }))
 } finally {
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(dir, { recursive: true, force: true })
 }

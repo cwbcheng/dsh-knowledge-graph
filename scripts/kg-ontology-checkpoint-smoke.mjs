@@ -12,10 +12,11 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as host from '../lib/index.js'
 
-const dir = mkdtempSync('/tmp/kg-ontology-checkpoint-')
+const dir = mkdtempSync(join(tmpdir(), 'kg-ontology-checkpoint-'))
 const previousDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(dir, 'test.sqlite')
 const cleanups = []

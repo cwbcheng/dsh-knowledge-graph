@@ -17,12 +17,13 @@ const graph = { source: { documentId: 'reuse-document', sourceId: 'reuse-source'
     paragraph: i, quote: paragraphs[i], groundingStatus: 'grounded', evidence: [{ documentId: 'reuse-document', sourceId: 'reuse-source', paragraph: i, quote: paragraphs[i] }] })),
   edges: [{ fromNodeId: 'n0', toNodeId: 'n79', relation: 'supports', evidence: [{ documentId: 'reuse-document', sourceId: 'reuse-source', paragraph: 82, quote: paragraphs[82] }] }] }
 let calls = 0
+const hostDisposers = []
 function createHost(stream = async function* () { calls++; yield { type: 'text-delta', index: 0, text: '{"issues":[]}' } }) {
   let handler
   host.apply({ get(name) {
     if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
     return name === 'llm' ? { stream } : null
-  }, effect(fn) { fn() }, interval() { return () => {} } })
+  }, effect(fn) { const dispose = fn(); if (typeof dispose === 'function') hostDisposers.push(dispose); return dispose }, interval() { return () => {} } })
   return (endpoint, body = {}, method = 'POST') => new Promise((resolve, reject) => {
     const req = new EventEmitter()
     Object.assign(req, { method, headers: {}, url: '/api/dsh-knowledge-graph/' + endpoint + (method === 'GET' ? '?' + new URLSearchParams(body) : '') })
@@ -213,6 +214,7 @@ try {
     nonemptyIssues: true, outputDependencies: true, fullTextFingerprint: true, unanchoredSource: true,
     canonicalReportSave: true, decisionRetention: true, pauseResume: true, failedCopy: true, corruption: true, legacyFailClosed: true }))
 } finally {
+  for (const dispose of hostDisposers.splice(0)) dispose()
   store.close()
   if (oldDb === undefined) delete process.env.DSH_KG_DB; else process.env.DSH_KG_DB = oldDb
   rmSync(dir, { recursive: true, force: true })

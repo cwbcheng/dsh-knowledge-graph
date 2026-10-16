@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import hostPlugin from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
 
@@ -310,7 +311,7 @@ async function waitHttpTask(api, taskId, timeoutMs = 5000) {
   throw new Error('persistent image task did not settle: ' + taskId)
 }
 async function persistentImageSmoke() {
-  const dir = mkdtempSync('/tmp/dsh-kg-image-')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-image-'))
   const dbPath = join(dir, 'image.sqlite')
   const previousDb = process.env.DSH_KG_DB
   process.env.DSH_KG_DB = dbPath

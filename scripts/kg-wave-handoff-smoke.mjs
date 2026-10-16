@@ -119,7 +119,10 @@ if (process.argv[2] === 'kill-worker') {
       const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, 20000)
       const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal })) }).finally(() => clearTimeout(timer))
       assert.equal(timedOut, false, stderr)
-      assert.equal(exit.signal, 'SIGKILL', stderr)
+      // Windows has no POSIX signals: process.kill(pid, 'SIGKILL') terminates with a
+      // non-zero code and a null signal. The durable-state assertions below still apply.
+      if (process.platform === 'win32') assert.ok(exit.signal === 'SIGKILL' || exit.code !== 0, stderr)
+      else assert.equal(exit.signal, 'SIGKILL', stderr)
       const run = store.listIncompleteRuns()[0]
       assert.ok(run, stderr)
       const checkpoint = store.loadCheckpoint(run.runId).checkpoint

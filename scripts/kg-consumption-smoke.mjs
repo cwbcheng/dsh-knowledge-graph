@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import hostPlugin from '../src/index.host.js'
 import { openSqliteStore } from '../src/kg-store.mjs'
 
@@ -522,7 +523,7 @@ const dynamicInsufficient = await dynamicAnswer('恢复问题但证据不足')
 assert(dynamicInsufficient.result.status === 'insufficient' && dynamicInsufficient.result.citations.length === 0, 'insufficient was not preserved as a successful semantic outcome')
 assert(!dynamicInsufficient.result.answer.includes('奶酪') && dynamicInsufficient.result.parts.length === 0 && dynamicInsufficient.result.followUps.length === 0, 'insufficient surfaced unconstrained model prose')
 
-const dir = mkdtempSync('/tmp/dsh-kg-consumption-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-consumption-'))
 const dbPath = join(dir, 'consumption.sqlite')
 process.env.DSH_KG_DB = dbPath
 let store = await openSqliteStore(dbPath)

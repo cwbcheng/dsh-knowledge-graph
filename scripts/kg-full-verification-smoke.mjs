@@ -12,6 +12,7 @@ const dir = mkdtempSync(join(tmpdir(), 'kg-full-verification-'))
 const oldDb = process.env.DSH_KG_DB
 process.env.DSH_KG_DB = join(dir, 'graph.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
+const hostDisposers = []
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const contract = createGraphContract()
 const model = { provider: 'fixture', model: 'full-graph-review' }
@@ -41,7 +42,7 @@ function createHost(stream) {
       if (name === 'webServer') return { register(route) { if (route.path === '/api/dsh-knowledge-graph') handler = route.handler; return () => {} } }
       return name === 'llm' ? { stream } : null
     },
-    effect(fn) { fn() }, interval() { return () => {} },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') hostDisposers.push(dispose); return dispose }, interval() { return () => {} },
   })
   return (endpoint, body = {}, method = 'POST') => new Promise((resolve, reject) => {
     const req = new EventEmitter()
@@ -492,6 +493,7 @@ try {
   assert.equal(oversizedCalls, 0, 'oversized prompt must be blocked before model call')
   assert.equal(store.loadVerificationBatches(oversized.taskId).length, 0)
 } finally {
+  for (const dispose of hostDisposers.splice(0)) dispose()
   store.close()
   if (oldDb === undefined) delete process.env.DSH_KG_DB
   else process.env.DSH_KG_DB = oldDb

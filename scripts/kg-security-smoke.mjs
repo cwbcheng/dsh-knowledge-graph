@@ -3,6 +3,7 @@ import { deflateRawSync } from 'node:zlib'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import hostPlugin from '../src/index.host.js'
 import * as persistentHost from '../lib/index.js'
 
@@ -52,7 +53,7 @@ function makeZip(name, content, declaredUncompressedSize = content.length) {
 }
 
 async function attachmentSmoke() {
-  const base = mkdtempSync('/tmp/dsh-kg-security-')
+  const base = mkdtempSync(join(tmpdir(), 'dsh-kg-security-'))
   const sessionId = 'security-smoke'
   const attachmentRoot = join(base, '.dsh', 'tmp', 'attachments', sessionId)
   const workspaceRoot = join(base, 'workspace')

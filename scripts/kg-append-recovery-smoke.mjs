@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as persistentHost from '../lib/index.js'
 
@@ -50,13 +51,13 @@ function createHost(kgExtractor) {
       if (name === 'kgExtractor') return kgExtractor
       return null
     },
-    effect(fn) { return fn() },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
     interval() { return () => {} },
   })
   return routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
 }
 
-const dir = mkdtempSync('/tmp/dsh-kg-recovery-')
+const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-recovery-'))
 const dbPath = join(dir, 'recovery.sqlite')
 process.env.DSH_KG_DB = dbPath
 const documentId = 'document-append-recovery'
@@ -156,6 +157,8 @@ assert(finishedRun && finishedRun.status === 'succeeded', 'resumed append checkp
 const afterList = await get(api2, 'extraction-run-list', {})
 assert(!afterList.runs.some(run => run.runId === append.taskId), 'Completed work must leave the unfinished list')
 assert(resumedCalls === savedRun.checkpoint.totalBatches - savedRun.checkpoint.nextBatchIndex, 'resume re-ran already completed append batches')
+
+for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
 
 rmSync(dir, { recursive: true, force: true })
 console.log(JSON.stringify({

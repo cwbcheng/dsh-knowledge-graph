@@ -31,7 +31,7 @@ const directory=mkdtempSync(join(tmpdir(),'learning-mapping-')),previous=process
 let store
 try{
  store=await openSqliteStore(process.env.DSH_KG_DB);store.saveGraph({...graph,edges:graph.edges.slice(3)},{sourceText,sourceUnits:units})
- const routes=[],{apply}=await import('../lib/index.js');apply({get:name=>name==='webServer'?{register:route=>{routes.push(route);return()=>{}}}:null,effect:fn=>fn(),interval:()=>()=>{}})
+ const routes=[],{apply}=await import('../lib/index.js');apply({get:name=>name==='webServer'?{register:route=>{routes.push(route);return()=>{}}}:null,effect:fn=>{const dispose=fn();if(typeof dispose==='function')(globalThis.kgHostDisposers??=[]).push(dispose);return dispose},interval:()=>()=>{}})
  const route=routes.find(r=>r.path==='/api/dsh-knowledge-graph')
  const post=(endpoint,body)=>new Promise((resolve,reject)=>{const req=new EventEmitter();Object.assign(req,{method:'POST',url:'/api/dsh-knowledge-graph/'+endpoint,headers:{}});const res={setHeader(){},writeHead(){},end(text){try{resolve(JSON.parse(text))}catch(e){reject(e)}}};route.handler(req,res).catch(reject);process.nextTick(()=>{req.emit('data',Buffer.from(JSON.stringify(body)));req.emit('end')})})
  const request={documentId:graph.source.documentId,expectedRevision:1,baseNodeIds:[],baseEdgeKeys:[],graph:{nodes:[],edges:graph.edges.slice(0,3)}}
@@ -41,5 +41,5 @@ try{
  store.close();store=await openSqliteStore(process.env.DSH_KG_DB);const saved=store.getDocument(request.documentId)
  for(const edge of saved.edges.filter(e=>e.modelId)){assert.equal(edge.condition,'失义');assert.equal(edge.statement,'失义而后礼');assert(edge.boundary.length>64);assert.equal(edge.relation,'has_rule');assert.equal(saved.nodes.find(n=>n.id===edge.toNodeId).type,'rule')}
  const invalid=structuredClone(saved);invalid.edges.find(e=>e.modelId).condition='任何时候';assert.throws(()=>store.saveGraph(invalid,{sourceText,expectedRevision:2}),{code:'invalid_source_relation'});assert.equal(store.getDocumentRevision(request.documentId),2)
-}finally{store?.close();if(previous===undefined)delete process.env.DSH_KG_DB;else process.env.DSH_KG_DB=previous;rmSync(directory,{recursive:true,force:true})}
+}finally{for(const dispose of globalThis.kgHostDisposers?.splice(0)??[])dispose();store?.close();if(previous===undefined)delete process.env.DSH_KG_DB;else process.env.DSH_KG_DB=previous;rmSync(directory,{recursive:true,force:true})}
 console.log(JSON.stringify({ok:true,learningTypes:true,typedEndpoints:true,conditionAndEvidencePreserved:true,versionConflict:true,invalidBindingRolledBack:true}))

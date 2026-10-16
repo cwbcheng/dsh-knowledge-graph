@@ -194,12 +194,14 @@ function request(handler, endpoint, body) {
 const dir = mkdtempSync(join(tmpdir(), 'kg-paragraph-remove-'))
 const dbPath = join(dir, 'test.sqlite')
 process.env.DSH_KG_DB = dbPath
+const hostDisposers = []
 try {
   let store = await openSqliteStore(dbPath)
   store.saveGraph(graph, { sourceText })
   store.close()
   const routes = []
-  persistentHost.apply({ get: name => name === 'webServer' ? { register(spec) { routes.push(spec); return () => {} } } : null, effect: fn => fn(), interval: () => () => {} })
+  persistentHost.apply({ get: name => name === 'webServer' ? { register(spec) { routes.push(spec); return () => {} } } : null,
+    effect: fn => { const dispose = fn(); if (typeof dispose === 'function') hostDisposers.push(dispose); return dispose }, interval: () => () => {} })
   const api = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const before = await request(api, 'document-load', { documentId, nodeLimit: 2 })
   assert.equal(before.graph.nodes.length, 2)
@@ -225,6 +227,8 @@ try {
   assert.deepEqual(ids(store.getDocument(documentId).nodes).sort(), ids(graph.nodes).sort(), 'retain the pre-edit revision for recovery')
   store.close()
 } finally {
+  // Release the Host's lazily opened SQLite handle before deleting the directory (Windows locks open files).
+  for (const dispose of hostDisposers.splice(0)) dispose()
   rmSync(dir, { recursive: true, force: true })
 }
 console.log('paragraph removal: anchors, selective deletion, cancellation, failures, stale views, CAS, cross-window edges, persistence and revision recovery passed')

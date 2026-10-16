@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import hostPlugin from '../src/index.host.js'
 import * as persistentHost from '../lib/index.js'
@@ -137,7 +138,7 @@ function request(handler, body, endpoint = 'candidate-list') {
 }
 
 async function persistentSmoke() {
-  const dir = mkdtempSync('/tmp/dsh-kg-candidate-')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-kg-candidate-'))
   const dbPath = join(dir, 'candidate.sqlite')
   process.env.DSH_KG_DB = dbPath
   const store = await openSqliteStore(dbPath)
@@ -157,7 +158,7 @@ async function persistentSmoke() {
   const webServer = { register(spec) { routes.push(spec); return () => {} } }
   persistentHost.apply({
     get(name) { return name === 'webServer' ? webServer : null },
-    effect(fn) { return fn() },
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose },
     interval() { return () => {} },
   })
   const api = routes.find((route) => route.path === '/api/dsh-knowledge-graph').handler
@@ -289,10 +290,11 @@ async function persistentSmoke() {
   process.env.DSH_KG_DB = join(dbPath, 'not-a-directory.sqlite')
   const unavailableRoutes = []
   persistentHost.apply({ get(name) { return name === 'webServer' ? { register(route) { unavailableRoutes.push(route); return () => {} } } : null },
-    effect(fn) { return fn() }, interval() { return () => {} } })
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval() { return () => {} } })
   const unavailableApi = unavailableRoutes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const unavailable = await compactSmoke((method, args) => request(unavailableApi, args, method), 'sqlite-open-failure')
   process.env.DSH_KG_DB = dbPath
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(dir, { recursive: true, force: true })
   return { listed: listed.candidates.length, queried: queried.graph.nodes.length, updated: update.candidate.id,
     revision: committed.revision, compact, fallback, unavailable, targeted, queryPlans, exactOpaqueIdentities: opaqueIds.length }

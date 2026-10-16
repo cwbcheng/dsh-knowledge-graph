@@ -43,7 +43,7 @@ try {
   const routes = []
   persistentHost.apply({ get(name) { return name === 'webServer' ? { register(spec) {
     routes.push(spec); return () => {}
-  } } : null }, effect(fn) { return fn() }, interval() { return () => {} } })
+  } } : null }, effect(fn) { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval() { return () => {} } })
   const api = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
   const documentId = gold.graph.source.documentId
   const before = await request(api, 'document-export', { documentId })
@@ -193,4 +193,4 @@ try {
     'a legal merge must persist both nodes\' full evidence sets')
   console.log(JSON.stringify({ temporaryDatabase: true, modelPreviewValid: true, modelEvidenceMissingP2: true,
     explicitReanchorValid: true, fabricatedCitationRejected: true, previewReadOnly: true, staleRevisionRejected: true }))
-} finally { rmSync(dir, { recursive: true, force: true }) }
+} finally { for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose(); rmSync(dir, { recursive: true, force: true }) }

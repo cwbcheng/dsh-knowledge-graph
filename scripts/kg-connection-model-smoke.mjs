@@ -109,7 +109,7 @@ try {
   const routes = []
   const persistent = await import('../lib/index.js')
   persistent.apply({ get: name => name === 'webServer' ? { register: route => { routes.push(route); return () => {} } } : null,
-    effect: fn => fn(), interval: () => () => {} })
+    effect: fn => { const dispose = fn(); if (typeof dispose === 'function') (globalThis.kgHostDisposers ??= []).push(dispose); return dispose }, interval: () => () => {} })
   const route = routes.find(item => item.path === '/api/dsh-knowledge-graph')
   const post = (method, body) => new Promise((resolve, reject) => {
     const req = new EventEmitter(); req.method = 'POST'; req.url = '/api/dsh-knowledge-graph/' + method; req.headers = {}
@@ -153,6 +153,7 @@ try {
 } finally {
   if (previousDb === undefined) delete process.env.DSH_KG_DB
   else process.env.DSH_KG_DB = previousDb
+  for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
   rmSync(directory, { recursive: true, force: true })
 }
 const large = structuredClone(doc)
