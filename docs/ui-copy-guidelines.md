@@ -62,6 +62,10 @@
 
 这轮查找交互参考 [Linear 2026 年 3 月界面更新](https://linear.app/changelog/2026-03-12-ui-refresh)的一致层级，以及 Carbon 的[筛选](https://www.carbondesignsystem.com/building-blocks/core/patterns/filtering)和[空状态](https://www.carbondesignsystem.com/building-blocks/core/patterns/empty-states)规范。主辅阅读布局另与 [Material 的标准布局](https://m3.material.io/foundations/layout/canonical-examples/overview)对照。来源是产品设计实践，不能代替本项目的可用性测试或证明任务完成率提升。
 
+联结模型所在浮窗跟随当前可用窗口大小收拢，四边和关闭按钮保持可达；目录、正文和原文依据按各自容器宽度重排。临时缩窄不覆盖用户保存的尺寸，恢复宽屏时还原布局；只有主动拖动或调整大小才保存位置。窗口变化不重建正文，不清除当前模型、任务、原文依据或未提交编辑。验收同时检查浮窗相对浏览器的边界，不能只看内容内部是否横向溢出。
+
+这项适配延续 [Linear 2026 年界面设计说明](https://linear.app/now/behind-the-latest-design-refresh)的正文优先和稳定导航原则，并参考 [Material 3 列表—详情布局](https://developer.android.com/develop/ui/compose/layouts/adaptive/list-detail)按可用空间安排主辅内容的做法；本项目使用 Web 容器查询和浮窗几何适配，不引入 Android 组件。
+
 ## 检查范围
 
 本轮核对了主菜单和四个工作区、生成与追加表单、历史和恢复任务、图布局和搜索、大图分页、节点和关系详情、阅读导航和书签、证据问答与概念档案、联结模型及结构编辑、比较和两步推测、学习练习及结果记录、渐构靶图及草稿备份、规则检查与 AI 核对、批量处理和修复、外部事实核查、原图和转写、会话知识图，以及 Chrome 扩展入口、弹窗和连接设置。

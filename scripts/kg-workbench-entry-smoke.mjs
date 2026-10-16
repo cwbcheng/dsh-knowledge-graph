@@ -51,7 +51,8 @@ async function loadClient(file, persistent) {
   const ctx = { get: name => name === 'slots' ? slots : forbidden, timeout: () => () => {} }
   const sandbox = { React, console, document, requestAnimationFrame: setTimeout, cancelAnimationFrame: clearTimeout,
     styles: { insert() {} }, host: forbidden,
-    localStorage: { getItem: () => null }, window: { innerWidth: 1200, innerHeight: 800 } }
+    localStorage: { getItem: () => null }, window: { innerWidth: 1200, innerHeight: 800,
+      addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } }
   const source = readFileSync(new URL(file, import.meta.url), 'utf8')
   if (persistent) {
     sandbox.window.__ModuleLoader__ = { load({ factory }) { sandbox.plugin = factory(() => React) } }

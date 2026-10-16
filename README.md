@@ -633,6 +633,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 - 原文中的 prompt injection 文本在问答提示中明确标记为待分析数据；输出仍经过严格 JSON 解析、evidence-ID admission、长度和数量上限。
 - 每次模型调用都执行真实 wall-clock deadline，计时覆盖 `llm.stream()` 建立连接和完整异步迭代；生成阶段超时以 typed `timeout` 失败，独立核验阶段超时则退回原文摘录，取消均以 `cancelled` 结束。即使 provider 忽略 `AbortSignal` 或 `iterator.return()` 不返回，任务也会立即释放前台 busy 状态，晚到 iterator 会在进入 `next()` 前被幂等关闭，部分输出不会发布。运维/回归可用 `DSH_KG_MODEL_TIMEOUT_CAP_MS`（最小 20ms）把各调用点原有 deadline 统一下调；未设置时保留各阶段既有预算。
 
+联结模型阅读时，知识图浮窗会随浏览器缩窄收拢，关闭按钮保持可达，目录、正文与原文依据按可用宽度重排。恢复宽屏会还原偏好的布局；当前模型、任务及未提交编辑保持。只有主动拖动或调整大小才保存窗口位置。
+
 ## Chrome 扩展（划线拆图）
 
 在**任意网页**上选中文字，点浮动按钮「生成知识图」，一键调用本机 DSH 服务生成知识图（弹窗内可直接拆分、看图、回链原文）。
