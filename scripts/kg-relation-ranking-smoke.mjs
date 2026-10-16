@@ -80,11 +80,14 @@ try {
   }
   // Canonically equivalent IDs tie exactly at each retained prefix boundary.
   // A later equal candidate must not replace the earlier candidate's last slot.
+  // The prefix uses digits because they sort before Latin letters in every
+  // locale. Letters such as 'e' would move with the runtime's default collation,
+  // so the accented pair would no longer straddle the six-node cutoff.
   assert.equal('\u00e9'.localeCompare('e\u0301'), 0)
   const target = { id: 'target', text: 'same', paragraph: 0 }
   for (const prefix of [1, 2, 5]) {
     for (const equivalentIds of [['\u00e9', 'e\u0301'], ['e\u0301', '\u00e9']]) {
-      const list = [...'abcde'.slice(0, prefix), ...equivalentIds, 'z'].map(id => ({ id, text: 'same', paragraph: 50 }))
+      const list = [...'01234'.slice(0, prefix), ...equivalentIds, 'z'].map(id => ({ id, text: 'same', paragraph: 50 }))
       const stats = api.graphConnectivityHost([target, ...list], [])
       const candidates = new Set(list.map(node => node.id)), byId = new Map(list.map(node => [node.id, node]))
       const actual = api.selectRelationCandidatesHost(candidates, target, byId, stats)
