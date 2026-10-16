@@ -32,9 +32,10 @@ const routes = []
 persistentHost.apply({ get: name => name === 'webServer' ? { register(spec) { routes.push(spec); return () => {} } } : null, effect: fn => fn(), interval: () => () => {} })
 const api = routes.find(route => route.path === '/api/dsh-knowledge-graph').handler
 const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Paragraph deletion fixture</title>
-<style>body{font-family:system-ui;margin:16px}*{box-sizing:border-box}</style>
+<style>body{font-family:system-ui;margin:16px}*{box-sizing:border-box}
+${process.env.KG_FIXTURE_SIDEBAR === '1' ? '#app{position:relative;z-index:20}.file-sidebar{position:fixed;z-index:30;right:0;top:0;width:300px;height:100vh;background:#fff;border:1px solid #999;padding:24px}@media(max-width:768px){.file-sidebar{width:100vw}}' : ''}</style>
 <script src="/extension/vendor/react.production.min.js"></script><script src="/extension/vendor/react-dom.production.min.js"></script></head>
-<body><div id="app"></div><script>
+<body><div id="app"></div>${process.env.KG_FIXTURE_SIDEBAR === '1' ? '<aside class="file-sidebar" aria-label="文件侧栏"><h2>文件侧栏</h2><textarea aria-label="文件草稿">保留文件草稿</textarea><button onclick="this.textContent=\'侧栏可交互\'">检查侧栏交互</button></aside>' : ''}<script>
 localStorage.setItem('dsh-kg-result-v2', JSON.stringify({documentId:'${documentId}',title:'Paragraph deletion fixture'}));
 const trajectory=new URLSearchParams(location.search).has('trajectory');
 if(trajectory)localStorage.setItem('dsh-kg-traj-result-v2:fixture-session', JSON.stringify({documentId:'${documentId}',revision:1}));

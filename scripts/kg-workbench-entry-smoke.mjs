@@ -65,11 +65,18 @@ async function loadClient(file, persistent) {
   const render = entry => entry.component({ wide: true })
   const unwrap = tree => { while (typeof tree?.tag === 'function') tree = tree.tag(tree.attrs); return tree }
   return { entries, injections, render, unwrap, document, element,
-    mountWindow(entry) {
+    mountWindow(entry, topLayer = false) {
       effects.length = 0
       const tree = unwrap(render(entry)), surface = element('window', null, true), close = element('close', surface)
       const closeButton = find(tree, item => item.attrs['aria-label'] === '关闭工作台')
       surface.querySelector = selector => selector === '.kg-win-close' ? close : null
+      if (topLayer) {
+        surface.setAttribute = (key, value) => { assert.equal(key, 'popover'); assert.equal(value, 'manual'); surface.popover = value }
+        surface.showPopover = () => { assert.equal(surface.popover, 'manual'); surface.shown = true }
+        surface.matches = selector => { assert.equal(selector, ':popover-open'); return surface.shown }
+        surface.hidePopover = () => { surface.shown = false }
+        surface.removeAttribute = () => { surface.popover = null }
+      }
       tree.attrs.ref.current = surface
       const cleanups = effects.splice(0).map(fn => fn())
       return { surface, close, tree,
@@ -84,6 +91,7 @@ async function loadClient(file, persistent) {
         unmount() {
           surface.isConnected = false; close.isConnected = false; tree.attrs.ref.current = null
           for (const cleanup of cleanups.reverse()) cleanup?.()
+          if (topLayer) { assert.equal(surface.shown, false); assert.equal(surface.popover, null) }
           assert.equal([...listeners.values()].reduce((sum, set) => sum + set.size, 0), 0, 'unmount must remove document listeners')
         },
       }
@@ -135,11 +143,12 @@ for (const [file, persistent] of [['../src/index.client.js', false], ['../lib/cl
   const overlay = ui.entries.get('shell.overlay:kg-workbench-window')
   const open = () => ui.unwrap(launcher.component({ wide: true })).attrs.onClick()
   const isOpen = () => ui.unwrap(launcher.component({ wide: true })).attrs['aria-expanded']
-  for (const reason of ['escape', 'button', 'detached-opener', 'outside-close']) {
+  for (const topLayer of [false, true]) for (const reason of ['escape', 'button', 'detached-opener', 'outside-close']) {
     const opener = element('opener'), outside = element('outside')
     document.activeElement = opener
     open()
-    const win = ui.mountWindow(overlay)
+    const win = ui.mountWindow(overlay, topLayer)
+    if (topLayer) assert.equal(win.surface.shown, true, 'workbench must escape the host stacking context')
     assert.equal(document.activeElement, win.close, file + ': opening must move keyboard focus into the workbench')
     const input = element('input', win.surface)
     document.activeElement = input
