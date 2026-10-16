@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -19,7 +20,7 @@ const valid = { schemaVersion: 1, datasetId: gold.datasetId, goldHash: fingerpri
 const dir = mkdtempSync(join(tmpdir(), 'kg-followup-provenance-'))
 const file = join(dir, 'capture.json')
 const replay = () => spawnSync(process.execPath,
-  [new URL('./kg-discovery-followup-repair-smoke.mjs', import.meta.url).pathname, file], { encoding: 'utf8' })
+  [fileURLToPath(new URL('./kg-discovery-followup-repair-smoke.mjs', import.meta.url)), file], { encoding: 'utf8' })
 try {
   writeFileSync(file, JSON.stringify(valid))
   const control = replay()

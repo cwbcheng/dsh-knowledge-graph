@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -278,43 +279,43 @@ try {
   writeFileSync(capturePath, JSON.stringify(rawCapture))
   const goldPath = join(temp, 'capture-gold.json')
   writeFileSync(goldPath, JSON.stringify(gold))
-  const capturedCli = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const capturedCli = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', goldPath, '--capture', capturePath, '--run', runPath], { encoding: 'utf8' })
   assert.equal(capturedCli.status, 0, capturedCli.stderr)
   assert.equal(JSON.parse(readFileSync(runPath, 'utf8')).predictions[0].usage.inputTokens, 300)
-  const gatedCapture = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const gatedCapture = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', goldPath, '--capture', capturePath, '--run', runPath, '--require-reviewed'], { encoding: 'utf8' })
   assert.equal(gatedCapture.status, 2, 'draft labels must block capture as well as evaluation')
   assert.match(gatedCapture.stderr, /draft labels/)
-  const clobber = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const clobber = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', goldPath, '--capture', capturePath, '--run', capturePath], { encoding: 'utf8' })
   assert.equal(clobber.status, 2, 'the converter must not overwrite its audit evidence')
   assert.match(clobber.stderr, /must not overwrite/)
-  const cli = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
-    '--gold', fixture.pathname, '--baseline', controlledBaseline.pathname,
-    '--candidate', controlledRegressed.pathname, '--json', json, '--markdown', markdown], { encoding: 'utf8' })
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
+    '--gold', fileURLToPath(fixture), '--baseline', fileURLToPath(controlledBaseline),
+    '--candidate', fileURLToPath(controlledRegressed), '--json', json, '--markdown', markdown], { encoding: 'utf8' })
   assert.equal(cli.status, 0, cli.stderr)
   assert.equal(JSON.parse(readFileSync(json, 'utf8')).candidate.metrics.unsafeRepairProposals, 5)
   assert.match(readFileSync(markdown, 'utf8'), /distant-qualifier/)
   assert.match(readFileSync(markdown, 'utf8'), /For learners in severe anxiety/)
-  const rejected = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
-    '--gold', fixture.pathname, '--candidate', controlledBaseline.pathname, '--require-reviewed'], { encoding: 'utf8' })
+  const rejected = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
+    '--gold', fileURLToPath(fixture), '--candidate', fileURLToPath(controlledBaseline), '--require-reviewed'], { encoding: 'utf8' })
   assert.equal(rejected.status, 2, 'Codex-reviewed labels must not masquerade as human-confirmed ground truth')
   assert.match(rejected.stderr, /human-reviewed/)
-  const codexFixtureGate = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
-    '--gold', fixture.pathname, '--candidate', controlledBaseline.pathname, '--require-adjudicated'], { encoding: 'utf8' })
+  const codexFixtureGate = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
+    '--gold', fileURLToPath(fixture), '--candidate', fileURLToPath(controlledBaseline), '--require-adjudicated'], { encoding: 'utf8' })
   assert.equal(codexFixtureGate.status, 0, codexFixtureGate.stderr)
-  const draftAdjudication = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const draftAdjudication = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', goldPath, '--candidate', join(temp, 'baseline.json'), '--require-adjudicated'], { encoding: 'utf8' })
   assert.equal(draftAdjudication.status, 2, 'draft labels cannot pass the Codex adjudication gate')
   assert.match(draftAdjudication.stderr, /draft labels/)
   const codexGoldPath = join(temp, 'codex-gold.json'), codexRunPath = join(temp, 'codex-run.json')
   writeFileSync(codexGoldPath, JSON.stringify(codexGold))
   writeFileSync(codexRunPath, JSON.stringify(codexRun))
-  const adjudicated = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const adjudicated = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', codexGoldPath, '--candidate', codexRunPath, '--require-adjudicated'], { encoding: 'utf8' })
   assert.equal(adjudicated.status, 0, adjudicated.stderr)
-  const notHuman = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const notHuman = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', codexGoldPath, '--candidate', codexRunPath, '--require-reviewed'], { encoding: 'utf8' })
   assert.equal(notHuman.status, 2, 'Codex adjudication must not pass the human-reviewed gate')
   assert.match(notHuman.stderr, /human-reviewed/)
@@ -324,7 +325,7 @@ try {
   const humanGoldPath = join(temp, 'human-gold.json'), humanRunPath = join(temp, 'human-run.json')
   writeFileSync(humanGoldPath, JSON.stringify(humanGold))
   writeFileSync(humanRunPath, JSON.stringify(humanRun))
-  const humanGate = spawnSync(process.execPath, [new URL('./kg-review-benchmark.mjs', import.meta.url).pathname,
+  const humanGate = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-review-benchmark.mjs', import.meta.url)),
     '--gold', humanGoldPath, '--candidate', humanRunPath, '--require-reviewed'], { encoding: 'utf8' })
   assert.equal(humanGate.status, 0, humanGate.stderr)
   assert.equal(JSON.parse(humanGate.stdout).labelState, 'human_reviewed_self_reported')

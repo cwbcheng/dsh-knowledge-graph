@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -156,19 +157,19 @@ const input = join(dir, 'misanchored.json')
 const output = join(dir, 'gold.json')
 writeFileSync(db, '')
 writeFileSync(input, JSON.stringify(correctedSunzi))
-const changedSunzi = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const changedSunzi = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(changedSunzi.status, 0)
 assert.match(changedSunzi.stderr, /finding evidence is not in source/)
 assert.equal(statSync(db).size, 0, 'altered public-domain contrast must not seed a graph with stale positive evidence')
 writeFileSync(input, JSON.stringify(brokenTaxonomy))
-const changedTaxonomy = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const changedTaxonomy = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(changedTaxonomy.status, 0)
 assert.match(changedTaxonomy.stderr, /graph quote is not in source|graph evidence is not in source/)
 assert.equal(statSync(db).size, 0, 'reversed taxonomy evidence must be rejected before database write')
 writeFileSync(input, JSON.stringify(malformed))
-const child = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const child = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(child.status, 0)
 assert.match(child.stderr, /source units differ from the Host content splitter/)
@@ -176,7 +177,7 @@ assert.equal(statSync(db).size, 0, 'a misanchored fixture must be rejected befor
 const wrongGraphQuote = structuredClone(second)
 wrongGraphQuote.graph.nodes[0].evidence[0].quote = second.sourceUnits[0].text
 writeFileSync(input, JSON.stringify(wrongGraphQuote))
-const wrongAnchor = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const wrongAnchor = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(wrongAnchor.status, 0)
 assert.match(wrongAnchor.stderr, /graph evidence is not in source/)
@@ -184,25 +185,25 @@ assert.equal(statSync(db).size, 0, 'wrong graph evidence must be rejected before
 const wrongTableRow = structuredClone(table)
 wrongTableRow.graph.nodes[0].evidence[1].quote = table.sourceUnits[4].text
 writeFileSync(input, JSON.stringify(wrongTableRow))
-const wrongRowAnchor = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const wrongRowAnchor = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(wrongRowAnchor.status, 0)
 assert.match(wrongRowAnchor.stderr, /graph evidence is not in source/)
 assert.equal(statSync(db).size, 0, 'a different table row must not be accepted as this node\'s citation')
 writeFileSync(input, JSON.stringify(assertedDialogue))
-const changedModality = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const changedModality = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(changedModality.status, 0)
 assert.match(changedModality.stderr, /finding evidence is not in source/)
 assert.equal(statSync(db).size, 0, 'a changed hypothesis status must be rejected before a database write')
 writeFileSync(input, JSON.stringify(endorsedInterview))
-const changedAttribution = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const changedAttribution = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(changedAttribution.status, 0)
 assert.match(changedAttribution.stderr, /finding evidence is not in source/)
 assert.equal(statSync(db).size, 0, 'replacing editorial disagreement with endorsement must be rejected before write')
 writeFileSync(input, JSON.stringify(erasedTransition))
-const changedTransition = spawnSync(process.execPath, [new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url).pathname,
+const changedTransition = spawnSync(process.execPath, [fileURLToPath(new URL('./kg-discovery-benchmark-seed.mjs', import.meta.url)),
   '--db', db, '--fixture', input, '--gold-output', output], { encoding: 'utf8' })
 assert.notEqual(changedTransition.status, 0)
 assert.match(changedTransition.stderr, /finding evidence is not in source/)

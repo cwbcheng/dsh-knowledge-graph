@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -75,7 +76,7 @@ const server = createServer(async (req, res) => {
   res.writeHead(404); res.end()
 })
 async function run(port, extra = [], output = rawPath) {
-  const args = [new URL('./kg-review-benchmark-live.mjs', import.meta.url).pathname,
+  const args = [fileURLToPath(new URL('./kg-review-benchmark-live.mjs', import.meta.url)),
     '--gold', goldPath, '--output', output, '--provider', model.provider, '--model', model.model,
     '--base-url', 'http://127.0.0.1:' + port, ...extra]
   return await new Promise((done, reject) => {
