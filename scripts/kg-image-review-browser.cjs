@@ -22,12 +22,13 @@ async function main() {
     const before = await canonical()
     const expectedRevision = before.revision
     const read = () => post('image-review', { action: 'list', documentId, expectedRevision })
-    const panel = () => page.getByRole('region', { name: '图片视觉解读', exact: true })
+    const panel = () => page.getByRole('region', { name: '解读与核对图片', exact: true })
     const form = () => panel().getByRole('region', { name: '对照原图核对', exact: true })
     const row = i => panel().getByRole('button', { name: '查看图片 images/figure-' + i + '.png', exact: true })
     const acknowledge = () => form().getByRole('checkbox', { name: '已对照原图检查转写内容', exact: true })
     const open = async () => {
-      await page.getByRole('button', { name: '图片解读与节点', exact: true }).click()
+      await page.getByRole('button', { name: '解读与核对图片', exact: true }).click()
+      await row(1).click()
       await panel().getByRole('button', { name: '核对转写', exact: true }).waitFor()
       await panel().locator('.kg-visual-original img').evaluate(img => img.decode())
     }

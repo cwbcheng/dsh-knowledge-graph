@@ -36,8 +36,8 @@ async function main() {
       }
       try {
         await page.goto(url.href)
-        await page.getByRole('button', { name: '图片解读与节点', exact: true }).click()
-        const panel = page.getByRole('region', { name: '图片视觉解读', exact: true })
+        await page.getByRole('button', { name: '解读与核对图片', exact: true }).click()
+        const panel = page.getByRole('region', { name: '解读与核对图片', exact: true })
         await panel.getByText('这张图片尚未解读，未生成解读内容节点。', { exact: true }).waitFor()
         const check = i => panel.getByRole('checkbox', { name: '选择图片 images/figure-' + i + '.png', exact: true })
         const toggle = async (i, checked) => {
@@ -62,7 +62,7 @@ async function main() {
         assert.equal(await check(2).isDisabled(), false, 'Can still uncheck at the limit')
         await panel.getByRole('button', { name: '下一页图片', exact: true }).click()
         assert.equal(await check(14).isDisabled(), true, 'Off-page selections still count toward the limit')
-        await panel.getByRole('button', { name: '清空选择', exact: true }).click()
+        await panel.getByRole('button', { name: '取消选择', exact: true }).click()
         await panel.getByText('已选 0/4 张', { exact: true }).waitFor()
         await toggle(14, true)
         await panel.getByRole('button', { name: '上一页图片', exact: true }).click()
