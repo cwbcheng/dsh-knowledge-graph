@@ -2,6 +2,8 @@
 
 **[English](README.en.md) | [中文](README.md)**
 
+The knowledge-graph window now fits a narrowing browser viewport while keeping its close control reachable. Connection-model directories, details and source evidence reflow within the available space; expanding restores the preferred window geometry without resetting the current model, task or unsaved edits. Only explicit dragging or resizing saves the window position.
+
 **DSH (DeepSeek Harness) Cordis plugin**: turn source text, images containing text / diagrams / tables, or an AI session execution trace into an **AI-generated knowledge graph**, with **two-way linking between the graph and the original text**.
 
 > Paste text or upload images → AI asynchronously builds the graph → two-way anchor navigation. A standalone, reusable plugin realization of NovelStudio's "资料 ⇄ 知识图" (Source ⇄ Knowledge Graph).

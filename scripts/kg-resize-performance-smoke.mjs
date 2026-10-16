@@ -219,4 +219,51 @@ for (const prefix of ['dsh-kg', 'dsh-kg-trajectory']) {
   assert.equal(observer.disconnected, true)
   assert.equal(doc.listenerCount, 0)
 }
-console.log('PASS resize: frame coalescing, final-coordinate persistence, cancellation, repeat gestures, shared controls and stable camera synchronization')
+// A persisted wide window must remain wholly reachable at medium widths, not
+// merely have scrollWidth === clientWidth inside an off-screen frame.
+{
+  const viewport = new Target()
+  viewport.innerWidth = 2560; viewport.innerHeight = 1221
+  const preferred = { x: 9, y: 10, w: 2541, h: 1200 }
+  const saved = new Map([['window', JSON.stringify(preferred)]])
+  let writes = 0, cancelled = 0, cursor = 0, nextFrame = 0, cleanup
+  const states = [], frames = new Map()
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n))
+  const storage = { getItem: key => saved.get(key), setItem: (key, value) => { saved.set(key, value); writes++ } }
+  const helpers = new Function('window', 'localStorage', 'LS_WIN', 'clamp',
+    section('function fitWinRect(', '// --------------------------- slot registration') + '; return { fitWinRect, loadWinRect }')(
+    viewport, storage, 'window', clamp)
+  const hook = new Function('useState', 'useEffect', 'window', 'localStorage', 'LS_WIN', 'requestAnimationFrame', 'cancelAnimationFrame', 'fitWinRect', 'loadWinRect',
+    section('function useWindowGeometry(', 'function WindowInner(') + '; return useWindowGeometry')(
+    init => { const i = cursor++; if (!(i in states)) states[i] = init(); return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value }] },
+    fn => { if (!cleanup) cleanup = fn() }, viewport, storage, 'window',
+    fn => { const id = nextFrame++; frames.set(id, fn); return id }, id => frames.delete(id), helpers.fitWinRect, helpers.loadWinRect)
+  const drag = { cancel: () => cancelled++ }
+  const render = () => { cursor = 0; return hook(drag) }
+  const flush = () => { const work = [...frames.values()]; frames.clear(); work.forEach(fn => fn()) }
+  let geometry = render(); flush()
+  assert.deepEqual(geometry.rect, preferred)
+  for (const [w, h] of [[900, 1000], [768, 600], [620, 1000], [320, 240], [2560, 1221]]) {
+    viewport.innerWidth = w; viewport.innerHeight = h
+    for (let i = 0; i < 100; i++) viewport.dispatchEvent(new Event('resize'))
+    assert.equal(frames.size, 1, 'Resize bursts coalesce, including frame ID zero')
+    flush(); geometry = render()
+    const rect = geometry.rect
+    assert(rect.x >= 6 && rect.y >= 6 && rect.x + rect.w <= w - 6 && rect.y + rect.h <= h - 6,
+      'All four borders, including the close control, must fit the viewport')
+    assert.equal(saved.get('window'), JSON.stringify(preferred), 'Ambient resizing cannot overwrite the saved layout')
+  }
+  assert.deepEqual(geometry.rect, preferred, 'Expanding restores preferred geometry')
+  assert.equal(writes, 0)
+  assert(cancelled >= 500, 'A viewport change cancels stale pointer previews before fitting')
+  const moved = { x: 50, y: 40, w: 800, h: 500 }
+  geometry.commit(moved); geometry = render()
+  assert.deepEqual(geometry.rect, moved); assert.equal(writes, 1)
+  viewport.dispatchEvent(new Event('resize')); cleanup()
+  assert.equal(frames.size, 0); assert.equal(viewport.listenerCount, 0)
+  saved.set('window', '{"x":1e400,"y":-1e400,"w":1e400,"h":null}')
+  assert(Object.values(helpers.loadWinRect()).every(Number.isFinite), 'Malformed stored dimensions must fall back safely')
+  assert.deepEqual(helpers.fitWinRect({ x: -500, y: 9999, w: 800, h: 500 }, { w: 900, h: 600 }),
+    { x: 6, y: 94, w: 800, h: 500 })
+}
+console.log('PASS resize: frame coalescing, final-coordinate persistence, cancellation, repeat gestures, shared controls, stable camera and viewport-fit restoration')
