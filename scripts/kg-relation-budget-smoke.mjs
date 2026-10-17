@@ -16,7 +16,7 @@ const cleanups = []
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      function relationBatchBudgetHost('
 assert.equal(source.split(marker).length, 2)
-const instrumented = source.replace(marker, `      harness.budgetTest = { weaveRelationsBudgetHost, relationBatchBudgetHost, reviewHighRiskRelationsHost, runRelationRetryTask, runTask, rememberCanonicalGraphHost, loadCanonicalDocumentHost, buildRelationWeaveGroupsHost, prepareRelationWeaveContextsHost, graphConnectivityHost, invariantRepairSnapshotHost, sha256HexHost, getTask(id) { return tasks.get(id) }, attach(task) { activeTask = task } }
+const instrumented = source.replace(marker, `      harness.budgetTest = { weaveRelationsBudgetHost, relationBatchBudgetHost, reviewHighRiskRelationsHost, runRelationRetryTask, runTask, rememberCanonicalGraphHost, loadCanonicalDocumentHost, buildRelationWeaveGroupsHost, prepareRelationWeaveContextsHost, graphConnectivityHost, invariantRepairSnapshotHost, sha256HexHost, getTask(id) { return tasks.get(id) }, attach(task) { tasks.set(task.id, task) } }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const invalidBudgets = [null, 0, -1, 21, 1.5, '3', true, NaN]

@@ -56,7 +56,7 @@ for (const file of ['../src/index.client.js', '../lib/client.js']) {
   activeRef.current = false
   assert.equal(action('completed'), 'completed')
 
-  assert(client.includes('generationTaskActive && !generationTaskViewing ? null : historyOpen'),
+  assert(client.includes('historyOpen ? historyPanel : generationTaskActive && !generationTaskViewing ? null'),
     'The workspace must remain in one stable render slot during saved-graph generation')
   assert(client.includes('pending.append === true || pending.relationRetry === true || pending.imageAppend === true'),
     'All saved-document generation kinds must hydrate the graph after reload')

@@ -25,10 +25,10 @@ for (const section of sections) {
       queue.add(fn)
       return () => queue.delete(fn)
     } }
-    new Function('useEffect', 'taskId', 'host', 'ctx', 'setError', 'setExtractProgress', 'sessionSeq', 'phase', code)(
+    new Function('useEffect', 'taskId', 'host', 'ctx', 'setError', 'setExtractProgress', 'sessionSeq', 'phase', 'taskSelectionRef', 'setPhase', code)(
       fn => { cleanup = fn() }, 'original-task', host, ctx,
       value => { error = typeof value === 'function' ? value(error) : value },
-      value => { progress = value }, sequence, 'extracting',
+      value => { progress = value }, sequence, 'extracting', sequence, () => {},
     )
     const flush = () => new Promise(resolve => setImmediate(resolve))
     await flush()
@@ -58,13 +58,13 @@ for (const section of sections) {
   }
 }
 // Execute the production restart-recovery function, not a duplicate model.
-const resumeCode = source.slice(source.indexOf('const resumeLostTask = async () => {'), source.indexOf('// ---- adaptive-backoff polling while a task runs ----'))
+const resumeCode = source.slice(source.indexOf('const resumeLostTask = async ('), source.indexOf('// ---- adaptive-backoff polling while a task runs ----'))
 let pending = { taskId: 'original', title: 'saved source', documentId: 'document', append: true }
 let recoveredId, error, calls = 0, release
 const resumeAttemptRef = { current: false }
 const submittedRef = { current: null }
 const resume = new Function('resumeAttemptRef', 'localStorage', 'LS_PENDING', 'effectiveModelArg', 'host',
-  'submittedRef', 'rememberPendingTask', 'setTaskId', 'setPhase', 'setExtractProgress', 'setError', 'toastStore', 'loadHistoryEntry',
+  'submittedRef', 'rememberPendingTask', 'setTaskId', 'setPhase', 'setExtractProgress', 'setError', 'toastStore', 'loadHistoryEntry', 'pendingTaskReferences',
   resumeCode + '\nreturn resumeLostTask;')(
   resumeAttemptRef, { getItem: () => JSON.stringify(pending) }, 'pending', null,
   { async call(endpoint, args) {
@@ -74,11 +74,11 @@ const resume = new Function('resumeAttemptRef', 'localStorage', 'LS_PENDING', 'e
     return new Promise(resolve => { release = resolve })
   } }, submittedRef,
   (taskId, sub) => { pending = { taskId, ...sub } }, value => { recoveredId = value }, () => {}, () => {},
-  value => { error = value }, { show() {} }, async () => {},
+  value => { error = value }, { show() {} }, async () => {}, () => ({ [pending.taskId]: pending }),
 )
 for (const id of ['after-first-restart', 'after-second-restart']) {
-  const recovery = resume()
-  assert.equal(await resume(), false, 'an in-flight resume must not be submitted twice')
+  const recovery = resume(pending.taskId)
+  assert.equal(await resume(pending.taskId), false, 'an in-flight resume must not be submitted twice')
   release({ taskId: id })
   assert.equal(await recovery, true)
   assert.equal(recoveredId, id)
@@ -89,10 +89,10 @@ for (const id of ['after-first-restart', 'after-second-restart']) {
   assert.equal(error, null)
 }
 assert.equal(calls, 2)
-const failed = resume()
+const failed = resume(pending.taskId)
 release({ error: { code: 'revision_conflict', message: 'changed' } })
 assert.equal(await failed, false)
-assert.equal(await resume(), false, 'rejected recovery must not loop or bypass the revision fence')
+assert.equal(await resume(pending.taskId), false, 'rejected recovery must not loop or bypass the revision fence')
 assert.equal(calls, 3)
 assert.equal(error.code, 'revision_conflict')
 console.log(JSON.stringify({ok:true, originalTaskPreserved:true, boundedBackoff:true, recovery:true, unmountAndLateRejection:true,

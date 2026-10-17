@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function callModel('
 assert.equal(source.split(marker).length, 2)
-const instrumented = source.replace(marker, `      harness.progressTest = { callModel, cancellableTaskDelayHost, addTaskCancelHookHost, attach(task) { activeTask = task; tasks.set(task.id, task) } }
+const instrumented = source.replace(marker, `      harness.progressTest = { callModel, cancellableTaskDelayHost, addTaskCancelHookHost, attach(task) { tasks.set(task.id, task) } }
 ${marker}`) + '\n//# sourceURL=kg-generation-progress-host.js'
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const handlers = new Map()
@@ -32,7 +32,7 @@ task.progress.discovery = { totalTargets: 137, searchedTargets: 48, remainingTar
 assert.deepEqual((await status()).progress.discovery, task.progress.discovery, 'dynamic task status must serialize discovery progress')
 task.progress.relationParallel = { stage: '关系审校', limit: 2, active: 2 }
 assert.deepEqual((await status()).progress.relationParallel, task.progress.relationParallel, 'task status must expose actual relation concurrency')
-const call = stage => harness.progressTest.callModel({ provider: 'fake', model: 'fake' }, '', '', 1000, 0.1, null, { stage })
+const call = stage => harness.progressTest.callModel({ provider: 'fake', model: 'fake' }, '', '', 1000, 0.1, null, { task, stage })
 const a = call('关系补全（第 1/54 组）')
 await tick()
 let p = (await status()).progress

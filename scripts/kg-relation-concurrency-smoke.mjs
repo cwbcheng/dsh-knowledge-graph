@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function runRelationQueueHost('
 assert.equal(source.split(marker).length, 2)
-const instrumented = source.replace(marker, `      harness.concurrentTest = { runRelationQueueHost, reviewHighRiskRelationsHost, weaveRelationsHost, attach(task) { activeTask = task } }
+const instrumented = source.replace(marker, `      harness.concurrentTest = { runRelationQueueHost, reviewHighRiskRelationsHost, weaveRelationsHost, attach(task) { tasks.set(task.id, task) } }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const harness = { handle() {} }

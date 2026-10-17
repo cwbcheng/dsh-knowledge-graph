@@ -425,7 +425,7 @@ CI 也可以设置 `DSH_KG_QA_BASE_URL`、`DSH_KG_QA_PROVIDER`、`DSH_KG_QA_MODE
 5. 在 **「检查与修正」** 点「当前窗口规则检查」检查当前节点窗口，或点「AI 全图原文核对」以原文为证据审校全部节点与关系；「外部事实核查」另用外部证据核查原文本身。问题清单可跨组分批核实、预览后保存安全修复；「查看图文」回到阅读区核对。节点详情的「质疑此节点」和关系详情的「质疑此关系」直接进入对应提问框；
 6. 在「检查与修正」展开「章节筛选与候选确认」，选择章节以筛选阅读区的图和原文；对候选实体 / 声明点「已接受」或「已拒绝」，点击候选卡可回链原文证据；
 7. 想继续扩展图：在「导入资料」粘贴下一段资料，点 **追加资料**（或直接选中聊天消息里的文字自动追加）。新增节点与已有节点建立跨段关系，全文段落统一编号，历史记录原地更新；此前验证结果会自动标记为过期，可重新验证；
-8. 用「历史记录」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；任务进行中关窗或刷新，重开窗口会自动恢复轮询；
+8. 用「历史记录」回看之前的拆分（自动保存最近 20 条，可单删 / 清空）；运行中也可点「新建知识图」提交其他资料，原任务继续在后台执行。后台任务列表分别提供查看、暂停、继续与取消；关窗或刷新后可重新连接已有任务；
 9. 对话区切换到「轨迹知识图」标签页，点 **生成会话知识图** 生成会话轨迹知识图；轨迹图也提供相同的结构化检索与证据问答入口；点击轨迹事件在图中聚焦节点，点击节点查看完整内容并滚动到对应事件；结果在切换标签页 / 刷新后自动恢复，拖拽中间竖条调两列宽度、拖拽下方横条调结果区高度。
 
 ### 核对图片解读结果
@@ -631,6 +631,7 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 - `targetKind=node | edge | source` 分别支持节点命题、关系命题和图覆盖不足时的原文段落证据。关系结论可直接引用 edge evidence，而不是只拿端点节点充当关系证明。
 - `groundingStatus=grounded` 只表示 quote 可回到 canonical 原文，**不等价于外部事实已证实**；外部真实性仍应使用「外部事实核查」。`entailmentStatus` 会原样进入 citation，UI 不会把 `unverified/uncertain/unsupported` 包装成已验证事实。
 - 原文中的 prompt injection 文本在问答提示中明确标记为待分析数据；输出仍经过严格 JSON 解析、evidence-ID admission、长度和数量上限。
+- 多知识图任务默认允许 4 个同时执行；`DSH_KG_MAX_CONCURRENT_TASKS` 可设为 1–16 的整数，非法值回退到 4。准备阶段也占用名额，达到上限返回 `busy`，不会偷偷排队或调用模型。同一文档的生成、追加、关系补全及其他 AI 任务互斥；编辑只检查目标文档，不因其他图运行而阻塞。暂停任务在工作线程退出后释放名额，继续时重新申请。每个任务独立记录进度、取消钩子、用量和检查点；「同时生成批数」仍控制单个知识图内部的分块并发，总模型并发会随运行图数增加。`task-active` 提供 `tasks`、`activeCount`、`maxConcurrentTasks`、`preparingCount`，并保留旧的单任务字段供兼容。可用 `npm run test:kg-multitask` 运行隔离并发回归，或 `node scripts/kg-multitask-ui-fixture.mjs` 检查真实工作台的模拟界面，不连接正式服务或模型。
 - 每次模型调用都执行真实 wall-clock deadline，计时覆盖 `llm.stream()` 建立连接和完整异步迭代；生成阶段超时以 typed `timeout` 失败，独立核验阶段超时则退回原文摘录，取消均以 `cancelled` 结束。即使 provider 忽略 `AbortSignal` 或 `iterator.return()` 不返回，任务也会立即释放前台 busy 状态，晚到 iterator 会在进入 `next()` 前被幂等关闭，部分输出不会发布。运维/回归可用 `DSH_KG_MODEL_TIMEOUT_CAP_MS`（最小 20ms）把各调用点原有 deadline 统一下调；未设置时保留各阶段既有预算。
 
 联结模型阅读时，知识图浮窗会随浏览器缩窄收拢，关闭按钮保持可达，目录、正文与原文依据按可用宽度重排。恢复宽屏会还原偏好的布局；当前模型、任务及未提交编辑保持。只有主动拖动或调整大小才保存窗口位置。
@@ -669,7 +670,7 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 │   append: 已有图节点清单注入提示词 ────────────►│   │  全局侧栏「知识图」按钮 + run 卡片启动条│
 │   batches → llm.stream (typed retry ×2)        │   │  会话标签页「轨迹知识图」                 │
 │   schema validate → merge (dedupe/warnings)    │   │    轨迹 ⇄ 知识图双向定位            │
-│   task Map; busy lock; 2h purge                │   └──────────────────────────────────────┘
+│   task Map; document locks; 2h purge          │   └──────────────────────────────────────┘
 └────────────────────────────────────────────────┘
 ```
 
@@ -748,8 +749,8 @@ node scripts/kg-generation-structure-ui-smoke.mjs
 - **增量合并（追加资料）**：追加时把已有图的节点清单注入提示词，AI 只产出新节点、并通过引用已有节点 id 建立**跨段关系边**；宿主负责新 id 重编号（避开已有）、单元号偏移（对齐全文编号）与语义去重。同一 canonical Node/Edge 再次出现时会合并新的 provenance-rich evidence；append 始终受 base revision fence 保护。
 - **验证以原文为唯一事实源**：快速体检在 Host 本地执行（与 Client 同一套锚点匹配算法）；深度审校按内容单元分批、每批只审相关子图，标准档先产生候选问题再由复核员二次过滤；无原文证据、置信度不足或目标不存在的 issue 在 Host 层直接丢弃。常驻 Web 插件的审校请求在较大时用 gzip 传输，不丢弃节点或关系；Host 分别限制压缩请求与解压后的 JSON 大小，并对超限返回明确错误。单次验证最多接纳 2000 个节点。
 - **修复不静默、可审计**：AI 只提建议，用户点「采纳」才应用补丁；一键修复批量应用全部可自动修复项；每次应用写 `graph.verification.auditLog`。窗口化以后浏览器不再分配连续 canonical node id：新增节点使用 `node_<UUID>`，Host/SQLite 仍会拒绝不可见节点 ID 碰撞。`merge_nodes` 通过 semantic operation `merge_node(from→into)` 交给 Host 在完整 canonical graph 上执行，因此窗口外 incident edges 会被重定向而不是静默删除。所有提交都受 `expectedRevision` + invariant gate 保护；blocking 修改返回 `invariant_violation`，并发冲突返回 `revision_conflict`。
-- **任务可观测、有 deadline、可即时取消**：进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮。模型调用的 wall-clock deadline 同时覆盖 stream acquisition 与完整 iteration；`timeout` 与 `cancelled` 使用独立 typed 状态。取消 hook 在操作完成后移除，各 runner 在 `finally` 清理 `activeTask`；即使 provider 不合作，前台任务也不会被永久占住。
-- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图和任务启动时冻结的 `baseRevision`；append 还保存 `baseSource / baseStaging`。trajectory checkpoint 额外保存 `traceEvents` 与追加时的 `baseTraceText/baseTraceEvents`。无论通过 `/extract` 提交 checkpoint，还是 Host 重启后走 `/resume-extract`，恢复前都必须确认 canonical revision 仍等于该 frozen base；旧 checkpoint 不会被重新绑定到新 revision。常驻 `/extract` 还会在异步 revision lookup 前原子占用 busy slot，两个并发请求不能同时入场。已完成 batch 不重跑；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
+- **任务可观测、有 deadline、可即时取消**：进度实时可见（阶段 / 已运行时长 / 已接收字符 / 警告），所有长任务都有取消按钮。模型调用的 wall-clock deadline 同时覆盖 stream acquisition 与完整 iteration；`timeout` 与 `cancelled` 使用独立 typed 状态。取消 hook 在操作完成后移除，每个任务在 `finally` 释放自己的运行名额与文档锁；即使 provider 不合作，也不会永久占住名额或释放其他任务的锁。
+- **逐内容块无损 checkpoint**：每个成功 chunk 都保存 `nextBatchIndex`、截至当前的完整语义图和任务启动时冻结的 `baseRevision`；append 还保存 `baseSource / baseStaging`。trajectory checkpoint 额外保存 `traceEvents` 与追加时的 `baseTraceText/baseTraceEvents`。无论通过 `/extract` 提交 checkpoint，还是 Host 重启后走 `/resume-extract`，恢复前都必须确认 canonical revision 仍等于该 frozen base；旧 checkpoint 不会被重新绑定到新 revision。常驻 `/extract` 在异步 revision lookup 前原子预留运行名额和文档，阻止同文档重复入场，同时允许不同图并行。已完成 batch 不重跑；checkpoint v2 不按 800 节点截断，并由 Host/SQLite 持久化；确定性失败不会自动续跑。
 - **拆分后关系补全逐组恢复**：每个通过确定性检查的关系组（包括有效空结果）保存到独立的 `checkpoint.relationWeave` 候选记录，绑定原文、基础图、本体与分组计划。Host 重启后按 `runId` 恢复，只重试未保存的组；写入失败立即终止，不把内存进度显示成已落盘。候选不会提前覆盖正式图，恢复后仍需独立语义审校。进度区和未完成任务列表显示已落盘组数。旧检查点兼容，但无法追溯修复前从未保存的关系候选。`scripts/kg-weave-recovery-smoke.mjs` 使用真实子进程强制终止、SQLite 写入失败及检查点篡改验证这些边界。已生成图上的持续补全仍按检索与审校完成的轮次提交正式图。
 - **800 是视图预算，不是知识上限**：Host/SQLite 保存全量 canonical graph；常驻模式的 `document-load` 直接在 SQLite 执行 `LIMIT/OFFSET`，子图查询只读取直接命中节点、bounded incident edges 与一跳邻居，不再先把整图 materialize 到 Node 内存。浏览器一次最多加载 800 个节点，提供上一页 / 下一页 / 指定页跳转与按节点 ID、文本、类型或章节查询。JSON/CSV 完整导出仍显式读取 canonical graph。
 - **翻页复用全图结构诊断**：常驻 SQLite Host 首次读取完整图计算诊断，连续翻页、改变窗口预算和子图查询复用最近一份结果；诊断仍描述同一版本的完整图。缓存绑定文档、版本、纯诊断函数和同一快照内的 SQLite 变更标记，本连接及其他连接写入（包括来源更新、删除重建）后重新计算；外层事务绕过缓存，返回值与缓存隔离，只保留诊断而非完整图。可运行 `node scripts/kg-document-window-diagnostics-benchmark.mjs eed57e6` 比较：12,000 节点 / 35,904 关系首次打开后连续翻四个 800 节点页，载入节点 51,200 → 3,200，重复全图读取 4 → 0。计时含 HTTP、JSON 和仪表开销，不含浏览器绘制；冷打开仍须完整诊断，不把窗口连通性当作全图指标。

@@ -44,7 +44,7 @@ async function bind(kind) {
   // Only the task body is held: route parsing, admission, errors and lock
   // ownership are production code, exercised across both transports.
   source = source.replace(marker, `      ctx.admissionTest = {
-    tasks, activeTaskStatusHost, rememberCanonicalGraphHost,
+    tasks, activeTaskStatusHost, rememberCanonicalGraphHost, startTaskHost,
     setRunner(run) { runTask = run; runRelationRetryTask = run; runConsumptionAnswerTask = run; runVerifyTask = run },
     ${kind === 'persistent' ? 'setStore(store) { sqliteStorePromise = Promise.resolve(store) },' : ''}
   };
@@ -89,22 +89,26 @@ async function check(name, run) {
 }
 
 await check('persistent extraction preparation failure releases admission lock', async () => {
-  const host = await bind('persistent'), ready = deferred()
+  const host = await bind('persistent'), ready = deferred(), survivorFinished = deferred()
   try {
     host.setStore(ready.promise)
     const preparing = host.post('extract', { documentId, text: graph.sourceText })
     await tick()
     assert.equal(host.activeTaskStatusHost().busy, true, 'reserve admission before the store lookup')
     assert.equal(host.activeTaskStatusHost().task, null, 'preparation is not a fictitious running task')
+    const survivor = { id: 'survivor', documentId: 'another-document', status: 'running', createdAt: Date.now() }
+    assert.equal(host.startTaskHost(survivor, async task => { await survivorFinished.promise; task.status = 'succeeded' }).taskId, survivor.id)
     const blocked = await host.post('answer-graph', { documentId, question: 'Alpha?' })
     assert.equal(blocked.response.error?.code, 'busy')
     ready.resolve({ ...store, getDocument() { throw Error('fixture storage read failure') } })
     const result = await preparing
     assert.equal(result.status, 500)
     assert.match(result.response.error.message, /storage read failure/)
-    assert.equal(host.tasks.size, 0)
-    assert.equal(host.activeTaskStatusHost().busy, false, 'a failed preparation must not leave a permanent busy state')
-  } finally { host.close() }
+    assert.equal(host.tasks.size, 1)
+    assert.equal(host.activeTaskStatusHost().preparingCount, 0, 'a failed preparation must release its own reservation')
+    assert.equal(host.activeTaskStatusHost().activeCount, 1, 'preparation failure cannot unlock the other document')
+    assert.equal(survivor.status, 'running')
+  } finally { survivorFinished.resolve(); await tick(); host.close() }
 })
 
 await check('overlapping persistent admissions start exactly one task', async () => {

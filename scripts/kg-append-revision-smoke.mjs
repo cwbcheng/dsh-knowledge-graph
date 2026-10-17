@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openSqliteStore } from '../src/kg-store.mjs'
 import * as persistentHost from '../lib/index.js'
 
@@ -107,7 +107,12 @@ const manual = await post(api, 'graph-commit', {
   baseNodeIds: loaded.graph.nodes.map((node) => node.id),
   baseEdgeKeys: [],
 })
-assert(manual && !manual.error && manual.revision === 2, 'concurrent manual graph commit failed')
+assert(manual?.error?.code === 'busy', 'a live append must fence same-document edits')
+// A second process can bypass this Host's admission map. Preserve the CAS
+// regression against an actual competing SQLite write, not just the UI fence.
+const externalStore = await openSqliteStore(dbPath)
+externalStore.saveGraph({ ...externalStore.getDocument(documentId), summary: 'manual revision wins' },
+  { sourceText, expectedRevision: 1, kind: 'external-edit' })
 appendGate.release()
 
 let terminal = null
@@ -146,7 +151,9 @@ const replacementManual = await post(api, 'graph-commit', {
   baseNodeIds: replacementBase.graph.nodes.map((node) => node.id),
   baseEdgeKeys: [],
 })
-assert(replacementManual && !replacementManual.error && replacementManual.revision === 3, 'concurrent replacement graph commit failed')
+assert(replacementManual?.error?.code === 'busy', 'a live replacement must fence same-document edits')
+externalStore.saveGraph({ ...externalStore.getDocument(documentId), summary: 'manual replacement wins' },
+  { sourceText, expectedRevision: 2, kind: 'external-edit' })
 replaceGate.release()
 let replacementTerminal = null
 for (let i = 0; i < 200; i++) {
@@ -178,18 +185,20 @@ const concurrentResponses = await Promise.all([
 ])
 const admitted = concurrentResponses.filter((response) => response && response.taskId)
 const rejected = concurrentResponses.filter((response) => response && response.error && response.error.code === 'busy')
-assert(admitted.length === 1 && rejected.length === 1, 'concurrent /extract requests bypassed the single-task admission reservation: ' + JSON.stringify(concurrentResponses))
+assert(admitted.length === 2 && rejected.length === 0, 'different documents must share concurrent admission: ' + JSON.stringify(concurrentResponses))
 await admissionGate.started
 admissionGate.release()
-let admissionTerminal = null
-for (let i = 0; i < 200; i++) {
-  const status = await get(api, 'task-status', { taskId: admitted[0].taskId })
-  if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'succeeded') { admissionTerminal = status; break }
-  await new Promise((resolve) => setTimeout(resolve, 5))
+for (const started of admitted) {
+  let admissionTerminal = null
+  for (let i = 0; i < 200; i++) {
+    const status = await get(api, 'task-status', { taskId: started.taskId })
+    if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'succeeded') { admissionTerminal = status; break }
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert(admissionTerminal && admissionTerminal.status === 'succeeded', 'admitted concurrent extraction did not complete')
 }
-assert(admissionTerminal && admissionTerminal.status === 'succeeded', 'admitted concurrent extraction did not complete')
 
+externalStore.close()
 for (const dispose of globalThis.kgHostDisposers?.splice(0) ?? []) dispose()
-
 rmSync(dir, { recursive: true, force: true })
 console.log(JSON.stringify({ ok: true, baseRevision: 1, appendConcurrentRevision: 2, replacementConcurrentRevision: 3, appendStatus: terminal.error.code, replacementStatus: replacementTerminal.error.code, staleCheckpointStatus: staleCheckpointResponse.error.code, concurrentAdmitted: admitted.length, concurrentBusy: rejected.length }))

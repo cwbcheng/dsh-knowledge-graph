@@ -60,7 +60,8 @@ try {
   const ownedTask = await invoke(api, { text: '隔离占位内容。', model: { provider: 'fixture', model: 'fixture' } }, 'extract')
   assert(ownedTask.taskId, JSON.stringify(ownedTask))
   try {
-    assert.equal((await call(request)).error?.code, 'busy', 'Live Host must reject saves while a generation owns the task lock')
+    assert.equal((await call({ ...request, documentId: ownedTask.documentId })).error?.code, 'busy', 'Live Host must reject saves to the document owned by a generation')
+    assert.equal((await call({ ...request, confirmed: false })).error?.code, 'invalid_input', 'Another document must still reach normal save validation')
     assert(Array.isArray((await list()).reviews), 'Read-only review remains available during generation')
     for (let i = 0; !releaseFixtureTask && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
     assert(releaseFixtureTask, 'Controlled task must reach its owned fixture gate')
@@ -149,7 +150,7 @@ try {
   const identityHelper = host.slice(identityStart, identityEnd)
   const handler = host.slice(host.indexOf("       harness.handle('image-review'"), host.indexOf("       harness.handle('image-nodes'"))
   const setup = new Function('harness', 'busy', 'loadCanonicalDocumentHost', 'imageReviewState', 'splitParagraphsHost', 'sha256HexHost', 'canonicalDocumentIdHost',
-    "const busyTaskResponseHost = () => ({error:{code:'busy'}});\n" + identityHelper + helpers + handler)
+    "const taskAdmissionErrorHost = () => busy ? {error:{code:'busy'}} : null;\n" + identityHelper + helpers + handler)
   for (const busy of [false, true]) {
     const handlers = new Map(), state = new Map()
     const snapshot = { graph, sourceText, revision: 1 }

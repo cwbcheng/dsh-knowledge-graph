@@ -201,15 +201,18 @@ if (process.argv[2] === 'kill-worker') {
     assert.equal(continued, 1)
     for (const section of client.split('// ---- adaptive-backoff polling while a task runs ----').slice(1)) {
       const prefix = section.slice(section.indexOf('useEffect('), section.indexOf("if (res && res.status === 'succeeded')"))
-      let phase = 'extracting', cleared = false, polled = 0
+      let phase = 'extracting', cleared = false, polled = 0, scheduled = 0, remembered = false
+      const workbench = prefix.includes('taskSelectionRef')
       const code = prefix + '}; tick(); }, [taskId, phase]);'
       const values = { useEffect: fn => fn(), taskId: 'task', phase, sessionId: 'session', sessionSeq: { current: 1 },
+        taskSelectionRef: { current: 1 }, submittedRef: { current: {} }, rememberPendingTask() { remembered = true },
         host: { async call() { polled++; return { status: 'paused', progress: { paused: true } } } },
-        ctx: { timeout() { throw Error('Paused polling must stop') } }, setError() {}, setExtractProgress() {},
+        ctx: { timeout(_fn, delay) { assert(workbench); assert.equal(delay, 8000); scheduled++; return () => {} } }, setError() {}, setExtractProgress() {},
         setPhase(value) { phase = value }, forgetPendingTask() { cleared = true }, clearTrajPending() { cleared = true } }
       new Function(...Object.keys(values), code)(...Object.values(values))
       await sleep(0)
-      assert.equal(phase, 'paused'); assert.equal(cleared, true); assert.equal(polled, 1)
+      assert.equal(phase, 'paused'); assert.equal(cleared, !workbench); assert.equal(polled, 1)
+      assert.equal(remembered, workbench); assert.equal(scheduled, workbench ? 1 : 0)
     }
     console.log(JSON.stringify({ allStreamsAborted: true, durableExplicitPause: true, pauseSurvivesSigkill: true,
       noAutomaticResume: true, bufferedSiblingPreserved: true, writeFailureVisible: true, resumeRevisionFence: true, pauseAndResumeUI: true }))

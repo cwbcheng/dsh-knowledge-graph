@@ -146,10 +146,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const imageInputs = Array.isArray(a.images) ? a.images : []
               if (!text && imageInputs.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先粘贴资料正文或上传图片' } })
               if (text.length > MAX_TEXT) return writeJson(res, 200, { error: { code: 'invalid_input', message: '资料正文不能超过 ' + MAX_TEXT + ' 字' } })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const checkpoint = a.checkpoint && typeof a.checkpoint === 'object' ? a.checkpoint : null
+              const extractionTaskId = 'kg-' + Date.now().toString(36) + '-' + seq
               if (checkpoint?.postprocess || checkpoint?.relationWeave) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '后处理记录只能由 Host 按 runId 从可信存储恢复，不能接纳客户端提供的候选或审校结论' } })
               if (checkpoint && imageInputs.length > 0) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: 'checkpoint 恢复不能重新附带图片' } })
               if (checkpointHasVisualSourceHost(checkpoint)) return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '包含图片来源的 checkpoint 只能由 Host 按 runId 从 SQLite 恢复' } })
@@ -158,7 +160,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               }
               const requestedDocumentId = canonicalDocumentInputHost(a.documentId) || canonicalDocumentInputHost(checkpoint?.documentId)
               let task
-              busy = true
+              const preparation = reserveTaskHost({ documentId: requestedDocumentId })
+              if (preparation.error) return writeJson(res, 200, preparation)
               try {
                 const baseDocument = requestedDocumentId ? (await getSqliteStore()).getDocument(requestedDocumentId) : null
                 const currentRevision = baseDocument?.revision || 0
@@ -178,7 +181,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   return writeJson(res, 200, { error: { code: error && error.code ? error.code : 'image_invalid', message: error && error.message ? error.message : '图片读取失败', ...(error && error.reason ? { details: { reason: error.reason } } : {}) } })
                 }
                 task = {
-                 id: 'kg-' + Date.now().toString(36) + '-' + seq,
+                 id: extractionTaskId,
                  status: 'running',
                  kind: checkpoint ? 'resume' : undefined,
                   relationBatchBudget: relationBudget.maxBatches,
@@ -197,7 +200,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  createdAt: Date.now(),
                 }
               } finally {
-                busy = false
+                releaseTaskHost(preparation.token)
               }
               return writeJson(res, 200, startTaskHost(task, runTask))
             }
@@ -449,8 +452,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let args
               try { args = JSON.parse(await readBody(req, 768 * 1024)) }
               catch { return writeJson(res, 400, { error: { code: 'invalid_input', message: '靶图请求无效或过大' } }) }
-              if (args?.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
-              return writeJson(res, 200, (await getSqliteStore()).targetMap(args))
+              const store = await getSqliteStore()
+              if (args?.action === 'save') {
+                const admissionError = taskAdmissionErrorHost(args, true)
+                if (admissionError) return writeJson(res, 200, admissionError)
+              }
+              return writeJson(res, 200, store.targetMap(args))
             }
             if (req.method === 'POST' && pathname === '/api/dsh-knowledge-graph/learning-mode') {
               res.setHeader('Cache-Control', 'no-store')
@@ -541,7 +548,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               try { a = JSON.parse(raw) } catch { a = {} }
               const documentId = canonicalDocumentInputHost(a?.documentId)
               const store = await getSqliteStore()
-              if (a?.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
+              if (a?.action === 'save') {
+                const admissionError = taskAdmissionErrorHost(a, true)
+                if (admissionError) return writeJson(res, 200, admissionError)
+              }
               const saved = documentId ? store.getDocument(documentId) : null
               const prepared = prepareImageReviewHost(saved, a, store.listImageReviews(documentId))
               if (!prepared.record) return writeJson(res, 200, prepared)
@@ -572,7 +582,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               try { a = JSON.parse(raw) } catch { a = {} }
               const documentId = canonicalDocumentInputHost(a?.documentId)
               const store = await getSqliteStore()
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a, true)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const current = documentId ? store.getCanonicalDocument(documentId) : null
               const prepared = prepareImageNodesHost(current, a || {})
               if (prepared.error) return writeJson(res, 200, prepared)
@@ -591,9 +602,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               let a
               try { a = JSON.parse(raw) } catch { a = {} }
               a = a && typeof a === 'object' ? a : {}
-              if (a.action === 'save' && busy) return writeJson(res, 200, busyTaskResponseHost())
-              const documentId = canonicalDocumentInputHost(a.documentId)
               const store = await getSqliteStore()
+              if (a.action === 'save') {
+                const admissionError = taskAdmissionErrorHost(a, true)
+                if (admissionError) return writeJson(res, 200, admissionError)
+              }
+              const documentId = canonicalDocumentInputHost(a.documentId)
               const current = documentId ? store.getCanonicalDocument(documentId) : null
               const prepared = prepareImageReferencesHost(current, a)
               if (!prepared.graph) return writeJson(res, 200, prepared)
@@ -684,6 +698,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!documentId || !a.graph || typeof a.graph !== 'object') return writeJson(res, 200, { error: { code: 'invalid_input', message: 'graph commit 缺少 documentId 或 graph' } })
               try {
                 const store = await getSqliteStore()
+                const admissionError = !previewOnly && taskAdmissionErrorHost(a, true)
+                if (admissionError) return writeJson(res, 200, admissionError)
                 const current = store.getDocument(documentId)
                 if (!current) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到要提交的 canonical graph' } })
                 if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
@@ -797,6 +813,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const store = await getSqliteStore()
               const current = store.getDocument(documentId)
               if (!current) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到当前知识图' } })
+              const admissionError = taskAdmissionErrorHost(a, true)
+              if (admissionError) return writeJson(res, 200, admissionError)
               if (current.revision !== expectedRevision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已有后续修改，本组不能直接撤销；请核对版本记录', currentRevision: current.revision } })
               const latest = store.listRevisions(documentId, 1)[0]
               if (latest?.revision !== expectedRevision || latest.kind !== 'bulk_review'
@@ -868,7 +886,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!documentId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问答缺少 documentId' } })
               if (!question) return writeJson(res, 200, { error: { code: 'invalid_input', message: '请先输入要向知识图提问的问题' } })
               if (question.length > MAX_CONSUME_QUERY_CHARS) return writeJson(res, 200, { error: { code: 'invalid_input', message: '知识图问题不能超过 ' + MAX_CONSUME_QUERY_CHARS + ' 字' } })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const store = await getSqliteStore()
               let context
               try {
@@ -893,7 +912,7 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!context) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到可问答的 canonical knowledge graph' } })
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
-              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', question, context, model, createdAt: Date.now() }
+              const task = { id: 'kg-' + Date.now().toString(36) + '-' + seq, status: 'running', kind: 'answer', documentId, question, context, model, createdAt: Date.now() }
               return writeJson(res, 200, startTaskHost(task, runConsumptionAnswerTask, '知识图证据问答失败：内部错误'))
             }
             if ((req.method === 'GET' || req.method === 'POST') && pathname === '/api/dsh-knowledge-graph/extraction-run-list') {
@@ -917,7 +936,10 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const store = await getSqliteStore()
               // No await between the runtime fence and deletion: a resume or
               // final checkpoint write must not race a successful delete.
-              if (busy || tasks.get(a.runId)?.status === 'running') return writeJson(res, 200, busyTaskResponseHost())
+              const deletingTask = tasks.get(a.runId)
+              if (Array.from(taskOwners.values()).some(owner => owner.task?.id === a.runId)) return writeJson(res, 200, busyTaskResponseHost(deletingTask))
+              const deletingAdmission = taskAdmissionErrorHost({ documentId: deletingTask?.documentId || store.loadCheckpoint(a.runId)?.documentId }, true)
+              if (deletingAdmission) return writeJson(res, 200, deletingAdmission)
               try {
                 const result = store.deleteIncompleteRun(a.runId, a.expectedUpdatedAt)
                 tasks.delete(a.runId)
@@ -940,9 +962,12 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (liveTask && taskStateHost(liveTask) === 'pausing') return writeJson(res, 200, busyTaskResponseHost())
               if (liveTask?.status === 'paused' && a.resumePaused !== true) return writeJson(res, 200, { error: { code: 'task_paused', message: '任务已暂停，请点击继续任务，不会自动续跑' } })
               if (liveTask && !((liveTask.status === 'failed' && a.retryFailed === true) || (liveTask.status === 'paused' && a.resumePaused === true))) return writeJson(res, 200, { taskId: runId, resumed: false })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到该任务的持久化 checkpoint' } })
+              const documentAdmission = taskAdmissionErrorHost({ documentId: savedRun.documentId || savedRun.checkpoint?.documentId })
+              if (documentAdmission) return writeJson(res, 200, documentAdmission)
               if (savedRun.status === 'paused' && a.resumePaused !== true) return writeJson(res, 200, { error: { code: 'task_paused', message: '任务已暂停，请点击继续任务，不会自动续跑' } })
               if (savedRun.status !== 'running' && !(savedRun.status === 'failed' && a.retryFailed === true) && !(savedRun.status === 'paused' && a.resumePaused === true)) {
                 return writeJson(res, 200, { error: { code: 'not_recoverable', message: '该任务状态为 ' + savedRun.status + '，不是 Host 重启遗留的运行中任务，禁止自动续跑' } })
@@ -1022,7 +1047,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!runId) return writeJson(res, 200, { error: { code: 'invalid_input', message: '缺少审校任务编号' } })
               const liveTask = tasks.get(runId)
               if (liveTask && ['running', 'pausing'].includes(taskStateHost(liveTask))) return writeJson(res, 200, busyTaskResponseHost())
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const store = await getSqliteStore()
               const savedRun = store.loadCheckpoint(runId)
               if (!savedRun) return writeJson(res, 200, { error: { code: 'not_found', message: '找不到审校检查点' } })
@@ -1045,6 +1071,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 return writeJson(res, 200, { error: { code: 'checkpoint_invalid', message: '旧版局部审校缺少原文段落边界，不能安全续跑；已保存结果保留，请重新启动该范围审校' } })
               }
               const documentId = savedRun.documentId || checkpoint.documentId || ''
+              const documentAdmission = taskAdmissionErrorHost({ documentId })
+              if (documentAdmission) return writeJson(res, 200, documentAdmission)
               if (documentId && (!Number.isInteger(checkpoint.baseRevision) || store.getDocumentRevision(documentId) !== checkpoint.baseRevision)) {
                 return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图版本已改变，不能把旧审校结果附加到新图' } })
               }
@@ -1072,7 +1100,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                 if (!Array.isArray(available) || !available.some(item => item.id === selectedModel.model)) {
                   return writeJson(res, 200, { error: { code: 'model_unavailable', message: '所选模型当前不可用，原审校检查点未改变' } })
                 }
-                if (busy) return writeJson(res, 200, busyTaskResponseHost())
+                const admissionError = taskAdmissionErrorHost({ documentId })
+                if (admissionError) return writeJson(res, 200, admissionError)
                 if (store.loadCheckpoint(runId)?.updatedAt !== savedRun.updatedAt) {
                   return writeJson(res, 200, { error: { code: 'run_conflict', message: '审校任务已变化，请刷新列表后重试' } })
                 }
@@ -1220,7 +1249,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                  report.scope = input.scoped ? { kind: 'source-units', ids: input.paragraphMap.slice() } : { kind: 'full', ids: [] }
                  return writeJson(res, 200, { report: mapVerificationResultHost(report, input.paragraphMap) })
                }
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               const metadata = verificationTaskMetadataHost(a, graph)
               if (!canonicalFull) currentRevision = metadata.documentId ? (await getSqliteStore()).getDocumentRevision(metadata.documentId) : null
@@ -1290,7 +1320,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
                   proposedFix: issue.proposedFix && typeof issue.proposedFix === 'object' ? issue.proposedFix : { action: 'none' },
                 }
               }
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -1321,7 +1352,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (mode === 'deep' && sources.length === 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '深度核查至少需要一个证据来源（wikipedia 或 rules）' } })
               const rules = typeof a.rules === 'string' ? a.rules.slice(0, 10000) : ''
               if (sources.includes('rules') && !rules.trim()) return writeJson(res, 200, { error: { code: 'invalid_input', message: '选择了规则来源，请粘贴领域规则/法条/教材内容' } })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -1369,7 +1401,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const trace = serializeTrace(newEvents)
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
               const paragraphOffset = baseTraceText ? splitParagraphsHost(baseTraceText).length : 0
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {
@@ -1407,7 +1440,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!Number.isSafeInteger(a.expectedRevision) || a.expectedRevision < 0) return writeJson(res, 200, { error: { code: 'invalid_input', message: '修改必须提供非负整数 expectedRevision' } })
               const expectedRevision = a.expectedRevision
               if (expectedRevision !== canonical.revision) return writeJson(res, 200, { error: { code: 'revision_conflict', message: '知识图已更新，请重新加载后再补全关系', currentRevision: canonical.revision } })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               rememberCanonicalGraphHost(canonical, canonicalSnapshot.sourceText, canonical.revision, canonicalSnapshot.sourceUnits)
               const continuity = continueOntologyHost(canonical, a.ontology)
               if (continuity.error) return writeJson(res, 200, { error: continuity.error })
@@ -1466,13 +1500,15 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               const paragraphOffset = existingSourceText
                 ? splitParagraphsHost(existingSourceText).length
                 : (Number.isInteger(a.paragraphOffset) && a.paragraphOffset > 0 ? a.paragraphOffset : 0)
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               let model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               if (interpretingImages) {
-                busy = true
+                const preparation = reserveTaskHost({ documentId })
+                if (preparation.error) return writeJson(res, 200, preparation)
                 try { model = await preflightImageModelHost(model) }
                 catch (error) { return writeJson(res, 200, { error: { code: error?.code || 'model_image_unsupported', message: error?.message || '模型不支持图片输入' } }) }
-                finally { busy = false }
+                finally { releaseTaskHost(preparation.token) }
               }
               seq += 1
               const appendContinuity = continueOntologyHost(existing, a.ontology)
@@ -1502,7 +1538,8 @@ const routeBlock = `      // ---- HTTP RPC over the host webServer (persistent m
               if (!session) return writeJson(res, 200, { error: { code: 'no_session', message: '找不到该会话（可能尚未开始或已结束），请先在对话中发一条消息再试' } })
               const trace = serializeTrace(session.events)
               if (!trace.traceText) return writeJson(res, 200, { error: { code: 'empty', message: '该会话还没有可拆解的轨迹内容' } })
-              if (busy) return writeJson(res, 200, busyTaskResponseHost())
+              const admissionError = taskAdmissionErrorHost(a)
+              if (admissionError) return writeJson(res, 200, admissionError)
               const model = a.model && typeof a.model === 'object' && typeof a.model.provider === 'string' && typeof a.model.model === 'string' ? a.model : null
               seq += 1
               const task = {

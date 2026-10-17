@@ -33,7 +33,8 @@ const marker = '      async function weaveRelationsHost('
 assert.equal(source.split(marker).length, 2, 'Source production instrumentation anchor must be unique')
 const stallDelayMarker = 'const STREAM_STALL_RETRY_DELAY_MS = 3000'
 assert.equal(source.split(stallDelayMarker).length, 2, 'Fast fixture may alter only the one documented stall delay, not accounting logic')
-const instrumented = source.replace(marker, `      harness.truncationTest = { weaveRelationsHost, weaveRelationsBudgetHost, runRelationRetryTask, reviewHighRiskRelationsHost, buildRelationWeaveGroupsHost, graphConnectivityHost, rememberCanonicalGraphHost, loadCanonicalDocumentHost, sha256HexHost, attach(task) { activeTask = task }, getActive() { return activeTask }, getTask(id) { return tasks.get(id) } }
+const instrumented = source.replace(marker, `      let fixtureTask;
+      harness.truncationTest = { weaveRelationsHost, weaveRelationsBudgetHost, runRelationRetryTask, reviewHighRiskRelationsHost, buildRelationWeaveGroupsHost, graphConnectivityHost, rememberCanonicalGraphHost, loadCanonicalDocumentHost, sha256HexHost, attach(task) { fixtureTask = task; tasks.set(task.id, task) }, getActive() { return fixtureTask }, getTask(id) { return tasks.get(id) } }
 ${marker}`).replace(stallDelayMarker, 'const STREAM_STALL_RETRY_DELAY_MS = 0')
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 

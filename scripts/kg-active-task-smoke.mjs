@@ -3,7 +3,14 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      function failTask('
-const instrumented = source.replace(marker, `      harness.taskTest = { set(items, owner, locked) { tasks.clear(); for (const item of items) tasks.set(item.id, item); activeTask = owner; busy = locked }, activeTaskStatusHost, busyTaskResponseHost }
+const instrumented = source.replace(marker, `      harness.taskTest = { set(items, owner, locked) {
+  tasks.clear(); taskOwners.clear(); for (const item of items) tasks.set(item.id, item);
+  if (locked) {
+    const running = items.filter(item => ['running', 'pausing'].includes(taskStateHost(item)));
+    for (const task of running) taskOwners.set({}, { documentId: taskDocumentIdHost(task), task });
+    if (!running.length) taskOwners.set({}, { documentId: '', task: null });
+  }
+}, activeTaskStatusHost, busyTaskResponseHost }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(instrumented).toString('base64'))
 const handlers = new Map(), harness = { handle(name, fn) { handlers.set(name, fn) } }
@@ -14,7 +21,7 @@ const running = { id: 'task-running', kind: 'relation-retry', title: 'book', doc
 const old = { id: 'old', status: 'succeeded', progress: {} }
 api.set([old, running], old, true)
 let response = await handlers.get('task-active')({})
-assert.equal(response.task.taskId, running.id, 'ignore a stale activeTask pointer and find the real running owner')
+assert.equal(response.task.taskId, running.id, 'find the reserved running owner')
 assert.equal(response.task.documentId, 'document-b', 'do not infer document ownership from the viewing tab')
 assert.ok(!JSON.stringify(response).includes('private'))
 assert.ok(!Object.hasOwn(response.task, 'checkpoint'))
@@ -23,7 +30,8 @@ const answer = { ...running, kind: 'answer' }
 api.set([answer], answer, true)
 assert.equal(api.activeTaskStatusHost().task.label, '知识图答疑')
 api.set([old], old, true)
-assert.deepEqual(api.activeTaskStatusHost(), { busy: true, task: null, trackedTask: null }, 'admission without an id is not a phantom old task')
+assert.equal(api.activeTaskStatusHost().preparingCount, 1, 'preparation without an id is not a phantom old task')
+assert.equal(api.activeTaskStatusHost().task, null)
 assert.equal(api.busyTaskResponseHost().error.activeTask, null)
 api.set([old], old, false)
 assert.equal(api.activeTaskStatusHost({ taskId: 'old' }).trackedTask.status, 'succeeded')
@@ -75,7 +83,7 @@ assert.ok(tree.includes('已完成'))
 assert.ok(tree.includes('查看更新后的知识图'))
 current = { busy: false, task: null, trackedTask: null }
 await ui.tick()
-assert.ok(JSON.stringify(ui.render()).includes('已断开'), 'host restart cannot leave a stale running spinner')
+assert.ok(!JSON.stringify(ui.render())?.includes('进行中'), 'host restart cannot leave a stale running spinner')
 ui.close(); assert.equal(ui.queue.size, 0)
 
 for (const title of ['', 'Reviewed material']) {
@@ -106,10 +114,25 @@ const late = mount(() => new Promise(resolve => { release = resolve }))
 late.render(); late.close(); release(current); await flush()
 assert.equal(late.state[0], null); assert.equal(late.queue.size, 0, 'unmounted discovery cannot publish or schedule late responses')
 
+const secondTask = { ...running, id: 'task-second', documentId: 'document-c', title: 'Second book', kind: 'extract' }
+api.set([running, secondTask], running, true)
+const multi = mount(async () => api.activeTaskStatusHost(), { knownTaskIds: ['task-running'], onOpenTask() {}, onStopTask() {} })
+multi.render(); await flush()
+const multiTree = JSON.stringify(multi.render())
+assert.ok(multiTree.includes('2/4 运行中'))
+assert.ok(multiTree.includes('Second book'))
+assert.ok(multiTree.includes('查看任务'))
+assert.ok(multiTree.includes('取消任务'))
+assert.ok(!multiTree.includes('任务编号：task-running'), 'the foreground task is not duplicated')
+api.set([], null, false)
+await multi.tick()
+assert.ok(JSON.stringify(multi.render()).includes('已断开'), 'disappearing running tasks receive a terminal connection state')
+multi.close()
+
 // Pending references are small and task-owned, not a second copy of the book.
 const saved = new Map()
 const localStorage = { getItem(key) { return saved.get(key) || null }, setItem(key, value) { saved.set(key, value) }, removeItem(key) { saved.delete(key) } }
-const storage = new Function('localStorage', 'LS_PENDING', components + '; return { rememberPendingTask, forgetPendingTask }')(localStorage, 'pending')
+const storage = new Function('localStorage', 'LS_PENDING', components + '; return { rememberPendingTask, forgetPendingTask, pendingTaskReferences }')(localStorage, 'pending')
 storage.rememberPendingTask('relation-1', { documentId: 'doc', title: 'book', relationRetry: true, text: 'must not persist full source' })
 assert.deepEqual(Object.keys(JSON.parse(saved.get('pending'))).sort(), ['append', 'documentId', 'relationRetry', 'taskId', 'title', 'ts'])
 assert.equal(JSON.parse(saved.get('pending')).relationRetry, true)
@@ -124,10 +147,17 @@ assert.equal(visualPending.imageAppend, true)
 assert.equal(visualPending.text, undefined)
 assert.equal(visualPending.images, undefined)
 storage.forgetPendingTask('visual-1')
+storage.rememberPendingTask('parallel-a', { documentId: 'doc-a' })
+storage.rememberPendingTask('parallel-b', { documentId: 'doc-b' })
+storage.rememberPendingTask('parallel-a', { documentId: 'doc-a' }, false)
+assert.equal(JSON.parse(saved.get('pending')).taskId, 'parallel-b', 'background detach cannot steal another task selection')
+storage.forgetPendingTask('parallel-a')
+assert.equal(storage.pendingTaskReferences()['parallel-b'].documentId, 'doc-b')
+storage.forgetPendingTask('parallel-b')
 
 // Exercise the actual submission path twice before React can re-render.
 const retryStart = client.indexOf('        const retryRelations = async () => {')
-const retryEnd = client.indexOf('        const resetAll = () => {', retryStart)
+const retryEnd = client.indexOf('        const workbenchNavigationBusy =', retryStart)
 const script = client.slice(retryStart, retryEnd)
 const budgetStart = client.indexOf('      function relationBatchBudgetValue(')
 const budgetEnd = client.indexOf('      function RelationBatchBudgetInput(', budgetStart)
@@ -135,6 +165,7 @@ assert(budgetStart >= 0 && budgetEnd > budgetStart)
 const relationBatchBudgetValue = new Function(client.slice(budgetStart, budgetEnd) + '; return relationBatchBudgetValue')()
 const values = { resultView: { graph: { source: { documentId: 'doc', revision: 1 } } }, documentIdOfGraph: () => 'doc', cancelVerifyTasks() {}, setError() {}, effectiveModelArg: null, graphRevisionRef: { current: 1 }, submittedRef: { current: null }, submissionBusyRef: { current: false }, resumeAttemptRef: { current: false }, setExtractProgress() {}, setPhase() {}, setSelectedNodeId() {}, setSelectedEdgeId() {}, setActivePara() {}, setTaskId() {}, taskId: null, phase: 'done', title: 'book', fullText: 'source', rememberPendingTask: storage.rememberPendingTask, host: { call(name) { assert.equal(name, 'relation-retry'); calls++; return new Promise(resolve => { release = resolve }) } } }
 values.continuousRelations = true
+values.generationTaskActiveRef = { current: false }
 values.extractionConcurrency = 4
 values.relationBatchBudgetValue = relationBatchBudgetValue
 values.relationBatchBudget = '3'
@@ -168,9 +199,9 @@ for (const budget of ['', '1.5', '21', null]) {
   assert.equal(values.submissionBusyRef.current, false)
 }
 
-const resumeStart = client.indexOf('         const resumeLostTask = async () => {')
+const resumeStart = client.indexOf('         const resumeLostTask = async (')
 const resumeEnd = client.indexOf('// ---- adaptive-backoff polling while a task runs ----', resumeStart)
-const resumeValues = { resumeAttemptRef: { current: false }, localStorage, LS_PENDING: 'pending', loadHistoryEntry: async entry => { assert.equal(entry.documentId, 'doc') }, setError(value) { assert.equal(value.code, 'relation_task_interrupted') }, host: { call() { throw Error('relation recovery must not resubmit extraction') } } }
+const resumeValues = { taskId: 'relation-accepted', pendingTaskReferences: storage.pendingTaskReferences, resumeAttemptRef: { current: false }, localStorage, LS_PENDING: 'pending', loadHistoryEntry: async entry => { assert.equal(entry.documentId, 'doc') }, setError(value) { assert.equal(value.code, 'relation_task_interrupted') }, host: { call() { throw Error('relation recovery must not resubmit extraction') } } }
 const resume = new Function(...Object.keys(resumeValues), client.slice(resumeStart, resumeEnd) + '; return resumeLostTask')(...Object.values(resumeValues))
 assert.equal(await resume(), false)
 assert.ok(client.includes('relationRetry: pending.relationRetry === true'), 'reload must preserve the kind, not turn relation search into extraction')

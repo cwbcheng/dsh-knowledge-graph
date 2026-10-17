@@ -9,7 +9,7 @@ import * as host from '../lib/index.js'
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function callModel('
 assert.equal(source.split(marker).length, 2)
-const exposed = source.replace(marker, `      harness.cacheTest = { callModel, normalizeModelUsageHost, prepareRelationWeaveContextsHost, buildRelationWeaveUserTextHost, relationContextRecordsHost, graphConnectivityHost, attach(task) { activeTask = task; tasks.set(task.id, task) } }
+const exposed = source.replace(marker, `      harness.cacheTest = { callModel, normalizeModelUsageHost, prepareRelationWeaveContextsHost, buildRelationWeaveUserTextHost, relationContextRecordsHost, graphConnectivityHost, attach(task) { tasks.set(task.id, task) } }
 ${marker}`)
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(exposed).toString('base64'))
 const handlers = new Map(), streams = []
@@ -68,7 +68,7 @@ assert.equal(api.normalizeModelUsageHost({ inputTokens: 100, cacheReadTokens: 50
 
 const task = { id: 'cache-test', status: 'running', createdAt: Date.now(), progress: {} }
 api.attach(task)
-const call = (timing = {}) => api.callModel({ provider: 'fake', model: 'fake' }, '', '', 2000, 0, null, timing)
+const call = (timing = {}, owner = task) => api.callModel({ provider: 'fake', model: 'fake' }, '', '', 2000, 0, null, { ...timing, task: owner })
 const usage = { inputTokens: 100, cacheReadTokens: 600, cacheWriteTokens: 300, outputTokens: 20, reasoningTokens: 10, totalTokens: 1020 }
 const a = call(), b = call()
 await tick()
@@ -120,7 +120,7 @@ assert.equal(status.modelUsage.finishedRequests, 5)
 assert.equal(status.modelUsage.reportedRequests, 4, 'unreported cancelled calls remain unknown')
 const fresh = { id: 'fresh', progress: {} }
 api.attach(fresh)
-const f = call(); await tick(); streams[5].push({ type: 'text-delta', index: 0, text: '{}' }); streams[5].end(); await f
+const f = call({}, fresh); await tick(); streams[5].push({ type: 'text-delta', index: 0, text: '{}' }); streams[5].end(); await f
 assert.equal(fresh.modelUsage.finishedRequests, 1, 'a new/resumed run must not inherit prior-run billing')
 assert.equal(fresh.modelUsage.reportedRequests, 0)
 
