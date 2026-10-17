@@ -1,3 +1,10 @@
+// Deterministic identifier order (see compareIdKeysHost in index.host.js): NFC forms,
+// compared by UTF-16 code unit, independent of the runtime locale.
+function compareIdKeys(a, b) {
+  const x = String(a).normalize('NFC'), y = String(b).normalize('NFC')
+  return x < y ? -1 : x > y ? 1 : 0
+}
+
 export function createTargetMapTools() {
   const clone = value => JSON.parse(JSON.stringify(value))
   const fail = (message, code = 'invalid_input') => { throw Object.assign(new Error(message), { code }) }
@@ -168,13 +175,13 @@ export function createTargetMapTools() {
           if (record.documentId !== documentId) continue
           const count = counts.get(record.target.id) || { recordCount: 0, currentRecordCount: 0 }
           count.recordCount++; if (record.baseRevision === revision) count.currentRecordCount++
-          if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && record.id.localeCompare(count.latestRecord.id) > 0) {
+          if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && compareIdKeys(record.id, count.latestRecord.id) > 0) {
             count.latestRecord = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt }
           }
           const match = searchIn === 'content' && query ? historyContentMatch(record.map, query) : null
           if (match) {
             count.matchCount = (count.matchCount || 0) + 1
-            if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && record.id.localeCompare(count.latestMatch.id) > 0) {
+            if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && compareIdKeys(record.id, count.latestMatch.id) > 0) {
               count.latestMatch = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt, match }
             }
           }
@@ -193,7 +200,7 @@ export function createTargetMapTools() {
       const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))
       if (targets.length !== 1) fail('目标节点不存在或身份不唯一', 'not_found')
       const target = { id: targets[0].id, type: targets[0].type, text: targets[0].text }
-      const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+      const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || compareIdKeys(b.id, a.id))
       const current = records.find(record => record.baseRevision === revision) || null
       if (args.action === 'history') {
         const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query, searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn

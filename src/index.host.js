@@ -4755,7 +4755,7 @@ function createHostPlugin(graphContractOnly) {
           return !!matched || normalize([model.nodeId, model.text, model.sectionTitle,
             ...model.inputs.map(node => node.text), ...model.outputs.map(node => node.text),
             ...selectPorts().map(port => port.node.text)].join(' ')).includes(query)
-        }).sort((a, b) => (a.paragraph ?? Infinity) - (b.paragraph ?? Infinity) || a.nodeId.localeCompare(b.nodeId))
+        }).sort((a, b) => (a.paragraph ?? Infinity) - (b.paragraph ?? Infinity) || compareIdKeysHost(a.nodeId, b.nodeId))
         const offset = Number.isSafeInteger(options.offset) && options.offset >= 0 ? options.offset : 0
         const topics = new Map()
         for (const model of summaries) {
@@ -4831,7 +4831,7 @@ function createHostPlugin(graphContractOnly) {
           title: String(byId.get(nodeId).node.text || '').slice(0, 160), linkedCount: claimIds.size,
           origin: 'graph_concept', claimIds })).sort((a, b) => b.linkedCount - a.linkedCount
             || (byId.get(a.nodeId).node.paragraph ?? Number.MAX_SAFE_INTEGER) - (byId.get(b.nodeId).node.paragraph ?? Number.MAX_SAFE_INTEGER)
-            || a.nodeId.localeCompare(b.nodeId))
+            || compareIdKeysHost(a.nodeId, b.nodeId))
         const requestedTheme = typeof options.themeId === 'string' ? options.themeId : ''
         const selectedTheme = requestedTheme ? allThemes.find((theme) => theme.nodeId === requestedTheme) : null
         if (requestedTheme && !selectedTheme) {
@@ -4843,7 +4843,7 @@ function createHostPlugin(graphContractOnly) {
         const ordered = (selectedIds ? topicEntries.filter((entry) => selectedIds.has(entry.node.id)) : topicEntries).sort((a, b) => {
           const pa = Number.isInteger(a.node.paragraph) ? a.node.paragraph : Number.MAX_SAFE_INTEGER
           const pb = Number.isInteger(b.node.paragraph) ? b.node.paragraph : Number.MAX_SAFE_INTEGER
-          return pa - pb || a.node.id.localeCompare(b.node.id)
+          return pa - pb || compareIdKeysHost(a.node.id, b.node.id)
         })
         const units = Array.isArray(document.sourceUnits) && document.sourceUnits.length > 0
           ? new Map(document.sourceUnits.map((unit) => [unit.paragraph, unit.text]))
@@ -4877,7 +4877,7 @@ function createHostPlugin(graphContractOnly) {
           .sort((a, b) => priorityType[b.node.type] - priorityType[a.node.type]
             || (neighbors.get(b.node.id)?.size || 0) - (neighbors.get(a.node.id)?.size || 0)
             || (a.node.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.node.paragraph ?? Number.MAX_SAFE_INTEGER)
-            || a.node.id.localeCompare(b.node.id))
+            || compareIdKeysHost(a.node.id, b.node.id))
         const featuredItems = []
         for (const entry of ranked) {
           if (featuredItems.length >= 5) break
@@ -4967,7 +4967,7 @@ function createHostPlugin(graphContractOnly) {
           }
         }
         const ordered = graph.nodes.filter(node => references.has(node?.id)).sort((a, b) =>
-          (a.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.paragraph ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id))
+          (a.paragraph ?? Number.MAX_SAFE_INTEGER) - (b.paragraph ?? Number.MAX_SAFE_INTEGER) || compareIdKeysHost(a.id, b.id))
         const tasks = []
         const add = (kind, ids, prompt, guide, extra = {}) => tasks.push({
           id: kind + ':' + ids.map(encodeURIComponent).join('|'), kind, prompt, guide,
@@ -5041,6 +5041,13 @@ function createHostPlugin(graphContractOnly) {
       // relying on 32-bit heuristics. Keep this implementation self-contained
       // because the dynamic Cordis package is defined from this function body
       // and therefore cannot depend on top-level Node imports.
+      // Deterministic identifier order. localeCompare follows the runtime locale, so tie-breaks
+      // and the hashes computed over sorted lists would differ between machines. Compare NFC
+      // forms by UTF-16 code unit: canonically equivalent IDs still tie, and nothing else does.
+      function compareIdKeysHost(a, b) {
+        const x = String(a).normalize('NFC'), y = String(b).normalize('NFC')
+        return x < y ? -1 : x > y ? 1 : 0
+      }
       function sha256HexHost(value) {
         const text = String(value == null ? '' : value)
         if (nativeSha256HexHost) return nativeSha256HexHost(text)
@@ -7251,7 +7258,7 @@ function createHostPlugin(graphContractOnly) {
               }
             }
           }
-          return result.sort((a, b) => a.paragraph - b.paragraph || a.nodeId.localeCompare(b.nodeId) || a.imageId.localeCompare(b.imageId))
+          return result.sort((a, b) => a.paragraph - b.paragraph || compareIdKeys(a.nodeId, b.nodeId) || compareIdKeys(a.imageId, b.imageId))
         }
         const referenceEdges = (graph, units) => {
           const records = referenceRecords(graph)
@@ -8191,13 +8198,13 @@ function createHostPlugin(graphContractOnly) {
                 if (record.documentId !== documentId) continue
                 const count = counts.get(record.target.id) || { recordCount: 0, currentRecordCount: 0 }
                 count.recordCount++; if (record.baseRevision === revision) count.currentRecordCount++
-                if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && record.id.localeCompare(count.latestRecord.id) > 0) {
+                if (!count.latestRecord || record.createdAt > count.latestRecord.createdAt || record.createdAt === count.latestRecord.createdAt && compareIdKeys(record.id, count.latestRecord.id) > 0) {
                   count.latestRecord = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt }
                 }
                 const match = searchIn === 'content' && query ? historyContentMatch(record.map, query) : null
                 if (match) {
                   count.matchCount = (count.matchCount || 0) + 1
-                  if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && record.id.localeCompare(count.latestMatch.id) > 0) {
+                  if (!count.latestMatch || record.createdAt > count.latestMatch.createdAt || record.createdAt === count.latestMatch.createdAt && compareIdKeys(record.id, count.latestMatch.id) > 0) {
                     count.latestMatch = { id: record.id, title: record.map.title, baseRevision: record.baseRevision, createdAt: record.createdAt, match }
                   }
                 }
@@ -8216,7 +8223,7 @@ function createHostPlugin(graphContractOnly) {
             const targets = nodes.filter(node => node.id === args.targetId && types.includes(node.type))
             if (targets.length !== 1) fail('目标节点不存在或身份不唯一', 'not_found')
             const target = { id: targets[0].id, type: targets[0].type, text: targets[0].text }
-            const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+            const records = allRecords.filter(record => record.documentId === documentId && record.target.id === target.id).sort((a, b) => b.createdAt - a.createdAt || compareIdKeys(b.id, a.id))
             const current = records.find(record => record.baseRevision === revision) || null
             if (args.action === 'history') {
               const offset = args.offset ?? 0, query = args.query === undefined ? '' : args.query, searchIn = args.searchIn === undefined ? 'metadata' : args.searchIn
@@ -9382,7 +9389,7 @@ function createHostPlugin(graphContractOnly) {
       }
       function selectRelationCandidatesHost(candidates, target, byId, stats) {
         const ranked = [], bridges = [], distant = []
-        const compare = (a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id))
+        const compare = (a, b) => b.score - a.score || compareIdKeysHost(String(a.node.id), String(b.node.id))
         const retain = (list, item, limit) => {
           if (list.length === limit && compare(item, list[list.length - 1]) >= 0) return
           let index = list.length
@@ -9408,7 +9415,7 @@ function createHostPlugin(graphContractOnly) {
       function buildRelationWeaveGroupsHost(nodes, stats, paragraphTexts, previousCoverage, sourceText) {
         // Coverage means candidate search, not proof that every possible relation
         // was found. Edge additions do not reset it; changed source/nodes do.
-        const signature = sha256HexHost(JSON.stringify([sourceText, nodes.map(node => [node.id, node.type, node.text, node.quote, node.paragraph, (node.evidence || []).map(item => [item.paragraph, item.quote]).sort((a, b) => a[0] - b[0] || String(a[1]).localeCompare(String(b[1]))), node.sectionId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))]))
+        const signature = sha256HexHost(JSON.stringify([sourceText, nodes.map(node => [node.id, node.type, node.text, node.quote, node.paragraph, (node.evidence || []).map(item => [item.paragraph, item.quote]).sort((a, b) => a[0] - b[0] || compareIdKeysHost(String(a[1]), String(b[1]))), node.sectionId]).sort((a, b) => compareIdKeysHost(String(a[0]), String(b[0])))]))
         const ids = new Set(nodes.map(node => node.id))
         const completed = new Set(previousCoverage?.version === 1 && previousCoverage.signature === signature
           ? (previousCoverage.completedTargetIds || []).filter(id => ids.has(id)) : [])
@@ -9425,7 +9432,7 @@ function createHostPlugin(graphContractOnly) {
           const degreeDiff = (stats.degree.get(a.id) || 0) - (stats.degree.get(b.id) || 0)
           if (degreeDiff !== 0) return degreeDiff
           const paragraphDiff = (Number.isInteger(a.paragraph) ? a.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.paragraph) ? b.paragraph : Number.MAX_SAFE_INTEGER)
-          return paragraphDiff || String(a.id).localeCompare(String(b.id))
+          return paragraphDiff || compareIdKeysHost(String(a.id), String(b.id))
         })
         const coverage = { version: 1, signature, pass: previousCoverage?.signature === signature ? (previousCoverage.pass || 1) + (restart ? 1 : 0) : 1, totalTargets: nodes.length, completedTargetIds: Array.from(completed), searchedTargets: completed.size, remainingTargets: nodes.length - completed.size }
         if (!orderedTargets.length) return { groups: [], coverage }
@@ -9462,7 +9469,7 @@ function createHostPlugin(graphContractOnly) {
           // Rare shared terms retrieve distant passages without arbitrary hubs
           // or all-pairs graph scans. Similarity is never admission evidence.
           const rare = Array.from(tokens.get(target.id)).filter(token => byToken.get(token).length > 1 && byToken.get(token).length <= Math.max(8, nodes.length * 0.2))
-            .sort((a, b) => byToken.get(a).length - byToken.get(b).length || a.localeCompare(b)).slice(0, 12)
+            .sort((a, b) => byToken.get(a).length - byToken.get(b).length || compareIdKeysHost(a, b)).slice(0, 12)
           for (const token of rare) for (const id of byToken.get(token)) candidates.add(id)
           candidates.delete(target.id)
           const related = selectRelationCandidatesHost(candidates, target, byId, stats)
@@ -9593,7 +9600,7 @@ function createHostPlugin(graphContractOnly) {
               return sameParagraph || jaccardHost(limitationTokens, basisTokens) > 0
             })
             .map((basis) => ({ basis, score: relationCandidateScoreHost(limitation, basis, stats) }))
-            .sort((a, b) => b.score - a.score || String(a.basis.id).localeCompare(String(b.basis.id)))
+            .sort((a, b) => b.score - a.score || compareIdKeysHost(String(a.basis.id), String(b.basis.id)))
             .slice(0, 3)
           for (const item of related) {
             pairs.push({ basis: item.basis, limitation })
@@ -9622,7 +9629,7 @@ function createHostPlugin(graphContractOnly) {
           const related = nodes
             .filter((node) => node && node.id !== example.id && weave.targets.has(node.type))
             .map((node) => ({ node, score: relationCandidateScoreHost(example, node, stats) }))
-            .sort((a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)))
+            .sort((a, b) => b.score - a.score || compareIdKeysHost(String(a.node.id), String(b.node.id)))
             .slice(0, 3)
           for (const item of related) {
             pairs.push({ example, target: item.node })
@@ -9636,7 +9643,7 @@ function createHostPlugin(graphContractOnly) {
         const records = new Map()
         for (const unit of relationEvidenceUnitsHost(nodes, paragraphTexts).sort((a, b) => a.num - b.num)) records.set('p:' + unit.num, JSON.stringify({ paragraph: unit.num, text: unit.text }))
         const attributes = ontNodeAttributes(ontology)
-        for (const node of nodes.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)))) records.set('n:' + node.id, JSON.stringify({ id: node.id, type: node.type, paragraph: node.paragraph, text: node.text,
+        for (const node of nodes.slice().sort((a, b) => compareIdKeysHost(String(a.id), String(b.id)))) records.set('n:' + node.id, JSON.stringify({ id: node.id, type: node.type, paragraph: node.paragraph, text: node.text,
           ...(node.modelStructure ? { modelStructure: node.modelStructure } : {}), ...(pickDeclaredAttributes(node, attributes) || {}) }))
         return records
       }
@@ -9695,12 +9702,12 @@ function createHostPlugin(graphContractOnly) {
         const candidatePairs = []
         const candidateSeen = new Set()
         const primaryIds = new Set(targetIds)
-        const lowDegree = groupNodes.slice().sort((a, b) => Number(primaryIds.has(b.id)) - Number(primaryIds.has(a.id)) || (stats.degree.get(a.id) || 0) - (stats.degree.get(b.id) || 0) || String(a.id).localeCompare(String(b.id)))
+        const lowDegree = groupNodes.slice().sort((a, b) => Number(primaryIds.has(b.id)) - Number(primaryIds.has(a.id)) || (stats.degree.get(a.id) || 0) - (stats.degree.get(b.id) || 0) || compareIdKeysHost(String(a.id), String(b.id)))
         for (const target of lowDegree) {
           const related = groupNodes
             .filter((node) => node.id !== target.id)
             .map((node) => ({ node, score: relationCandidateScoreHost(target, node, stats) }))
-            .sort((a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)))
+            .sort((a, b) => b.score - a.score || compareIdKeysHost(String(a.node.id), String(b.node.id)))
           let accepted = 0
           for (const item of related) {
             const pairKey = [target.id, item.node.id].sort().join('|')
@@ -12713,11 +12720,11 @@ function createHostPlugin(graphContractOnly) {
         const allNodes = Array.isArray(graph.nodes) ? graph.nodes : []
         const allEdges = Array.isArray(graph.edges) ? graph.edges : []
         const orderedEdges = allEdges.slice().sort((a, b) => {
-          const from = String(a && a.fromNodeId || '').localeCompare(String(b && b.fromNodeId || ''))
+          const from = compareIdKeysHost(String(a && a.fromNodeId || ''), String(b && b.fromNodeId || ''))
           if (from) return from
-          const to = String(a && a.toNodeId || '').localeCompare(String(b && b.toNodeId || ''))
+          const to = compareIdKeysHost(String(a && a.toNodeId || ''), String(b && b.toNodeId || ''))
           if (to) return to
-          return String(a && a.relation || '').localeCompare(String(b && b.relation || ''))
+          return compareIdKeysHost(String(a && a.relation || ''), String(b && b.relation || ''))
         })
         const byId = new Map(allNodes.filter((node) => node && typeof node.id === 'string').map((node) => [node.id, node]))
         const relationSeedOrder = new Map()
@@ -12753,7 +12760,7 @@ function createHostPlugin(graphContractOnly) {
           }
           candidates.push({ node, ...scored })
         }
-        candidates.sort((a, b) => b.score - a.score || (Number.isInteger(a.node.paragraph) ? a.node.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.node.paragraph) ? b.node.paragraph : Number.MAX_SAFE_INTEGER) || a.node.id.localeCompare(b.node.id))
+        candidates.sort((a, b) => b.score - a.score || (Number.isInteger(a.node.paragraph) ? a.node.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.node.paragraph) ? b.node.paragraph : Number.MAX_SAFE_INTEGER) || compareIdKeysHost(a.node.id, b.node.id))
         const direct = candidates.slice(0, directLimit)
         const selectedIds = new Set(direct.map((item) => item.node.id))
         let frontier = new Set(selectedIds)
@@ -12789,7 +12796,7 @@ function createHostPlugin(graphContractOnly) {
             const bn = byId.get(b)
             const ap = Number.isInteger(an && an.paragraph) ? an.paragraph : Number.MAX_SAFE_INTEGER
             const bp = Number.isInteger(bn && bn.paragraph) ? bn.paragraph : Number.MAX_SAFE_INTEGER
-            return ap - bp || a.localeCompare(b)
+            return ap - bp || compareIdKeysHost(a, b)
           })
           for (const id of orderedNeighborIds) {
             if (selectedIds.size >= maxNodes) break
@@ -14182,7 +14189,7 @@ function createHostPlugin(graphContractOnly) {
           }
           return [id, node || null]
         })
-        return sha256HexHost(verificationSemanticJsonHost({ nodes, edges: [...edges].sort(([a], [b]) => a.localeCompare(b)),
+        return sha256HexHost(verificationSemanticJsonHost({ nodes, edges: [...edges].sort(([a], [b]) => compareIdKeysHost(a, b)),
           source: entireSource ? { hash: context.sourceHash } : [...paragraphs].sort((a, b) => a - b).map(p => [p, context.paragraphs[p] ?? null]) }))
       }
       function certifyVerificationBatchHost(context, batch, result, origin) {

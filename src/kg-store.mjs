@@ -7,6 +7,13 @@ import { createImageNodeTools } from './kg-image-nodes.mjs'
 import { createModelStructureTools, createModelConsumptionTools } from './kg-model-structure.mjs'
 import { createTargetMapTools } from './kg-target-map.mjs'
 
+// Deterministic identifier order (see compareIdKeysHost in index.host.js): NFC forms,
+// compared by UTF-16 code unit, independent of the runtime locale.
+function compareIdKeys(a, b) {
+  const x = String(a).normalize('NFC'), y = String(b).normalize('NFC')
+  return x < y ? -1 : x > y ? 1 : 0
+}
+
 const imageNodeTools = createImageNodeTools()
 const modelStructureTools = createModelStructureTools()
 const modelConsumptionTools = createModelConsumptionTools(modelStructureTools)
@@ -2848,7 +2855,7 @@ export class SqliteKnowledgeStore {
       if (value) { lexicalCandidateCount++; scored.push({ row: item, ...value }) }
     }
     const trimScored = () => {
-      scored.sort((a, b) => b.score - a.score || (Number.isInteger(a.row.paragraph) ? a.row.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.row.paragraph) ? b.row.paragraph : Number.MAX_SAFE_INTEGER) || a.row.node_id.localeCompare(b.row.node_id))
+      scored.sort((a, b) => b.score - a.score || (Number.isInteger(a.row.paragraph) ? a.row.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.row.paragraph) ? b.row.paragraph : Number.MAX_SAFE_INTEGER) || compareIdKeys(a.row.node_id, b.row.node_id))
       if (scored.length > candidateCap) scored.splice(candidateCap)
     }
     if (terms.length > 0) {
@@ -2896,7 +2903,7 @@ export class SqliteKnowledgeStore {
         const marks = part.map(() => '?').join(',')
         result.push(...this.db.prepare('SELECT * FROM graph_nodes WHERE document_id = ? AND node_id IN (' + marks + ') ORDER BY paragraph, node_id').all(documentId, ...part))
       }
-      result.sort((a, b) => (Number.isInteger(a.paragraph) ? a.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.paragraph) ? b.paragraph : Number.MAX_SAFE_INTEGER) || a.node_id.localeCompare(b.node_id))
+      result.sort((a, b) => (Number.isInteger(a.paragraph) ? a.paragraph : Number.MAX_SAFE_INTEGER) - (Number.isInteger(b.paragraph) ? b.paragraph : Number.MAX_SAFE_INTEGER) || compareIdKeys(a.node_id, b.node_id))
       return result
     }
     const fetchFrontierEdges = (ids, cap) => {
