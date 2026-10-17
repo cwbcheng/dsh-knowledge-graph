@@ -387,7 +387,32 @@ ctx.provide('llm', { stream(request) {
     evidence: [{ paragraph: evidenceParagraph, quote: paragraphs[wholeGraphReview ? paragraphs.length - 1 : reviewedIndex] }],
     proposedFix: reviewedIndex < 2 && !wholeGraphReview && !(reviewDismissMode && reviewedIndex === 0) ? { action: 'update_node', nodePatch: { id: 'n' + reviewedIndex,
       patch: { quote: paragraphs[reviewedIndex] } } } : { action: 'none' },
-  } : { issues: [] }
+  // Relation weave requests carry no reviewed index either and are answered by this
+  // default, so it must stay a complete empty graph: the weave planner requires an
+  // edges array before it accepts a group.
+  } : { issues: [], edges: [] }
+  // Text extraction and text append requests need a real graph reply: the canned review
+  // text above cannot anchor to the submitted source, so build nodes from the numbered
+  // paragraphs the Host actually sent ([P<num>] <text>). Only paragraphs that are not
+  // already part of this fixture's source count as newly submitted text, so an append
+  // that merely re-sends existing context (for example an image-interpretation append)
+  // keeps the canned reply and adds no paragraph-derived nodes.
+  // In visual-inspector mode the append is image-driven, so the canned empty graph is the
+  // right reply: synthesizing paragraph nodes there would change node counts the checks assert.
+  if (!Number.isInteger(reviewedIndex) && !visualInspectorMode) {
+    const known = new Set(paragraphs.map(text => String(text).trim()))
+    const prompt = String(request.messages?.[0]?.content?.[0]?.text || '')
+    const units = [...prompt.matchAll(/^\[P(\d+)\]\s*(.+)$/gm)].map(match => ({ num: Number(match[1]), text: match[2].trim() }))
+      .filter(unit => unit.text && !known.has(unit.text))
+    if (units.length > 0) {
+      reply = {
+        summary: 'Fixture extraction for paragraphs ' + units.map(unit => unit.num).join(', '),
+        nodes: units.map(unit => ({ id: 'n' + unit.num, type: 'fact', text: unit.text, quote: unit.text, paragraph: unit.num,
+          evidence: [{ paragraph: unit.num, quote: unit.text }], groundingStatus: 'grounded' })),
+        edges: [],
+      }
+    }
+  }
   if (relationSemanticMode) reply = { verdict: 'confirmed',
     answer: 'The source explicitly denies a causal direction; this proposed relation is an adversarial fixture.',
     evidence: [{ paragraph: 0, quote: paragraphs[0] }],
