@@ -15,7 +15,8 @@ const walk = (tree, predicate) => {
   return [...(predicate(tree) ? [tree] : []), ...(tree.children || []).flatMap(child => walk(child, predicate))]
 }
 const text = tree => tree == null || tree === false ? '' : typeof tree !== 'object' ? String(tree) : (tree.children || []).map(text).join('')
-const paragraphSnapshot = tree => (tree.children || []).filter(child => child?.type === 'p').map(text)
+// Paragraphs may sit inside the collapsed details disclosure; the rendered content is the same.
+const paragraphSnapshot = tree => (tree.children || []).flatMap(child => child?.type === 'details' ? (child.children || []) : [child]).filter(child => child?.type === 'p').map(text)
 const start = source.indexOf('      function relationBatchBudgetValue(')
 const end = source.indexOf('      function ModelUsageStatus(', start)
 assert.ok(start >= 0 && end > start, 'Source UI helper boundaries must exist')
