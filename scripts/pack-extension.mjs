@@ -12,7 +12,10 @@ const keyPath = resolve(process.env.DSH_KG_EXTENSION_KEY || defaultKey)
 const outputPath = resolve(ROOT, 'dist', 'dsh-knowledge-graph.crx')
 
 const keyRelative = relative(ROOT, keyPath)
-if (keyRelative === '' || (!keyRelative.startsWith('..' + sep) && keyRelative !== '..')) {
+// relative() yields an absolute path when the key sits on another drive, which also
+// means it is outside the repository: treat only a repo-relative path as inside.
+const keyInsideRepository = keyRelative === '' || (!isAbsolute(keyRelative) && !keyRelative.startsWith('..' + sep) && keyRelative !== '..')
+if (keyInsideRepository) {
   throw new Error('DSH_KG_EXTENSION_KEY must point outside the repository; private keys must not be checked in')
 }
 
