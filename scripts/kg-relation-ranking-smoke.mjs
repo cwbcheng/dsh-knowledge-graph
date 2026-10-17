@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+// Independent oracle for the product's identifier order: NFC forms by UTF-16
+// code unit, so ties and cutoffs never depend on the runtime locale.
+const compareIdsOracle = (a, b) => { const x = a.normalize('NFC'), y = b.normalize('NFC'); return x < y ? -1 : x > y ? 1 : 0 }
 const previousHarness = globalThis.harness
 let source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
 const marker = '      async function weaveRelationsHost('
@@ -16,9 +19,9 @@ source = source.replace('function relationCandidateScoreHost(', `function relati
   return measuredRelationCandidateScoreHost(...args)
 }
 function measuredRelationCandidateScoreHost(`)
-const compare = 'const compare = (a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id))'
+const compare = 'const compare = (a, b) => b.score - a.score || compareIdKeysHost(String(a.node.id), String(b.node.id))'
 assert.equal(source.split(compare).length, 2)
-source = source.replace(compare, 'const compare = (a, b) => { harness.comparisons++; return b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)) }')
+source = source.replace(compare, 'const compare = (a, b) => { harness.comparisons++; return b.score - a.score || compareIdKeysHost(String(a.node.id), String(b.node.id)) }')
 const { default: plugin } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 const harness = { handle() {}, scored: 0, comparisons: 0 }
 globalThis.harness = harness
@@ -43,7 +46,7 @@ function exhaustive(candidates, target, byId, stats) {
     score += Math.min(stats.degree.get(id) || 0, 6) * 0.2
     if (stats.componentById.get(target.id) !== stats.componentById.get(id)) score += 0.25
     return { node, distance, score }
-  }).sort((a, b) => b.score - a.score || String(a.node.id).localeCompare(String(b.node.id)))
+  }).sort((a, b) => b.score - a.score || compareIdsOracle(String(a.node.id), String(b.node.id)))
   const bridges = ranked.filter(item => stats.componentById.get(item.node.id) !== stats.componentById.get(target.id))
   const distant = bridges.filter(item => Number.isFinite(item.distance) && item.distance > 8)
   return Array.from(new Map([...distant.slice(0, 2), ...bridges.slice(0, 3), ...ranked.slice(0, 6)].map(item => [item.node.id, item.node])).values())
@@ -80,14 +83,14 @@ try {
   }
   // Canonically equivalent IDs tie exactly at each retained prefix boundary.
   // A later equal candidate must not replace the earlier candidate's last slot.
-  // The prefix uses digits because they sort before Latin letters in every
-  // locale. Letters such as 'e' would move with the runtime's default collation,
-  // so the accented pair would no longer straddle the six-node cutoff.
-  assert.equal('\u00e9'.localeCompare('e\u0301'), 0)
+  // The prefix uses digits and the tail uses U+00FF: in code-unit order every
+  // digit sorts before the accented pair and U+00FF after it, so the pair
+  // straddles the six-node cutoff with a fixed, locale-free outcome.
+  assert.equal('\u00e9'.normalize('NFC'), 'e\u0301'.normalize('NFC'))
   const target = { id: 'target', text: 'same', paragraph: 0 }
   for (const prefix of [1, 2, 5]) {
     for (const equivalentIds of [['\u00e9', 'e\u0301'], ['e\u0301', '\u00e9']]) {
-      const list = [...'01234'.slice(0, prefix), ...equivalentIds, 'z'].map(id => ({ id, text: 'same', paragraph: 50 }))
+      const list = [...'01234'.slice(0, prefix), ...equivalentIds, '\u00ff'].map(id => ({ id, text: 'same', paragraph: 50 }))
       const stats = api.graphConnectivityHost([target, ...list], [])
       const candidates = new Set(list.map(node => node.id)), byId = new Map(list.map(node => [node.id, node]))
       const actual = api.selectRelationCandidatesHost(candidates, target, byId, stats)

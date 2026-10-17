@@ -59,7 +59,7 @@ function fixture(id, count = 12, { searched = 0, long = false } = {}) {
       paragraph: i, evidence: [{ paragraph: i, quote: text }] })), edges: [] }
   const text = paragraphs.join('\n\n')
   const signature = hash([text, graph.nodes.map(node => [node.id, node.type, node.text, node.quote, node.paragraph,
-    node.evidence.map(item => [item.paragraph, item.quote]), node.sectionId]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))])
+    node.evidence.map(item => [item.paragraph, item.quote]), node.sectionId]).sort((a, b) => { const x = String(a[0]).normalize('NFC'), y = String(b[0]).normalize('NFC'); return x < y ? -1 : x > y ? 1 : 0 })])
   const completedTargetIds = graph.nodes.slice(0, searched).map(node => node.id)
   graph.generation = { relationDiscovery: { version: 1, signature, pass: 1, totalTargets: count,
     completedTargetIds, searchedTargets: searched, remainingTargets: count - searched } }

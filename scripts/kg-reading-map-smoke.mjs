@@ -7,10 +7,16 @@ import { performance } from 'node:perf_hooks'
 import { openSqliteStore } from '../src/kg-store.mjs'
 
 const source = readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8')
+// The sliced function calls the Host's identifier-order helper, so extract that
+// helper from the same source instead of leaving the reference undefined.
+const comparatorStart = source.indexOf('      function compareIdKeysHost(')
+const comparatorEnd = source.indexOf('      function sha256HexHost(', comparatorStart)
+assert(comparatorStart >= 0 && comparatorEnd > comparatorStart, 'Host identifier order helper must exist')
 const start = source.indexOf('      function readingMapHost(')
 const end = source.indexOf('      function splitParagraphsOffsetsHost(', start)
 assert(start >= 0 && end > start, 'Reading map must be derived by the actual Host')
-const readingMapHost = new Function('splitParagraphsHost', source.slice(start, end) + '\nreturn readingMapHost')(
+const readingMapHost = new Function('splitParagraphsHost',
+  source.slice(comparatorStart, comparatorEnd) + source.slice(start, end) + '\nreturn readingMapHost')(
   text => text.split(/\n\s*\n/),
 )
 

@@ -9,6 +9,8 @@ import { openSqliteStore } from '../src/kg-store.mjs'
 import { createModelStructureTools, createModelConsumptionTools } from '../src/kg-model-structure.mjs'
 import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { modelCatalogueSearchFixture } from './kg-model-catalogue-search-fixture-data.mjs'
+// Same identifier order as the product (NFC, UTF-16 code unit); locale-independent.
+const compareIdKeysTest = (a, b) => { const x = String(a).normalize('NFC'), y = String(b).normalize('NFC'); return x < y ? -1 : x > y ? 1 : 0 }
 
 const fixture = modelCatalogueSearchFixture({ scale: true })
 const harness = await modelLearningHarness({ fixture })
@@ -119,7 +121,7 @@ try {
   assert.equal(last.items.at(-1).nodeId, 'catalogue-scale-zzzz')
   assert.equal((await read({ query: 'PRECISIONTAILCATALOGUE' })).items[0].nodeId, 'catalogue-scale-zzzz')
   assert.equal(scaled.topics.reduce((count, topic) => count + topic.count, 0), scaled.totalModels)
-  assert(scaled.items.every((item, index, all) => !index || all[index - 1].nodeId.localeCompare(item.nodeId) <= 0))
+  assert(scaled.items.every((item, index, all) => !index || compareIdKeysTest(all[index - 1].nodeId, item.nodeId) <= 0))
   assert(scaleMs < 5000, 'Full-graph search must remain bounded in the adversarial fixture')
   assert.equal((await post({ query: 'ONLYAFTERMIDNIGHT', graph: { nodes: [] }, ontology: 'forged' })).total, 1)
   assert.equal((await post({ expectedRevision: 0, query: 'ONLYAFTERMIDNIGHT' })).error.code, 'revision_conflict')
