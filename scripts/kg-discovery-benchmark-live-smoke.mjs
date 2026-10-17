@@ -39,9 +39,11 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')),
     { revision: 2, pending: { taskId: 'already-admitted' } })
   assert.equal(readFileSync(output + '.pending', 'utf8'), 'orphaned interrupted bytes')
-  assert.equal(statSync(output).mode & 0o777, 0o600, 'raw model captures must remain private')
+  // POSIX permission bits do not exist on Windows (stat reports 0666 regardless
+  // of the 0600 open mode), so enforce them only where the platform honours them.
+  if (process.platform !== 'win32') assert.equal(statSync(output).mode & 0o777, 0o600, 'raw model captures must remain private')
   const release = acquireBenchmarkCaptureLock(output)
-  assert.equal(statSync(output + '.lock').mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal(statSync(output + '.lock').mode & 0o777, 0o600)
   assert.throws(() => acquireBenchmarkCaptureLock(output), /capture is locked/)
   release()
   const releaseAgain = acquireBenchmarkCaptureLock(output)
