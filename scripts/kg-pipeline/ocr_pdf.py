@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -16,13 +17,24 @@ def atomic_text(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+        # Write the UTF-8 bytes directly: text mode would turn "\n" into "\r\n" on
+        # Windows, so the file would no longer match the sha256 recorded for it.
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
                                          prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
             temporary = Path(handle.name)
-            handle.write(text)
+            handle.write(text.encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # Windows refuses to replace a file while another handle has it open (a
+        # concurrent reader); retry briefly rather than losing the completed write.
+        for attempt in range(50):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.01)
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
