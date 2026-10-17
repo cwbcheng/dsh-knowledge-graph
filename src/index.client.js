@@ -1101,7 +1101,7 @@ export default function clientPlugin() {
           conceptIds.length && onLocate ? h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
             h('span', null, '孤立概念定位：'), conceptIds.slice(0, 8).map(id => h('button', { key: id, type: 'button', className: 'kg-secondary', onClick: () => onLocate(id) }, id)),
             conceptIds.length > 8 ? h('span', null, '另有 ' + (conceptIds.length - 8) + ' 个，待按原文核查') : null) : null,
-          h('p', { style: { margin: '6px 0 0' } }, '结构检查只提示连接情况。独立事实可以保存；是否有关系仍需原文依据。'))
+          h('p', { style: { margin: '6px 0 0', color: '#64748b', fontSize: 12 } }, '结构检查只提示连接情况。独立事实可以保存；是否有关系仍需原文依据。'))
       }
       function GraphContentScopeControls({ scope, onChange, disabled }) {
         return h('div', { style: { marginBottom: 8, fontSize: 13 } },
