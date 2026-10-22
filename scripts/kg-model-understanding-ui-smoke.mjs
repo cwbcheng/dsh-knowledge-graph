@@ -9,7 +9,7 @@ const harness = await modelLearningHarness({ fixture: modelStructureFixture() })
 const { store, document, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = []
-let paused = false, loseSave = true, legacy = false, forged = false, confirm = true
+let paused = false, loseSave = true, legacy = false, forged = false, confirm = true, storageFailure = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -27,7 +27,7 @@ const React = {
 }
 const context = { window: { React, confirm: () => confirm, addEventListener: (key, fn) => events.set(key, fn), removeEventListener: key => events.delete(key) },
   console, AbortController, setTimeout, clearTimeout, crypto: { randomUUID },
-  sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } }
+  sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => { if (storageFailure) throw new Error('Quota'); storage.set(key, value) }, removeItem: key => storage.delete(key) } }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 let Component = context.window.KGViewer.ModelUnderstandingPanel
 assert.equal(typeof Component, 'function')
@@ -67,6 +67,16 @@ try {
   const graphBefore = store.getDocument(document.documentId), unitsBefore = store.getDocumentSourceUnits(document.documentId)
   render(); await settle()
   assert(button('保存我的理解').props.disabled)
+  storageFailure = true
+  fill('我的联结规律', '无法缓存的个人草稿\n限定条件仍须核验')
+  fill('适用条件', '只针对本次情境，不代表已掌握')
+  props.active = false; render(); assert.equal(tree, null)
+  props.active = true; render(); await settle()
+  assert.equal(input('我的联结规律').props.value, '无法缓存的个人草稿\n限定条件仍须核验')
+  assert.equal(input('适用条件').props.value, '只针对本次情境，不代表已掌握')
+  assert.equal(store.listLearningAttempts(document.documentId, 'taxi', 'understanding').length, 0)
+  storageFailure = false
+  fill('我的联结规律', ''); fill('适用条件', '')
   fill('我的联结规律', '仍待核对的个人解释；不是正确答案。')
   fill('尚未解决的问题', '缺少夜间费用时该如何判断？')
   props.active = false; render(); assert.equal(tree, null)
