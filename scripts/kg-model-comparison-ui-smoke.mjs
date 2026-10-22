@@ -9,7 +9,7 @@ const harness = await modelLearningHarness({ fixture: comparisonFixture() })
 const { document, store, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree, Component, props
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = [], challenges = []
-let paused = false, loseSave = false, invalidIdentity = false
+let paused = false, loseSave = false, invalidIdentity = false, failCatalogOnce = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, properties, ...children) => ({ type, props: { ...properties, children } }),
@@ -28,6 +28,7 @@ runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url),
 const call = (args, signal, method = 'learning-mode') => {
   requests.push({ args, signal, method })
   const run = async () => {
+    if (failCatalogOnce && method === 'connection-models' && !args.modelId) { failCatalogOnce = false; throw new Error('Catalogue temporarily unavailable') }
     const result = await post(args, method)
     if (args.action === 'save' && loseSave) { loseSave = false; throw new Error('Lost challenge save response') }
     return invalidIdentity ? { ...result, documentId: 'foreign-document' } : result
@@ -37,7 +38,11 @@ const call = (args, signal, method = 'learning-mode') => {
 function render() {
   for (let count = 0; count < 30; count++) {
     updates.splice(0).forEach(fn => fn()); cursor = 0
-    tree = Component(props); owner.effects.splice(0).forEach(fn => fn())
+    tree = Component(props)
+    for (const node of all(tree, el => el.props['aria-label'] === '比较模型候选' && el.props.ref)) {
+      node.props.ref.current = owner.focusNode ||= { scrollTop: 80, focus: () => { owner.focused = (owner.focused || 0) + 1 } }
+    }
+    owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
   throw new Error('Component update loop')
@@ -49,6 +54,7 @@ const all = (el, predicate) => Array.isArray(el) ? el.flatMap(child => all(child
 const button = label => { const found = all(tree, el => el.type === 'button' && (el.props['aria-label'] === label || text(el) === label))[0]; assert(found, label); return found }
 const click = label => { const found = button(label); assert(!found.props.disabled, label); found.props.onClick(); render() }
 const input = label => { const found = all(tree, el => ['textarea', 'select', 'input'].includes(el.type) && el.props['aria-label'] === label)[0]; assert(found, label); return found }
+const candidates = () => { const node = all(tree, el => el.props['aria-label'] === '比较模型候选')[0]; assert(node, 'Candidate region stays mounted during reads'); return node }
 const fill = (label, value) => { const found = input(label); assert(!found.props.disabled, label); found.props.onChange({ target: { value } }); render() }
 const choose = id => {
   const found = all(tree, el => el.type === 'button' && text(el).includes(id + ' · '))[0]
@@ -70,10 +76,33 @@ try {
   assert(text(tree).includes('前 2 / 2 条关联材料'))
   click('挑战模型 B'); assert.deepEqual(challenges, ['night'], 'challenge targets selected secondary model, not primary by mistake')
   click('原文 P9'); await settle(); assert(text(tree).includes('Locate failed visibly'))
-  click('下一页比较模型'); await settle()
+  assert.equal(candidates().props.tabIndex, -1)
+  const beforePaging = requests.length, pairReads = requests.filter(item => item.args.compareModelId).length
+  const nextPage = button('下一页比较模型').props.onClick
+  paused = true
+  nextPage(); nextPage(); render()
+  assert.equal(requests.length, beforePaging + 1, 'Repeated page callbacks issue one catalogue request')
+  assert.equal(owner.focused, 1, 'Focus moves before the page controls become unavailable')
+  assert.equal(candidates().props['aria-busy'], true)
+  assert.equal(owner.focusNode.scrollTop, 0)
+  assert(button('上一页比较模型').props.disabled && button('下一页比较模型').props.disabled)
+  nextPage(); assert.equal(updates.length, 0, 'Retired page callback cannot act during the new read')
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert.equal(owner.focused, 1, 'Completing a read does not steal focus back')
+  assert.equal(candidates().props['aria-busy'], false)
+  assert(button('下一页比较模型').props.disabled)
+  button('下一页比较模型').props.onClick(); assert.equal(updates.length, 0, 'Last-page boundary is checked by the handler')
   assert(text(tree).includes('已记录的输入、输出端点相同'), 'candidate pagination does not replace the selected pair')
   assert(text(tree).includes('peer-9'))
   click('上一页比较模型'); await settle()
+  assert.equal(owner.focused, 2)
+  assert.equal(requests.filter(item => item.args.compareModelId).length, pairReads, 'Candidate paging never reloads the selected pair')
+  button('上一页比较模型').props.onClick(); assert.equal(updates.length, 0, 'First-page boundary is checked by the handler')
+  failCatalogOnce = true; click('下一页比较模型'); await settle()
+  assert(text(tree).includes('Catalogue temporarily unavailable'))
+  assert(candidates()); assert(!button('上一页比较模型').props.disabled)
+  click('上一页比较模型'); await settle()
+  assert(text(tree).includes('已记录的输入、输出端点相同'), 'Failure and recovery retain the selected pair')
   paused = true
   choose('multi'); const old = deferred.splice(0)
   choose('unknown'); const fresh = deferred.splice(0)
@@ -91,6 +120,30 @@ try {
   assert(text(tree).includes('比较模型身份或版本不一致'))
   invalidIdentity = false; click('重新读取模型比较'); await settle()
   assert(text(tree).includes('已记录的输入、输出端点相同'))
+
+  for (const change of ['document', 'revision', 'model', 'query', 'filter', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+      load: (args, signal) => call(args, signal, 'connection-models') })
+    await settle()
+    const retired = button('下一页比较模型').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 2
+    if (change === 'model') props.modelId = 'night'
+    if (change === 'query') fill('搜索比较模型', 'night')
+    if (change === 'filter') all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } })
+    if (change === 'reload') click('重新读取模型比较')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    if (change === 'query') assert(button('下一页比较模型').props.disabled, 'Pending query cannot paginate old matches')
+    retired()
+    assert.equal(updates.length, 0, 'Retired page action cannot change ' + change + ' context')
+    assert.equal(owner.focused || 0, 0, 'Retired page action cannot move focus after ' + change)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
 
   mount('ModelLearningPanel', { documentId: document.documentId, revision: 1, modelId: 'taxi', exercise: 'counterexample', active: true, call })
   await settle()
@@ -145,5 +198,6 @@ try {
   assert.equal(input('基准情境').props.value, '7 km', 'invalid challenge retains all unsaved fields')
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi', 'counterexample').length, 1)
   console.log(JSON.stringify({ ok: true, generatedProductionComponents: true, actualSqliteHttp: true, pairRaceFenced: true, explicitSelection: true,
-    targetIdentity: true, challengeDraftScopes: true, idempotentLostResponse: true, visibleInvalidChange: true, graphUnchanged: true }))
+    targetIdentity: true, paginationFocus: true, paginationScopeGuards: 9, pageFailureRecovery: true,
+    challengeDraftScopes: true, idempotentLostResponse: true, visibleInvalidChange: true, graphUnchanged: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
