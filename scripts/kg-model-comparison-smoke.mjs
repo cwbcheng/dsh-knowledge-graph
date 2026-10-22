@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createGraphContract } from '../src/index.host.js'
 import { modelLearningHarness, learnerResponse, learnerReview } from './kg-model-learning-fixture-data.mjs'
 import { comparisonFixture, counterexampleResponse } from './kg-model-comparison-fixture-data.mjs'
+import { comparisonAliasFixture } from './kg-model-comparison-alias-fixture-data.mjs'
 
 const harness = await modelLearningHarness({ fixture: comparisonFixture() })
 const { document, store, post } = harness
@@ -48,6 +49,34 @@ try {
   const emptyName = structuredClone(document)
   emptyName.graph.nodes.find(node => node.id === 'distance').text = ''
   assert.equal(contract.connectionModels(emptyName, { ...args, compareModelId: 'night' }).sameNamedTotal, 0)
+  for (const collisions of [false, true]) {
+    const aliasFixture = comparisonAliasFixture({ collisions }), aliasHarness = await modelLearningHarness({ fixture: aliasFixture })
+    try {
+      const graphBefore = JSON.stringify(aliasHarness.store.getDocument(aliasFixture.documentId))
+      const unitsBefore = JSON.stringify(aliasHarness.store.getDocumentSourceUnits(aliasFixture.documentId))
+      for (const [modelId, compareModelId] of [['taxi', 'budget-model'], ['budget-model', 'taxi']]) {
+        const response = await aliasHarness.post({ documentId: aliasFixture.documentId, expectedRevision: 1, modelId, compareModelId }, 'connection-models')
+        assert.equal(response.sameNamedTotal, collisions ? 74 : 0, 'a shared identity with a different slot label is not in the same-name bucket')
+        assert.equal(response.sameNamed.length, collisions ? 50 : 0, 'the total remains exact while the visible pair list stays bounded')
+        assert(response.sameNamed.every(item => item.left.nodeId !== item.right.nodeId))
+        assert(response.shared.some(item => item.node.nodeId === 'fare'))
+        assert.equal(response.equivalence, 'not_inferred')
+        if (collisions) {
+          const unknown = (modelId === 'taxi' ? response.left : response.right).ports.find(port => port.node.nodeId === 'alias-left')
+          assert.equal(unknown.role, 'unknown', 'name matching cannot assign an unknown endpoint role')
+          assert(unknown.citations.some(citation => citation.quote === aliasFixture.sourceUnits[0].text))
+        }
+      }
+      assert.equal(JSON.stringify(aliasHarness.store.getDocument(aliasFixture.documentId)), graphBefore)
+      assert.equal(JSON.stringify(aliasHarness.store.getDocumentSourceUnits(aliasFixture.documentId)), unitsBefore)
+      assert.equal(aliasHarness.store.listLearningAttempts(aliasFixture.documentId).length, 0)
+    } finally { aliasHarness.stop() }
+  }
+  const normalizedAlias = comparisonAliasFixture()
+  normalizedAlias.graph.nodes.find(node => node.id === 'taxi').modelStructure.slots[1].label = 'AMOUNT'
+  normalizedAlias.graph.nodes.find(node => node.id === 'budget-model').modelStructure.slots[0].label = 'ＡＭＯＵＮＴ'
+  assert.equal(contract.connectionModels(normalizedAlias, { ...args, compareModelId: 'budget-model' }).sameNamedTotal, 0,
+    'a normalized matching label still excludes its shared canonical identity exactly once')
   const peers = await post({ documentId: document.documentId, expectedRevision: 1, peerOf: 'taxi' }, 'connection-models')
   assert(peers.total > 20); assert(!peers.items.some(item => item.nodeId === 'taxi' || item.nodeId === 'named-copy'))
   const late = await post({ documentId: document.documentId, expectedRevision: 1, peerOf: 'taxi', offset: 20 }, 'connection-models')
@@ -97,6 +126,7 @@ try {
   assert.equal((await save()).attempt.stale, true, 'lost acknowledgement retry preserves old version snapshot')
   assert.equal((await post({ ...args, exercise, action: 'get', attemptId: initial.attemptId })).attempt.response.falsifier, counterexampleResponse.falsifier)
   assert.equal((await post({ ...args, exercise: 'unknown', action: 'plan' })).error.code, 'invalid_input')
-  console.log(JSON.stringify({ ok: true, identityNotLabel: true, comparisonDoesNotInferEquivalence: true, unknownAndDuplicatePortsVisible: true,
+  console.log(JSON.stringify({ ok: true, identityNotLabel: true, structuredAliasTotals: [0, 74], bothComparisonOrders: true,
+    normalizedSharedAliasExcluded: true, comparisonDoesNotInferEquivalence: true, unknownAndDuplicatePortsVisible: true,
     canonicalPagination: true, controlledChangeNotAutoVerified: true, immutableCounterexample: true, scopedHistoryBeforeLimit: true, graphUnchanged: true }))
 } finally { harness.stop() }
