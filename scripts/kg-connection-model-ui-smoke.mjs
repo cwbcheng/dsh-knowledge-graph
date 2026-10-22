@@ -273,6 +273,24 @@ try {
   const externalSaved = structuredClone(harness.store.getDocument(identityDoc.documentId))
   assert.equal(externalSaved.revision, 3)
   currentController = await latestController(); props.revision = 3; render()
+  const retainedDraft = () => {
+    const draft = all(tree, el => el.props['aria-label'] === '旧版方向修改')[0]
+    assert(draft, 'A pending or failed detail read must keep the old direction draft accessible')
+    assert(text(draft).includes('raw-mass') && text(draft).includes(identityDoc.sourceUnits[1].text))
+    assert(text(draft).includes('原文 P8') && text(draft).includes(identityDoc.graph.source.id))
+    assert.equal(all(draft, el => el.type === 'button').length, 1, 'Old evidence is readable, never a current-source navigation target')
+    return draft
+  }
+  retainedDraft()
+  requests.filter(request => request.args.modelId).at(-1).reject(new Error('fixture current detail unavailable'))
+  await settle()
+  assert(text(tree).includes('fixture current detail unavailable'))
+  retainedDraft()
+  assert(!all(tree, el => el.type === 'button' && text(el) === '确认保存方向').length)
+  const failedReadDiscard = button('放弃旧版方向修改').props.onClick
+  context.window.confirm = () => { throw new Error('Hidden or retired draft actions must not ask for confirmation') }
+  props.active = false; render(); failedReadDiscard(); await settle(); retainedDraft()
+  props.active = true; render(); failedReadDiscard(); await settle(); retainedDraft()
   await resolveIdentity(requests.filter(request => !request.args.modelId).at(-1))
   await resolveIdentity(requests.filter(request => request.args.modelId).at(-1))
   assert(button('预览方向修改').props.disabled, 'A direction draft based on revision 2 must not be previewed against revision 3')
@@ -309,10 +327,39 @@ try {
   assert.equal(resaved.sourceText, original.sourceText)
   assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId)), sourceUnitsBefore)
   assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
+
+  // Removing the entire selected model leaves no detail or task navigation.
+  // Its previous direction choices must remain readable and explicitly discardable.
+  props.revision = 4; render()
+  await resolveIdentity(requests.filter(request => !request.args.modelId).at(-1))
+  await resolveIdentity(requests.filter(request => request.args.modelId).at(-1))
+  editRole('raw-mass', 'output'); click('下上对照')
+  const removed = structuredClone(resaved)
+  removed.nodes = removed.nodes.filter(node => node.id !== 'mass-quality')
+  removed.edges = removed.edges.filter(edge => edge.fromNodeId !== 'mass-quality' && edge.toNodeId !== 'mass-quality')
+  harness.store.saveGraph(removed, { sourceText: identityDoc.sourceText, sourceUnits: identityDoc.sourceUnits, expectedRevision: 4 })
+  const afterRemoval = structuredClone(harness.store.getDocument(identityDoc.documentId)), writesBeforeRemoval = scopedRequests.length
+  assert.equal(afterRemoval.revision, 5)
+  props.revision = 5; render(); retainedDraft()
+  await resolveIdentity(requests.filter(request => !request.args.modelId).at(-1))
+  await resolveIdentity(requests.filter(request => request.args.modelId).at(-1))
+  assert(text(retainedDraft()).includes('第 4 版') && text(retainedDraft()).includes('第 5 版'))
+  assert(text(retainedDraft()).includes('输入 → 输出'))
+  assert(button('核对').props.disabled, 'No model detail means the review task cannot be opened')
+  context.window.confirm = () => false
+  click('放弃旧版方向修改'); retainedDraft()
+  context.window.confirm = () => true
+  click('放弃旧版方向修改')
+  assert(!all(tree, el => el.props['aria-label'] === '旧版方向修改').length)
+  assert.equal(scopedRequests.length, writesBeforeRemoval, 'Inspecting or discarding a removed model draft cannot submit a write')
+  assert.deepEqual(harness.store.getDocument(identityDoc.documentId), afterRemoval)
+  assert.equal(JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId)), sourceUnitsBefore)
+  assert.equal(harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n, 0)
   for (const state of owner.slots) state.cleanup?.()
 } finally { harness.stop() }
 console.log(JSON.stringify({ ok: true, staleResponsesRejected: true, previewApprovalInvalidation: true,
   errorRetry: true, wholeGraphSearch: true, sourceNavigation: true, unmountAborts: true,
   singleDirectionPreviewAndConfirmation: true, failedDirectionPreviewAndCommitRetry: true,
   versionedDirectionDraft: true, oldDirectionEvidenceRetained: true, explicitCurrentVersionRecheck: true,
+  failedReadDirectionDraftAccessible: true, removedModelDirectionDraftAccessible: true,
   sameNameDirectionIdentity: true, exactApprovalEvidence: true, actualCanonicalPreviewAndConfirmation: true, conditionsAndSourcePreserved: true }))
