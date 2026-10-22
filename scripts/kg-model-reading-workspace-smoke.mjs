@@ -119,8 +119,12 @@ for (const completed of [[], ['catalogue'], ['detail'], ['catalogue', 'detail']]
 }
 
 const retry = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi' } })
+const detailPane = panel => all(panel.tree, node => node.props.className === 'kg-model-detail')[0]
+assert(text(detailPane(retry)).includes('taxi · 请求版本 1'), 'Pending detail retains the requested model identity without claiming it was loaded')
 retry.requests.forEach(request => request.resolve({ error: { message: 'current parent read failed' } }))
 await retry.settle(); assert(text(retry.tree).includes('current parent read failed'))
+assert(!text(detailPane(retry)).includes('选择一个联结模型'), 'A failed read does not mean the user has no selected model')
+assert(text(detailPane(retry)).includes('taxi · 请求版本 1'))
 retry.props.active = false; retry.render(); retry.props.active = true; retry.render()
 assert.equal(retry.requests.length, 4, 'Failed reads retry on return')
 for (const request of retry.requests.slice(2)) await retry.resolve(request)
@@ -132,6 +136,17 @@ retry.props.active = true; retry.render()
 assert.equal(retry.requests.length, 6)
 assert(retry.requests.slice(4).every(request => request.args.expectedRevision === 2))
 retry.unmount()
+
+for (const next of [{ revision: 2 }, { documentId: 'different-document' }]) {
+  const failed = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi', sourceOpen: true } })
+  failed.requests.find(request => request.args.modelId).resolve({ error: { message: 'retired detail failure' } })
+  await failed.settle(); assert(text(detailPane(failed)).includes('retired detail failure'))
+  Object.assign(failed.props, next); failed.render(false)
+  assert(!text(detailPane(failed)).includes('retired detail failure'), 'Retire a previous context error before effects run')
+  assert(!all(failed.tree, node => node.type === 'button' && text(node) === '重试读取模型详情').length)
+  assert(!text(failed.source()).includes('依据未能读取'), 'A previous failure cannot label the new source context')
+  failed.unmount()
+}
 
 const debounced = mount({ restoreState: { documentId: fixture.documentId, revision: 1, modelId: 'taxi' } })
 for (const request of debounced.requests.slice()) await debounced.resolve(request)
@@ -299,6 +314,9 @@ assert(!text(owner.source()).includes('unknown ·'), 'Revision change hides sour
 owner.render(); owner.requests.at(-1).resolve({ error: { message: '版本已变化' } }); await owner.settle()
 assert(!all(owner.source(), node => node.props.className === 'kg-model-evidence').length)
 assert(text(owner.source()).includes('依据未能读取'))
+assert(text(owner.source()).includes('重试读取模型详情'), 'The source pane points to the draft-preserving detail retry')
+assert(!text(detailPane(owner)).includes('选择一个联结模型'))
+assert(text(detailPane(owner)).includes('unknown · 请求版本 2'))
 owner.unmount()
 const restored = mount({ restoreState: saved })
 assert(restored.source()); assert(!all(restored.source(), node => node.props.className === 'kg-model-evidence').length)

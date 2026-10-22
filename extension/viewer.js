@@ -4194,7 +4194,7 @@
         const [exercise, setExercise] = useState(initial.exercise)
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
-        const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [reload, setReload] = useState(0)
+        const [error, setError] = useState(''), [detailFailure, setDetailError] = useState(null), [reload, setReload] = useState(0)
         const [detailRetry, setDetailRetry] = useState(0), detailRetryRequest = useRef(null)
         const [sourceOpen, setSourceOpen] = useState(initial.sourceOpen)
         const [inspectedField, setInspectedField] = useState(null)
@@ -4217,6 +4217,7 @@
         const detailReadScope = JSON.stringify([documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, detailRetry])
         // Hide the previous selection during render, before an effect starts the next read.
         const detail = loadedDetail?.scope === detailReadScope ? loadedDetail.value : null
+        const detailError = detailFailure?.scope === detailReadScope ? detailFailure.message : ''
         // Field choices belong to this loaded detail, not a model name or a
         // cached quote. Retire them immediately on every read/selection change.
         if (!sourceContext.current || sourceContext.current.scope !== detailReadScope
@@ -4403,7 +4404,7 @@
           const id = ++detailSequence.current, abort = new AbortController()
           const opening = readActivity.current
           const isCurrent = () => id === detailSequence.current && !abort.signal.aborted && readActivity.current === opening
-          setDetail(null); setDetailError(''); setPreview(null); setNotice('')
+          setDetail(null); setDetailError(null); setPreview(null); setNotice('')
           if (!modelId) { setDetailLoading(false); return () => abort.abort() }
           setDetailLoading(true)
           api.current.load({ documentId, expectedRevision: revision, modelId, offset: materialOffset, branchId, exampleOffset }, abort.signal).then(result => {
@@ -4412,7 +4413,7 @@
             if (result.documentId !== documentId || result.revision !== revision || result.model?.nodeId !== modelId) throw new Error('模型详情版本不一致')
             if (result.structure && !Array.isArray(result.legacyPorts)) throw new Error('原有图谱端点记录读取不完整，请重新读取模型。')
             setDetail({ scope: detailReadScope, value: result })
-          }).catch(reason => { if (isCurrent()) setDetailError(reason.message || '模型详情读取失败') })
+          }).catch(reason => { if (isCurrent()) setDetailError({ scope: detailReadScope, message: reason.message || '模型详情读取失败' }) })
             .finally(() => { if (isCurrent()) setDetailLoading(false) })
           return () => { abort.abort(); detailSequence.current++ }
         }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, detailRetry, active])
@@ -4515,13 +4516,13 @@
           // confirmation would otherwise queue behind a successful version CAS.
           writePending.current = true
           const id = ++writeSequence.current
-          setSaving(true); setDetailError(''); setNotice('')
+          setSaving(true); setDetailError(null); setNotice('')
           try {
             const result = await api.current.onRoles({ modelId, revision, changes: roles, preview: commit ? preview : null })
             if (id !== writeSequence.current) return
             if (commit) { setPreview(null); setRoleDraft({ revision, changes: {}, ports: {} }); setNotice('方向已保存'); setReload(value => value + 1) }
             else setPreview(result)
-          } catch (reason) { if (id === writeSequence.current) { setPreview(null); setDetailError(reason.message || '方向未保存') } }
+          } catch (reason) { if (id === writeSequence.current) { setPreview(null); setDetailError({ scope: detailReadScope, message: reason.message || '方向未保存' }) } }
           finally { writePending.current = false; setSaving(false) }
         }
         const refButton = (reference, onLocate) => h('button', { type: 'button', className: 'kg-secondary',
@@ -4627,7 +4628,7 @@
                   target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
                 } }, '返回模型目录'),
                 h('strong', null, detail?.model.sectionTitle || '联结模型'),
-                detail ? h('span', { className: 'kg-model-meta' }, detail.model.nodeId + ' · 版本 ' + revision) : null),
+                modelId ? h('span', { className: 'kg-model-meta' }, modelId + (detail ? ' · 版本 ' : ' · 请求版本 ') + revision) : null),
               detailError ? h('p', { role: 'alert' }, detailError) : null,
               detailError && !detail ? h('div', null,
                 h('button', { type: 'button', className: 'kg-secondary', disabled: detailLoading || saving || busy || importBusy, onClick: retryDetailRead }, '重试读取模型详情'),
@@ -4773,7 +4774,7 @@
                     h('p', null, item.text + (item.nodeId ? ' · ' + item.nodeId : '') + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对')),
                     h('details', null, h('summary', null, '本次修改的映射原文'), evidence(previewPorts.get(item.edgeKey) || {})))),
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !detailLoading ? h('p', null, '选择一个联结模型') : null),
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !modelId && !detailLoading ? h('p', null, '选择一个联结模型') : null),
               sourceOpen ? h('aside', { className: 'kg-model-source-pane', 'aria-label': '当前模型的原文依据', tabIndex: -1, ref: sourceRef },
                 h('div', { className: 'kg-model-toolbar' }, h('h4', null, '原文依据'),
                   h('button', { type: 'button', className: 'kg-secondary', onClick: closeSource }, '收起原文')),
@@ -4797,7 +4798,7 @@
                     h('h4', null, '相关原文上下文'),
                     detail.sourceUnits?.length ? h(ConnectionSourceUnits, { units: detail.sourceUnits, documentId, revision, onLocate: locateInSource })
                       : h('p', { className: 'kg-model-meta' }, '当前模型暂无可展示的原文上下文'))) :
-                  h('p', { role: 'status' }, detailError ? '当前模型的依据未能读取，请重新读取模型。' : modelId ? '正在读取当前模型的依据…' : '选择模型后查看依据')) : null))))
+                  h('p', { role: 'status' }, detailError ? '当前模型的依据未能读取，请使用上方「重试读取模型详情」。' : modelId ? '正在读取当前模型的依据…' : '选择模型后查看依据')) : null))))
       }
 
       function ConnectionSourceUnits({ units, documentId, revision, onLocate }) {
