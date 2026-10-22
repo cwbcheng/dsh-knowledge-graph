@@ -4634,6 +4634,21 @@
               detail ? taskGroups.map(group => h('div', { key: group.id, className: 'kg-model-task-links', role: 'group',
                 'aria-label': group.label + '功能', hidden: activeGroup !== group.id }, group.items.map(([id, label]) => h('button', {
                   key: id, type: 'button', className: 'kg-secondary', 'aria-pressed': tab === id, disabled: unavailable(id), onClick: () => setTab(id) }, label)))) : null,
+              // A newer version can remove the model or fail to load. Its old
+              // direction draft must remain accessible without the review tab.
+              staleRoles && (tab === 'review' || !detail) ? h('div', { role: 'alert', className: 'kg-model-warning', 'aria-label': '旧版方向修改' },
+                h('p', null, '方向修改基于第 ' + roleDraft.revision + ' 版，当前为第 ' + revision + ' 版；旧选择和引文保留，不能直接用于当前版本。'),
+                h('ul', null, Object.entries(roles).map(([key, value]) => {
+                  const port = roleDraft.ports[key]
+                  return h('li', { key }, h('p', null, (port?.text || key) + ' · ' + (port?.nodeId || key) + '：'
+                    + ({ input: '输入', output: '输出' }[port?.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[value] || '待核对')),
+                    h('details', null, h('summary', null, '修改时的映射原文 · 第 ' + roleDraft.revision + ' 版'),
+                      port?.citations.length ? port.citations.map((citation, index) => h('div', { key: index },
+                        h('p', { className: 'kg-model-meta' }, '原文 P' + (citation.paragraph + 1) + (citation.sourceId ? ' · 来源 ' + citation.sourceId : '')),
+                        h('blockquote', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, citation.quote)))
+                        : h('p', null, '当时尚无可匹配的原文引用')))
+                })),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: discardOldRoles }, '放弃旧版方向修改')) : null,
               detail ? h(React.Fragment, null,
                 page && !page.items.some(item => item.nodeId === modelId) ? h('p', { className: 'kg-model-meta' }, '当前模型不在本页目录中') : null,
                 tab !== 'understanding' && tab !== 'history' && tab !== 'chain' ? h(React.Fragment, null,
@@ -4728,19 +4743,6 @@
                     h('button', { type: 'button', className: 'kg-secondary', disabled: materialOffset + detail.related.length >= detail.relatedTotal, onClick: () => setMaterialOffset(materialOffset + 20) }, '下一页材料'))) : null,
                 tab === 'review' ? h('div', null,
                   h('p', { className: 'kg-model-meta' }, '方向核对不代表事实成立；错误示例和转写内容仍需分别复核。'),
-                  staleRoles ? h('div', { role: 'alert', className: 'kg-model-warning', 'aria-label': '旧版方向修改' },
-                    h('p', null, '方向修改基于第 ' + roleDraft.revision + ' 版，当前为第 ' + revision + ' 版；旧选择和引文保留，不能直接用于当前版本。'),
-                    h('ul', null, Object.entries(roles).map(([key, value]) => {
-                      const port = roleDraft.ports[key]
-                      return h('li', { key }, h('p', null, (port?.text || key) + ' · ' + (port?.nodeId || key) + '：'
-                        + ({ input: '输入', output: '输出' }[port?.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[value] || '待核对')),
-                        h('details', null, h('summary', null, '修改时的映射原文 · 第 ' + roleDraft.revision + ' 版'),
-                          port?.citations.length ? port.citations.map((citation, index) => h('div', { key: index },
-                            h('p', { className: 'kg-model-meta' }, '原文 P' + (citation.paragraph + 1) + (citation.sourceId ? ' · 来源 ' + citation.sourceId : '')),
-                            h('blockquote', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, citation.quote)))
-                            : h('p', null, '当时尚无可匹配的原文引用')))
-                    })),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving || busy, onClick: discardOldRoles }, '放弃旧版方向修改')) : null,
                   detail.ports.filter(item => item.editable).map(item => h('div', { key: item.edgeIndex }, h('label', { className: 'kg-model-review-row' },
                     h('span', null, item.node.text, h('span', { className: 'kg-model-meta' }, ' · ' + item.node.nodeId)),
                     h('select', { 'aria-label': '端点角色 ' + item.node.nodeId, disabled: saving || busy || staleRoles,
