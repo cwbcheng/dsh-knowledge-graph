@@ -4874,12 +4874,27 @@
         const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [error, setError] = useState(''), [pairError, setPairError] = useState('')
         const [sourceError, setSourceError] = useState('')
         const [reload, setReload] = useState(0)
-        const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset])
+        const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset, reload])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
         const pair = loadedPair?.documentId === documentId && loadedPair.revision === revision && loadedPair.left?.model?.nodeId === modelId
           && loadedPair.right?.model?.nodeId === peerId ? loadedPair : null
         const api = useRef({ load, onLocate, onOpen, onChallenge }), catalogSequence = useRef(0), pairSequence = useRef(0)
         api.current = { load, onLocate, onOpen, onChallenge }
+        const candidatesRef = useRef(null), pageContext = useRef(null), pageRequest = useRef(null), mounted = useRef(true)
+        const navigationKey = JSON.stringify([catalogKey, query, active])
+        if (pageContext.current?.key !== navigationKey) pageContext.current = { key: navigationKey }
+        const opening = pageContext.current
+        useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+        const turnPage = step => {
+          if (!mounted.current || !active || opening !== pageContext.current || pageRequest.current === opening
+            || loading || query !== search || (step < 0 ? offset === 0 : !page || offset + page.items.length >= page.total)) return
+          pageRequest.current = opening
+          // Keep keyboard position in the candidate list while the new page
+          // loads. Async responses update rows without moving focus again.
+          candidatesRef.current?.focus?.({ preventScroll: true })
+          if (candidatesRef.current) candidatesRef.current.scrollTop = 0
+          setOffset(Math.max(0, offset + step * 20))
+        }
         const locationScope = JSON.stringify([documentId, revision, modelId, peerId, reload])
         const location = useConnectionModelLocation(locationScope, active)
         useEffect(() => { setSourceError('') }, [locationScope, active])
@@ -4942,14 +4957,16 @@
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取模型比较', title: '重新读取模型比较', disabled: loading || comparing, onClick: () => setReload(value => value + 1) }, '↻')),
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取全图比较目录…') : null,
-          page ? h('div', null, h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表规律等价'),
-            h('div', { className: 'kg-model-compare-choices' }, page.items.filter(item => item.nodeId !== modelId).map(item => h('button', {
+          h('div', null,
+            page ? h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表规律等价') : null,
+            h('div', { className: 'kg-model-toolbar kg-model-pagination', role: 'group', 'aria-label': '比较模型分页' },
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || query !== search || offset === 0, onClick: () => turnPage(-1) }, '上一页比较模型'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnPage(1) }, '下一页比较模型')),
+            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '比较模型候选', 'aria-busy': loading, tabIndex: -1, ref: candidatesRef },
+              page?.items.filter(item => item.nodeId !== modelId).map(item => h('button', {
               key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => setPeerId(item.nodeId) },
               h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
-            !page.total && sharedOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSharedOnly(false); setOffset(0) } }, '查看全部模型') : null,
-            h('div', { className: 'kg-model-toolbar' },
-              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页比较模型'),
-              h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页比较模型'))) : null,
+            page && !page.total && sharedOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSharedOnly(false); setOffset(0) } }, '查看全部模型') : null),
           pairError ? h('p', { role: 'alert' }, pairError) : null,
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           comparing ? h('p', { role: 'status' }, '正在对照两个模型…') : null,
