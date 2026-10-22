@@ -4708,7 +4708,10 @@ function createHostPlugin(graphContractOnly) {
             const name = normalize(group.node.text)
             if (!name) continue
             const matches = names.get(name) || []
-            sameNamedTotal += matches.length - (b.has(id) ? 1 : 0)
+            // A shared concept can have different contextual slot labels. Its
+            // identity is excluded only when it belongs to this name bucket.
+            const sharedPeer = b.get(id)
+            sameNamedTotal += matches.length - (sharedPeer && normalize(sharedPeer.node.text) === name ? 1 : 0)
             for (const other of matches) {
               if (sameNamed.length >= 50) break
               if (other.nodeId !== id) sameNamed.push({ left: group.node, right: other })
