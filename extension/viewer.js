@@ -4194,7 +4194,8 @@
         const [exercise, setExercise] = useState(initial.exercise)
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
-        const [error, setError] = useState(''), [detailFailure, setDetailError] = useState(null), [reload, setReload] = useState(0)
+        const [directoryFailure, setError] = useState(null), [detailFailure, setDetailError] = useState(null), [reload, setReload] = useState(0)
+        const [directoryRetry, setDirectoryRetry] = useState(0), directoryRetryRequest = useRef(null), directoryReadContext = useRef(null)
         const [detailRetry, setDetailRetry] = useState(0), detailRetryRequest = useRef(null)
         const [sourceOpen, setSourceOpen] = useState(initial.sourceOpen)
         const [inspectedField, setInspectedField] = useState(null)
@@ -4299,8 +4300,15 @@
         const history = useRef(initial.history), lastFocus = useRef(initial.focusRequest)
         const directoryRef = useRef(null), directoryPositionRef = useRef(initial.directoryPosition), directoryPageScope = useRef(''), directoryContext = useRef(null)
         const directoryScope = JSON.stringify([documentId, revision, search, section, offset, needsReview, concept?.nodeId || '', role])
-        const directoryReadScope = JSON.stringify([directoryScope, reload])
+        const directoryReadScope = JSON.stringify([directoryScope, reload, directoryRetry])
         const page = loadedPage?.scope === directoryReadScope ? loadedPage.value : null
+        const error = query === search && directoryFailure?.scope === directoryReadScope ? directoryFailure.message : ''
+        if (!directoryReadContext.current || directoryReadContext.current.scope !== directoryReadScope
+          || directoryReadContext.current.query !== query || directoryReadContext.current.activity !== readActivity.current
+          || directoryReadContext.current.saving !== saving || directoryReadContext.current.busy !== busy || directoryReadContext.current.importBusy !== importBusy) {
+          directoryReadContext.current = { scope: directoryReadScope, query, activity: readActivity.current, saving, busy, importBusy }
+        }
+        const directoryOpening = directoryReadContext.current
         const searchRef = useRef(null), topicCache = useRef(null), detailRef = useRef(null)
         const topicScope = JSON.stringify([documentId, revision, reload])
         // Chapter options describe the whole document, not the filtered page.
@@ -4366,7 +4374,7 @@
           const id = ++sequence.current, abort = new AbortController()
           const opening = readActivity.current
           const isCurrent = () => id === sequence.current && !abort.signal.aborted && readActivity.current === opening
-          setLoading(true); setError(''); setPage(null)
+          setLoading(true); setError(null); setPage(null)
           api.current.load({ documentId, expectedRevision: revision, query: search, sectionId: section,
             offset, needsReview, conceptId: concept?.nodeId || '', role }, abort.signal).then(result => {
             if (!isCurrent()) return
@@ -4375,10 +4383,10 @@
             directoryPageScope.current = directoryScope
             setPage({ scope: directoryReadScope, value: result })
             setModelId(current => current || result.items[0]?.nodeId || '')
-          }).catch(reason => { if (isCurrent()) setError(reason.message || '模型目录读取失败') })
+          }).catch(reason => { if (isCurrent()) setError({ scope: directoryReadScope, message: reason.message || '模型目录读取失败' }) })
             .finally(() => { if (isCurrent()) setLoading(false) })
           return () => { abort.abort(); sequence.current++ }
-        }, [documentId, revision, search, section, offset, needsReview, concept?.nodeId, role, reload, active])
+        }, [documentId, revision, search, section, offset, needsReview, concept?.nodeId, role, reload, directoryRetry, active])
         useEffect(() => {
           const element = directoryRef.current
           if (!element || loading || error || !page || directoryPageScope.current !== directoryScope || query !== search) return
@@ -4488,6 +4496,16 @@
             setRoleDraft({ revision, changes: {}, ports: {} }); setPreview(null); setReload(value => value + 1)
           } catch (reason) { if (isCurrent()) setRefreshError(reason.message || '操作未完成') }
         }
+        const retryDirectoryRead = () => {
+          if (!refreshMounted.current || !active || directoryOpening !== directoryReadContext.current
+            || !error || page || loading || query !== search || writePending.current || saving || busy || importBusy
+            || directoryRetryRequest.current === directoryOpening) return
+          // Directory recovery preserves the selected detail and its private
+          // drafts. A retry is scoped to the exact filters, page and version.
+          directoryRetryRequest.current = directoryOpening
+          searchRef.current?.focus?.({ preventScroll: true })
+          setDirectoryRetry(value => value + 1)
+        }
         const retryDetailRead = () => {
           if (!refreshMounted.current || !active || sourceOpening !== sourceContext.current || refreshOpening !== refreshContext.current
             || !detailError || detail || detailLoading || writePending.current || saving || busy || importBusy
@@ -4596,6 +4614,9 @@
               h('span', null, filter.name + (filter.value ? '：' + filter.value : '')), h('span', { 'aria-hidden': true }, '×'))),
             h('button', { type: 'button', className: 'kg-secondary', onClick: () => clearFilter('all') }, '清除全部筛选')) : null,
           error ? h('p', { role: 'alert' }, error) : null,
+          error && !page ? h('div', null,
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading || saving || busy || importBusy, onClick: retryDirectoryRead }, '重试读取模型目录'),
+            h('p', { className: 'kg-model-meta' }, '保留当前筛选、页码和未保存的修改。')) : null,
           h('div', { className: 'kg-model-meta kg-model-directory-summary', role: 'status' }, query !== search ? '正在更新筛选…' : loading ? '正在读取全图模型…' : page ? '全图 ' + page.totalModels + ' 个模型 · 筛选 ' + page.total + ' 个 · 当前 ' + (page.items.length ? offset + 1 : 0) + '–' + (page.items.length ? offset + page.items.length : 0) + ' 个' : ''),
           h('div', { className: 'kg-model-workspace' },
             h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', 'aria-busy': loading || query !== search, ref: directoryRef, onScroll: rememberDirectory },
