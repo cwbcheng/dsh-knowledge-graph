@@ -8,7 +8,7 @@ const harness = await modelLearningHarness({ fixture: modelChainFixture() })
 const { document, store, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree, props
 const updates = [], storage = new Map(), requests = [], deferred = []
-let paused = false, foreign = false, oldHost = false, malformed = false, transportFailure = false, storageFailure = false, confirm = true, failCatalogOnce = false
+let paused = false, foreign = false, oldHost = false, malformed = false, transportFailure = false, storageFailure = false, confirm = true, failCatalogOnce = false, failPairOnce = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, properties, ...children) => ({ type, props: { ...properties, children } }),
@@ -28,6 +28,7 @@ const load = (args, signal) => {
   requests.push({ args, signal })
   const run = async () => {
     if (failCatalogOnce && !args.modelId) { failCatalogOnce = false; throw new Error('Chain catalogue unavailable') }
+    if (failPairOnce && args.compareModelId && !args.chainDraft) { failPairOnce = false; throw new Error('Chain models unavailable') }
     if (transportFailure && args.chainDraft) throw new Error('Chain transport failed')
     const value = await post(args, 'connection-models')
     if (foreign) return { ...value, documentId: 'foreign-document' }
@@ -53,6 +54,7 @@ function render() {
   throw new Error('Component update loop')
 }
 async function settle() { for (let count = 0; count < 8; count++) { await new Promise(resolve => setImmediate(resolve)); render() } }
+function beforeEffects() { updates.splice(0).forEach(fn => fn()); cursor = 0; tree = Component(props) }
 const text = el => Array.isArray(el) ? el.map(text).join('') : el && typeof el === 'object' ? text(el.props?.children) : String(el ?? '')
 const all = (el, predicate) => Array.isArray(el) ? el.flatMap(child => all(child, predicate)) : !el || typeof el !== 'object' ? [] :
   [...(predicate(el) ? [el] : []), ...all(el.props?.children, predicate)]
@@ -99,11 +101,50 @@ try {
   assert(button('检查推测缺口').props.disabled)
   assert(button('导出推测草稿').props.disabled)
   assert(button('导入推测草稿'))
+  assert(!text(tree).includes('已保留的两步草稿'), 'an unselected peer is not presented as a second model')
   choose('budget-model'); await settle()
   assert(!button('导出推测草稿').props.disabled, 'an unchecked, incomplete draft can be backed up')
   click('检查推测缺口'); await settle()
   assert(text(tree).includes('停在第 1 步'))
   fillDraft()
+  const savedBeforeReload = storage.get(storedKey)
+  const assertPreservedDraft = () => {
+    const saved = all(tree, el => el.props['aria-label'] === '已保留的两步草稿')[0]
+    assert(saved, 'pending and failed model reads must leave the private steps readable')
+    for (const step of JSON.parse(savedBeforeReload).draft.steps) {
+      for (const value of [step.modelId, step.branchId, step.conditions, step.reasoning,
+        ...step.inputs.flatMap(item => Object.values(item).filter(value => value && !['known', 'link'].includes(value))),
+        ...step.outputs.flatMap(item => Object.values(item))]) assert(text(saved).includes(value), 'preserved draft field: ' + value)
+    }
+    assert.equal(all(saved, el => ['input', 'select', 'textarea', 'button'].includes(el.type)).length, 0, 'unloaded model slots cannot be edited or used to locate current source')
+    assert.equal(all(tree, el => el.props['aria-label'] === '第 1 步分支').length, 0)
+    assert(button('检查推测缺口').props.disabled)
+    assert(!button('导出推测草稿').props.disabled)
+    assert.equal(storage.get(storedKey), savedBeforeReload, 'read failures do not rewrite any private draft or its source revision')
+    assert(text(tree).includes('草稿来源版本 1 · 请求模型版本 1'))
+    assert(!text(saved).includes('抽取状态：'), 'cached learner text must not masquerade as validated current model facts')
+  }
+  paused = true
+  button('重新读取两步推测模型').props.onClick(); beforeEffects()
+  assertPreservedDraft()
+  render()
+  assertPreservedDraft()
+  const pendingModels = deferred.splice(0)
+  assert.equal(pendingModels.length, 2)
+  failPairOnce = true
+  pendingModels.forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('Chain models unavailable'))
+  assertPreservedDraft()
+  paused = true
+  button('重新读取两步推测模型').props.onClick(); beforeEffects()
+  assert(!text(tree).includes('Chain models unavailable'), 'the previous error is hidden on the first render of a new read')
+  render(); assertPreservedDraft()
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(!all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length)
+  assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot')
+  assert.equal(input('第 1 步 · 基础费用预测').props.value, '14')
+  assert.equal(storage.get(storedKey), savedBeforeReload)
+  assert(text(tree).includes('草稿来源版本 1 · 已读取模型版本 1'))
   const checkButton = button('检查推测缺口'); checkButton.props.onClick(); checkButton.props.onClick(); render(); await settle()
   assert.equal(requests.filter(item => item.args.chainDraft).length, 2, 'single-flight check despite double click')
   assert(text(tree).includes('草稿字段已齐备'))
@@ -302,8 +343,23 @@ try {
   const current = store.getDocument(document.documentId)
   current.nodes.find(node => node.id === 'taxi').text = '来源更新后的合成计价模型'
   store.saveGraph(current, { sourceText: document.sourceText, sourceUnits: document.sourceUnits, expectedRevision: 1 })
-  props.revision = 2; render(); await settle()
+  const oldSourceDraft = storage.get(storedKey)
+  paused = true; props.revision = 2; beforeEffects()
+  assert(text(tree).includes('草稿来源版本 1 · 请求模型版本 2'), 'the draft source and requested model versions are distinct before effects run')
+  assert(all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length)
+  assert(button('对照后使用当前版本').props.disabled && button('检查推测缺口').props.disabled)
+  render()
+  failPairOnce = true; deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('Chain models unavailable'))
+  assert(text(tree).includes('草稿来源版本 1 · 请求模型版本 2'))
+  assert(text(tree).includes('fare-slot') && text(tree).includes('expense'))
+  assert(button('对照后使用当前版本').props.disabled, 'a failed newer model read cannot approve old draft text against the current version')
+  assert(!button('导出推测草稿').props.disabled)
+  assert.equal(storage.get(storedKey), oldSourceDraft)
+  click('重新读取两步推测模型'); await settle()
   assert(text(tree).includes('草稿来源版本 1，当前版本 2'))
+  assert(text(tree).includes('草稿来源版本 1 · 已读取模型版本 2'))
+  assert.equal(storage.get(storedKey), oldSourceDraft, 'successful model reads do not silently rebase the draft')
   assert(button('检查推测缺口').props.disabled)
   assert.equal(input('第 1 步 · 基础费用预测').props.value, '14')
   confirm = false; click('对照后使用当前版本'); assert(button('检查推测缺口').props.disabled)
@@ -381,6 +437,45 @@ try {
     owner.slots.forEach(state => state.cleanup?.())
     deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
   }
+  const savedWork = { scope: JSON.stringify([document.documentId, 'taxi']), revision: 1, peerId: 'budget-model', draft: modelChainDraft() }
+  savedWork.draft.steps[1].inputs[0].value = '旧手填值\n<img src=x onerror=alert(1)>'
+  savedWork.draft.steps[1].inputs[0].basis = '旧手填依据，当前不使用'
+  savedWork.draft.steps[1].inputs[1].fromSlotId = '此前选择的槽位'
+  savedWork.draft.steps[1].inputs[1].meaning = '此前承接核对，当前不使用'
+  savedWork.draft.steps[1].outputs.push({ slotId: 'retired-output', value: '旧预测仍保留' })
+  storage.set(storedKey, JSON.stringify(savedWork))
+  paused = true; mount({ ...basicProps, revision: 2 })
+  const savedTree = all(tree, el => el.props['aria-label'] === '已保留的两步草稿')[0]
+  assert(text(savedTree).includes('保留的已知输入文字（当前未使用）') && text(savedTree).includes('保留的承接核对文字（当前未使用）'))
+  for (const value of ['旧手填值\n<img src=x onerror=alert(1)>', '旧手填依据，当前不使用', '此前选择的槽位', '此前承接核对，当前不使用', 'retired-output', '旧预测仍保留']) assert(text(savedTree).includes(value))
+  assert.equal(all(savedTree, el => el.type === 'img' || el.props.dangerouslySetInnerHTML).length, 0, 'private draft text remains text, including multiline markup')
+  foreign = true; deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('两步推测模型版本或身份不一致'))
+  assert(all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length, 'rejected foreign replies cannot replace the saved draft with model facts')
+  assert.equal(storage.get(storedKey), JSON.stringify(savedWork))
+  foreign = false
+  for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden']) {
+    failPairOnce = true; mount({ ...basicProps, revision: 2 }); await settle()
+    assert(text(tree).includes('Chain models unavailable'))
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 3
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'peer') all(tree, el => el.type === 'button' && text(el).includes('chain-peer-0 · '))[0].props.onClick()
+    if (change === 'reload') button('重新读取两步推测模型').props.onClick()
+    if (change === 'hidden') props.active = false
+    beforeEffects()
+    assert(!text(tree).includes('Chain models unavailable'), 'old pair failure is not attributed to the first render of ' + change)
+    if (['document', 'model', 'hidden'].includes(change)) assert(!all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length, 'old saved steps are not shown in another owner context')
+    if (change === 'peer') {
+      assert(text(tree).includes('第 2 步 · chain-peer-0'))
+      assert(!text(tree).includes('第 2 步 · budget-model') && !text(tree).includes('旧预测仍保留'), 'confirmed peer replacement clears only its own old step')
+      assert(text(tree).includes(savedWork.draft.steps[0].reasoning), 'the first step remains after confirmed peer replacement')
+    }
+    render(); owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+    storage.set(storedKey, JSON.stringify(savedWork))
+  }
   Component = context.window.KGViewer.ConnectionModelPanel
   oldHost = true
   mount({ documentId: document.documentId, revision: 2, load,
@@ -399,5 +494,5 @@ try {
   chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
   assert.equal(chainChild.props.modelId, 'taxi')
   assert(chainChild.props.active, 'return restores the chain tab, not just the previous model identity')
-  console.log('model chain UI: actual production route, persistent candidate paging and focus, scoped catalogue-only retry, repeated failures, preserved checks and drafts, 10 retired retry contexts, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, scoped catalogue-only retry, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
