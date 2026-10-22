@@ -5044,7 +5044,7 @@
         const [error, setError] = useState(''), [catalogFailure, setCatalogFailure] = useState(null), [storageError, setStorageError] = useState('')
         const [catalogRetry, setCatalogRetry] = useState(0), catalogRetryRequest = useRef(null), searchRef = useRef(null)
         const [sourceError, setSourceError] = useState('')
-        const [pairError, setPairError] = useState('')
+        const [pairFailure, setPairFailure] = useState(null)
         const [exportError, setExportError] = useState('')
         const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
         const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
@@ -5082,8 +5082,9 @@
           searchRef.current?.focus?.({ preventScroll: true })
           setCatalogRetry(value => value + 1)
         }
-        const pairKey = JSON.stringify([scope, revision, peerId])
+        const pairKey = JSON.stringify([scope, revision, peerId, reload])
         const pair = loadedPair?.scope === pairKey ? loadedPair : null
+        const pairError = pairFailure?.scope === pairKey ? pairFailure.message : ''
         const stale = current.revision !== revision
         const checked = result?.scope === pairKey && result.draftKey === JSON.stringify(draft) && !stale ? result.chain : null
         const locationScope = JSON.stringify([pairKey, current.revision, draft.steps.map(step => step.branchId), reload])
@@ -5118,7 +5119,7 @@
         }, [scope, revision, active, search, candidatesOnly, offset, reload, catalogRetry])
         useEffect(() => {
           const id = ++pairSequence.current, abort = new AbortController()
-          setPair(null); setPairError(''); invalidate(true); setLoading(active && !!peerId)
+          setPair(null); setPairFailure(null); invalidate(true); setLoading(active && !!peerId)
           if (!active || !peerId) return () => { abort.abort(); pairSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: peerId }, abort.signal).then(value => {
             if (id !== pairSequence.current || abort.signal.aborted) return
@@ -5126,7 +5127,7 @@
             if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision
               || value.left?.model?.nodeId !== modelId || value.right?.model?.nodeId !== peerId) throw new Error('两步推测模型版本或身份不一致')
             setPair({ ...value, scope: pairKey })
-          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setPairError(reason.message || '模型读取失败') })
+          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setPairFailure({ scope: pairKey, message: reason.message || '模型读取失败' }) })
             .finally(() => { if (id === pairSequence.current && !abort.signal.aborted) setLoading(false) })
           return () => { abort.abort(); pairSequence.current++; checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false }
         }, [scope, revision, peerId, active, reload])
@@ -5213,6 +5214,27 @@
         }, reason => setSourceError(reason.message || '原文定位失败'))
         const field = (label, value, onChange, maxLength = 1000) => h('label', { className: 'kg-chain-field' }, h('span', null, label),
           h('textarea', { 'aria-label': label, value, maxLength, rows: 2, onChange: event => onChange(event.target.value) }))
+        // A private draft remains readable without a current model response.
+        // Use its recorded identities, never stale model labels or source links.
+        const savedField = (label, value) => h('p', { key: label }, h('strong', null, label + '：'), value || '尚未填写')
+        const savedStep = (step, index) => h('section', { key: index, className: 'kg-chain-step', 'aria-label': '第 ' + (index + 1) + ' 步保留草稿' },
+          h('h4', null, '第 ' + (index + 1) + ' 步 · ' + step.modelId),
+          savedField('草稿分支身份', step.branchId),
+          h('h5', null, '草稿输入'),
+          !step.inputs.length ? h('p', { className: 'kg-model-meta' }, '尚未填写输入') : step.inputs.map(item => h('div', { key: item.slotId, className: 'kg-chain-slot' },
+            savedField('输入槽位身份', item.slotId),
+            savedField('输入来源', item.source === 'link' ? '承接第 1 步的预测输出' : '情境中的已知输入'),
+            item.source === 'known' || item.value || item.basis ? h('div', null,
+              item.source !== 'known' ? h('p', { className: 'kg-model-meta' }, '保留的已知输入文字（当前未使用）') : null,
+              savedField('已知值或状态', item.value), savedField('输入依据', item.basis)) : null,
+            item.source === 'link' || [item.fromSlotId, item.meaning, item.unit, item.timeState, item.objectScope].some(Boolean) ? h('div', null,
+              item.source !== 'link' ? h('p', { className: 'kg-model-meta' }, '保留的承接核对文字（当前未使用）') : null,
+              savedField('第 1 步输出槽位身份', item.fromSlotId),
+              [['meaning', '含义核对'], ['unit', '单位口径核对'], ['timeState', '时间状态核对'], ['objectScope', '对象范围核对']].map(([key, label]) => savedField(label, item[key]))) : null)),
+          h('h5', null, '我的输出预测'),
+          !step.outputs.length ? h('p', { className: 'kg-model-meta' }, '尚未填写预测') : step.outputs.map(item => h('div', { key: item.slotId, className: 'kg-chain-slot' },
+            savedField('输出槽位身份', item.slotId), savedField('预测值或状态', item.value))),
+          savedField('适用条件与边界依据', step.conditions), savedField('应用过程', step.reasoning))
         const stepEditor = (detail, index) => {
           const step = draft.steps[index], number = index + 1, structure = detail.structure
           const selectedBranch = structure?.branches.find(item => item.id === step.branchId)
@@ -5271,6 +5293,7 @@
         if (!active) return null
         return h('section', { className: 'kg-model-chain', 'aria-label': '两步推测工作台' },
           h('h3', null, '两步推测草稿'), h('p', { className: 'kg-model-meta' }, '标签页草稿 · 未写入图谱或长期学习记录 · 输出为我的预测'),
+          peerId ? h('p', { className: 'kg-model-meta' }, '草稿来源版本 ' + current.revision + ' · ' + (pair ? '已读取模型版本 ' : '请求模型版本 ') + revision) : null,
           h('div', { className: 'kg-model-toolbar' },
             h('input', { ref: importInput, type: 'file', accept: '.json,application/json', className: 'kg-image-input', 'aria-label': '选择推测草稿文件', onChange: previewImport }),
             h('button', { type: 'button', className: 'kg-secondary', disabled: importing, onClick: () => importInput.current?.click() }, importing ? '正在读取草稿…' : '导入推测草稿')),
@@ -5313,7 +5336,10 @@
           pairError ? h('p', { role: 'alert' }, pairError) : null,
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           exportError ? h('p', { role: 'alert' }, exportError) : null,
-          pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : null,
+          pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : peerId ?
+            h('section', { 'aria-label': '已保留的两步草稿' },
+              h('p', { className: 'kg-model-warning' }, '模型尚未读取，草稿文字仍保留。以下只读内容尚未与请求版本对照；可导出备份，重新读取模型后继续核对。'),
+              h('div', { className: 'kg-model-compare-grid' }, draft.steps.map(savedStep))) : null,
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: !peerId, onClick: exportDraft }, '导出推测草稿')),
           checked ? h('section', { className: 'kg-chain-result', 'aria-label': '推测缺口检查' },

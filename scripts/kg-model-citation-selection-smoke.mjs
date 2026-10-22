@@ -322,7 +322,11 @@ try {
   await readChain.click('↻')
   assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
   const checkingDisabled = ui => all(ui.owner.tree, item => item.type === 'button' && text(item) === '检查推测缺口')[0].props.disabled
-  assert(checkingDisabled(readChain)); assert(!text(readChain.owner.tree).includes('第 2 步 · taxi-peer'))
+  assert(checkingDisabled(readChain))
+  const savedSteps = all(readChain.owner.tree, item => item.props['aria-label'] === '已保留的两步草稿')[0]
+  assert(text(savedSteps).includes('第 2 步 · taxi-peer'), 'Failed model reads retain the selected private draft identity')
+  assert(text(savedSteps).includes('不能外推到夜间；保留原文条件') && text(savedSteps).includes('我的第二步推测仍须核对'))
+  assert.equal(all(savedSteps, item => ['button', 'select', 'textarea'].includes(item.type)).length, 0, 'Saved text cannot offer obsolete model structure or source navigation')
   for (const [label, value] of [['具体情境', '白天、同一次行程；补充个人文字，未核验'], ['推测目标', '我的推测目标仍须核对']]) {
     await readChain.fill(label, value)
     assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'), 'Personal text is not recovery of the model read')
@@ -371,7 +375,11 @@ try {
       : contract.connectionModels(fixture, { documentId: fixture.documentId, expectedRevision: 1, modelId: 'taxi', compareModelId: 'taxi-peer' }))
     await ui.settle()
     assert(text(ui.owner.tree).includes('当前选择的模型读取失败'), 'An obsolete success or failure cannot clear or replace the current pair-read error')
-    assert(!text(ui.owner.tree).includes('过期模型读取失败')); assert(checkingDisabled(ui)); assert(!text(ui.owner.tree).includes('第 2 步 · taxi-peer'))
+    assert(!text(ui.owner.tree).includes('过期模型读取失败')); assert(checkingDisabled(ui))
+    const retained = all(ui.owner.tree, item => item.props['aria-label'] === '已保留的两步草稿')[0]
+    assert(text(retained).includes('第 2 步 · ' + (transition === 'selection' ? 'taxi-third' : 'taxi-peer')), 'Only the current private selection remains visible')
+    assert.equal(all(ui.owner.tree, item => item.props['aria-label'] === '第 2 步').length, 0, 'The obsolete model editor cannot return after a late response')
+    assert.equal(all(retained, item => ['button', 'select', 'textarea'].includes(item.type)).length, 0)
     chainPairRaceCases++
   }
   // A completed personal export recovers only its own failure. Preserve
