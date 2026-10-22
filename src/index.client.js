@@ -173,7 +173,10 @@ export default function clientPlugin() {
 @media (prefers-color-scheme: dark) { .kg-models button[aria-pressed=true] { color: #67e8f9; border-color: #22d3ee; } }
 .kg-models summary { cursor: pointer; }
 .kg-model-workspace { display: grid; grid-template-columns: minmax(0,1fr); min-height: 430px; }
-.kg-model-directory { border-bottom: 1px solid var(--kg-border); max-height: 220px; overflow: auto; }
+.kg-model-catalogue { min-width: 0; align-self: start; border-bottom: 1px solid var(--kg-border); }
+.kg-model-pagination { margin: 0; padding: 0 0 8px; }
+.kg-model-directory { max-height: 220px; overflow: auto; }
+.kg-model-directory:focus-visible { outline: 2px solid #0891b2; outline-offset: -2px; }
 .kg-model-list-item { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--kg-border); padding: 12px 8px; color: var(--kg-text); background: transparent; cursor: pointer; overflow-wrap: anywhere; }
 .kg-model-list-item[aria-current=true] { background: rgba(8,145,178,.10); border-left: 3px solid #0891b2; }
 .kg-model-list-item strong, .kg-model-list-item small { display: block; }
@@ -267,7 +270,8 @@ export default function clientPlugin() {
 .kg-models .kg-model-compare-column-label { display: block; }
 @container kg-models (min-width: 840px) {
   .kg-model-workspace { grid-template-columns: minmax(170px, 24%) minmax(0,1fr); }
-  .kg-model-directory { border-right: 1px solid var(--kg-border); border-bottom: 0; padding-right: 12px; max-height: 720px; }
+  .kg-model-catalogue { border-right: 1px solid var(--kg-border); border-bottom: 0; padding-right: 12px; }
+  .kg-model-directory { max-height: 720px; }
   .kg-model-detail { padding-left: 16px; }
 }
 @container kg-model-detail (min-width: 560px) {
@@ -5447,7 +5451,7 @@ export default function clientPlugin() {
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
         const [directoryFailure, setError] = useState(null), [detailFailure, setDetailError] = useState(null), [reload, setReload] = useState(0)
-        const [directoryRetry, setDirectoryRetry] = useState(0), directoryRetryRequest = useRef(null), directoryReadContext = useRef(null)
+        const [directoryRetry, setDirectoryRetry] = useState(0), directoryRetryRequest = useRef(null), directoryReadContext = useRef(null), directoryPageRequest = useRef(null)
         const [detailRetry, setDetailRetry] = useState(0), detailRetryRequest = useRef(null)
         const [sourceOpen, setSourceOpen] = useState(initial.sourceOpen)
         const [inspectedField, setInspectedField] = useState(null)
@@ -5561,6 +5565,16 @@ export default function clientPlugin() {
           directoryReadContext.current = { scope: directoryReadScope, query, activity: readActivity.current, saving, busy, importBusy }
         }
         const directoryOpening = directoryReadContext.current
+        const turnDirectoryPage = step => {
+          if (!refreshMounted.current || !active || directoryOpening !== directoryReadContext.current
+            || directoryPageRequest.current === directoryOpening || loading || query !== search
+            || (step < 0 ? offset === 0 : !page || offset + page.items.length >= page.total)) return
+          directoryPageRequest.current = directoryOpening
+          // Focus the persistent list before paging disables its trigger. The
+          // response only updates rows; it must not steal focus asynchronously.
+          directoryRef.current?.focus?.({ preventScroll: true })
+          setOffset(Math.max(0, offset + step * 20))
+        }
         const searchRef = useRef(null), topicCache = useRef(null), detailRef = useRef(null)
         const topicScope = JSON.stringify([documentId, revision, reload])
         // Chapter options describe the whole document, not the filtered page.
@@ -5871,7 +5885,11 @@ export default function clientPlugin() {
             h('p', { className: 'kg-model-meta' }, '保留当前筛选、页码和未保存的修改。')) : null,
           h('div', { className: 'kg-model-meta kg-model-directory-summary', role: 'status' }, query !== search ? '正在更新筛选…' : loading ? '正在读取全图模型…' : page ? '全图 ' + page.totalModels + ' 个模型 · 筛选 ' + page.total + ' 个 · 当前 ' + (page.items.length ? offset + 1 : 0) + '–' + (page.items.length ? offset + page.items.length : 0) + ' 个' : ''),
           h('div', { className: 'kg-model-workspace' },
-            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', 'aria-busy': loading || query !== search, ref: directoryRef, onScroll: rememberDirectory },
+            h('div', { className: 'kg-model-catalogue' },
+              h('div', { className: 'kg-model-toolbar kg-model-pagination', role: 'group', 'aria-label': '模型目录分页' },
+                h('button', { type: 'button', className: 'kg-secondary', disabled: !active || loading || query !== search || offset === 0, onClick: () => turnDirectoryPage(-1) }, '上一页'),
+                h('button', { type: 'button', className: 'kg-secondary', disabled: !active || loading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnDirectoryPage(1) }, '下一页')),
+            h('nav', { className: 'kg-model-directory', 'aria-label': '模型目录', 'aria-busy': loading || query !== search, tabIndex: -1, ref: directoryRef, onScroll: rememberDirectory },
               page?.items.map(model => h('div', { key: model.nodeId, 'data-model-catalogue-row': model.nodeId }, h('button', { type: 'button', className: 'kg-model-list-item', 'aria-current': modelId === model.nodeId,
                 onClick: () => select(model.nodeId) }, h('strong', null, title(model)), h('small', null, model.sectionTitle),
                 h('small', null, model.warnings.join(' · ') || '角色已记录 · 结论待核对')),
@@ -5890,10 +5908,7 @@ export default function clientPlugin() {
                 h('strong', null, !page.totalModels ? '这份资料尚无联结模型' : page.total ? '当前页没有模型' : '没有匹配的联结模型'),
                 h('p', { className: 'kg-model-meta' }, !page.totalModels ? '可继续阅读知识图与原文。' : page.total ? '模型目录已变化，可返回第一页继续查看。' : '试试减少筛选条件，或换一个关键词。'),
                 page.total ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setOffset(0); searchRef.current?.focus?.({ preventScroll: true }) } }, '返回第一页')
-                  : page.totalModels && filters.length ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => clearFilter('all') }, '查看全部模型') : null) : null,
-              h('div', { className: 'kg-model-toolbar' },
-                h('button', { type: 'button', className: 'kg-secondary', disabled: loading || offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页'),
-                h('button', { type: 'button', className: 'kg-secondary', disabled: loading || !page || offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页'))),
+                  : page.totalModels && filters.length ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => clearFilter('all') }, '查看全部模型') : null) : null)),
             h('div', { ref: detailRef, tabIndex: -1, className: 'kg-model-detail', 'aria-label': '模型详情', 'aria-busy': detailLoading },
               h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', title: '返回上一个模型', 'aria-label': '返回上一个模型', disabled: !history.current.length || saving, onClick: back }, '←'),
                 h('button', { type: 'button', className: 'kg-secondary', onClick: () => {

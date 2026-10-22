@@ -34,7 +34,7 @@ const text = node => Array.isArray(node) ? node.map(text).join('') : node && typ
 const all = (node, test) => Array.isArray(node) ? node.flatMap(child => all(child, test)) : !node || typeof node !== 'object' || node.props.hidden ? []
   : [...(test(node) ? [node] : []), ...all(node.props?.children, test)]
 const mount = (state = {}, doc = fixture) => {
-  const owner = { slots: [], updates: [], effects: [], requests: [], snapshots: [], focused: 0, doc }
+  const owner = { slots: [], updates: [], effects: [], requests: [], snapshots: [], focused: 0, directoryFocused: 0, doc }
   owner.props = { documentId: doc.documentId, revision: 1,
     restoreState: { documentId: doc.documentId, revision: 1, modelId: 'taxi', tab: 'review', sourceOpen: true, ...state },
     load: (args, signal) => new Promise(resolve => owner.requests.push({ args, signal, resolve })),
@@ -45,6 +45,9 @@ const mount = (state = {}, doc = fixture) => {
       owner.tree = Component(owner.props)
       for (const node of all(owner.tree, node => node.type === 'input' && node.props.ref)) {
         node.props.ref.current = { focus: () => owner.focused++ }
+      }
+      for (const node of all(owner.tree, node => node.props.className === 'kg-model-directory')) {
+        node.props.ref.current = { clientHeight: 0, focus: () => owner.directoryFocused++ }
       }
       if (!effects) return
       owner.effects.splice(0).forEach(fn => fn())
@@ -108,7 +111,19 @@ assert.equal(owner.snapshots.at(-1).sourceOpen, true)
 assert.equal(owner.control('端点角色 distance').props.value, 'output')
 assert(owner.focused >= 2, 'Removing a disappearing filter restores keyboard focus to search')
 assert(text(owner.tree).includes('当前 1–20 个'))
-owner.click('下一页'); await owner.resolve(owner.lastPage())
+const directory = all(owner.tree, node => node.props.className === 'kg-model-directory')[0]
+assert.equal(all(directory, node => node.type === 'button' && ['上一页', '下一页'].includes(text(node))).length, 0,
+  'Paging controls must remain outside the clipped scrolling list')
+assert.equal(directory.props.tabIndex, -1, 'The persistent directory can receive focus while its rows load')
+const nextPage = owner.control('下一页').props.onClick, beforePageReads = owner.requests.length
+nextPage(); nextPage(); owner.render()
+assert.equal(owner.requests.length, beforePageReads + 1, 'One page turn is admitted before React rerenders')
+assert.equal(owner.directoryFocused, 1, 'Explicit paging moves focus to the persistent directory before controls disable')
+assert.equal(owner.control('端点角色 distance').props.value, 'output')
+await owner.resolve(owner.lastPage())
+assert.equal(owner.directoryFocused, 1, 'A completed read must not steal focus back from another control')
+nextPage(); owner.render()
+assert.equal(owner.requests.length, beforePageReads + 1, 'A retired pagination callback cannot rewind the reading context')
 assert(text(owner.tree).includes('当前 21–31 个'))
 owner.change('模型章节', 'first')
 owner.lastPage().resolve({ error: { message: 'current filter read failed' } }); await owner.settle()
@@ -137,6 +152,22 @@ owner.props.revision = 2; owner.render()
 assert(!owner.options().includes('第一章 · 模型与实例'), 'Chapter metadata cannot survive a version change')
 assert(!owner.snapshots.at(-1).topics, 'Only browsing intent may enter persisted state')
 owner.unmount()
+
+for (const change of ['query', 'revision', 'hidden', 'unmount']) {
+  const panel = mount()
+  await panel.resolve(panel.lastPage())
+  const turn = panel.control('下一页').props.onClick
+  if (change === 'query') panel.control('搜索联结模型').props.onChange({ target: { value: 'pending filter' } })
+  if (change === 'revision') panel.props.revision = 2
+  if (change === 'hidden') panel.props.active = false
+  if (change === 'unmount') panel.unmount()
+  else panel.render(false)
+  turn()
+  assert.equal(panel.updates.length, 0, 'Retired page action cannot change the new reading context: ' + change)
+  assert.equal(panel.directoryFocused, 0, 'Retired page action cannot move focus: ' + change)
+  if (change === 'query') assert(panel.control('下一页').props.disabled, 'Pending filter disables old-page navigation')
+  if (change !== 'unmount') panel.unmount()
+}
 
 for (const change of ['document', 'revision', 'query', 'section', 'page', 'hidden', 'busy', 'unmount']) {
   const panel = mount(state)
