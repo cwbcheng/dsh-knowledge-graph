@@ -1,5 +1,6 @@
 // Browser QA for an unsaved direction draft after an external model update.
 // Uses the production viewer/controller and an isolated canonical SQLite store.
+// Optional comparison: --baseline-ref=ffb655c loads that revision's viewer.
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -8,8 +9,9 @@ import { directionIdentityFixture } from './kg-model-direction-identity-fixture.
 import { modelReviewControllerSource } from './kg-model-review-controller-fixture.mjs'
 
 const fixture = directionIdentityFixture(), harness = await modelLearningHarness({ fixture })
-const root = new URL('../', import.meta.url), baseline = process.argv.includes('--baseline')
-const viewer = baseline ? execFileSync('git', ['show', 'HEAD:extension/viewer.js'], { cwd: root, encoding: 'utf8', maxBuffer: 8e6 })
+const root = new URL('../', import.meta.url), baselineRef = process.argv.find(arg => arg.startsWith('--baseline-ref='))?.slice(15)
+const baseline = !!baselineRef
+const viewer = baseline ? execFileSync('git', ['show', baselineRef + ':extension/viewer.js'], { cwd: root, encoding: 'utf8', maxBuffer: 8e6 })
   : readFileSync(new URL('extension/viewer.js', root), 'utf8')
 let failDetail = false, expected = JSON.stringify(harness.store.getDocument(fixture.documentId)), roleWrites = 0
 const sourceUnits = JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId))
