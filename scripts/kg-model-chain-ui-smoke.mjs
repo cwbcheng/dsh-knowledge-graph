@@ -44,6 +44,9 @@ function render() {
     for (const node of all(tree, el => el.props['aria-label'] === '第 2 步模型候选' && el.props.ref)) {
       node.props.ref.current = owner.focusNode ||= { scrollTop: 80, focus: () => { owner.focused = (owner.focused || 0) + 1 } }
     }
+    for (const node of all(tree, el => el.props['aria-label'] === '搜索第 2 步模型' && el.props.ref)) {
+      node.props.ref.current = { focus: () => { owner.searchFocused = (owner.searchFocused || 0) + 1 } }
+    }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
@@ -132,10 +135,27 @@ try {
   assert(text(tree).includes('Chain catalogue unavailable'))
   assert(candidates())
   assert(!button('上一页第 2 步模型').props.disabled, 'a failed page retains the previous-page recovery action')
+  const retry = button('重试读取第 2 步候选').props.onClick
+  const failedRead = requests.at(-1).args
+  paused = true
+  retry(); retry(); render()
+  const pendingRetry = deferred.splice(0)
+  assert.equal(pendingRetry.length, 1, 'double activation retries only the failed catalogue request')
+  assert.deepEqual(pendingRetry[0].args, failedRead, 'retry preserves the query, filter, page, model and revision')
+  assert.equal(owner.searchFocused, 1, 'retry moves focus to the persistent search field before removing its button')
+  assert(candidates().props['aria-busy'])
+  assert(!text(tree).includes('Chain catalogue unavailable'))
+  assert(text(tree).includes('草稿字段已齐备') && text(tree).includes('fare-slot → expense：14'), 'catalogue retry leaves the selected pair and private check mounted')
+  assert.equal(storage.get(storedKey), cachedBeforePaging)
+  pendingRetry[0].resolve(); paused = false; await settle()
+  assert.equal(owner.searchFocused, 1, 'a successful retry does not steal focus asynchronously')
+  const afterRetryReads = requests.length
+  retry(); render(); await settle()
+  assert.equal(requests.length, afterRetryReads, 'the retired retry callback cannot start another read')
   click('上一页第 2 步模型'); await settle()
   assert(!text(tree).includes('Chain catalogue unavailable'))
   const pageReads = requests.slice(readsBeforePaging)
-  assert.deepEqual(pageReads.map(item => item.args.offset), [20, 0, 20, 0])
+  assert.deepEqual(pageReads.map(item => item.args.offset), [20, 0, 20, 20, 0])
   assert(pageReads.every(item => !item.args.modelId && !item.args.chainDraft && item.args.query === '' && item.args.chainOf === 'taxi'
     && item.args.excludeModelId === 'taxi' && item.args.expectedRevision === 1), 'paging only reads the current filtered catalogue')
   assert.equal(storage.get(storedKey), cachedBeforePaging, 'paging preserves all private draft fields and their cache')
@@ -146,6 +166,30 @@ try {
   beforeQueryPage(); render()
   assert.equal(requests.length, beforeQueryReads)
   assert.equal(owner.focused, beforeQueryFocus, 'a stale query callback cannot steal focus')
+  fill('搜索第 2 步模型', ''); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
+  all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } }); render(); await settle()
+  fill('搜索第 2 步模型', '预算'); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
+  failCatalogOnce = true; click('下一页第 2 步模型'); await settle()
+  const filteredFailure = requests.at(-1).args
+  assert.equal(filteredFailure.query, '预算'); assert.equal(filteredFailure.chainOf, ''); assert.equal(filteredFailure.offset, 20)
+  failCatalogOnce = true; click('重试读取第 2 步候选'); await settle()
+  assert(text(tree).includes('Chain catalogue unavailable'), 'a second failure offers another scoped retry')
+  assert.deepEqual(requests.at(-1).args, filteredFailure)
+  assert(text(tree).includes('草稿字段已齐备'))
+  paused = true
+  click('检查推测缺口')
+  const pendingCheckDuringRetry = deferred.shift()
+  click('重试读取第 2 步候选')
+  const pendingFilteredRetry = deferred.shift()
+  assert.equal(deferred.length, 0, 'retry does not reload the selected pair')
+  assert.deepEqual(pendingFilteredRetry.args, filteredFailure)
+  assert(!pendingCheckDuringRetry.signal.aborted, 'retry cannot cancel an independently requested private check')
+  pendingCheckDuringRetry.resolve(); await settle()
+  assert(text(tree).includes('草稿字段已齐备'))
+  pendingFilteredRetry.resolve(); paused = false; await settle()
+  assert(text(tree).includes('fare-slot → expense：14'))
+  assert.equal(storage.get(storedKey), cachedBeforePaging)
+  all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: true } }); render(); await settle()
   fill('搜索第 2 步模型', ''); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
   assert.deepEqual(store.getDocument(document.documentId), graphBefore, 'candidate navigation leaves the canonical graph unchanged')
   const checksBeforeImport = requests.filter(item => item.args.chainDraft).length
@@ -312,6 +356,31 @@ try {
     owner.slots.forEach(state => state.cleanup?.())
     deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
   }
+  for (const change of ['document', 'revision', 'model', 'query', 'filter', 'page', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    mount({ ...basicProps, revision: 2 }); await settle()
+    failCatalogOnce = true; click('下一页第 2 步模型'); await settle()
+    const retired = button('重试读取第 2 步候选').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 3
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'query') fill('搜索第 2 步模型', '预算')
+    if (change === 'filter') all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } })
+    if (change === 'page') click('上一页第 2 步模型')
+    if (change === 'reload') click('重新读取两步推测模型')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    else assert(!text(tree).includes('Chain catalogue unavailable'), 'the old error is hidden immediately after ' + change)
+    const reads = requests.length
+    retired()
+    assert.equal(updates.length, 0, 'retired retry cannot change ' + change + ' context')
+    assert.equal(requests.length, reads)
+    assert.equal(owner.searchFocused || 0, 0, 'retired retry cannot move focus after ' + change)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
   Component = context.window.KGViewer.ConnectionModelPanel
   oldHost = true
   mount({ documentId: document.documentId, revision: 2, load,
@@ -330,5 +399,5 @@ try {
   chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
   assert.equal(chainChild.props.modelId, 'taxi')
   assert(chainChild.props.active, 'return restores the chain tab, not just the previous model identity')
-  console.log('model chain UI: actual production route, persistent candidate paging and focus, catalogue-only reads, failed-page recovery, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, persistent candidate paging and focus, scoped catalogue-only retry, repeated failures, preserved checks and drafts, 10 retired retry contexts, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
