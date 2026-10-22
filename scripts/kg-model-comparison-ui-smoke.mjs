@@ -46,6 +46,9 @@ function render() {
     for (const node of all(tree, el => el.props['aria-label'] === '搜索比较模型' && el.props.ref)) {
       node.props.ref.current = owner.searchNode ||= { focus: () => { owner.searchFocused = (owner.searchFocused || 0) + 1 } }
     }
+    for (const node of all(tree, el => el.props['aria-label'] === '比较模型读取状态' && el.props.ref)) {
+      node.props.ref.current = { focus: () => { owner.pairFocused = (owner.pairFocused || 0) + 1 } }
+    }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
@@ -175,6 +178,78 @@ try {
   assert(text(tree).includes('比较模型身份或版本不一致'))
   assert(identity().includes('请求版本 1') && !identity().includes('抽取状态：'), 'A response for another version is not displayed as loaded')
   invalidRevision = false
+  const readsBeforeRejectedRetry = requests.length
+  click('重试读取比较模型对'); await settle()
+  assert.equal(requests.length, readsBeforeRejectedRetry + 1)
+  assert(identity().includes('版本 1') && !identity().includes('请求版本'))
+  assert(text(tree).includes('比较目录版本不一致'), 'pair recovery does not replace the independent candidate failure')
+  click('重试读取比较候选'); await settle()
+  failPairOnce = true; click('重新读取模型比较'); await settle()
+  fill('搜索比较模型', '待比较'); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
+  click('下一页比较模型'); await settle()
+  assert(!text(candidates()).includes('night · '), 'retry does not require B to remain on the candidate page')
+  const candidateBeforePairRetry = JSON.stringify(candidates().props.children), retryReadsBefore = requests.length
+  const retryModels = button('重试读取比较模型对').props.onClick
+  paused = true; retryModels(); retryModels(); beforeEffects()
+  assert(!text(tree).includes('Comparison temporarily unavailable'), 'retry hides the old error before effects')
+  assert(identity().includes('请求版本 1') && identity().includes('模型 B · night'))
+  render()
+  assert.equal(deferred.length, 1); assert.equal(requests.length, retryReadsBefore + 1)
+  assert.equal(requests.at(-1).args.compareModelId, 'night')
+  assert.equal(JSON.stringify(candidates().props.children), candidateBeforePairRetry)
+  assert.equal(input('搜索比较模型').props.value, '待比较')
+  assert.equal(owner.pairFocused, 2, 'each explicit retry focuses the persistent status once')
+  assert.equal(all(tree, el => el.props['aria-label'] === '比较模型读取状态')[0].props.tabIndex, -1)
+  invalidIdentity = true; deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('比较模型对读取失败：比较模型身份或版本不一致'))
+  assert(identity().includes('请求版本 1') && !identity().includes('抽取状态：'))
+  assert(!all(tree, el => el.props.className === 'kg-model-compare-row').length)
+  invalidIdentity = false; paused = true; click('重试读取比较模型对')
+  assert.equal(deferred.length, 1, 'a rejected identity remains independently retryable')
+  const focusBeforePairReply = owner.pairFocused
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert.equal(owner.pairFocused, focusBeforePairReply, 'asynchronous replies do not move focus')
+  assert.equal(JSON.stringify(candidates().props.children), candidateBeforePairRetry)
+  assert(text(tree).includes('夜间附加条件') && text(tree).includes('不代表条件、单位或结论等价'))
+  assert(!button('上一页比较模型').props.disabled)
+  const retiredReads = requests.length
+  retryModels(); render(); await settle(); assert.equal(requests.length, retiredReads)
+  failCatalogOnce = true; failPairOnce = true; click('重新读取模型比较'); await settle()
+  paused = true; click('重试读取比较候选')
+  const independentCatalogue = deferred[0]
+  click('重试读取比较模型对')
+  assert.equal(deferred.length, 2); assert(!independentCatalogue.signal.aborted, 'pair retry cannot cancel an independent candidate request')
+  assert.equal(independentCatalogue.args.offset, 20); assert.equal(independentCatalogue.args.query, '待比较')
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('夜间附加条件'))
+
+  for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+      load: (args, signal) => call(args, signal, 'connection-models') })
+    await settle(); failPairOnce = true; choose('night'); await settle()
+    const retired = button('重试读取比较模型对').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 2
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'peer') choose('unknown')
+    if (change === 'reload') click('重新读取模型比较')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    beforeEffects()
+    if (change !== 'unmount') {
+      retired()
+      assert.equal(updates.length, 0, 'retired pair retry cannot act before effects after ' + change)
+    }
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    const reads = requests.length
+    retired()
+    assert.equal(updates.length, 0, 'retired pair retry cannot change ' + change + ' context')
+    assert.equal(requests.length, reads); assert.equal(owner.pairFocused || 0, 0)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
 
   for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden']) {
     mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
@@ -339,7 +414,8 @@ try {
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi', 'counterexample').length, 1)
   console.log(JSON.stringify({ ok: true, generatedProductionComponents: true, actualSqliteHttp: true, pairRaceFenced: true, explicitSelection: true,
     targetIdentity: true, paginationFocus: true, paginationScopeGuards: 9, pageFailureRecovery: true,
-    catalogRetryScopeGuards: 10, independentRetry: true, pendingComparisonPreserved: true, evidenceRetained: true,
+    catalogRetryScopeGuards: 10, independentRetry: true, independentPairRetry: true, pairRetryScopeGuards: 8,
+    pairRetrySingleFlight: true, pairRetryIdentityRejection: true, pendingComparisonPreserved: true, evidenceRetained: true,
     requestedPairIdentity: true, failureFirstRenderScopes: 6, requestedRevisionNotLoadedFacts: true,
     challengeDraftScopes: true, idempotentLostResponse: true, visibleInvalidChange: true, graphUnchanged: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
