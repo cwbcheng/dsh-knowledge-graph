@@ -6276,7 +6276,8 @@ export default function clientPlugin() {
         const [candidatesOnly, setCandidatesOnly] = useState(true), [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null)
         const [loadedPair, setPair] = useState(null), [result, setResult] = useState(null), [reload, setReload] = useState(0)
         const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false), [catalogLoading, setCatalogLoading] = useState(false)
-        const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
+        const [error, setError] = useState(''), [catalogFailure, setCatalogFailure] = useState(null), [storageError, setStorageError] = useState('')
+        const [catalogRetry, setCatalogRetry] = useState(0), catalogRetryRequest = useRef(null), searchRef = useRef(null)
         const [sourceError, setSourceError] = useState('')
         const [pairError, setPairError] = useState('')
         const [exportError, setExportError] = useState('')
@@ -6289,8 +6290,9 @@ export default function clientPlugin() {
         workRef.current = work
         api.current = { load, onLocate, onOpen, onStructure }
         const current = work.scope === scope ? work : empty(), peerId = current.peerId, draft = current.draft
-        const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset, reload])
+        const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset, reload, catalogRetry])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const catalogError = query === search && catalogFailure?.scope === catalogKey ? catalogFailure.message : ''
         const candidatesRef = useRef(null), pageContext = useRef(null), pageRequest = useRef(null), mounted = useRef(true)
         const navigationKey = JSON.stringify([catalogKey, query, active])
         if (pageContext.current?.key !== navigationKey) pageContext.current = { key: navigationKey }
@@ -6305,6 +6307,15 @@ export default function clientPlugin() {
           candidatesRef.current?.focus?.({ preventScroll: true })
           if (candidatesRef.current) candidatesRef.current.scrollTop = 0
           setOffset(Math.max(0, offset + step * 20))
+        }
+        const retryCatalog = () => {
+          if (!mounted.current || !active || opening !== pageContext.current || catalogLoading || !catalogError
+            || catalogRetryRequest.current === catalogFailure) return
+          catalogRetryRequest.current = catalogFailure
+          // Retry only this candidate page. Reloading the selected pair would
+          // invalidate the private check and interrupt its draft editors.
+          searchRef.current?.focus?.({ preventScroll: true })
+          setCatalogRetry(value => value + 1)
         }
         const pairKey = JSON.stringify([scope, revision, peerId])
         const pair = loadedPair?.scope === pairKey ? loadedPair : null
@@ -6328,7 +6339,7 @@ export default function clientPlugin() {
         useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
         useEffect(() => {
           const id = ++catalogSequence.current, abort = new AbortController()
-          setPage(null); setCatalogError(''); setCatalogLoading(active)
+          setPage(null); setCatalogFailure(null); setCatalogLoading(active)
           if (!active) return () => { abort.abort(); catalogSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, query: search, offset, excludeModelId: modelId,
             chainOf: candidatesOnly ? modelId : '' }, abort.signal).then(value => {
@@ -6336,10 +6347,10 @@ export default function clientPlugin() {
             if (value?.error) throw new Error(value.error.message)
             if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || !Array.isArray(value.items)) throw new Error('两步推测目录版本或身份不一致，请等待同版本服务部署')
             setPage({ ...value, scope: catalogKey })
-          }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogError(reason.message || '模型目录读取失败') })
+          }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogFailure({ scope: catalogKey, message: reason.message || '模型目录读取失败' }) })
             .finally(() => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogLoading(false) })
           return () => { abort.abort(); catalogSequence.current++ }
-        }, [scope, revision, active, search, candidatesOnly, offset, reload])
+        }, [scope, revision, active, search, candidatesOnly, offset, reload, catalogRetry])
         useEffect(() => {
           const id = ++pairSequence.current, abort = new AbortController()
           setPair(null); setPairError(''); invalidate(true); setLoading(active && !!peerId)
@@ -6518,10 +6529,11 @@ export default function clientPlugin() {
             } }, '对照后使用当前版本')) : null,
           field('具体情境', draft.scenario, text => changeDraft(value => ({ ...value, scenario: text })), 2000),
           field('推测目标', draft.goal, text => changeDraft(value => ({ ...value, goal: text })), 2000),
-          h('div', { className: 'kg-model-toolbar' }, h('input', { type: 'search', maxLength: 200, value: query, 'aria-label': '搜索第 2 步模型', placeholder: '第二个模型', onChange: event => setQuery(event.target.value) }),
+          h('div', { className: 'kg-model-toolbar' }, h('input', { ref: searchRef, type: 'search', maxLength: 200, value: query, 'aria-label': '搜索第 2 步模型', placeholder: '第二个模型', onChange: event => setQuery(event.target.value) }),
             h('label', null, h('input', { type: 'checkbox', checked: candidatesOnly, onChange: event => { setCandidatesOnly(event.target.checked); setOffset(0) } }), ' 输出承接候选'),
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取两步推测模型', title: '重新读取两步推测模型', onClick: () => { invalidate(); setReload(value => value + 1) } }, '↻')),
-          catalogError ? h('p', { role: 'alert' }, catalogError) : null,
+          catalogError ? h('div', { role: 'alert' }, catalogError, ' ',
+            h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading, onClick: retryCatalog }, '重试读取第 2 步候选')) : null,
           catalogLoading ? h('p', { role: 'status' }, '正在读取第 2 步模型候选…') : null,
           h('div', null,
             page ? h('p', { className: 'kg-model-meta' }, '候选 ' + page.total + ' 个 · 仅按概念与已记录方向筛选，相容性尚未核对') : null,
