@@ -132,7 +132,10 @@
 @media (prefers-color-scheme: dark) { .kg-models button[aria-pressed=true] { color: #67e8f9; border-color: #22d3ee; } }
 .kg-models summary { cursor: pointer; }
 .kg-model-workspace { display: grid; grid-template-columns: minmax(0,1fr); min-height: 430px; }
-.kg-model-directory { border-bottom: 1px solid var(--kg-border); max-height: 220px; overflow: auto; }
+.kg-model-catalogue { min-width: 0; align-self: start; border-bottom: 1px solid var(--kg-border); }
+.kg-model-pagination { margin: 0; padding: 0 0 8px; }
+.kg-model-directory { max-height: 220px; overflow: auto; }
+.kg-model-directory:focus-visible { outline: 2px solid #0891b2; outline-offset: -2px; }
 .kg-model-list-item { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--kg-border); padding: 12px 8px; color: var(--kg-text); background: transparent; cursor: pointer; overflow-wrap: anywhere; }
 .kg-model-list-item[aria-current=true] { background: rgba(8,145,178,.10); border-left: 3px solid #0891b2; }
 .kg-model-list-item strong, .kg-model-list-item small { display: block; }
@@ -226,7 +229,8 @@
 .kg-models .kg-model-compare-column-label { display: block; }
 @container kg-models (min-width: 840px) {
   .kg-model-workspace { grid-template-columns: minmax(170px, 24%) minmax(0,1fr); }
-  .kg-model-directory { border-right: 1px solid var(--kg-border); border-bottom: 0; padding-right: 12px; max-height: 720px; }
+  .kg-model-catalogue { border-right: 1px solid var(--kg-border); border-bottom: 0; padding-right: 12px; }
+  .kg-model-directory { max-height: 720px; }
   .kg-model-detail { padding-left: 16px; }
 }
 @container kg-model-detail (min-width: 560px) {
