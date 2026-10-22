@@ -48,6 +48,9 @@ function render() {
     for (const node of all(tree, el => el.props['aria-label'] === '搜索第 2 步模型' && el.props.ref)) {
       node.props.ref.current = { focus: () => { owner.searchFocused = (owner.searchFocused || 0) + 1 } }
     }
+    for (const node of all(tree, el => el.props['aria-label'] === '两步模型读取状态' && el.props.ref)) {
+      node.props.ref.current = { focus: () => { owner.pairFocused = (owner.pairFocused || 0) + 1 } }
+    }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
@@ -135,11 +138,30 @@ try {
   pendingModels.forEach(item => item.resolve()); paused = false; await settle()
   assert(text(tree).includes('Chain models unavailable'))
   assertPreservedDraft()
+  const candidatePageBeforeRetry = JSON.stringify(candidates().props.children)
+  const readsBeforePairRetry = requests.length
   paused = true
-  button('重新读取两步推测模型').props.onClick(); beforeEffects()
+  const retryModels = button('重试读取两步模型').props.onClick
+  retryModels(); retryModels(); beforeEffects()
+  assert.equal(owner.pairFocused, 1, 'one explicit retry focuses its persistent status region once')
+  assert.equal(all(tree, el => el.props['aria-label'] === '两步模型读取状态')[0].props.tabIndex, -1)
   assert(!text(tree).includes('Chain models unavailable'), 'the previous error is hidden on the first render of a new read')
   render(); assertPreservedDraft()
+  assert.equal(deferred.length, 1, 'model-only retry never rereads the candidate page')
+  assert.equal(requests.length, readsBeforePairRetry + 1, 'repeated callbacks enqueue one read')
+  assert.equal(JSON.stringify(candidates().props.children), candidatePageBeforeRetry)
+  assert.equal(requests.at(-1).args.compareModelId, 'budget-model')
+  failPairOnce = true
   deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(text(tree).includes('两步模型读取失败：Chain models unavailable'))
+  assertPreservedDraft()
+  paused = true; click('重试读取两步模型')
+  assert.equal(deferred.length, 1, 'a new failure can be retried again')
+  assert.equal(owner.pairFocused, 2)
+  const focusBeforeResponse = owner.pairFocused
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert.equal(owner.pairFocused, focusBeforeResponse, 'asynchronous model replies do not move focus')
+  assert.equal(JSON.stringify(candidates().props.children), candidatePageBeforeRetry)
   assert(!all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length)
   assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot')
   assert.equal(input('第 1 步 · 基础费用预测').props.value, '14')
@@ -454,6 +476,46 @@ try {
   assert(all(tree, el => el.props['aria-label'] === '已保留的两步草稿').length, 'rejected foreign replies cannot replace the saved draft with model facts')
   assert.equal(storage.get(storedKey), JSON.stringify(savedWork))
   foreign = false
+  const checksBeforeStaleRetry = requests.filter(item => item.args.chainDraft).length
+  const readsBeforeStaleRetry = requests.length
+  click('重试读取两步模型'); await settle()
+  assert.equal(requests.length, readsBeforeStaleRetry + 1)
+  assert.equal(requests.filter(item => item.args.chainDraft).length, checksBeforeStaleRetry, 'retry never automatically checks or certifies a draft')
+  assert(text(tree).includes('草稿来源版本 1 · 已读取模型版本 2'))
+  assert(button('检查推测缺口').props.disabled, 'successful retry cannot bypass the stale source version confirmation')
+  assert.equal(storage.get(storedKey), JSON.stringify(savedWork), 'successful retry does not rebase or rewrite private text')
+  failCatalogOnce = true; failPairOnce = true; mount({ ...basicProps, revision: 2 }); await settle()
+  const catalogueFailureBeforePairRetry = text(all(tree, el => el.props.role === 'alert').find(el => text(el).includes('Chain catalogue unavailable')))
+  paused = true; click('重试读取第 2 步候选')
+  const pendingCatalogue = deferred[0]
+  click('重试读取两步模型')
+  assert.equal(deferred.length, 2, 'independent catalogue retry and model retry coexist')
+  assert(!pendingCatalogue.signal.aborted, 'model retry does not cancel the independent candidate request')
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert.equal(storage.get(storedKey), JSON.stringify(savedWork))
+  assert(catalogueFailureBeforePairRetry.includes('Chain catalogue unavailable'))
+  for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    failPairOnce = true; mount({ ...basicProps, revision: 2 }); await settle()
+    const retired = button('重试读取两步模型').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 3
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'peer') choose('chain-peer-0')
+    if (change === 'reload') click('重新读取两步推测模型')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    const reads = requests.length
+    retired()
+    assert.equal(updates.length, 0, 'retired model retry cannot change ' + change + ' context')
+    assert.equal(requests.length, reads)
+    assert.equal(owner.pairFocused || 0, 0, 'retired model retry cannot move focus after ' + change)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+    storage.set(storedKey, JSON.stringify(savedWork))
+  }
   for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden']) {
     failPairOnce = true; mount({ ...basicProps, revision: 2 }); await settle()
     assert(text(tree).includes('Chain models unavailable'))
@@ -494,5 +556,5 @@ try {
   chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
   assert.equal(chainChild.props.modelId, 'taxi')
   assert(chainChild.props.active, 'return restores the chain tab, not just the previous model identity')
-  console.log('model chain UI: actual production route, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, scoped catalogue-only retry, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
