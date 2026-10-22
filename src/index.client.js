@@ -5447,6 +5447,7 @@ export default function clientPlugin() {
         const [practiceRequest, setPracticeRequest] = useState(null), [understandingRequest, setUnderstandingRequest] = useState(null)
         const [loading, setLoading] = useState(false), [detailLoading, setDetailLoading] = useState(false)
         const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [reload, setReload] = useState(0)
+        const [detailRetry, setDetailRetry] = useState(0), detailRetryRequest = useRef(null)
         const [sourceOpen, setSourceOpen] = useState(initial.sourceOpen)
         const [inspectedField, setInspectedField] = useState(null)
         const sourceContext = useRef(null)
@@ -5465,7 +5466,7 @@ export default function clientPlugin() {
         const [structureFocus, setStructureFocus] = useState(null)
         const readActivity = useRef({ active })
         if (readActivity.current.active !== active) readActivity.current = { active }
-        const detailReadScope = JSON.stringify([documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
+        const detailReadScope = JSON.stringify([documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, detailRetry])
         // Hide the previous selection during render, before an effect starts the next read.
         const detail = loadedDetail?.scope === detailReadScope ? loadedDetail.value : null
         // Field choices belong to this loaded detail, not a model name or a
@@ -5515,7 +5516,7 @@ export default function clientPlugin() {
         const fieldRef = useRef(null)
         const api = useRef({ load, onRoles, onLocate, onReview, onRefresh, onStateChange })
         api.current = { load, onRoles, onLocate, onReview, onRefresh, onStateChange }
-        const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload])
+        const locationScope = JSON.stringify([documentId, revision, modelId, tab, materialOffset, branchId, exampleOffset, reload, detailRetry])
         const location = useConnectionModelLocation(locationScope, active)
         const sourceLocation = useConnectionModelLocation(JSON.stringify([locationScope, sourceOpen, sourceSelection?.branchId, sourceSelection?.field]), active && sourceOpen)
         const reviewScope = JSON.stringify([locationScope, saving, !!busy, importBusy])
@@ -5533,6 +5534,7 @@ export default function clientPlugin() {
         }, [])
         useEffect(() => { setSourceError('') }, [locationScope, active])
         useEffect(() => { setReviewError('') }, [reviewScope, active])
+        useEffect(() => { setRefreshError('') }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload])
         const locate = (reference, stillCurrent) => location(reference, api.current.onLocate, null, stillCurrent)
         const locateInDetail = (reference, stillCurrent) => location(reference, (value, isCurrent) => {
           // The location guard admits the attempt before it clears its own error.
@@ -5653,7 +5655,7 @@ export default function clientPlugin() {
           const id = ++detailSequence.current, abort = new AbortController()
           const opening = readActivity.current
           const isCurrent = () => id === detailSequence.current && !abort.signal.aborted && readActivity.current === opening
-          setDetail(null); setDetailError(''); setRefreshError(''); setPreview(null); setNotice('')
+          setDetail(null); setDetailError(''); setPreview(null); setNotice('')
           if (!modelId) { setDetailLoading(false); return () => abort.abort() }
           setDetailLoading(true)
           api.current.load({ documentId, expectedRevision: revision, modelId, offset: materialOffset, branchId, exampleOffset }, abort.signal).then(result => {
@@ -5665,7 +5667,7 @@ export default function clientPlugin() {
           }).catch(reason => { if (isCurrent()) setDetailError(reason.message || '模型详情读取失败') })
             .finally(() => { if (isCurrent()) setDetailLoading(false) })
           return () => { abort.abort(); detailSequence.current++ }
-        }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, active])
+        }, [documentId, revision, modelId, materialOffset, branchId, exampleOffset, reload, detailRetry, active])
         // Visibility cancels reads, not an explicitly requested direction write.
         useEffect(() => () => { writeSequence.current++ }, [detailReadScope])
         useEffect(() => { setRoleDraft({ revision, changes: {}, ports: {} }) }, [documentId, modelId])
@@ -5736,6 +5738,16 @@ export default function clientPlugin() {
             if (refreshed === false || !isCurrent()) return
             setRoleDraft({ revision, changes: {}, ports: {} }); setPreview(null); setReload(value => value + 1)
           } catch (reason) { if (isCurrent()) setRefreshError(reason.message || '操作未完成') }
+        }
+        const retryDetailRead = () => {
+          if (!refreshMounted.current || !active || sourceOpening !== sourceContext.current || refreshOpening !== refreshContext.current
+            || !detailError || detail || detailLoading || writePending.current || saving || busy || importBusy
+            || detailRetryRequest.current === sourceOpening) return
+          // Retry only this failed read. The directory and unsaved direction
+          // choices keep their identity; every response still checks revision.
+          detailRetryRequest.current = sourceOpening
+          detailRef.current?.focus?.({ preventScroll: true })
+          setDetailRetry(value => value + 1)
         }
         const changeRole = (item, value) => {
           if (!active || sourceOpening !== sourceContext.current || writePending.current || saving || busy || staleRoles) return
@@ -5869,6 +5881,9 @@ export default function clientPlugin() {
                 h('strong', null, detail?.model.sectionTitle || '联结模型'),
                 detail ? h('span', { className: 'kg-model-meta' }, detail.model.nodeId + ' · 版本 ' + revision) : null),
               detailError ? h('p', { role: 'alert' }, detailError) : null,
+              detailError && !detail ? h('div', null,
+                h('button', { type: 'button', className: 'kg-secondary', disabled: detailLoading || saving || busy || importBusy, onClick: retryDetailRead }, '重试读取模型详情'),
+                h('p', { className: 'kg-model-meta' }, '保留当前页及未保存的方向修改。')) : null,
               refreshError ? h('p', { role: 'alert' }, refreshError) : null,
               reviewError ? h('p', { role: 'alert' }, reviewError) : null,
               sourceError ? h('p', { role: 'alert' }, sourceError) : null,

@@ -122,7 +122,7 @@ assert.equal(writes.length, 3, 'retries and navigation may never trigger another
 
 // Two meanings of the same word must remain distinguishable at approval time.
 // Use the actual production controller and canonical SQLite HTTP validation.
-const identityDoc = directionIdentityFixture(), harness = await modelLearningHarness({ fixture: identityDoc })
+const identityDoc = directionIdentityFixture({ extraMaterials: 21 }), harness = await modelLearningHarness({ fixture: identityDoc })
 try {
   const original = structuredClone(harness.store.getDocument(identityDoc.documentId))
   const sourceUnitsBefore = JSON.stringify(harness.store.getDocumentSourceUnits(identityDoc.documentId))
@@ -166,6 +166,44 @@ try {
     assert(text(label).includes(id), 'Same-name role selector must visibly identify its concept: ' + id)
   }
   editRole('raw-mass', 'input')
+  // A failed material-page read must be recoverable without the global
+  // refresh's explicit draft discard, or a hidden-workspace round trip.
+  click('下上对照'); click('下一页材料')
+  const failedMaterialRead = requests.at(-1), directoryReads = requests.filter(request => !request.args.modelId).length
+  assert.equal(failedMaterialRead.args.offset, 20)
+  failedMaterialRead.reject(new Error('fixture material page unavailable')); await settle()
+  let failedRefreshes = 0
+  props.onRefresh = async () => { failedRefreshes++; throw new Error('fixture canonical refresh unavailable') }
+  context.window.confirm = () => true
+  render(); click('重新读取模型'); await settle()
+  assert(text(tree).includes('fixture canonical refresh unavailable'))
+  const failedDetailRetry = button('重试读取模型详情').props.onClick
+  context.window.confirm = () => { throw new Error('A failed detail retry must preserve the direction draft without discard confirmation') }
+  const beforeRetry = requests.length
+  props.busy = true; render(); failedDetailRetry(); await settle()
+  assert.equal(requests.length, beforeRetry, 'An old retry callback cannot run while a graph operation is busy')
+  props.busy = false; render()
+  const retryDetail = button('重试读取模型详情').props.onClick
+  retryDetail(); retryDetail(); render()
+  assert.equal(requests.length, beforeRetry + 1, 'Repeated activation admits one detail read')
+  assert.deepEqual(requests.at(-1).args, failedMaterialRead.args, 'Retry keeps the document, version, model, branch and material page')
+  assert.equal(requests.filter(request => !request.args.modelId).length, directoryReads, 'A detail retry preserves the loaded directory')
+  const retryRead = requests.at(-1)
+  props.active = false; render(); retryDetail(); await settle()
+  assert(retryRead.signal.aborted)
+  assert.equal(requests.length, beforeRetry + 1, 'Hidden or retired retry callbacks cannot restart a read')
+  props.active = true; render()
+  await resolveIdentity(retryRead)
+  assert(!roleSelect('raw-mass'), 'An aborted late read cannot publish detail')
+  await resolveIdentity(requests.at(-1))
+  click('核对方向')
+  assert.equal(roleSelect('raw-mass').props.value, 'input', 'Retry must retain the unsaved role selection')
+  assert(text(tree).includes('fixture canonical refresh unavailable'), 'A detail retry does not recover an independent canonical refresh failure')
+  assert.equal(failedRefreshes, 1, 'The detail retry must not call the global refresh receiver')
+  assert.equal(calls.length, 0, 'Retry cannot preview, save, or refresh the canonical graph')
+  unchanged()
+  props.onRefresh = undefined
+  click('下上对照'); click('上一页材料'); await resolveIdentity(requests.at(-1)); click('核对方向')
   const previewClick = button('预览方向修改').props.onClick
   previewClick(); previewClick(); render()
   assert.equal(admissions.length, 1, 'Repeated preview activation before the disabled render must admit one request')
@@ -362,4 +400,5 @@ console.log(JSON.stringify({ ok: true, staleResponsesRejected: true, previewAppr
   singleDirectionPreviewAndConfirmation: true, failedDirectionPreviewAndCommitRetry: true,
   versionedDirectionDraft: true, oldDirectionEvidenceRetained: true, explicitCurrentVersionRecheck: true,
   failedReadDirectionDraftAccessible: true, removedModelDirectionDraftAccessible: true,
+  failedDetailRetryPreservesDraftAndPage: true, detailRetryScopeAndNoWrites: true,
   sameNameDirectionIdentity: true, exactApprovalEvidence: true, actualCanonicalPreviewAndConfirmation: true, conditionsAndSourcePreserved: true }))

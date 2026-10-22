@@ -8,12 +8,13 @@ import { modelLearningHarness } from './kg-model-learning-fixture-data.mjs'
 import { directionIdentityFixture } from './kg-model-direction-identity-fixture.mjs'
 import { modelReviewControllerSource } from './kg-model-review-controller-fixture.mjs'
 
-const fixture = directionIdentityFixture(), harness = await modelLearningHarness({ fixture })
+const fixture = directionIdentityFixture({ extraMaterials: 21 }), harness = await modelLearningHarness({ fixture })
 const root = new URL('../', import.meta.url), baselineRef = process.argv.find(arg => arg.startsWith('--baseline-ref='))?.slice(15)
 const baseline = !!baselineRef
 const viewer = baseline ? execFileSync('git', ['show', baselineRef + ':extension/viewer.js'], { cwd: root, encoding: 'utf8', maxBuffer: 8e6 })
   : readFileSync(new URL('extension/viewer.js', root), 'utf8')
-let failDetail = false, expected = JSON.stringify(harness.store.getDocument(fixture.documentId)), roleWrites = 0
+let failDetail = false, failDetailOnce = false, expected = JSON.stringify(harness.store.getDocument(fixture.documentId)), roleWrites = 0
+const detailReads = [], directoryReads = []
 const sourceUnits = JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId))
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>方向草稿恢复验收</title><link rel="stylesheet" href="/viewer.css">
@@ -30,9 +31,10 @@ function App(){
     state.current={resultView:view,currentResultRef:{current:view},graphRevisionRef:{current:loaded.revision},graphCommitQueueRef:{current:Promise.resolve()},verifyBusyRef:{current:false}};
     controller.current=createModelReviewController(state.current,{call:(method,args)=>rpc('/api/dsh-knowledge-graph/'+method,args)});setRevision(loaded.revision);};
   React.useEffect(()=>{loadState().catch(error=>setMessage(error.message))},[]);
-  const simulate=async kind=>{try{await rpc('/fixture/'+kind);await loadState();setMessage(kind==='remove'?'已在临时图谱移除当前模型。':kind==='fail'?'新版详情请求将返回隔离测试错误。':'已允许详情读取；隐藏再显示工作台可重试。')}catch(error){setMessage(error.message)}};
+  const simulate=async kind=>{try{await rpc('/fixture/'+kind);await loadState();setMessage(kind==='remove'?'已在临时图谱移除当前模型。':kind==='fail'?'新版详情请求将返回隔离测试错误。':kind==='fail-once'?'下一次详情读取会失败一次，图谱版本不变。':'已允许详情读取；隐藏再显示工作台可重试。')}catch(error){setMessage(error.message)}};
   return h('main',{className:'kg-root'},h('h1',null,'方向草稿恢复验收'),
     h('div',{className:'controls'},h('button',{onClick:()=>simulate('fail')},'模拟外部更新并中断详情'),
+      h('button',{onClick:()=>simulate('fail-once')},'模拟下一次详情失败'),
       h('button',{onClick:()=>simulate('recover')},'恢复详情读取'),h('button',{onClick:()=>simulate('remove')},'模拟移除当前模型'),
       h('button',{onClick:()=>setActive(value=>!value)},active?'隐藏工作台':'显示工作台')),
     h('p',{role:'status'},message),
@@ -62,11 +64,14 @@ const server = createServer(async (request, response) => {
           expected = JSON.stringify(harness.store.getDocument(fixture.documentId))
           failDetail = path === '/fixture/fail'
         } else if (path === '/fixture/recover') failDetail = false
+        else if (path === '/fixture/fail-once') failDetailOnce = true
         else { response.writeHead(404); response.end('{}'); return }
         response.end('{}'); return
       }
       const method = path.split('/').at(-1)
-      if (method === 'connection-models' && args.modelId && failDetail) {
+      if (method === 'connection-models') (args.modelId ? detailReads : directoryReads).push(args)
+      if (method === 'connection-models' && args.modelId && (failDetail || failDetailOnce)) {
+        failDetailOnce = false
         response.writeHead(503); response.end(JSON.stringify({ error: { message: '隔离测试：新版详情暂时无法读取' } })); return
       }
       if (method === 'graph-commit' || method === 'graph-commit-preview') roleWrites++
@@ -74,7 +79,7 @@ const server = createServer(async (request, response) => {
     }
     if (path === '/verification') {
       response.setHeader('Content-Type', 'application/json')
-      response.end(JSON.stringify({ baseline, revision: harness.store.getDocumentRevision(fixture.documentId), roleWrites,
+      response.end(JSON.stringify({ baseline, revision: harness.store.getDocumentRevision(fixture.documentId), roleWrites, detailReads, directoryReads,
         graphUnchangedAfterExplicitFixtureChange: JSON.stringify(harness.store.getDocument(fixture.documentId)) === expected,
         sourceUnitsUnchanged: JSON.stringify(harness.store.getDocumentSourceUnits(fixture.documentId)) === sourceUnits,
         learningCount: harness.store.db.prepare('SELECT COUNT(*) AS n FROM learning_attempts').get().n })); return
