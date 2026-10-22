@@ -39,13 +39,14 @@ const mount = (state = {}, doc = fixture) => {
     restoreState: { documentId: doc.documentId, revision: 1, modelId: 'taxi', tab: 'review', sourceOpen: true, ...state },
     load: (args, signal) => new Promise(resolve => owner.requests.push({ args, signal, resolve })),
     onStateChange: state => owner.snapshots.push(state), onRoles: () => { writes++; throw new Error('Filters cannot write') } }
-  owner.render = () => {
+  owner.render = (effects = true) => {
     for (let i = 0; i < 20; i++) {
       owner.updates.splice(0).forEach(fn => fn()); current = owner; cursor = 0
       owner.tree = Component(owner.props)
       for (const node of all(owner.tree, node => node.type === 'input' && node.props.ref)) {
         node.props.ref.current = { focus: () => owner.focused++ }
       }
+      if (!effects) return
       owner.effects.splice(0).forEach(fn => fn())
       if (!owner.updates.length) return
     }
@@ -114,10 +115,69 @@ owner.lastPage().resolve({ error: { message: 'current filter read failed' } }); 
 assert(text(owner.tree).includes('current filter read failed'))
 assert(!all(owner.tree, node => node.props.className === 'kg-model-empty').length, 'A failed request is not an empty result')
 assert.equal(owner.options(), chapters)
+const failedArgs = JSON.stringify(owner.lastPage().args), detailReads = owner.requests.filter(item => item.args.modelId).length
+const beforeRetry = owner.requests.length, beforeFocus = owner.focused
+owner.props.onRefresh = () => { throw new Error('Directory recovery cannot refresh the graph or discard drafts') }
+const retryDirectory = owner.control('重试读取模型目录').props.onClick
+retryDirectory(); retryDirectory(); owner.render()
+assert.equal(owner.requests.length, beforeRetry + 1, 'Repeated activation before rendering admits one directory retry')
+assert.equal(JSON.stringify(owner.lastPage().args), failedArgs, 'Retry keeps the exact document, revision, query, filters and page')
+assert(!text(owner.tree).includes('current filter read failed'))
+assert.equal(owner.focused, beforeFocus + 1, 'Focus returns to the persistent search control as retry disappears')
+assert.equal(owner.control('端点角色 distance').props.value, 'output')
+await owner.resolve(owner.lastPage())
+assert.equal(owner.requests.filter(item => item.args.modelId).length, detailReads, 'Directory retry cannot remount or reload the selected detail')
+assert.equal(owner.control('端点角色 distance').props.value, 'output')
+assert.equal(owner.snapshots.at(-1).modelId, 'taxi')
+assert.equal(owner.snapshots.at(-1).tab, 'review')
+assert.equal(owner.snapshots.at(-1).sourceOpen, true)
+retryDirectory(); owner.render()
+assert.equal(owner.requests.length, beforeRetry + 1, 'A retired retry callback cannot fetch again after recovery')
 owner.props.revision = 2; owner.render()
 assert(!owner.options().includes('第一章 · 模型与实例'), 'Chapter metadata cannot survive a version change')
 assert(!owner.snapshots.at(-1).topics, 'Only browsing intent may enter persisted state')
 owner.unmount()
+
+for (const change of ['document', 'revision', 'query', 'section', 'page', 'hidden', 'busy', 'unmount']) {
+  const panel = mount(state)
+  await panel.resolve(panel.requests.find(item => item.args.modelId))
+  panel.lastPage().resolve({ error: { message: 'retired directory failure' } }); await panel.settle()
+  const retry = panel.control('重试读取模型目录').props.onClick, requests = panel.requests.length
+  if (change === 'document') panel.props.documentId = 'different-document'
+  if (change === 'revision') panel.props.revision = 2
+  if (change === 'query') panel.control('搜索联结模型').props.onChange({ target: { value: 'pending query' } })
+  if (change === 'section') panel.control('模型章节').props.onChange({ target: { value: 'second' } })
+  if (change === 'page') panel.control('上一页').props.onClick()
+  if (change === 'hidden') panel.props.active = false
+  if (change === 'busy') panel.props.busy = true
+  if (change === 'unmount') panel.unmount()
+  else panel.render(false)
+  if (!['hidden', 'busy', 'unmount'].includes(change)) {
+    assert(!text(panel.tree).includes('retired directory failure'), 'Retire old directory errors before effects: ' + change)
+    assert(!all(panel.tree, node => node.type === 'button' && text(node) === '重试读取模型目录').length)
+  }
+  retry()
+  assert.equal(panel.updates.length, 0, 'A retired or blocked callback cannot schedule a retry: ' + change)
+  assert.equal(panel.requests.length, requests)
+  if (change !== 'unmount') panel.unmount()
+}
+
+const interrupted = mount(state)
+await interrupted.resolve(interrupted.requests.find(item => item.args.modelId))
+interrupted.lastPage().resolve({ error: { message: 'first directory failure' } }); await interrupted.settle()
+interrupted.click('重试读取模型目录')
+const cancelledRetry = interrupted.lastPage()
+interrupted.props.active = false; interrupted.render()
+assert(cancelledRetry.signal.aborted)
+interrupted.props.active = true; interrupted.render()
+const currentRetry = interrupted.lastPage()
+cancelledRetry.resolve({ error: { message: 'late cancelled retry' } }); await interrupted.settle()
+assert(!text(interrupted.tree).includes('late cancelled retry'))
+currentRetry.resolve({ error: { message: 'second directory failure' } }); await interrupted.settle()
+interrupted.click('重试读取模型目录'); await interrupted.resolve(interrupted.lastPage())
+assert(!text(interrupted.tree).includes('second directory failure'))
+assert.equal(interrupted.requests.filter(item => item.args.modelId).length, 1)
+interrupted.unmount()
 
 for (const [label, field, expected] of [['清除章节筛选', 'sectionId', ''], ['清除待核对筛选', 'needsReview', false], ['清除作用筛选', 'role', ''], ['清除概念筛选', 'conceptId', '']]) {
   const panel = mount(state)
@@ -145,4 +205,5 @@ assert.equal(timers.size, 0)
 assert.equal(writes, 0); assert.equal(confirmations, 0); assert.equal(JSON.stringify(fixture), original)
 console.log(JSON.stringify({ visibleFilters: 5, independentRemoval: true, singleClearAllRead: true, debounceCancelled: true,
   stableVersionScopedChapters: true, threeEmptyStates: true, currentReadErrorsPreserved: true, exactIdentityAndQuery: true,
-  currentDetailAndDirectionDraftPreserved: true, keyboardFocusRestored: true, writes, browserGeometryNotTested: true }))
+  currentDetailAndDirectionDraftPreserved: true, keyboardFocusRestored: true, scopedDirectoryRetry: true,
+  directoryRetryDoesNotReloadDetail: true, repeatedRetryAdmittedOnce: true, retiredRetryRejected: true, writes, browserGeometryNotTested: true }))
