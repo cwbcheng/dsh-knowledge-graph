@@ -20,3 +20,15 @@ export function comparisonAliasFixture({ collisions = false } = {}) {
   for (let index = 0; index < 37; index++) add(right, 'alias-right-' + index, 'input')
   return document
 }
+
+export function comparisonMultiAliasFixture() {
+  const document = modelChainFixture()
+  const left = document.graph.nodes.find(node => node.id === 'taxi')
+  const right = document.graph.nodes.find(node => node.id === 'duplicate-concept')
+  document.graph.nodes.push({ id: 'other-period', type: 'concept', text: '另一身份的费用', paragraph: 0 })
+  for (const [index, label] of ['另一时段费用', '行程基础费用', '行程基础费用'].entries()) {
+    left.modelStructure.slots.push({ ...structuredClone(right.modelStructure.slots[1]),
+      id: 'other-period-' + index, conceptId: 'other-period', label, role: 'unknown' })
+  }
+  return document
+}

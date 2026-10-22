@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createGraphContract } from '../src/index.host.js'
 import { modelLearningHarness, learnerResponse, learnerReview } from './kg-model-learning-fixture-data.mjs'
 import { comparisonFixture, counterexampleResponse } from './kg-model-comparison-fixture-data.mjs'
-import { comparisonAliasFixture } from './kg-model-comparison-alias-fixture-data.mjs'
+import { comparisonAliasFixture, comparisonMultiAliasFixture } from './kg-model-comparison-alias-fixture-data.mjs'
 
 const harness = await modelLearningHarness({ fixture: comparisonFixture() })
 const { document, store, post } = harness
@@ -77,6 +77,31 @@ try {
   normalizedAlias.graph.nodes.find(node => node.id === 'budget-model').modelStructure.slots[0].label = 'ＡＭＯＵＮＴ'
   assert.equal(contract.connectionModels(normalizedAlias, { ...args, compareModelId: 'budget-model' }).sameNamedTotal, 0,
     'a normalized matching label still excludes its shared canonical identity exactly once')
+  for (const reverseLeft of [false, true]) for (const reverseRight of [false, true]) {
+    const fixture = comparisonMultiAliasFixture()
+    if (reverseLeft) fixture.graph.nodes.find(node => node.id === 'taxi').modelStructure.slots.reverse()
+    if (reverseRight) fixture.graph.nodes.find(node => node.id === 'duplicate-concept').modelStructure.slots.reverse()
+    const multiple = await modelLearningHarness({ fixture })
+    try {
+      const graphBefore = JSON.stringify(multiple.store.getDocument(fixture.documentId))
+      const unitsBefore = JSON.stringify(multiple.store.getDocumentSourceUnits(fixture.documentId))
+      for (const [modelId, compareModelId] of [['taxi', 'duplicate-concept'], ['duplicate-concept', 'taxi']]) {
+        const response = await multiple.post({ documentId: fixture.documentId, expectedRevision: 1, modelId, compareModelId }, 'connection-models')
+        assert.equal(response.sameNamedTotal, 1, 'all slot labels participate, but each canonical identity pair counts once')
+        assert.equal(response.sameNamed.length, 1)
+        const match = response.sameNamed[0]
+        assert.deepEqual([match.left.nodeId, match.right.nodeId].sort(), ['fare', 'other-period'])
+        assert.equal(match.left.text, match.right.text, 'the displayed references come from matching contextual slot labels')
+        assert.equal(response.equivalence, 'not_inferred')
+        const detail = modelId === 'taxi' ? response.left : response.right
+        assert.equal(detail.ports.filter(port => port.node.nodeId === 'other-period').length, 3)
+        assert(detail.ports.filter(port => port.node.nodeId === 'other-period').every(port => port.role === 'unknown' && port.citations.length))
+      }
+      assert.equal(JSON.stringify(multiple.store.getDocument(fixture.documentId)), graphBefore)
+      assert.equal(JSON.stringify(multiple.store.getDocumentSourceUnits(fixture.documentId)), unitsBefore)
+      assert.equal(multiple.store.listLearningAttempts(fixture.documentId).length, 0)
+    } finally { multiple.stop() }
+  }
   const peers = await post({ documentId: document.documentId, expectedRevision: 1, peerOf: 'taxi' }, 'connection-models')
   assert(peers.total > 20); assert(!peers.items.some(item => item.nodeId === 'taxi' || item.nodeId === 'named-copy'))
   const late = await post({ documentId: document.documentId, expectedRevision: 1, peerOf: 'taxi', offset: 20 }, 'connection-models')
