@@ -5017,7 +5017,7 @@
         const [work, setWork] = useState(restore), [query, setQuery] = useState(''), [search, setSearch] = useState('')
         const [candidatesOnly, setCandidatesOnly] = useState(true), [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null)
         const [loadedPair, setPair] = useState(null), [result, setResult] = useState(null), [reload, setReload] = useState(0)
-        const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false)
+        const [loading, setLoading] = useState(false), [checking, setChecking] = useState(false), [catalogLoading, setCatalogLoading] = useState(false)
         const [error, setError] = useState(''), [catalogError, setCatalogError] = useState(''), [storageError, setStorageError] = useState('')
         const [sourceError, setSourceError] = useState('')
         const [pairError, setPairError] = useState('')
@@ -5031,8 +5031,23 @@
         workRef.current = work
         api.current = { load, onLocate, onOpen, onStructure }
         const current = work.scope === scope ? work : empty(), peerId = current.peerId, draft = current.draft
-        const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset])
+        const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset, reload])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const candidatesRef = useRef(null), pageContext = useRef(null), pageRequest = useRef(null), mounted = useRef(true)
+        const navigationKey = JSON.stringify([catalogKey, query, active])
+        if (pageContext.current?.key !== navigationKey) pageContext.current = { key: navigationKey }
+        const opening = pageContext.current
+        useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+        const turnPage = step => {
+          if (!mounted.current || !active || opening !== pageContext.current || pageRequest.current === opening
+            || catalogLoading || query !== search || (step < 0 ? offset === 0 : !page || offset + page.items.length >= page.total)) return
+          pageRequest.current = opening
+          // Move focus only for this explicit turn; catalogue replies must not
+          // interrupt editing the private draft or change the selected pair.
+          candidatesRef.current?.focus?.({ preventScroll: true })
+          if (candidatesRef.current) candidatesRef.current.scrollTop = 0
+          setOffset(Math.max(0, offset + step * 20))
+        }
         const pairKey = JSON.stringify([scope, revision, peerId])
         const pair = loadedPair?.scope === pairKey ? loadedPair : null
         const stale = current.revision !== revision
@@ -5055,7 +5070,7 @@
         useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
         useEffect(() => {
           const id = ++catalogSequence.current, abort = new AbortController()
-          setPage(null); setCatalogError('')
+          setPage(null); setCatalogError(''); setCatalogLoading(active)
           if (!active) return () => { abort.abort(); catalogSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, query: search, offset, excludeModelId: modelId,
             chainOf: candidatesOnly ? modelId : '' }, abort.signal).then(value => {
@@ -5064,6 +5079,7 @@
             if (value.modelChainVersion !== 1 || value.documentId !== documentId || value.revision !== revision || !Array.isArray(value.items)) throw new Error('两步推测目录版本或身份不一致，请等待同版本服务部署')
             setPage({ ...value, scope: catalogKey })
           }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogError(reason.message || '模型目录读取失败') })
+            .finally(() => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogLoading(false) })
           return () => { abort.abort(); catalogSequence.current++ }
         }, [scope, revision, active, search, candidatesOnly, offset, reload])
         useEffect(() => {
@@ -5248,12 +5264,15 @@
             h('label', null, h('input', { type: 'checkbox', checked: candidatesOnly, onChange: event => { setCandidatesOnly(event.target.checked); setOffset(0) } }), ' 输出承接候选'),
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取两步推测模型', title: '重新读取两步推测模型', onClick: () => { invalidate(); setReload(value => value + 1) } }, '↻')),
           catalogError ? h('p', { role: 'alert' }, catalogError) : null,
-          page ? h('div', null, h('p', { className: 'kg-model-meta' }, '候选 ' + page.total + ' 个 · 仅按概念与已记录方向筛选，相容性尚未核对'),
-            h('div', { className: 'kg-model-compare-choices' }, page.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
+          catalogLoading ? h('p', { role: 'status' }, '正在读取第 2 步模型候选…') : null,
+          h('div', null,
+            page ? h('p', { className: 'kg-model-meta' }, '候选 ' + page.total + ' 个 · 仅按概念与已记录方向筛选，相容性尚未核对') : null,
+            h('div', { className: 'kg-model-toolbar kg-model-pagination', role: 'group', 'aria-label': '第 2 步模型分页' },
+              h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading || query !== search || offset === 0, onClick: () => turnPage(-1) }, '上一页第 2 步模型'),
+              h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnPage(1) }, '下一页第 2 步模型')),
+            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '第 2 步模型候选', 'aria-busy': catalogLoading, tabIndex: -1, ref: candidatesRef }, page?.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
               'aria-pressed': peerId === item.nodeId, onClick: () => selectPeer(item.nodeId) }, h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
-            !page.total && candidatesOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setCandidatesOnly(false); setOffset(0) } }, '查看全部第 2 步模型') : null,
-            h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-secondary', disabled: offset === 0, onClick: () => setOffset(Math.max(0, offset - 20)) }, '上一页第 2 步模型'),
-              h('button', { type: 'button', className: 'kg-secondary', disabled: offset + page.items.length >= page.total, onClick: () => setOffset(offset + 20) }, '下一页第 2 步模型'))) : null,
+            page && !page.total && candidatesOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setCandidatesOnly(false); setOffset(0) } }, '查看全部第 2 步模型') : null),
           error ? h('p', { role: 'alert' }, error) : null,
           loading ? h('p', { role: 'status' }, '正在读取两步模型…') : null,
           pairError ? h('p', { role: 'alert' }, pairError) : null,

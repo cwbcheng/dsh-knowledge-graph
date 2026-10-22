@@ -8,7 +8,7 @@ const harness = await modelLearningHarness({ fixture: modelChainFixture() })
 const { document, store, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree, props
 const updates = [], storage = new Map(), requests = [], deferred = []
-let paused = false, foreign = false, oldHost = false, malformed = false, transportFailure = false, storageFailure = false, confirm = true
+let paused = false, foreign = false, oldHost = false, malformed = false, transportFailure = false, storageFailure = false, confirm = true, failCatalogOnce = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, properties, ...children) => ({ type, props: { ...properties, children } }),
@@ -27,6 +27,7 @@ let Component = context.window.KGViewer.ConnectionModelChain
 const load = (args, signal) => {
   requests.push({ args, signal })
   const run = async () => {
+    if (failCatalogOnce && !args.modelId) { failCatalogOnce = false; throw new Error('Chain catalogue unavailable') }
     if (transportFailure && args.chainDraft) throw new Error('Chain transport failed')
     const value = await post(args, 'connection-models')
     if (foreign) return { ...value, documentId: 'foreign-document' }
@@ -39,7 +40,11 @@ const load = (args, signal) => {
 function render() {
   for (let count = 0; count < 30; count++) {
     updates.splice(0).forEach(fn => fn()); cursor = 0
-    tree = Component(props); owner.effects.splice(0).forEach(fn => fn())
+    tree = Component(props)
+    for (const node of all(tree, el => el.props['aria-label'] === '第 2 步模型候选' && el.props.ref)) {
+      node.props.ref.current = owner.focusNode ||= { scrollTop: 80, focus: () => { owner.focused = (owner.focused || 0) + 1 } }
+    }
+    owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
   throw new Error('Component update loop')
@@ -50,6 +55,7 @@ const all = (el, predicate) => Array.isArray(el) ? el.flatMap(child => all(child
   [...(predicate(el) ? [el] : []), ...all(el.props?.children, predicate)]
 const button = label => { const found = all(tree, el => el.type === 'button' && (el.props['aria-label'] === label || text(el) === label))[0]; assert(found, 'Missing button: ' + label); return found }
 const click = label => { const found = button(label); assert(!found.props.disabled, label); found.props.onClick(); render() }
+const candidates = () => { const node = all(tree, el => el.props['aria-label'] === '第 2 步模型候选')[0]; assert(node, 'Candidate region stays mounted during reads'); return node }
 const input = label => { const found = all(tree, el => ['textarea', 'select', 'input'].includes(el.type) && el.props['aria-label'] === label)[0]; assert(found, 'Missing field: ' + label); return found }
 const fill = (label, value) => { input(label).props.onChange({ target: { value } }); render() }
 const choose = id => { const found = all(tree, el => el.type === 'button' && text(el).includes(id + ' · '))[0]; assert(found, 'Missing peer: ' + id); found.props.onClick(); render() }
@@ -101,6 +107,47 @@ try {
   assert(text(tree).includes('fare-slot → expense：14'))
   assert(text(tree).includes('尚未独立核验'))
   assert(button('导出推测草稿'))
+  const cachedBeforePaging = storage.get(storedKey), readsBeforePaging = requests.length
+  const oldNextPage = button('下一页第 2 步模型').props.onClick
+  paused = true
+  oldNextPage(); oldNextPage(); render()
+  assert.equal(owner.focused, 1, 'one explicit page turn moves focus once, before the response')
+  assert.equal(candidates().props.tabIndex, -1)
+  assert.equal(candidates().props['aria-busy'], true)
+  assert.equal(owner.focusNode.scrollTop, 0)
+  assert(button('上一页第 2 步模型').props.disabled && button('下一页第 2 步模型').props.disabled)
+  const pendingPage = deferred.splice(0)
+  assert.equal(pendingPage.length, 1, 'double activation starts one catalogue read')
+  assert.equal(pendingPage[0].args.offset, 20)
+  assert.equal(pendingPage[0].args.chainOf, 'taxi')
+  assert.equal(input('第 2 步 · 行程基础费用承接槽位').props.value, 'fare-slot')
+  assert(text(tree).includes('fare-slot → expense：14'), 'the current private check remains visible while paging')
+  pendingPage[0].resolve(); paused = false; await settle()
+  assert.equal(owner.focused, 1, 'a catalogue response does not move focus again')
+  assert.equal(candidates().props['aria-busy'], false)
+  oldNextPage(); render(); await settle()
+  assert.equal(requests.length, readsBeforePaging + 1, 'an old page callback cannot navigate again')
+  click('上一页第 2 步模型'); await settle()
+  failCatalogOnce = true; click('下一页第 2 步模型'); await settle()
+  assert(text(tree).includes('Chain catalogue unavailable'))
+  assert(candidates())
+  assert(!button('上一页第 2 步模型').props.disabled, 'a failed page retains the previous-page recovery action')
+  click('上一页第 2 步模型'); await settle()
+  assert(!text(tree).includes('Chain catalogue unavailable'))
+  const pageReads = requests.slice(readsBeforePaging)
+  assert.deepEqual(pageReads.map(item => item.args.offset), [20, 0, 20, 0])
+  assert(pageReads.every(item => !item.args.modelId && !item.args.chainDraft && item.args.query === '' && item.args.chainOf === 'taxi'
+    && item.args.excludeModelId === 'taxi' && item.args.expectedRevision === 1), 'paging only reads the current filtered catalogue')
+  assert.equal(storage.get(storedKey), cachedBeforePaging, 'paging preserves all private draft fields and their cache')
+  assert(text(tree).includes('草稿字段已齐备') && text(tree).includes('fare-slot → expense：14'))
+  const beforeQueryPage = button('下一页第 2 步模型').props.onClick, beforeQueryReads = requests.length, beforeQueryFocus = owner.focused
+  fill('搜索第 2 步模型', '预算')
+  assert(button('下一页第 2 步模型').props.disabled, 'pending search cannot paginate old results')
+  beforeQueryPage(); render()
+  assert.equal(requests.length, beforeQueryReads)
+  assert.equal(owner.focused, beforeQueryFocus, 'a stale query callback cannot steal focus')
+  fill('搜索第 2 步模型', ''); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
+  assert.deepEqual(store.getDocument(document.documentId), graphBefore, 'candidate navigation leaves the canonical graph unchanged')
   const checksBeforeImport = requests.filter(item => item.args.chainDraft).length
   const cachedBeforeImport = storage.get(storedKey)
   const file = exchange(); file.draft.goal = '从文件恢复的目标'
@@ -246,6 +293,25 @@ try {
   confirm = true; click('重新建立标签页草稿'); assert.notEqual(storage.get(storedKey), '{broken')
   assert.deepEqual(store.getDocumentSourceUnits(document.documentId), unitsBefore)
   assert.deepEqual(store.getDocument(document.documentId).edges, graphBefore.edges)
+  for (const change of ['document', 'revision', 'model', 'filter', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    mount({ ...basicProps, revision: 2 }); await settle()
+    const retired = button('下一页第 2 步模型').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 3
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'filter') all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } })
+    if (change === 'reload') click('重新读取两步推测模型')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    retired()
+    assert.equal(updates.length, 0, 'retired page action cannot change ' + change + ' context')
+    assert.equal(owner.focused || 0, 0, 'retired page action cannot move focus after ' + change)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
   Component = context.window.KGViewer.ConnectionModelPanel
   oldHost = true
   mount({ documentId: document.documentId, revision: 2, load,
@@ -264,5 +330,5 @@ try {
   chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
   assert.equal(chainChild.props.modelId, 'taxi')
   assert(chainChild.props.active, 'return restores the chain tab, not just the previous model identity')
-  console.log('model chain UI: actual production route, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, persistent candidate paging and focus, catalogue-only reads, failed-page recovery, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }

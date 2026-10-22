@@ -14,10 +14,10 @@ const html = () => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8
 <title>两步推测 · 隔离验证</title><link rel="stylesheet" href="/viewer.css"><style>body{margin:0;background:#f6f7f8;font:14px system-ui}main{max-width:1360px;margin:auto;padding:16px;background:white;box-sizing:border-box}h1{font-size:18px}</style>
 <script src="/react.js"></script><script src="/react-dom.js"></script><script src="/viewer.js"></script></head><body><div id="root"></div><script>
 const h=React.createElement;
-const rpc=async(args,signal)=>{const r=await fetch('/api/dsh-knowledge-graph/connection-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args),signal});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()};
+const rpc=async(args,signal,method='connection-models')=>{const r=await fetch('/api/dsh-knowledge-graph/'+method,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args),signal});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()};
 function App(){const [revision,setRevision]=React.useState(${store.getDocumentRevision(document.documentId)}),[reference,setReference]=React.useState(null);return h('main',{className:'kg-root'},
 h('h1',null,'联结模型 · 两步推测隔离验证'),h('button',{type:'button',onClick:async()=>{const r=await fetch('/fixture/revise',{method:'POST'});setRevision((await r.json()).revision)}},'更新隔离模型版本'),
-h(KGViewer.ConnectionModelPanel,{documentId:${JSON.stringify(document.documentId)},revision,load:rpc,focusRequest:{documentId:${JSON.stringify(document.documentId)},revision,type:'connection_model',nodeId:'taxi'},onLocate:setReference}),
+h(KGViewer.ConnectionModelPanel,{documentId:${JSON.stringify(document.documentId)},revision,load:rpc,learningCall:(args,signal)=>rpc(args,signal,'learning-mode'),focusRequest:{documentId:${JSON.stringify(document.documentId)},revision,type:'connection_model',nodeId:'taxi'},onLocate:setReference}),
 h('p',{role:'status'},reference?JSON.stringify(reference):''));}
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
 </script></body></html>`
