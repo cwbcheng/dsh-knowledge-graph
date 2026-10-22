@@ -3099,6 +3099,7 @@ export default function clientPlugin() {
         const key = 'dsh-kg-model-structure:' + JSON.stringify([documentId, modelId])
         const [draft, setDraft] = useState(null), [loading, setLoading] = useState(false), [saving, setSaving] = useState(false)
         const [error, setError] = useState(''), [notice, setNotice] = useState(''), [preview, setPreview] = useState(null)
+        const cacheUnavailable = useRef(false), cacheWarning = '草稿缓存不可用；当前结构尚未保存，请保留本页。'
         const [section, setSection] = useState('slots'), [selectedExample, setSelectedExample] = useState('')
         const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [offset, setOffset] = useState(0)
         const [conceptPage, setConceptPage] = useState(null), [choice, setChoice] = useState(''), [reload, setReload] = useState(0)
@@ -3138,10 +3139,13 @@ export default function clientPlugin() {
               draftCopy.current = { scope: scope.current, draft: value, raw }
               globalThis.sessionStorage?.setItem(key, raw)
             } else { draftCopy.current = null; globalThis.sessionStorage?.removeItem(key) }
+            cacheUnavailable.current = false
+            setError(current => current === cacheWarning ? '' : current)
           }
-          catch { setError('草稿缓存不可用；当前结构尚未保存，请保留本页。') }
+          catch { cacheUnavailable.current = true; setError(cacheWarning) }
         }
         useEffect(() => {
+          cacheUnavailable.current = false
           setDraft(null); setPreview(null); setSection('slots'); setSelectedExample(''); setQuery(''); setSearch(''); setOffset(0); setChoice(''); setEndpointNames({}); setSaving(false)
           setSourceTarget(null); setRequestedFocus(null); setGapOffset(0); setLegacyPorts([])
           operation.current++
@@ -3154,7 +3158,7 @@ export default function clientPlugin() {
         useEffect(() => {
           const id = ++sequence.current, abort = new AbortController()
           loadedStructureScope.current = ''
-          setPreview(null); setError(''); setLoading(active); setSupported(false); setAssistSupported(false); setSourceTarget(null)
+          setPreview(null); setError(cacheUnavailable.current ? cacheWarning : ''); setLoading(active); setSupported(false); setAssistSupported(false); setSourceTarget(null)
           if (!active) return () => abort.abort()
           api.current.load({ documentId, expectedRevision: revision, modelId, structureEdit: true }, abort.signal).then(result => {
             if (abort.signal.aborted || id !== sequence.current) return
@@ -6034,9 +6038,6 @@ export default function clientPlugin() {
                     setUnderstandingRequest(item ? { attemptId: item.attemptId, exercise: item.task.exercise || 'prediction', modelId, nonce: Date.now() + Math.random() } : null)
                     setTab('understanding')
                   } : undefined, onLocate: locate }),
-                h(ModelStructureEditor, { documentId, revision, modelId, active: active && tab === 'structure', load, onCommit: onStructure, busy,
-                  focusRequest: structureFocus, onLocate: locateInDetail,
-                  onBusy: setSaving, onRefresh: () => api.current.onRefresh?.() }),
                 tab === 'materials' ? h('div', null,
                   detail.structure ? h(ModelPairedExamples, { documentId, revision, structure: detail.structure, selectedSlot, selectedExample,
                     onSlot: (slotId, exampleId) => { setSelectedSlot(slotId); setSelectedExample(exampleId) },
@@ -6064,7 +6065,12 @@ export default function clientPlugin() {
                     h('p', null, item.text + (item.nodeId ? ' · ' + item.nodeId : '') + '：' + ({ input: '输入', output: '输出' }[item.before] || '待核对') + ' → ' + ({ input: '输入', output: '输出' }[item.after] || '待核对')),
                     h('details', null, h('summary', null, '本次修改的映射原文'), evidence(previewPorts.get(item.edgeKey) || {})))),
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
-                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !modelId && !detailLoading ? h('p', null, '选择一个联结模型') : null),
+                    h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !modelId && !detailLoading ? h('p', null, '选择一个联结模型') : null,
+              // Detail reads may temporarily unmount their facts. Keep the private
+              // editor owner alive so unavailable browser storage cannot erase it.
+              h(ModelStructureEditor, { documentId, revision, modelId, active: active && !!detail && tab === 'structure', load, onCommit: onStructure, busy,
+                focusRequest: structureFocus, onLocate: locateInDetail,
+                onBusy: setSaving, onRefresh: () => api.current.onRefresh?.() })),
               sourceOpen ? h('aside', { className: 'kg-model-source-pane', 'aria-label': '当前模型的原文依据', tabIndex: -1, ref: sourceRef },
                 h('div', { className: 'kg-model-toolbar' }, h('h4', null, '原文依据'),
                   h('button', { type: 'button', className: 'kg-secondary', onClick: closeSource }, '收起原文')),

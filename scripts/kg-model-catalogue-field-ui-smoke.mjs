@@ -98,6 +98,9 @@ try {
     let selectedLocation = location
     owner.click(hits(owner)[0])
     const request = owner.requests.at(-1)
+    const editor = all(owner.tree, node => typeof node.type === 'function' && node.type.name === 'ModelStructureEditor')
+    assert.equal(editor.length, 1, 'A pending field detail read must retain the private structure editor owner')
+    assert.equal(editor[0].props.active, false, 'Pending canonical detail cannot expose structure editing')
     assert.equal(request.args.modelId, catalogue.items[0].nodeId)
     assert.equal(request.args.branchId, location.branchId, 'Opaque branch identity must reach the actual canonical detail route')
     assert.equal(request.args.expectedRevision, 1)

@@ -8,6 +8,7 @@ import { createModelReviewController } from './kg-model-review-controller-fixtur
 const harness = await modelLearningHarness({ fixture: modelStructureFixture() })
 let current, cursor = 0, timerId = 0, uuid = 0
 const updates = [], timers = new Map(), cache = new Map()
+let storageFailure = false
 const slot = init => { const index = cursor++; return current.slots[index] ||= init() }
 const React = {
   createElement(type, props, ...children) { return { type, props: { ...props, children } } },
@@ -16,7 +17,7 @@ const React = {
   useEffect(fn, deps) { const state = slot(() => ({})); if (!state.deps || deps.some((value, index) => !Object.is(value, state.deps[index]))) { current.effects.push(() => { state.cleanup?.(); state.cleanup = fn() }); state.deps = deps } },
 }
 const context = { window: { React, confirm: () => true }, console, AbortController,
-  crypto: { randomUUID: () => 'fixture-' + (++uuid) }, sessionStorage: { getItem: key => cache.get(key) || null, setItem: (key, value) => cache.set(key, value), removeItem: key => cache.delete(key) },
+  crypto: { randomUUID: () => 'fixture-' + (++uuid) }, sessionStorage: { getItem: key => cache.get(key) || null, setItem: (key, value) => { if (storageFailure) throw new Error('Quota'); cache.set(key, value) }, removeItem: key => cache.delete(key) },
   setTimeout: fn => { timers.set(++timerId, fn); return timerId }, clearTimeout: id => timers.delete(id) }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 const { ModelStructureEditor, ModelPairedExamples } = context.window.KGViewer
@@ -73,6 +74,15 @@ try {
   render(); await settle()
   assert(text(tree).includes('初速度') && text(tree).includes('后续速度'))
   assert.equal(writes.length, 0, 'reading must not write')
+  storageFailure = true
+  change('槽位名称 final-speed', '缓存失败时的完整草稿')
+  props.active = false; render(); props.active = true; render(); await settle()
+  assert(text(tree).includes('草稿缓存不可用'), 'Reactivation cannot conceal an unresolved storage failure')
+  assert.equal(all(tree, element => element.props['aria-label'] === '槽位名称 final-speed')[0].props.value, '缓存失败时的完整草稿')
+  assert.equal(writes.length, 0)
+  storageFailure = false
+  change('槽位名称 final-speed', '后续速度')
+  assert(!text(tree).includes('草稿缓存不可用'), 'A successful cache write clears only its own warning')
   change('时间或对象状态 final-speed', '10 秒后')
   assert([...cache.values()].some(value => value.includes('10 秒后')))
   click('预览结构修改'); await settle()
