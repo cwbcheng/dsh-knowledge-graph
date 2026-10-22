@@ -42,6 +42,9 @@ function render() {
     for (const node of all(tree, el => el.props['aria-label'] === '比较模型候选' && el.props.ref)) {
       node.props.ref.current = owner.focusNode ||= { scrollTop: 80, focus: () => { owner.focused = (owner.focused || 0) + 1 } }
     }
+    for (const node of all(tree, el => el.props['aria-label'] === '搜索比较模型' && el.props.ref)) {
+      node.props.ref.current = owner.searchNode ||= { focus: () => { owner.searchFocused = (owner.searchFocused || 0) + 1 } }
+    }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
@@ -101,8 +104,42 @@ try {
   failCatalogOnce = true; click('下一页比较模型'); await settle()
   assert(text(tree).includes('Catalogue temporarily unavailable'))
   assert(candidates()); assert(!button('上一页比较模型').props.disabled)
+  const retry = button('重试读取比较候选').props.onClick, failedRead = requests.at(-1).args
+  const comparedRows = () => all(tree, el => el.props.className === 'kg-model-compare-row').map(text)
+  const rowsBeforeRetry = comparedRows()
+  paused = true
+  retry(); retry(); render()
+  const pendingRetry = deferred.splice(0)
+  assert.equal(pendingRetry.length, 1, 'Double activation only retries one catalogue read')
+  assert.deepEqual(pendingRetry[0].args, failedRead, 'Retry retains the failed query, filter, page and version')
+  assert.equal(owner.searchFocused, 1, 'Focus moves to the persistent search before the retry button disappears')
+  assert(candidates().props['aria-busy'])
+  assert(!text(tree).includes('Catalogue temporarily unavailable'))
+  assert.deepEqual(comparedRows(), rowsBeforeRetry, 'The selected pair and its evidence stay mounted during retry')
+  assert(text(tree).includes('Locate failed visibly'), 'Catalogue retry must not reset independent source location state')
+  pendingRetry[0].resolve(); paused = false; await settle()
+  assert.equal(owner.searchFocused, 1, 'Retry responses do not steal focus')
+  assert.equal(requests.filter(item => item.args.compareModelId).length, pairReads)
+  assert.deepEqual(comparedRows(), rowsBeforeRetry)
+  const readsAfterRetry = requests.length
+  retry(); render(); await settle()
+  assert.equal(requests.length, readsAfterRetry, 'A retired retry callback cannot initiate another read')
   click('上一页比较模型'); await settle()
   assert(text(tree).includes('已记录的输入、输出端点相同'), 'Failure and recovery retain the selected pair')
+  all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } }); render(); await settle()
+  fill('搜索比较模型', '待比较'); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
+  failCatalogOnce = true; click('下一页比较模型'); await settle()
+  const filteredRead = requests.at(-1).args
+  assert.equal(filteredRead.query, '待比较'); assert.equal(filteredRead.peerOf, ''); assert.equal(filteredRead.offset, 20)
+  failCatalogOnce = true; click('重试读取比较候选'); await settle()
+  assert(text(tree).includes('Catalogue temporarily unavailable'), 'Another failure remains retryable')
+  assert.deepEqual(requests.at(-1).args, filteredRead)
+  click('重试读取比较候选'); await settle()
+  assert.deepEqual(requests.at(-1).args, filteredRead)
+  assert.deepEqual(comparedRows(), rowsBeforeRetry)
+  assert.equal(requests.filter(item => item.args.compareModelId).length, pairReads)
+  all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: true } }); render(); await settle()
+  fill('搜索比较模型', ''); await new Promise(resolve => setTimeout(resolve, 260)); await settle()
   paused = true
   choose('multi'); const old = deferred.splice(0)
   choose('unknown'); const fresh = deferred.splice(0)
@@ -144,6 +181,50 @@ try {
     owner.slots.forEach(state => state.cleanup?.())
     deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
   }
+
+  for (const change of ['document', 'revision', 'model', 'query', 'filter', 'page', 'reload', 'hidden', 'reactivated', 'unmount']) {
+    mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+      load: (args, signal) => call(args, signal, 'connection-models') })
+    await settle()
+    failCatalogOnce = true; click('下一页比较模型'); await settle()
+    const retired = button('重试读取比较候选').props.onClick
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 2
+    if (change === 'model') props.modelId = 'night'
+    if (change === 'query') fill('搜索比较模型', 'night')
+    if (change === 'filter') all(tree, el => el.type === 'input' && el.props.type === 'checkbox')[0].props.onChange({ target: { checked: false } })
+    if (change === 'page') click('上一页比较模型')
+    if (change === 'reload') click('重新读取模型比较')
+    if (change === 'hidden' || change === 'reactivated') props.active = false
+    render()
+    if (change === 'reactivated') { props.active = true; render() }
+    if (change === 'unmount') owner.slots.forEach(state => state.cleanup?.())
+    else assert(!text(tree).includes('Catalogue temporarily unavailable'), 'Old errors are hidden after ' + change)
+    const reads = requests.length
+    retired()
+    assert.equal(updates.length, 0, 'Retired retry cannot mutate ' + change + ' context')
+    assert.equal(requests.length, reads)
+    assert.equal(owner.searchFocused || 0, 0, 'Retired retry cannot move focus after ' + change)
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
+
+  mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+    load: (args, signal) => call(args, signal, 'connection-models') })
+  await settle()
+  paused = true; choose('night')
+  const pendingPair = deferred.shift()
+  failCatalogOnce = true; click('下一页比较模型')
+  deferred.shift().resolve(); await settle()
+  click('重试读取比较候选')
+  const concurrentRetry = deferred.shift()
+  assert(!pendingPair.signal.aborted, 'Retry cannot cancel an independently selected comparison')
+  assert.equal(deferred.length, 0, 'Retry does not duplicate a pending comparison')
+  pendingPair.resolve(); await settle()
+  assert(text(tree).includes('已记录的输入、输出端点相同'))
+  concurrentRetry.resolve(); paused = false; await settle()
+  assert(text(tree).includes('已记录的输入、输出端点相同'))
 
   mount('ModelLearningPanel', { documentId: document.documentId, revision: 1, modelId: 'taxi', exercise: 'counterexample', active: true, call })
   await settle()
@@ -199,5 +280,6 @@ try {
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi', 'counterexample').length, 1)
   console.log(JSON.stringify({ ok: true, generatedProductionComponents: true, actualSqliteHttp: true, pairRaceFenced: true, explicitSelection: true,
     targetIdentity: true, paginationFocus: true, paginationScopeGuards: 9, pageFailureRecovery: true,
+    catalogRetryScopeGuards: 10, independentRetry: true, pendingComparisonPreserved: true, evidenceRetained: true,
     challengeDraftScopes: true, idempotentLostResponse: true, visibleInvalidChange: true, graphUnchanged: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }

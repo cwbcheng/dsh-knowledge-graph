@@ -6129,11 +6129,13 @@ export default function clientPlugin() {
       function ConnectionModelComparison({ documentId, revision, modelId, active = true, load, onLocate, onOpen, onChallenge }) {
         const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [sharedOnly, setSharedOnly] = useState(true)
         const [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null), [peerId, setPeerId] = useState(''), [loadedPair, setPair] = useState(null)
-        const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [error, setError] = useState(''), [pairError, setPairError] = useState('')
+        const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [catalogFailure, setCatalogFailure] = useState(null), [pairError, setPairError] = useState('')
         const [sourceError, setSourceError] = useState('')
         const [reload, setReload] = useState(0)
-        const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset, reload])
+        const [catalogRetry, setCatalogRetry] = useState(0), catalogRetryRequest = useRef(null), searchRef = useRef(null)
+        const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset, reload, catalogRetry])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const error = query === search && catalogFailure?.scope === catalogKey ? catalogFailure.message : ''
         const pair = loadedPair?.documentId === documentId && loadedPair.revision === revision && loadedPair.left?.model?.nodeId === modelId
           && loadedPair.right?.model?.nodeId === peerId ? loadedPair : null
         const api = useRef({ load, onLocate, onOpen, onChallenge }), catalogSequence = useRef(0), pairSequence = useRef(0)
@@ -6153,6 +6155,15 @@ export default function clientPlugin() {
           if (candidatesRef.current) candidatesRef.current.scrollTop = 0
           setOffset(Math.max(0, offset + step * 20))
         }
+        const retryCatalog = () => {
+          if (!mounted.current || !active || opening !== pageContext.current || loading || !error
+            || catalogRetryRequest.current === catalogFailure) return
+          catalogRetryRequest.current = catalogFailure
+          // Retry only the catalogue, keeping the selected pair and expanded
+          // evidence mounted. Its response must not move keyboard focus.
+          searchRef.current?.focus?.({ preventScroll: true })
+          setCatalogRetry(value => value + 1)
+        }
         const locationScope = JSON.stringify([documentId, revision, modelId, peerId, reload])
         const location = useConnectionModelLocation(locationScope, active)
         useEffect(() => { setSourceError('') }, [locationScope, active])
@@ -6160,17 +6171,17 @@ export default function clientPlugin() {
         useEffect(() => { setPeerId(''); setOffset(0); setQuery(''); setSearch('') }, [documentId, modelId])
         useEffect(() => {
           const id = ++catalogSequence.current, abort = new AbortController()
-          setPage(null); setError(''); setLoading(active)
+          setPage(null); setCatalogFailure(null); setLoading(active)
           if (!active) return () => { abort.abort(); catalogSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, query: search, offset, excludeModelId: modelId, peerOf: sharedOnly ? modelId : '' }, abort.signal).then(result => {
             if (id !== catalogSequence.current || abort.signal.aborted) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || !Array.isArray(result.items)) throw new Error('比较目录版本不一致')
             setPage({ ...result, scope: catalogKey })
-          }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setError(reason.message || '比较目录读取失败') })
+          }).catch(reason => { if (id === catalogSequence.current && !abort.signal.aborted) setCatalogFailure({ scope: catalogKey, message: reason.message || '比较目录读取失败' }) })
             .finally(() => { if (id === catalogSequence.current && !abort.signal.aborted) setLoading(false) })
           return () => { abort.abort(); catalogSequence.current++ }
-        }, [documentId, revision, modelId, active, search, sharedOnly, offset, reload])
+        }, [documentId, revision, modelId, active, search, sharedOnly, offset, reload, catalogRetry])
         useEffect(() => {
           const id = ++pairSequence.current, abort = new AbortController()
           setPair(null); setPairError(''); setComparing(active && !!peerId)
@@ -6210,10 +6221,11 @@ export default function clientPlugin() {
         if (!active) return null
         return h('section', { className: 'kg-model-comparison', 'aria-label': '联结模型比较' },
           h('div', { className: 'kg-model-toolbar' },
-            h('input', { type: 'search', value: query, maxLength: 200, 'aria-label': '搜索比较模型', placeholder: '选择另一个模型', onChange: event => setQuery(event.target.value) }),
+            h('input', { type: 'search', value: query, ref: searchRef, maxLength: 200, 'aria-label': '搜索比较模型', placeholder: '选择另一个模型', onChange: event => setQuery(event.target.value) }),
             h('label', null, h('input', { type: 'checkbox', checked: sharedOnly, onChange: event => { setSharedOnly(event.target.checked); setOffset(0) } }), ' 共享概念端点'),
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取模型比较', title: '重新读取模型比较', disabled: loading || comparing, onClick: () => setReload(value => value + 1) }, '↻')),
-          error ? h('p', { role: 'alert' }, error) : null,
+          error ? h('div', { role: 'alert' }, h('p', null, error),
+            h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: retryCatalog }, '重试读取比较候选')) : null,
           loading ? h('p', { role: 'status' }, '正在读取全图比较目录…') : null,
           h('div', null,
             page ? h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表规律等价') : null,
