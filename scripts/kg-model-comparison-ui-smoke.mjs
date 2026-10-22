@@ -9,7 +9,7 @@ const harness = await modelLearningHarness({ fixture: comparisonFixture() })
 const { document, store, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree, Component, props
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = [], challenges = []
-let paused = false, loseSave = false, invalidIdentity = false, failCatalogOnce = false
+let paused = false, loseSave = false, invalidIdentity = false, invalidRevision = false, failCatalogOnce = false, failPairOnce = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, properties, ...children) => ({ type, props: { ...properties, children } }),
@@ -29,9 +29,10 @@ const call = (args, signal, method = 'learning-mode') => {
   requests.push({ args, signal, method })
   const run = async () => {
     if (failCatalogOnce && method === 'connection-models' && !args.modelId) { failCatalogOnce = false; throw new Error('Catalogue temporarily unavailable') }
+    if (failPairOnce && method === 'connection-models' && args.compareModelId) { failPairOnce = false; throw new Error('Comparison temporarily unavailable') }
     const result = await post(args, method)
     if (args.action === 'save' && loseSave) { loseSave = false; throw new Error('Lost challenge save response') }
-    return invalidIdentity ? { ...result, documentId: 'foreign-document' } : result
+    return invalidIdentity ? { ...result, documentId: 'foreign-document' } : invalidRevision ? { ...result, revision: result.revision + 1 } : result
   }
   return paused ? new Promise((resolve, reject) => deferred.push({ args, signal, resolve: () => run().then(resolve, reject) })) : run()
 }
@@ -58,6 +59,8 @@ const button = label => { const found = all(tree, el => el.type === 'button' && 
 const click = label => { const found = button(label); assert(!found.props.disabled, label); found.props.onClick(); render() }
 const input = label => { const found = all(tree, el => ['textarea', 'select', 'input'].includes(el.type) && el.props['aria-label'] === label)[0]; assert(found, label); return found }
 const candidates = () => { const node = all(tree, el => el.props['aria-label'] === '比较模型候选')[0]; assert(node, 'Candidate region stays mounted during reads'); return node }
+const identity = () => { const node = all(tree, el => el.props['aria-label'] === '本次比较对象')[0]; assert(node, 'Selected comparison identity stays visible'); return text(node) }
+const beforeEffects = () => { updates.splice(0).forEach(fn => fn()); cursor = 0; tree = Component(props) }
 const fill = (label, value) => { const found = input(label); assert(!found.props.disabled, label); found.props.onChange({ target: { value } }); render() }
 const choose = id => {
   const found = all(tree, el => el.type === 'button' && text(el).includes(id + ' · '))[0]
@@ -73,7 +76,14 @@ try {
     load: (args, signal) => call(args, signal, 'connection-models'), onChallenge: id => challenges.push(id), onLocate: () => { throw new Error('Locate failed visibly') } })
   await settle()
   assert.equal(requests.filter(item => item.args.compareModelId).length, 0, 'comparison requires explicit second model selection')
-  choose('night'); await settle()
+  assert(!all(tree, el => el.props['aria-label'] === '本次比较对象').length, 'No second model is inferred before explicit selection')
+  paused = true; choose('night')
+  assert(identity().includes('模型 A · taxi')); assert(identity().includes('模型 B · night'))
+  assert(identity().includes('请求版本 1'))
+  assert(!identity().includes('抽取状态：'), 'Unloaded comparison cannot present model verification states')
+  assert(!all(tree, el => el.props.className === 'kg-model-compare-row').length)
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(identity().includes('版本 1')); assert(!identity().includes('请求版本'))
   assert(text(tree).includes('已记录的输入、输出端点相同'))
   assert(text(tree).includes('不代表条件、单位或结论等价'))
   assert(text(tree).includes('前 2 / 2 条关联材料'))
@@ -97,6 +107,8 @@ try {
   button('下一页比较模型').props.onClick(); assert.equal(updates.length, 0, 'Last-page boundary is checked by the handler')
   assert(text(tree).includes('已记录的输入、输出端点相同'), 'candidate pagination does not replace the selected pair')
   assert(text(tree).includes('peer-9'))
+  assert(!text(candidates()).includes('night · '), 'Selected B is outside the current candidate page')
+  assert(identity().includes('模型 B · night'), 'Comparison identity does not depend on the candidate page')
   click('上一页比较模型'); await settle()
   assert.equal(owner.focused, 2)
   assert.equal(requests.filter(item => item.args.compareModelId).length, pairReads, 'Candidate paging never reloads the selected pair')
@@ -155,8 +167,55 @@ try {
   paused = false; invalidIdentity = true
   props.active = true; render(); await settle()
   assert(text(tree).includes('比较模型身份或版本不一致'))
+  assert(identity().includes('模型 B · night') && identity().includes('请求版本 1'))
+  assert(!identity().includes('抽取状态：'), 'Rejected response cannot become displayed model facts')
   invalidIdentity = false; click('重新读取模型比较'); await settle()
   assert(text(tree).includes('已记录的输入、输出端点相同'))
+  invalidRevision = true; click('重新读取模型比较'); await settle()
+  assert(text(tree).includes('比较模型身份或版本不一致'))
+  assert(identity().includes('请求版本 1') && !identity().includes('抽取状态：'), 'A response for another version is not displayed as loaded')
+  invalidRevision = false
+
+  for (const change of ['document', 'revision', 'model', 'peer', 'reload', 'hidden']) {
+    mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+      load: (args, signal) => call(args, signal, 'connection-models') })
+    await settle()
+    failPairOnce = true; choose('night'); await settle()
+    assert(text(tree).includes('Comparison temporarily unavailable'))
+    assert(identity().includes('模型 A · taxi') && identity().includes('模型 B · night') && identity().includes('请求版本 1'))
+    assert(!all(tree, el => el.props.className === 'kg-model-compare-row').length)
+    // Changes must be truthful on the first render, before effect cleanup.
+    paused = true
+    if (change === 'document') props.documentId = 'other-document'
+    if (change === 'revision') props.revision = 2
+    if (change === 'model') props.modelId = 'multi'
+    if (change === 'peer') all(tree, el => el.type === 'button' && text(el).includes('unknown · '))[0].props.onClick()
+    if (change === 'reload') button('重新读取模型比较').props.onClick()
+    if (change === 'hidden') props.active = false
+    beforeEffects()
+    assert(!text(tree).includes('Comparison temporarily unavailable'), 'Old failure cannot be attributed to ' + change + ' context')
+    if (['document', 'model', 'hidden'].includes(change)) assert(!all(tree, el => el.props['aria-label'] === '本次比较对象').length, 'Old B cannot belong to a new primary model or document')
+    if (change === 'revision') assert(identity().includes('请求版本 2') && identity().includes('模型 B · night'))
+    if (change === 'peer') assert(identity().includes('模型 B · unknown') && !identity().includes('模型 B · night'))
+    render()
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
+
+  for (const change of ['revision', 'reload']) {
+    mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+      load: (args, signal) => call(args, signal, 'connection-models') })
+    await settle(); choose('night'); await settle()
+    paused = true
+    if (change === 'revision') props.revision = 2
+    else button('重新读取模型比较').props.onClick()
+    beforeEffects()
+    assert(identity().includes('请求版本 ' + props.revision) && !identity().includes('抽取状态：'))
+    assert(!all(tree, el => el.props.className === 'kg-model-compare-row').length, 'Loaded details vanish before effects on ' + change)
+    render()
+    owner.slots.forEach(state => state.cleanup?.())
+    deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  }
 
   for (const change of ['document', 'revision', 'model', 'query', 'filter', 'reload', 'hidden', 'reactivated', 'unmount']) {
     mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
@@ -281,5 +340,6 @@ try {
   console.log(JSON.stringify({ ok: true, generatedProductionComponents: true, actualSqliteHttp: true, pairRaceFenced: true, explicitSelection: true,
     targetIdentity: true, paginationFocus: true, paginationScopeGuards: 9, pageFailureRecovery: true,
     catalogRetryScopeGuards: 10, independentRetry: true, pendingComparisonPreserved: true, evidenceRetained: true,
+    requestedPairIdentity: true, failureFirstRenderScopes: 6, requestedRevisionNotLoadedFacts: true,
     challengeDraftScopes: true, idempotentLostResponse: true, visibleInvalidChange: true, graphUnchanged: true }))
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }

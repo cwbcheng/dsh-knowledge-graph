@@ -4870,15 +4870,19 @@
 
       function ConnectionModelComparison({ documentId, revision, modelId, active = true, load, onLocate, onOpen, onChallenge }) {
         const [query, setQuery] = useState(''), [search, setSearch] = useState(''), [sharedOnly, setSharedOnly] = useState(true)
-        const [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null), [peerId, setPeerId] = useState(''), [loadedPair, setPair] = useState(null)
-        const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [catalogFailure, setCatalogFailure] = useState(null), [pairError, setPairError] = useState('')
+        const [offset, setOffset] = useState(0), [loadedPage, setPage] = useState(null), [selection, setSelection] = useState(null), [loadedPair, setPair] = useState(null)
+        const [loading, setLoading] = useState(false), [comparing, setComparing] = useState(false), [catalogFailure, setCatalogFailure] = useState(null), [pairFailure, setPairFailure] = useState(null)
         const [sourceError, setSourceError] = useState('')
         const [reload, setReload] = useState(0)
         const [catalogRetry, setCatalogRetry] = useState(0), catalogRetryRequest = useRef(null), searchRef = useRef(null)
+        const selectionScope = JSON.stringify([documentId, modelId])
+        const peerId = selection?.scope === selectionScope ? selection.nodeId : ''
+        const pairKey = JSON.stringify([documentId, revision, modelId, peerId, reload])
         const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset, reload, catalogRetry])
         const page = loadedPage?.scope === catalogKey ? loadedPage : null
         const error = query === search && catalogFailure?.scope === catalogKey ? catalogFailure.message : ''
-        const pair = loadedPair?.documentId === documentId && loadedPair.revision === revision && loadedPair.left?.model?.nodeId === modelId
+        const pairError = pairFailure?.scope === pairKey ? pairFailure.message : ''
+        const pair = loadedPair?.scope === pairKey && loadedPair.documentId === documentId && loadedPair.revision === revision && loadedPair.left?.model?.nodeId === modelId
           && loadedPair.right?.model?.nodeId === peerId ? loadedPair : null
         const api = useRef({ load, onLocate, onOpen, onChallenge }), catalogSequence = useRef(0), pairSequence = useRef(0)
         api.current = { load, onLocate, onOpen, onChallenge }
@@ -4910,7 +4914,7 @@
         const location = useConnectionModelLocation(locationScope, active)
         useEffect(() => { setSourceError('') }, [locationScope, active])
         useEffect(() => { const timer = setTimeout(() => { setSearch(query); setOffset(0) }, 220); return () => clearTimeout(timer) }, [query])
-        useEffect(() => { setPeerId(''); setOffset(0); setQuery(''); setSearch('') }, [documentId, modelId])
+        useEffect(() => { setSelection(null); setOffset(0); setQuery(''); setSearch('') }, [documentId, modelId])
         useEffect(() => {
           const id = ++catalogSequence.current, abort = new AbortController()
           setPage(null); setCatalogFailure(null); setLoading(active)
@@ -4926,14 +4930,14 @@
         }, [documentId, revision, modelId, active, search, sharedOnly, offset, reload, catalogRetry])
         useEffect(() => {
           const id = ++pairSequence.current, abort = new AbortController()
-          setPair(null); setPairError(''); setComparing(active && !!peerId)
+          setPair(null); setPairFailure(null); setComparing(active && !!peerId)
           if (!active || !peerId) return () => { abort.abort(); pairSequence.current++ }
           api.current.load({ documentId, expectedRevision: revision, modelId, compareModelId: peerId }, abort.signal).then(result => {
             if (id !== pairSequence.current || abort.signal.aborted) return
             if (result?.error) throw new Error(result.error.message)
             if (result.documentId !== documentId || result.revision !== revision || result.left?.model?.nodeId !== modelId || result.right?.model?.nodeId !== peerId) throw new Error('比较模型身份或版本不一致')
-            setPair(result)
-          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setPairError(reason.message || '模型比较读取失败') })
+            setPair({ ...result, scope: pairKey })
+          }).catch(reason => { if (id === pairSequence.current && !abort.signal.aborted) setPairFailure({ scope: pairKey, message: reason.message || '模型比较读取失败' }) })
             .finally(() => { if (id === pairSequence.current && !abort.signal.aborted) setComparing(false) })
           return () => { abort.abort(); pairSequence.current++ }
         }, [documentId, revision, modelId, peerId, active, reload])
@@ -4976,20 +4980,27 @@
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnPage(1) }, '下一页比较模型')),
             h('nav', { className: 'kg-model-compare-choices', 'aria-label': '比较模型候选', 'aria-busy': loading, tabIndex: -1, ref: candidatesRef },
               page?.items.filter(item => item.nodeId !== modelId).map(item => h('button', {
-              key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => setPeerId(item.nodeId) },
+              key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => setSelection({ scope: selectionScope, nodeId: item.nodeId }) },
               h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
             page && !page.total && sharedOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSharedOnly(false); setOffset(0) } }, '查看全部模型') : null),
+          // Requested identities remain readable even when B is outside the
+          // candidate page. Only a validated response supplies model facts.
+          peerId ? h('section', { 'aria-label': '本次比较对象' },
+            h('p', { className: 'kg-model-meta' }, (pair ? '版本 ' : '请求版本 ') + revision),
+            h('div', { className: 'kg-model-compare-grid' }, [modelId, peerId].map((id, index) => {
+              const detail = pair && (index ? pair.right : pair.left)
+              return h('div', { key: id }, h('h4', null, '模型 ' + (index ? 'B' : 'A') + ' · ' + id),
+                detail ? h('div', null, h('p', { className: 'kg-model-meta' }, detail.model.sectionTitle),
+                  h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[detail.model.state] || '待确认') +
+                    ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[detail.model.entailmentStatus] || '未核对原文支持')),
+                  detail.model.warnings.length ? h('p', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
+                  onOpen ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onOpen(detail.model.nodeId) }, '查看模型 ' + (index ? 'B' : 'A')) : null,
+                  onChallenge ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onChallenge(detail.model.nodeId) }, '挑战模型 ' + (index ? 'B' : 'A')) : null) : null)
+            }))) : null,
           pairError ? h('p', { role: 'alert' }, pairError) : null,
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
           comparing ? h('p', { role: 'status' }, '正在对照两个模型…') : null,
           pair ? h('div', null,
-            h('div', { className: 'kg-model-compare-grid' }, [pair.left, pair.right].map((detail, index) => h('div', { key: detail.model.nodeId },
-              h('h4', null, '模型 ' + (index ? 'B' : 'A') + ' · ' + detail.model.nodeId), h('p', { className: 'kg-model-meta' }, detail.model.sectionTitle),
-              h('p', { className: 'kg-model-meta' }, '抽取状态：' + ({ candidate: '待确认', accepted: '已接受', rejected: '已拒绝' }[detail.model.state] || '待确认') +
-                ' · ' + ({ verified: '已核对原文支持', unsupported: '原文不支持', uncertain: '原文支持不确定' }[detail.model.entailmentStatus] || '未核对原文支持')),
-              detail.model.warnings.length ? h('p', { className: 'kg-model-warning' }, detail.model.warnings.join('；')) : null,
-              onOpen ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onOpen(detail.model.nodeId) }, '查看模型 ' + (index ? 'B' : 'A')) : null,
-              onChallenge ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => api.current.onChallenge(detail.model.nodeId) }, '挑战模型 ' + (index ? 'B' : 'A')) : null))),
             h('p', { className: 'kg-model-meta' }, ({ same_recorded_direction: '已记录的输入、输出端点相同；不代表条件、单位或结论等价。',
               different_recorded_direction: '已记录的输入、输出端点有差异；不代表模型互相矛盾。', incomplete: '端点角色或关系身份尚不完整，不能判定方向是否一致。' }[pair.endpointStatus])),
             pair.shared.length ? h('section', null, h('h4', null, '同一概念在两个模型中的作用'), pair.shared.map(item => h('p', { key: item.node.nodeId },
