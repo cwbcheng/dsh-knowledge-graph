@@ -4886,7 +4886,8 @@
         const peerId = selection?.scope === selectionScope ? selection.nodeId : ''
         const pairKey = JSON.stringify([documentId, revision, modelId, peerId, reload, pairRetry])
         const catalogKey = JSON.stringify([documentId, revision, modelId, search, sharedOnly, offset, reload, catalogRetry])
-        const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const waitingQuery = query !== search
+        const page = !waitingQuery && loadedPage?.scope === catalogKey ? loadedPage : null
         const error = query === search && catalogFailure?.scope === catalogKey ? catalogFailure.message : ''
         const pairError = pairFailure?.scope === pairKey ? pairFailure.message : ''
         const pair = loadedPair?.scope === pairKey && loadedPair.documentId === documentId && loadedPair.revision === revision && loadedPair.left?.model?.nodeId === modelId
@@ -4898,6 +4899,11 @@
         if (pageContext.current?.key !== navigationKey) pageContext.current = { key: navigationKey }
         const opening = pageContext.current
         useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+        const selectPeer = nodeId => {
+          if (!mounted.current || !active || opening !== pageContext.current || waitingQuery
+            || !page?.items.some(item => item.nodeId === nodeId && nodeId !== modelId)) return
+          setSelection({ scope: selectionScope, nodeId })
+        }
         const turnPage = step => {
           if (!mounted.current || !active || opening !== pageContext.current || pageRequest.current === opening
             || loading || query !== search || (step < 0 ? offset === 0 : !page || offset + page.items.length >= page.total)) return
@@ -4988,18 +4994,18 @@
           h('div', { className: 'kg-model-toolbar' },
             h('input', { type: 'search', value: query, ref: searchRef, maxLength: 200, 'aria-label': '搜索比较模型', placeholder: '选择另一个模型', onChange: event => setQuery(event.target.value) }),
             h('label', null, h('input', { type: 'checkbox', checked: sharedOnly, onChange: event => { setSharedOnly(event.target.checked); setOffset(0) } }), ' 共享概念端点'),
-            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取模型比较', title: '重新读取模型比较', disabled: loading || comparing, onClick: () => setReload(value => value + 1) }, '↻')),
+            h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取模型比较', title: '重新读取模型比较', disabled: loading || comparing || waitingQuery, onClick: () => setReload(value => value + 1) }, '↻')),
           error ? h('div', { role: 'alert' }, h('p', null, error),
             h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: retryCatalog }, '重试读取比较候选')) : null,
-          loading ? h('p', { role: 'status' }, '正在读取全图比较目录…') : null,
+          waitingQuery || loading ? h('p', { role: 'status' }, waitingQuery ? '正在更新比较搜索…' : '正在读取全图比较目录…') : null,
           h('div', null,
             page ? h('p', { className: 'kg-model-meta' }, '匹配 ' + page.total + ' 个模型 · 端点相同不代表规律等价') : null,
             h('div', { className: 'kg-model-toolbar kg-model-pagination', role: 'group', 'aria-label': '比较模型分页' },
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || query !== search || offset === 0, onClick: () => turnPage(-1) }, '上一页比较模型'),
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnPage(1) }, '下一页比较模型')),
-            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '比较模型候选', 'aria-busy': loading, tabIndex: -1, ref: candidatesRef },
+            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '比较模型候选', 'aria-busy': waitingQuery || loading, tabIndex: -1, ref: candidatesRef },
               page?.items.filter(item => item.nodeId !== modelId).map(item => h('button', {
-              key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => setSelection({ scope: selectionScope, nodeId: item.nodeId }) },
+              key: item.nodeId, type: 'button', className: 'kg-model-list-item', title: item.text, 'aria-pressed': peerId === item.nodeId, onClick: () => selectPeer(item.nodeId) },
               h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
             page && !page.total && sharedOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setSharedOnly(false); setOffset(0) } }, '查看全部模型') : null),
           // Requested identities remain readable even when B is outside the

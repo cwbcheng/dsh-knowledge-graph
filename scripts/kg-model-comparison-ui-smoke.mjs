@@ -92,6 +92,23 @@ try {
   assert(text(tree).includes('前 2 / 2 条关联材料'))
   click('挑战模型 B'); assert.deepEqual(challenges, ['night'], 'challenge targets selected secondary model, not primary by mistake')
   click('原文 P9'); await settle(); assert(text(tree).includes('Locate failed visibly'))
+  const originalRows = all(tree, el => el.props.className === 'kg-model-compare-row').map(text)
+  const oldCandidate = all(tree, el => el.type === 'button' && text(el).includes('unknown · '))[0]
+  assert(oldCandidate)
+  const readsBeforeQuery = requests.length
+  fill('搜索比较模型', '没有这个模型-零结果')
+  assert.equal(all(candidates(), el => el.type === 'button').length, 0, 'Pending query cannot show selectable matches for the previous query')
+  assert(!text(tree).includes('匹配 28 个模型'), 'Previous count does not describe a pending query')
+  assert.equal(candidates().props['aria-busy'], true)
+  assert(text(tree).includes('正在更新比较搜索'))
+  assert(identity().includes('模型 B · night'))
+  assert.deepEqual(all(tree, el => el.props.className === 'kg-model-compare-row').map(text), originalRows)
+  oldCandidate.props.onClick()
+  assert.equal(updates.length, 0, 'Retired candidates cannot change explicit selection after query changes')
+  assert.equal(requests.length, readsBeforeQuery, 'Debounce does not send an intermediate query')
+  fill('搜索比较模型', '')
+  assert(identity().includes('模型 B · night'))
+  assert.equal(candidates().props['aria-busy'], false)
   assert.equal(candidates().props.tabIndex, -1)
   const beforePaging = requests.length, pairReads = requests.filter(item => item.args.compareModelId).length
   const nextPage = button('下一页比较模型').props.onClick
@@ -360,6 +377,28 @@ try {
   concurrentRetry.resolve(); paused = false; await settle()
   assert(text(tree).includes('已记录的输入、输出端点相同'))
 
+  mount('ConnectionModelComparison', { documentId: document.documentId, revision: 1, modelId: 'taxi', active: true,
+    load: (args, signal) => call(args, signal, 'connection-models') })
+  await settle(); choose('night'); await settle()
+  const pairReadsBeforeSearch = requests.filter(item => item.args.compareModelId).length
+  const pairRowsBeforeSearch = all(tree, el => el.props.className === 'kg-model-compare-row').map(text)
+  fill('搜索比较模型', '没有这个模型-零结果')
+  await new Promise(resolve => setTimeout(resolve, 240)); await settle()
+  assert(text(tree).includes('匹配 0 个模型')); assert(button('查看全部模型'))
+  fill('搜索比较模型', '夜间')
+  assert(!text(tree).includes('匹配 0 个模型'), 'Old zero count cannot describe the new pending keyword')
+  assert(!all(tree, el => el.type === 'button' && text(el) === '查看全部模型').length, 'Old zero-result action stays hidden')
+  paused = true
+  await new Promise(resolve => setTimeout(resolve, 240)); await settle()
+  assert.equal(deferred.length, 1); assert.equal(deferred[0].args.query, '夜间')
+  assert.equal(candidates().props['aria-busy'], true)
+  assert.equal(all(candidates(), el => el.type === 'button').length, 0)
+  assert.deepEqual(all(tree, el => el.props.className === 'kg-model-compare-row').map(text), pairRowsBeforeSearch)
+  deferred.shift().resolve(); paused = false; await settle()
+  assert(text(tree).includes('匹配 1 个模型')); assert.equal(candidates().props['aria-busy'], false)
+  assert(identity().includes('模型 B · night'))
+  assert.equal(requests.filter(item => item.args.compareModelId).length, pairReadsBeforeSearch)
+
   mount('ModelLearningPanel', { documentId: document.documentId, revision: 1, modelId: 'taxi', exercise: 'counterexample', active: true, call })
   await settle()
   const fields = { inputs: '输入', mapping: '联结与推理', outputs: '输出', boundary: '适用条件与失效边界',
@@ -414,6 +453,7 @@ try {
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi', 'counterexample').length, 1)
   console.log(JSON.stringify({ ok: true, generatedProductionComponents: true, actualSqliteHttp: true, pairRaceFenced: true, explicitSelection: true,
     targetIdentity: true, paginationFocus: true, paginationScopeGuards: 9, pageFailureRecovery: true,
+    pendingQueryHidesPreviousMatches: true, staleCandidateRejected: true, zeroResultWaitIsolation: true, independentSearchPreservesPair: true,
     catalogRetryScopeGuards: 10, independentRetry: true, independentPairRetry: true, pairRetryScopeGuards: 8,
     pairRetrySingleFlight: true, pairRetryIdentityRejection: true, pendingComparisonPreserved: true, evidenceRetained: true,
     requestedPairIdentity: true, failureFirstRenderScopes: 6, requestedRevisionNotLoadedFacts: true,
