@@ -7356,7 +7356,7 @@ export default function clientPlugin() {
           try {
             if (value) globalThis.sessionStorage?.setItem(name, JSON.stringify(value))
             else globalThis.sessionStorage?.removeItem(name)
-          } catch { setError('本标签页的草稿缓存不可用；未保存的内容请保留在当前窗口。') }
+          } catch { /* The cache warning below reflects the current private draft. */ }
         }
         const uuid = () => globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random()
         useEffect(() => {
@@ -7423,6 +7423,14 @@ export default function clientPlugin() {
         const task = plan?.documentId === documentId && plan.revision === revision && plan.modelId === modelId
           && (!plan.tasks[0] || (plan.tasks[0].exercise || 'prediction') === exercise) ? plan.tasks[0] : null
         const pendingReview = opened?.review ? readDraft(storageKey + ':' + opened.attemptId) : null
+        const differsFromCache = (name, value) => {
+          if (!value) return false
+          try { return globalThis.sessionStorage?.getItem(name) !== JSON.stringify(value) }
+          catch { return true }
+        }
+        const uncachedDraft = draft && (draft.submitted || draft.sourceExposure !== 'unsure' || Object.values(draft.fields).some(value => value.trim()))
+          && differsFromCache(storageKey, draft)
+        const uncachedReview = opened && differsFromCache(storageKey + ':' + opened.attemptId, readDraft(storageKey + ':' + opened.attemptId))
         const record = result => {
           const attempt = result?.attempt
           if (result?.error || !attempt) throw new Error(result?.error?.message || '操作未确认；可重试')
@@ -7496,6 +7504,7 @@ export default function clientPlugin() {
             opened && draft && (draft.submitted || Object.values(draft.fields).some(value => value.trim())) ?
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => { setOpened(null); setMessage('已返回原预测草稿，内容未被替换。') } }, '返回未保存的预测草稿') : null,
             opened && onUnderstanding ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => onUnderstanding(opened) }, '修订我的理解') : null),
+          uncachedDraft || uncachedReview ? h('p', { role: 'alert' }, '本标签页的草稿缓存不可用；未保存的内容请保留在当前窗口。') : null,
           loading ? h('p', { role: 'status' }, '正在读取当前模型的练习与记录…') : null,
           error ? h('p', { role: 'alert' }, error) : null,
           locationError ? h('p', { role: 'alert' }, locationError) : null,
