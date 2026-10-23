@@ -343,6 +343,24 @@ try {
   assert.deepEqual(store.getDocument(document.documentId).edges, before.edges)
   assert.deepEqual(store.getDocumentSourceUnits(document.documentId), unitsBefore)
   assert.equal(store.getLearningAttempt('prediction').version, 2, 'only explicit reveal changed prediction version')
+  // A late receipt must respect newer in-window edits even if storage still
+  // contains the older submitted request after subsequent quota failures.
+  props.prediction = store.getLearningAttempt('prediction'); delete props.focusRequest
+  props.draftMemory = new Map(); storage.delete(draftKey()); remount(); await settle()
+  click('记录新结果'); fill('反馈来源', 'reflection'); fill('个人复盘内容', '旧请求尚未发送。')
+  paused = true; click('保存结果记录'); const memoryWrite = deferred.splice(0)
+  const staleStoredId = JSON.parse(storage.get(draftKey())).attemptId
+  storageFailure = true; remount(); const memoryReads = deferred.splice(0)
+  memoryReads.forEach(item => item.resolve()); await settle()
+  assert(text(tree).includes('此前结果未保存'))
+  fill('个人复盘内容', '缓存失效后新写的私人草稿\n不能被旧回应删除。')
+  const newerMemory = props.draftMemory.get(draftKey())
+  assert.notEqual(newerMemory.attemptId, staleStoredId)
+  assert.equal(JSON.parse(storage.get(draftKey())).attemptId, staleStoredId, 'Quota failure leaves the older request in storage')
+  memoryWrite.forEach(item => item.resolve()); await settle()
+  assert.equal(props.draftMemory.get(draftKey())?.attemptId, newerMemory.attemptId, 'Late receipts cannot clear newer memory using stale browser storage')
+  assert.equal(input('个人复盘内容').props.value, newerMemory.response.content)
+  paused = false; storageFailure = false; delete props.draftMemory
   owner.slots.forEach(state => state.cleanup?.()); owner = { slots: [], effects: [] }; updates.length = 0
   Component = context.window.KGViewer.ConnectionModelPanel
   let rootLegacy = true
