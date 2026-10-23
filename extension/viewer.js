@@ -5084,7 +5084,8 @@
         api.current = { load, onLocate, onOpen, onStructure }
         const current = work.scope === scope ? work : empty(), peerId = current.peerId, draft = current.draft
         const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset, reload, catalogRetry])
-        const page = loadedPage?.scope === catalogKey ? loadedPage : null
+        const waitingQuery = query !== search
+        const page = !waitingQuery && loadedPage?.scope === catalogKey ? loadedPage : null
         const catalogError = query === search && catalogFailure?.scope === catalogKey ? catalogFailure.message : ''
         const candidatesRef = useRef(null), pageContext = useRef(null), pageRequest = useRef(null), mounted = useRef(true)
         const navigationKey = JSON.stringify([catalogKey, query, active])
@@ -5185,6 +5186,8 @@
         const changeOutput = (index, slotId, value) => changeStep(index, step => ({ ...step,
           outputs: [...step.outputs.filter(item => item.slotId !== slotId), { slotId, value }] }))
         const selectPeer = id => {
+          if (!mounted.current || !active || opening !== pageContext.current || waitingQuery
+            || !page?.items.some(item => item.nodeId === id)) return
           if (id === peerId) return
           if (peerId && !window.confirm('切换第二个模型会清空第 2 步的槽位与应用草稿，第 1 步和情境保留。继续？')) return
           update(value => ({ ...value, peerId: id, draft: { ...value.draft, steps: [value.draft.steps[0], emptyStep(id)] } }))
@@ -5362,13 +5365,13 @@
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取两步推测模型', title: '重新读取两步推测模型', onClick: () => { invalidate(); setReload(value => value + 1) } }, '↻')),
           catalogError ? h('div', { role: 'alert' }, catalogError, ' ',
             h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading, onClick: retryCatalog }, '重试读取第 2 步候选')) : null,
-          catalogLoading ? h('p', { role: 'status' }, '正在读取第 2 步模型候选…') : null,
+          waitingQuery || catalogLoading ? h('p', { role: 'status' }, waitingQuery ? '正在更新第 2 步搜索…' : '正在读取第 2 步模型候选…') : null,
           h('div', null,
             page ? h('p', { className: 'kg-model-meta' }, '候选 ' + page.total + ' 个 · 仅按概念与已记录方向筛选，相容性尚未核对') : null,
             h('div', { className: 'kg-model-toolbar kg-model-pagination', role: 'group', 'aria-label': '第 2 步模型分页' },
               h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading || query !== search || offset === 0, onClick: () => turnPage(-1) }, '上一页第 2 步模型'),
               h('button', { type: 'button', className: 'kg-secondary', disabled: catalogLoading || query !== search || !page || offset + page.items.length >= page.total, onClick: () => turnPage(1) }, '下一页第 2 步模型')),
-            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '第 2 步模型候选', 'aria-busy': catalogLoading, tabIndex: -1, ref: candidatesRef }, page?.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
+            h('nav', { className: 'kg-model-compare-choices', 'aria-label': '第 2 步模型候选', 'aria-busy': waitingQuery || catalogLoading, tabIndex: -1, ref: candidatesRef }, page?.items.map(item => h('button', { key: item.nodeId, type: 'button', className: 'kg-model-list-item',
               'aria-pressed': peerId === item.nodeId, onClick: () => selectPeer(item.nodeId) }, h('strong', null, item.text), h('small', null, item.nodeId + ' · ' + item.sectionTitle)))),
             page && !page.total && candidatesOnly ? h('button', { type: 'button', className: 'kg-secondary', onClick: () => { setCandidatesOnly(false); setOffset(0) } }, '查看全部第 2 步模型') : null),
           error ? h('p', { role: 'alert' }, error) : null,
