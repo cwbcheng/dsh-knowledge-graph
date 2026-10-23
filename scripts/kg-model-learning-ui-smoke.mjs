@@ -9,6 +9,7 @@ const { store, document, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = []
 let paused = false, loseSave = true, loseReveal = true, loseReview = true, storageFailure = false
+let confirmAllowed = true, confirmations = 0
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -24,7 +25,7 @@ const React = {
     }
   },
 }
-const context = { window: { React, confirm: () => true, addEventListener: (key, fn) => events.set(key, fn),
+const context = { window: { React, confirm: () => { confirmations++; return confirmAllowed }, addEventListener: (key, fn) => events.set(key, fn),
   removeEventListener: key => events.delete(key) }, console, AbortController,
   crypto: { randomUUID }, sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => {
     if (storageFailure) throw new Error('QuotaExceededError')
@@ -65,16 +66,22 @@ const click = label => { const found = button(label); assert(!found.props.disabl
 const input = label => { const found = all(tree, el => ['textarea', 'select'].includes(el.type) && el.props['aria-label'] === label)[0]; assert(found, label); return found }
 const fill = (label, value) => { const found = input(label); assert(!found.props.disabled, label); found.props.onChange({ target: { value } }); render() }
 const remount = () => { owner.slots.forEach(state => state.cleanup?.()); updates.length = 0; owner = { slots: [], effects: [] }; render() }
+const closingWarned = () => { let warned = false; events.get('beforeunload')({ preventDefault: () => { warned = true } }); return warned }
 try {
   const before = JSON.stringify(store.getDocument(document.documentId))
   render(); await settle()
   assert(!text(tree).includes('2 km 对应 10 元'), 'reference example must not be shown before prediction')
   assert(button('保存预测').props.disabled)
+  assert(!closingWarned(), 'Untouched defaults are not unsaved personal choices')
   const fields = { inputs: '输入', mapping: '联结与推理', outputs: '输出', boundary: '适用条件与失效边界',
     scenario: '具体的新情境', prediction: '我的预测', check: '可观察的验证依据' }
   storageFailure = true
   for (const exercise of ['prediction', 'counterexample']) {
     props.exercise = exercise; render(); await settle()
+    fill('此前的原文接触', 'seen')
+    assert(closingWarned(), 'Exposure-only ' + exercise + ' drafts must warn before closing')
+    fill('此前的原文接触', 'unsure')
+    assert(!closingWarned(), 'Restoring default exposure leaves no personal choice to discard')
     const prediction = exercise === 'counterexample' ? '改变后的预测' : '我的预测'
     const privateFields = { [prediction]: '未提交的私人预测\n仍需核验。', '适用条件与失效边界': '仅限简化模型\n夜间附加费未核验。',
       ...(exercise === 'counterexample' ? { '只改变的一项与保持不变的条件': '只改变距离\n时间条件保持不变。',
@@ -126,6 +133,17 @@ try {
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi').length, 1)
   assert(!text(tree).includes('2 km 对应 10 元'))
   assert(text(tree).includes('最初的预测'))
+  click('另开一次预测'); fill('此前的原文接触', 'seen')
+  const previousRecord = all(tree, el => el.type === 'button' && text(el).includes(' · 已预测'))[0]
+  assert(previousRecord); previousRecord.props.onClick(); render(); await settle()
+  const confirmationCount = confirmations; confirmAllowed = false
+  click('另开一次预测')
+  assert.equal(confirmations, confirmationCount + 1, 'Exposure-only drafts require explicit discard confirmation')
+  assert(text(tree).includes('最初的预测'), 'Cancel keeps the selected record and private draft')
+  click('返回未保存的预测草稿')
+  assert.equal(input('此前的原文接触').props.value, 'seen')
+  fill('此前的原文接触', 'unsure'); confirmAllowed = true
+  previousRecord.props.onClick(); render(); await settle()
   const feedback = () => all(tree, el => el.type === context.window.KGViewer.ModelFeedbackPanel)[0]
   const feedbackMemory = feedback().props.draftMemory
   assert(feedbackMemory && typeof feedbackMemory.get === 'function', 'Practice owns the fallback for feedback children')
@@ -138,6 +156,13 @@ try {
   click('展开原文对照'); await settle()
   assert(text(tree).includes('2 km 对应 10 元'))
   assert(text(tree).includes('不是标准答案'))
+  assert(!closingWarned(), 'Revealing a saved prediction does not create a review draft')
+  for (const [label, selected, original] of [['复盘判断', 'boundary', 'unsure'], ['模型练习自评', 'confident', 'uncertain']]) {
+    fill(label, selected); assert(closingWarned(), label + ' alone must warn before closing')
+    const count = confirmations; confirmAllowed = false; click('另开一次预测')
+    assert.equal(confirmations, count + 1); assert.equal(input(label).props.value, selected, 'Cancelled discard preserves ' + label)
+    confirmAllowed = true; fill(label, original); assert(!closingWarned(), 'Default review choices are not dirty')
+  }
   fill('复盘判断', learnerReview.diagnosis); fill('保留或修改的理由', learnerReview.reflection); fill('下一步验证', learnerReview.nextCheck)
   storageFailure = true
   fill('保留或修改的理由', learnerReview.reflection + '\n未缓存的新复盘。')
@@ -215,6 +240,18 @@ try {
   warned = false; events.get('beforeunload')({ preventDefault: () => { warned = true } })
   assert.equal(warned, true, 'closing the tab warns about the uncommitted alternate reflection')
   assert.equal(store.getDocumentRevision(document.documentId), 3)
+  click('另开一次预测'); fill('此前的原文接触', 'seen')
+  store.saveGraph({ ...document.graph, summary: 'fixture fourth revision' }, { sourceText: document.sourceText,
+    sourceUnits: document.sourceUnits, expectedRevision: 3 })
+  props.revision = 4; render(); await settle()
+  assert.equal(input('此前的原文接触').props.value, 'seen', 'Source changes preserve exposure-only private drafts')
+  assert(text(tree).includes('草稿基于第 3 版'))
+  assert(button('保存预测').props.disabled, 'Exposure-only drafts must not silently adopt the new source revision')
+  confirmAllowed = false; click('重开当前版本练习')
+  assert.equal(input('此前的原文接触').props.value, 'seen', 'Cancelling a new-version restart retains the choice')
+  confirmAllowed = true; click('重开当前版本练习')
+  assert.equal(input('此前的原文接触').props.value, 'unsure')
+  assert(!closingWarned(), 'Explicitly discarded drafts no longer warn')
   console.log(JSON.stringify({ ok: true, actualSqliteHttpRoutes: true, concealedUntilSavedReveal: true,
     lostResponseRetries: true, scopeRaceFenced: true, draftsPreserved: true, oldSourceExplicit: true,
     oldVersionSaveAcknowledged: true, conflictingReflectionPreserved: true }))
