@@ -7,7 +7,7 @@ import { modelChainFixture, modelChainDraft } from './kg-model-chain-fixture-dat
 const harness = await modelLearningHarness({ fixture: modelChainFixture() })
 const { document, store, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree, props
-const updates = [], storage = new Map(), requests = [], deferred = []
+const updates = [], storage = new Map(), requests = [], deferred = [], events = new Map()
 let paused = false, foreign = false, oldHost = false, malformed = false, transportFailure = false, storageFailure = false, confirm = true, failCatalogOnce = false, failPairOnce = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
@@ -20,7 +20,7 @@ const React = {
       owner.effects.push(() => { state.cleanup?.(); state.cleanup = fn() }); state.deps = deps
     } },
 }
-const context = { window: { React, confirm: () => confirm }, console, AbortController, setTimeout, clearTimeout,
+const context = { window: { React, confirm: () => confirm, addEventListener: (key, fn) => events.set(key, fn), removeEventListener: key => events.delete(key) }, console, AbortController, setTimeout, clearTimeout,
   sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => { if (storageFailure) throw new Error('Quota'); storage.set(key, value) } } }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 let Component = context.window.KGViewer.ConnectionModelChain
@@ -66,6 +66,7 @@ const click = label => { const found = button(label); assert(!found.props.disabl
 const candidates = () => { const node = all(tree, el => el.props['aria-label'] === '第 2 步模型候选')[0]; assert(node, 'Candidate region stays mounted during reads'); return node }
 const input = label => { const found = all(tree, el => ['textarea', 'select', 'input'].includes(el.type) && el.props['aria-label'] === label)[0]; assert(found, 'Missing field: ' + label); return found }
 const fill = (label, value) => { input(label).props.onChange({ target: { value } }); render() }
+const closingWarned = () => { const event = { prevented: false, preventDefault() { this.prevented = true } }; events.get('beforeunload')?.(event); return event.prevented }
 const choose = id => { const found = all(tree, el => el.type === 'button' && text(el).includes(id + ' · '))[0]; assert(found, 'Missing peer: ' + id); found.props.onClick(); render() }
 const mount = next => {
   owner.slots.forEach(state => state.cleanup?.()); updates.length = 0; owner = { slots: [], effects: [] }; props = { ...next }; render()
@@ -105,7 +106,27 @@ try {
   assert(button('导出推测草稿').props.disabled)
   assert(button('导入推测草稿'))
   assert(!text(tree).includes('已保留的两步草稿'), 'an unselected peer is not presented as a second model')
+  assert(!closingWarned(), 'An untouched chain cannot cause a close prompt')
   choose('budget-model'); await settle()
+  assert(!closingWarned(), 'Browsing a model pair alone cannot cause a close prompt')
+  fill('具体情境', '  '); assert(!closingWarned()); fill('具体情境', '')
+  fill('第 1 步分支', 'extra'); assert(closingWarned(), 'A branch-only private choice needs close protection')
+  fill('第 1 步分支', ''); assert(!closingWarned(), 'Returning a branch to its default removes the prompt')
+  fill('第 2 步 · 行程基础费用输入来源', 'link'); assert(closingWarned(), 'A source-only private choice needs close protection')
+  fill('第 2 步 · 行程基础费用输入来源', 'known'); assert(!closingWarned())
+  fill('第 1 步 · 行驶距离输入依据', '尚待核对的私人依据'); assert(closingWarned())
+  fill('第 1 步 · 行驶距离输入依据', ''); assert(!closingWarned())
+  fill('第 1 步 · 基础费用预测', '0'); assert(closingWarned(), 'Zero is a private output value')
+  fill('第 1 步 · 基础费用预测', ''); assert(!closingWarned())
+  fill('第 2 步适用条件与边界依据', '未提交的私人条件')
+  const closeCache = JSON.stringify([...storage]), closeReads = requests.length
+  assert(closingWarned()); assert.equal(JSON.stringify([...storage]), closeCache); assert.equal(requests.length, closeReads)
+  props.active = false; render(); assert.equal(tree, null); assert(closingWarned(), 'Hidden task drafts stay protected')
+  props.active = true; render(); await settle()
+  props.modelId = 'budget-model'; render(); await settle(); assert.equal(input('具体情境').props.value, '')
+  assert(closingWarned(), 'A private draft in another model stays protected')
+  props.modelId = 'taxi'; render(); await settle(); fill('第 2 步适用条件与边界依据', '')
+  assert(!closingWarned(), 'Clearing the last private field removes protection, including its memory copy')
   assert(!button('导出推测草稿').props.disabled, 'an unchecked, incomplete draft can be backed up')
   click('检查推测缺口'); await settle()
   assert(text(tree).includes('停在第 1 步'))
