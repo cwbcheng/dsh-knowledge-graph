@@ -284,6 +284,33 @@ try {
   assert.equal(JSON.stringify(store.getDocument(document.documentId)), beforeHiddenGraph)
   assert.equal(JSON.stringify(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()), beforeHiddenLearning,
     'History navigation and close protection never save or revise personal records')
+  openRecord('hidden-review-a'); await settle()
+  fill('复盘判断', learnerReview.diagnosis); fill('保留或修改的理由', learnerReview.reflection); fill('下一步验证', learnerReview.nextCheck)
+  loseReview = false; paused = true; click('保存复盘')
+  const heldReview = deferred.splice(0).find(item => item.args.action === 'review')
+  assert(heldReview); assert.equal(store.getLearningAttempt('hidden-review-a').review, null)
+  paused = false; props.modelId = 'unknown'; render(); await settle()
+  props.modelId = 'taxi'; render(); await settle(); openRecord('hidden-review-a'); await settle()
+  const newerReflection = '旧请求尚未确认时新写的复盘\n边界仍需另行核对。'
+  fill('保留或修改的理由', newerReflection)
+  heldReview.resolve(); await settle()
+  assert.equal(store.getLearningAttempt('hidden-review-a').review.content.reflection, learnerReview.reflection,
+    'The delayed request saves only the original confirmed review')
+  click('重新读取学习记录'); await settle()
+  assert(text(tree).includes('保留的未保存复盘'))
+  assert(text(tree).includes(newerReflection), 'A late review receipt must not clear a newer in-window draft')
+  assert(input('保留或修改的理由').props.disabled, 'Saved review stays immutable beside the newer private draft')
+  openRecord('hidden-review-b'); await settle(); storageFailure = false
+  fill('复盘判断', learnerReview.diagnosis); fill('保留或修改的理由', learnerReview.reflection); fill('下一步验证', learnerReview.nextCheck)
+  paused = true; click('保存复盘')
+  const heldCachedReview = deferred.splice(0).find(item => item.args.action === 'review'); assert(heldCachedReview)
+  const cachedReviewKey = [...storage.keys()].find(key => key.endsWith(':hidden-review-b')); assert(cachedReviewKey)
+  const newerCachedReview = { ...JSON.parse(storage.get(cachedReviewKey)), reflection: '另一份较新的浏览器缓存复盘，仍未提交。' }
+  storage.set(cachedReviewKey, JSON.stringify(newerCachedReview)); paused = false
+  heldCachedReview.resolve(); await settle()
+  assert.equal(JSON.parse(storage.get(cachedReviewKey)).reflection, newerCachedReview.reflection,
+    'A receipt must also preserve a newer cached draft when memory still matches the submitted content')
+  assert.equal(JSON.stringify(store.getDocument(document.documentId)), beforeHiddenGraph)
   console.log(JSON.stringify({ ok: true, actualSqliteHttpRoutes: true, concealedUntilSavedReveal: true,
     lostResponseRetries: true, scopeRaceFenced: true, draftsPreserved: true, oldSourceExplicit: true,
     oldVersionSaveAcknowledged: true, conflictingReflectionPreserved: true }))

@@ -7455,7 +7455,15 @@ export default function clientPlugin() {
             const attempt = record(await api.current(args))
             if (attempt.attemptId !== args.attemptId) throw new Error('返回的练习标识不一致')
             if (action === 'save' && readDraft(storageKey)?.attemptId === args.attemptId) remember(storageKey, null)
-            if (action === 'review') remember(storageKey + ':' + args.attemptId, null)
+            if (action === 'review') {
+              const reviewKey = storageKey + ':' + args.attemptId, submittedContent = JSON.stringify(submittedReview)
+              try {
+                const cached = globalThis.sessionStorage?.getItem(reviewKey)
+                // A receipt may discard only the acknowledged draft in both copies.
+                if (JSON.stringify(readDraft(reviewKey)) === submittedContent &&
+                    (!cached || JSON.stringify(JSON.parse(cached)) === submittedContent)) remember(reviewKey, null)
+              } catch { /* Keep the private draft when its cache cannot be compared. */ }
+            }
             if (scope.current !== capturedScope || token !== operation.current) return
             setOpened(attempt); setAttempts(current => [attempt, ...current.filter(item => item.attemptId !== attempt.attemptId)]
               .sort((a, b) => b.createdAt - a.createdAt).slice(0, 100))
