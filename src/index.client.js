@@ -6020,9 +6020,6 @@ export default function clientPlugin() {
                   onChallenge: id => {
                     if (select(id, 'learn')) setExercise('counterexample')
                   } }),
-                h(ConnectionModelChain, { documentId, revision, modelId, active: active && tab === 'chain' && detail.modelChainVersion === 1, load,
-                  onLocate: locate, onOpen: id => select(id),
-                  onStructure: id => select(id, 'structure') }),
                 tab === 'learn' ? h('div', { className: 'kg-consume-tabs', role: 'group', 'aria-label': '模型练习类型' },
                   [['prediction', '新情境预测'], ['counterexample', '反例挑战']].map(([id, label]) => h('button', { key: id, type: 'button', className: 'kg-secondary',
                     'aria-pressed': exercise === id, onClick: () => setExercise(id) }, label))) : null,
@@ -6058,6 +6055,9 @@ export default function clientPlugin() {
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !modelId && !detailLoading ? h('p', null, '选择一个联结模型') : null,
               // Detail reads may temporarily unmount their facts. Keep the private
               // draft owners alive so unavailable browser storage cannot erase them.
+              h(ConnectionModelChain, { documentId, revision, modelId, active: active && tab === 'chain' && detail?.modelChainVersion === 1, load,
+                onLocate: locate, onOpen: id => select(id),
+                onStructure: id => select(id, 'structure') }),
               h(ModelLearningPanel, { documentId, revision, modelId, exercise, active: active && !!detail && tab === 'learn', call: learningCall,
                 focusRequest: practiceRequest?.modelId === modelId ? practiceRequest : null,
                 feedbackSupported: detail?.modelFeedbackVersion === 1,
@@ -6308,9 +6308,12 @@ export default function clientPlugin() {
 
       function ConnectionModelChain({ documentId, revision, modelId, active = true, load, onLocate, onOpen, onStructure }) {
         const scope = JSON.stringify([documentId, modelId]), storageKey = 'dsh-kg-model-chain:' + scope
+        const drafts = useRef(new Map())
         const emptyStep = id => ({ modelId: id, branchId: '', inputs: [], outputs: [], conditions: '', reasoning: '' })
         const empty = () => ({ scope, revision, peerId: '', draft: { version: 1, scenario: '', goal: '', steps: [emptyStep(modelId), emptyStep('unselected-model')] } })
         const restore = () => {
+          if (!documentId || !modelId) return empty()
+          if (drafts.current.has(storageKey)) return drafts.current.get(storageKey)
           try {
             const raw = sessionStorage.getItem(storageKey)
             if (!raw) return empty()
@@ -6397,7 +6400,9 @@ export default function clientPlugin() {
           return () => { importSequence.current++; importAbort.current?.abort() }
         }, [scope, revision, active])
         useEffect(() => {
-          if (work.scope !== scope || work.restoreError) return
+          if (!documentId || !modelId || work.scope !== scope) return
+          drafts.current.set(storageKey, work)
+          if (work.restoreError) return
           try { sessionStorage.setItem(storageKey, JSON.stringify(work)); setStorageError('') }
           catch (reason) { setStorageError('标签页草稿未缓存，请保留当前页面：' + reason.message) }
         }, [work, scope])
@@ -6434,7 +6439,7 @@ export default function clientPlugin() {
           const value = workRef.current, next = transform(value.scope === scope ? value : empty())
           try { MODEL_CHAIN_TOOLS.validateDraft(next.draft) }
           catch (reason) { setError(reason.message + '；本次输入未覆盖原草稿'); return }
-          invalidate(); workRef.current = next; setWork(next)
+          invalidate(); drafts.current.set(storageKey, next); workRef.current = next; setWork(next)
         }
         const changeDraft = transform => update(value => ({ ...value, draft: transform(value.draft) }))
         const changeStep = (index, transform) => changeDraft(value => ({ ...value, steps: value.steps.map((step, i) => i === index ? transform(step) : step) }))
