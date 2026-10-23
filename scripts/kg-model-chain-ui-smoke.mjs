@@ -74,6 +74,9 @@ function render() {
     for (const node of all(tree, el => el.props['aria-label'] === '草稿导出状态' && el.props.ref)) {
       node.props.ref.current = { focus: () => { owner.exportFocused = (owner.exportFocused || 0) + 1 } }
     }
+    for (const node of all(tree, el => el.props['aria-label'] === '草稿导入错误' && el.props.ref)) {
+      node.props.ref.current = { focus: () => { owner.importFocused = (owner.importFocused || 0) + 1 } }
+    }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
   }
@@ -417,6 +420,60 @@ try {
   assert(text(tree).includes('最多 2 MiB')); assert.equal(storage.get(storedKey), cacheAfterImport)
   await importFile(exchange(), { text: async () => { throw new Error('File read failed') } }); await settle()
   assert(text(tree).includes('File read failed')); assert.equal(storage.get(storedKey), cacheAfterImport)
+  const importFields = () => JSON.stringify(all(tree, el => ['input', 'textarea', 'select'].includes(el.type)).map(el => ({
+    label: el.props['aria-label'], value: el.props.value, checked: el.props.checked,
+  })))
+  const originalFields = importFields(), originalCheck = text(all(tree, el => el.props['aria-label'] === '推测缺口检查')[0])
+  assert(originalCheck.includes('草稿字段已齐备'))
+  const assertImportPreserved = () => {
+    assert.equal(importFields(), originalFields, 'all original form fields survive an unsuccessful import')
+    assert.equal(storage.get(storedKey), cacheAfterImport, 'the complete private draft and its source revision remain cached')
+    assert.equal(text(all(tree, el => el.props['aria-label'] === '推测缺口检查')[0]), originalCheck, 'a failed import cannot erase the original check')
+    assert.equal(requests.filter(item => item.args.chainDraft).length, checksBeforeImport + 1, 'import never runs a new check')
+    assert(closingWarned(), 'the retained private draft remains protected on closing')
+  }
+  for (const reason of [null, undefined, new Error('File read failed'), new Error('File read failed')]) {
+    const focused = owner.importFocused || 0
+    await assert.doesNotReject(importFile(exchange(), { text: async () => { throw reason } }), 'non-Error rejection must still produce recoverable feedback')
+    await settle()
+    const alert = all(tree, el => el.props['aria-label'] === '草稿导入错误')[0]
+    assert(alert && alert.props.role === 'alert' && alert.props.tabIndex === -1)
+    assert(text(alert).includes('当前草稿未覆盖') && text(alert).includes('同一文件重试'))
+    assert.equal(owner.importFocused, focused + 1, 'each current failure, including identical retries, focuses its visible feedback')
+    assert(!button('导入推测草稿').props.disabled)
+    assertImportPreserved()
+  }
+  for (const unused of [0, 1]) {
+    const focused = owner.importFocused
+    await importFile(exchange(), { size: 2 * 1024 * 1024 + 1 }); await settle()
+    assert.equal(owner.importFocused, focused + 1, 'repeated synchronous failures also focus their feedback')
+    assertImportPreserved()
+  }
+  failPairOnce = true
+  await importFile(exchange()); await settle()
+  assert(text(tree).includes('Chain models unavailable')); assertImportPreserved()
+  let reads = 0
+  const retryFile = { size: 1024, text: async () => { if (++reads === 1) throw new Error('Retry this file'); return JSON.stringify(file) } }
+  const selectSameFile = () => {
+    const target = { value: 'same-file.json', files: [retryFile] }
+    const pending = input('选择推测草稿文件').props.onChange({ target }); render()
+    assert.equal(target.value, ''); return pending
+  }
+  await selectSameFile(); await settle(); assertImportPreserved()
+  const retryFocus = owner.importFocused
+  await selectSameFile(); await settle()
+  assert.equal(reads, 2); assert(text(tree).includes('待导入草稿'))
+  assert.equal(all(tree, el => el.props['aria-label'] === '草稿导入错误').length, 0)
+  assert.equal(owner.importFocused, retryFocus, 'a successful retry does not refocus old error feedback')
+  assertImportPreserved()
+  confirm = false; click('确认替换为导入草稿'); assertImportPreserved()
+  confirm = true; click('取消导入'); assertImportPreserved()
+  let rejectRetiredImport
+  const retiredImport = importFile(exchange(), { text: () => new Promise((resolve, reject) => { rejectRetiredImport = reject }) })
+  props.active = false; render(); rejectRetiredImport(new Error('Late file failure')); await retiredImport; await settle()
+  assert.equal(owner.importFocused, retryFocus, 'retired or hidden import failures never steal focus')
+  props.active = true; render(); await settle()
+  assert.equal(all(tree, el => el.props['aria-label'] === '草稿导入错误').length, 0)
   for (const kind of ['foreign', 'oldHost']) {
     if (kind === 'foreign') foreign = true; else oldHost = true
     await importFile(exchange()); await settle()
@@ -523,6 +580,15 @@ try {
   assert(text(tree).includes('标签页草稿未缓存'), 'export retry cannot dismiss a separate storage failure')
   const privateFields = () => all(tree, el => ['textarea', 'select'].includes(el.type)).map(el => [el.props['aria-label'], el.props.value])
   const uncachedFields = privateFields()
+  const cachedBeforeFailedImport = storage.get(storedKey)
+  await importFile(exchange(), { text: async () => { throw null } }); await settle()
+  assert(text(tree).includes('草稿未能导入') && text(tree).includes('标签页草稿未缓存'))
+  assert.deepEqual(privateFields(), uncachedFields, 'failed import retains the latest uncached draft instead of restoring older storage')
+  assert.equal(storage.get(storedKey), cachedBeforeFailedImport)
+  await importFile(exchange()); await settle()
+  assert(text(tree).includes('待导入草稿') && text(tree).includes('标签页草稿未缓存'))
+  assert.deepEqual(privateFields(), uncachedFields, 'retry preview cannot replace uncached edits')
+  click('取消导入'); assert.equal(storage.get(storedKey), cachedBeforeFailedImport)
   props.modelId = 'budget-model'; render(); await settle()
   assert.equal(input('推测目标').props.value, '', 'Another model must not display the private chain')
   props.modelId = 'taxi'; render(); await settle()
@@ -716,5 +782,5 @@ try {
   assert.equal(chainChild.props.modelId, 'taxi')
   deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
   assert(all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0].props.active)
-  console.log('model chain UI: actual production route, window memory fallback by document/model, retained owner through detail reads, uncached source revision and malformed-cache private edits preserved, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, export failures and retries preserve checked/stale/uncached drafts, download cleanup and focused feedback, draft import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, window memory fallback by document/model, retained owner through detail reads, uncached source revision and malformed-cache private edits preserved, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, export failures and retries preserve checked/stale/uncached drafts, download cleanup and focused feedback, import read/null/repeated/transport failures focus feedback and retain every field/cache/check, same-file retry preview and confirmation, uncached import failure retention, retired import focus guards, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
