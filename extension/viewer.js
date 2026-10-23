@@ -5793,7 +5793,7 @@
           try {
             if (value) globalThis.sessionStorage?.setItem(key, JSON.stringify(value))
             else globalThis.sessionStorage?.removeItem(key)
-          } catch { if (scope.current === scopeKey) setError('结果草稿缓存不可用；请保留当前窗口。') }
+          } catch { /* The rendered warning compares the current private draft with its cached copy. */ }
         }
         const dirty = value => value && (value.submitted || value.response.reference || value.response.observationConfirmed || value.response.parentResultId ||
           value.response.type !== 'observation' || value.response.comparison !== 'not_compared' ||
@@ -5952,6 +5952,11 @@
           (response.type !== 'reference' || (draft.sourceMode === 'book' ? response.reference?.quote.trim() : response.sourceName.trim() && response.sourceLocator.trim())) &&
           (response.type !== 'derivation' || response.context.trim()) && (response.type !== 'ai_suggestion' || response.sourceName.trim())
         const safeLink = url => { try { const parsed = new URL(url); return ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : '' } catch { return '' } }
+        const uncachedDraft = (() => {
+          if (!dirty(draft)) return false
+          try { return globalThis.sessionStorage?.getItem(storageKey) !== JSON.stringify(draft) }
+          catch { return true }
+        })()
         return h('section', { className: 'kg-model-feedback', 'aria-label': '预测的验证结果记录' },
           h('div', { className: 'kg-model-toolbar' }, h('h4', null, '验证结果记录'),
             supported ? h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取验证结果', title: '重新读取验证结果', disabled: busy || loading,
@@ -5961,6 +5966,7 @@
           !supported ? h('p', { role: 'status' }, '结果记录版本尚未就绪：当前服务不支持保存验证结果；预测和复盘仍可使用。') : null,
           loading ? h('p', { role: 'status' }, '正在读取这次预测的结果…') : null,
           error ? h('p', { role: 'alert' }, error) : null, message ? h('p', { role: 'status' }, message) : null,
+          uncachedDraft ? h('p', { role: 'alert' }, '结果草稿缓存不可用；请保留当前窗口。') : null,
           locationError ? h('p', { role: 'alert' }, locationError) : null,
           prediction.baseRevision !== revision ? h('p', { role: 'status' }, '此处补记的是图谱第 ' + prediction.baseRevision + ' 版的预测结果，不作为当前第 ' + revision + ' 版的验证。') : null,
           draft && supported ? h('div', { className: 'kg-model-feedback-fields' },
