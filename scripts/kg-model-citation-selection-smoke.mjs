@@ -341,10 +341,14 @@ try {
   assert.equal(readChain.owner.storage.get(readKey), edited)
   await readChain.fill('具体情境', '合法补充，但模型仍未读取')
   assert(!text(readChain.owner.tree).includes('本次输入未覆盖原草稿')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  const beforeFailedExport = readChain.owner.storage.get(readKey)
+  const exportMessage = () => text(all(readChain.owner.tree, item => item.props['aria-label'] === '草稿导出状态'))
   await readChain.click('导出推测草稿')
-  assert(text(readChain.owner.tree).includes('页面文字仍保留')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  assert(exportMessage().includes('草稿未能导出') && exportMessage().includes('全部草稿仍保留'))
+  assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  assert.equal(readChain.owner.storage.get(readKey), beforeFailedExport)
   await readChain.fill('推测目标', '导出未恢复模型；继续保留自己的目标')
-  assert(!text(readChain.owner.tree).includes('页面文字仍保留')); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
+  assert.equal(exportMessage(), ''); assert(text(readChain.owner.tree).includes('尚未恢复的两步模型读取错误'))
   const recovery = deferred(), recoveryDraft = readChain.owner.storage.get(readKey)
   readChain.props.load = args => args.compareModelId ? recovery.promise : Promise.resolve(contract.connectionModels(fixture, args))
   await readChain.click('↻')
@@ -415,7 +419,7 @@ try {
       assert.equal(independent.length, kind === 'none' ? 0 : 1, kind + ' has its own operation error before export')
       rejectExport = true
       for (let attempt = 0; attempt < 2; attempt++) {
-        await ui.click('导出推测草稿'); assert(text(ui.owner.tree).includes('受控草稿导出失败，页面文字仍保留'))
+        await ui.click('导出推测草稿'); assert(text(ui.owner.tree).includes('草稿未能导出：受控草稿导出失败。全部草稿仍保留'))
         for (const message of independent) assert(text(ui.owner.tree).includes(message), 'Export failure cannot replace another error')
         assert.equal(exportDownloads.length, count); assert.equal(ui.owner.storage.get(readKey), cached)
       }

@@ -22,6 +22,26 @@ const React = {
 }
 const context = { window: { React, confirm: () => confirm, addEventListener: (key, fn) => events.set(key, fn), removeEventListener: key => events.delete(key) }, console, AbortController, setTimeout, clearTimeout,
   sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => { if (storageFailure) throw new Error('Quota'); storage.set(key, value) } } }
+let downloadFailure = '', nextUrl = 0
+const downloadUrls = new Map(), downloadAnchors = new Set(), downloads = [], downloadCleanup = []
+context.Blob = Blob
+const createObjectURL = blob => {
+  if (downloadFailure === 'url') throw new Error('Object URL unavailable')
+  const url = 'blob:chain-' + ++nextUrl; downloadUrls.set(url, blob); return url
+}
+context.URL = { createObjectURL, revokeObjectURL: url => downloadUrls.delete(url) }
+context.document = {
+  body: { appendChild(anchor) { if (downloadFailure === 'append') throw new Error('Append denied'); downloadAnchors.add(anchor) } },
+  createElement() {
+    if (downloadFailure === 'element') throw new Error('Element unavailable')
+    return { style: {}, remove() { downloadAnchors.delete(this) }, click() {
+      if (downloadFailure === 'null') throw null
+      if (downloadFailure === 'click') throw new Error('Download blocked')
+      downloads.push({ blob: downloadUrls.get(this.href), filename: this.download })
+    } }
+  },
+}
+context.setTimeout = (fn, delay) => delay === 1200 ? downloadCleanup.push(fn) : setTimeout(fn, delay)
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 let Component = context.window.KGViewer.ConnectionModelChain
 const load = (args, signal) => {
@@ -50,6 +70,9 @@ function render() {
     }
     for (const node of all(tree, el => el.props['aria-label'] === '两步模型读取状态' && el.props.ref)) {
       node.props.ref.current = { focus: () => { owner.pairFocused = (owner.pairFocused || 0) + 1 } }
+    }
+    for (const node of all(tree, el => el.props['aria-label'] === '草稿导出状态' && el.props.ref)) {
+      node.props.ref.current = { focus: () => { owner.exportFocused = (owner.exportFocused || 0) + 1 } }
     }
     owner.effects.splice(0).forEach(fn => fn())
     if (!updates.length) return
@@ -194,6 +217,64 @@ try {
   assert(text(tree).includes('fare-slot → expense：14'))
   assert(text(tree).includes('尚未独立核验'))
   assert(button('导出推测草稿'))
+  const exportSnapshot = () => ({
+    fields: all(tree, el => ['textarea', 'select', 'input'].includes(el.type)).map(el => [el.props['aria-label'], el.props.value, el.props.checked]),
+    cache: storage.get(storedKey), check: text(all(tree, el => el.props['aria-label'] === '推测缺口检查')),
+    reads: requests.length, closing: closingWarned(),
+  })
+  const beforeExports = exportSnapshot()
+  for (const failure of ['unavailable', 'url', 'element', 'append', 'click', 'click', 'null']) {
+    downloadFailure = failure
+    context.URL.createObjectURL = failure === 'unavailable' ? undefined : createObjectURL
+    const previousFocus = owner.exportFocused || 0
+    click('导出推测草稿')
+    assert.equal(downloadUrls.size, 0, 'failed downloads must release any object URL: ' + failure)
+    assert.equal(downloadAnchors.size, 0, 'failed downloads must remove the temporary anchor: ' + failure)
+    assert.equal(downloads.length, 0)
+    const status = all(tree, el => el.props['aria-label'] === '草稿导出状态')[0]
+    assert(status, 'export feedback stays next to the export action')
+    assert.equal(status.props.tabIndex, -1)
+    assert.equal(all(status, el => el.props.role === 'alert').length, 1)
+    assert(text(status).includes('草稿未能导出') && text(status).includes('重试') && text(status).includes('仍保留'))
+    assert.equal(owner.exportFocused, previousFocus + 1, 'each explicit failure reveals its feedback, including repeated errors')
+    const topChildren = tree.props.children.flat()
+    assert.equal(topChildren[topChildren.indexOf(status) - 1].props.className, 'kg-model-toolbar')
+    assert.deepEqual(exportSnapshot(), beforeExports, 'export failure cannot mutate any field, cached identity/revision, check or close protection')
+    render(); assert.equal(owner.exportFocused, previousFocus + 1, 'unrelated renders must not steal focus')
+  }
+  downloadFailure = ''; context.URL.createObjectURL = createObjectURL
+  click('导出推测草稿')
+  assert.equal(downloads.length, 1)
+  assert.equal(downloadAnchors.size, 0)
+  assert.equal(downloadUrls.size, 1, 'keep the successful object URL alive until the browser can consume it')
+  assert.equal(downloadCleanup.length, 1)
+  const exported = JSON.parse(await downloads[0].blob.text())
+  assert.equal(downloads[0].filename, 'model-chain-draft.json')
+  assert.deepEqual(exported.draft, JSON.parse(beforeExports.cache).draft)
+  assert.equal(exported.documentId, document.documentId); assert.equal(exported.revision, 1)
+  assert.deepEqual(exported.modelIds, ['taxi', 'budget-model'])
+  assert.equal(exported.persisted, false); assert.equal(exported.status, 'worksheet_complete')
+  const exportStatus = all(tree, el => el.props['aria-label'] === '草稿导出状态')[0]
+  assert.equal(all(exportStatus, el => el.props.role === 'alert').length, 0)
+  assert(text(exportStatus).includes('已请求下载') && !text(exportStatus).includes('导出成功'), 'dispatch alone is not proof of a saved file')
+  assert.deepEqual(exportSnapshot(), beforeExports, 'retry preserves the exact draft and existing check')
+  downloadCleanup.splice(0).forEach(fn => fn()); assert.equal(downloadUrls.size, 0)
+  async function retryBackup(expectedDraft, expectedRevision) {
+    const before = exportSnapshot(), count = downloads.length
+    downloadFailure = 'click'; click('导出推测草稿')
+    assert(text(all(tree, el => el.props['aria-label'] === '草稿导出状态')).includes('草稿未能导出'))
+    assert.equal(downloads.length, count); assert.equal(downloadUrls.size, 0); assert.equal(downloadAnchors.size, 0)
+    assert.deepEqual(exportSnapshot(), before)
+    downloadFailure = ''; click('导出推测草稿')
+    const value = JSON.parse(await downloads[count].blob.text())
+    assert.deepEqual(value.draft, expectedDraft)
+    assert.equal(value.revision, expectedRevision)
+    assert.equal(value.documentId, document.documentId)
+    assert.deepEqual(value.modelIds, expectedDraft.steps.map(step => step.modelId))
+    assert.equal(value.status, undefined, 'an unchecked or stale backup must not acquire a check receipt')
+    assert.deepEqual(exportSnapshot(), before)
+    downloadCleanup.splice(0).forEach(fn => fn()); assert.equal(downloadUrls.size, 0)
+  }
   const cachedBeforePaging = storage.get(storedKey), readsBeforePaging = requests.length
   const oldNextPage = button('下一页第 2 步模型').props.onClick
   paused = true
@@ -426,6 +507,7 @@ try {
   assert(button('对照后使用当前版本').props.disabled, 'a failed newer model read cannot approve old draft text against the current version')
   assert(!button('导出推测草稿').props.disabled)
   assert.equal(storage.get(storedKey), oldSourceDraft)
+  await retryBackup(JSON.parse(oldSourceDraft).draft, 1)
   click('重新读取两步推测模型'); await settle()
   assert(text(tree).includes('草稿来源版本 1，当前版本 2'))
   assert(text(tree).includes('草稿来源版本 1 · 已读取模型版本 2'))
@@ -437,6 +519,8 @@ try {
   storageFailure = true; fill('推测目标', '缓存失败也保留页面文字')
   assert(text(tree).includes('标签页草稿未缓存'))
   assert.equal(input('推测目标').props.value, '缓存失败也保留页面文字')
+  await retryBackup({ ...JSON.parse(storage.get(storedKey)).draft, goal: '缓存失败也保留页面文字' }, 2)
+  assert(text(tree).includes('标签页草稿未缓存'), 'export retry cannot dismiss a separate storage failure')
   const privateFields = () => all(tree, el => ['textarea', 'select'].includes(el.type)).map(el => [el.props['aria-label'], el.props.value])
   const uncachedFields = privateFields()
   props.modelId = 'budget-model'; render(); await settle()
@@ -632,5 +716,5 @@ try {
   assert.equal(chainChild.props.modelId, 'taxi')
   deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
   assert(all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0].props.active)
-  console.log('model chain UI: actual production route, window memory fallback by document/model, retained owner through detail reads, uncached source revision and malformed-cache private edits preserved, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  console.log('model chain UI: actual production route, window memory fallback by document/model, retained owner through detail reads, uncached source revision and malformed-cache private edits preserved, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, export failures and retries preserve checked/stale/uncached drafts, download cleanup and focused feedback, draft import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
