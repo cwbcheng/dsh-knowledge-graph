@@ -5076,7 +5076,10 @@
         const [sourceError, setSourceError] = useState('')
         const [pairFailure, setPairFailure] = useState(null)
         const [pairRetry, setPairRetry] = useState(0), pairRetryRequest = useRef(null), pairStatusRef = useRef(null), pairContext = useRef(null)
-        const [exportError, setExportError] = useState('')
+        const [exportFeedback, setExportFeedback] = useState(null), exportStatusRef = useRef(null)
+        useEffect(() => {
+          if (active && exportFeedback?.error) exportStatusRef.current?.focus?.()
+        }, [exportFeedback])
         const [incoming, setIncoming] = useState(null), [importing, setImporting] = useState(false)
         const [importError, setImportError] = useState(''), [importNotice, setImportNotice] = useState('')
         const importInput = useRef(null), importSequence = useRef(0), importAbort = useRef(null)
@@ -5149,7 +5152,7 @@
         const location = useConnectionModelLocation(locationScope, active)
         useEffect(() => { setSourceError('') }, [locationScope, active])
         const cancelImport = (keepNotice = false) => { importSequence.current++; importAbort.current?.abort(); setIncoming(null); setImporting(false); setImportError(''); if (!keepNotice) setImportNotice('') }
-        const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); setExportError(''); cancelImport(keepImportNotice) }
+        const invalidate = (keepImportNotice = false) => { checkSequence.current++; checkAbort.current?.abort(); checkPending.current = false; setChecking(false); setResult(null); setError(''); setExportFeedback(null); cancelImport(keepImportNotice) }
         useEffect(() => { setWork(restore()); invalidate(); setQuery(''); setSearch(''); setOffset(0); setStorageError('') }, [documentId, modelId])
         useEffect(() => {
           cancelImport()
@@ -5244,8 +5247,10 @@
               modelIds: draft.steps.map(step => step.modelId), draft }
             MODEL_CHAIN_TOOLS.validateDraft(value.draft)
             if (!downloadBrowserBlob(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }), 'model-chain-draft.json')) throw new Error('当前浏览器无法导出草稿')
-            setExportError('')
-          } catch (reason) { setExportError(reason.message + '，页面文字仍保留') }
+            setExportFeedback({ message: '已请求下载草稿，请在浏览器下载列表中确认文件。页面草稿仍保留。' })
+          } catch (reason) {
+            setExportFeedback({ error: true, message: '草稿未能导出：' + (reason?.message || '下载未能启动') + '。全部草稿仍保留，请保留当前页面并重试导出。' })
+          }
         }
         const check = async () => {
           if (!pair || stale || checkPending.current) return
@@ -5399,13 +5404,14 @@
             pairError ? h('div', { role: 'alert' }, h('p', null, '两步模型读取失败：' + pairError),
               h('button', { type: 'button', className: 'kg-secondary', disabled: loading, onClick: retryPair }, '重试读取两步模型')) : null),
           sourceError ? h('p', { role: 'alert' }, sourceError) : null,
-          exportError ? h('p', { role: 'alert' }, exportError) : null,
           pair ? h('div', { className: 'kg-model-compare-grid' }, stepEditor(pair.left, 0), stepEditor(pair.right, 1)) : peerId ?
             h('section', { 'aria-label': '已保留的两步草稿' },
               h('p', { className: 'kg-model-warning' }, '模型尚未读取，草稿文字仍保留。以下只读内容尚未与请求版本对照；可导出备份，重新读取模型后继续核对。'),
               h('div', { className: 'kg-model-compare-grid' }, draft.steps.map(savedStep))) : null,
           h('div', { className: 'kg-model-toolbar' }, h('button', { type: 'button', className: 'kg-primary', disabled: !pair || stale || checking, onClick: check }, checking ? '检查中…' : '检查推测缺口'),
             h('button', { type: 'button', className: 'kg-secondary', disabled: !peerId, onClick: exportDraft }, '导出推测草稿')),
+          h('section', { 'aria-label': '草稿导出状态', tabIndex: -1, ref: exportStatusRef },
+            exportFeedback ? h('p', { role: exportFeedback.error ? 'alert' : 'status' }, exportFeedback.message) : null),
           checked ? h('section', { className: 'kg-chain-result', 'aria-label': '推测缺口检查' },
             h('h4', { role: 'status' }, checked.status === 'blocked' ? '停在第 ' + checked.firstStop + ' 步 · ' + checked.issues.length + ' 处缺口' : '草稿字段已齐备 · 相容性与结果尚未独立核验'),
             checked.issues.map((item, index) => h('p', { key: index, className: 'kg-model-warning' }, item.message)),
@@ -6752,16 +6758,28 @@
       function downloadBrowserBlob(blob, filename, ctx) {
         if (!blob || typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false
         const url = URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = filename
-        anchor.style.display = 'none'
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
+        let anchor, dispatched = false
         const revoke = () => { try { URL.revokeObjectURL(url) } catch (e) {} }
-        if (ctx && typeof ctx.timeout === 'function') ctx.timeout(revoke, 1200)
-        else revoke()
+        try {
+          anchor = document.createElement('a')
+          anchor.href = url
+          anchor.download = filename
+          anchor.style.display = 'none'
+          document.body.appendChild(anchor)
+          anchor.click()
+          dispatched = true
+        } finally {
+          try { anchor?.remove() } catch (e) {}
+          if (!dispatched) revoke()
+          else {
+            // Give the browser time to consume a dispatched download; a failed
+            // dispatch releases both resources immediately, without touching drafts.
+            try {
+              if (ctx && typeof ctx.timeout === 'function') ctx.timeout(revoke, 1200)
+              else setTimeout(revoke, 1200)
+            } catch (e) { revoke() }
+          }
+        }
         return true
       }
       function exportGraphFile(graph, title, kind, ctx) {
