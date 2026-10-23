@@ -8,7 +8,7 @@ const harness = await modelLearningHarness()
 const { store, document, post } = harness
 let owner = { slots: [], effects: [] }, cursor = 0, tree
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = []
-let paused = false, loseSave = true, loseReveal = true, loseReview = true
+let paused = false, loseSave = true, loseReveal = true, loseReview = true, storageFailure = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -26,7 +26,10 @@ const React = {
 }
 const context = { window: { React, confirm: () => true, addEventListener: (key, fn) => events.set(key, fn),
   removeEventListener: key => events.delete(key) }, console, AbortController,
-  crypto: { randomUUID }, sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } }
+  crypto: { randomUUID }, sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => {
+    if (storageFailure) throw new Error('QuotaExceededError')
+    storage.set(key, value)
+  }, removeItem: key => storage.delete(key) } }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 const Component = context.window.KGViewer.ModelLearningPanel
 assert.equal(typeof Component, 'function')
@@ -69,6 +72,25 @@ try {
   assert(button('保存预测').props.disabled)
   const fields = { inputs: '输入', mapping: '联结与推理', outputs: '输出', boundary: '适用条件与失效边界',
     scenario: '具体的新情境', prediction: '我的预测', check: '可观察的验证依据' }
+  storageFailure = true
+  for (const exercise of ['prediction', 'counterexample']) {
+    props.exercise = exercise; render(); await settle()
+    const prediction = exercise === 'counterexample' ? '改变后的预测' : '我的预测'
+    const privateFields = { [prediction]: '未提交的私人预测\n仍需核验。', '适用条件与失效边界': '仅限简化模型\n夜间附加费未核验。',
+      ...(exercise === 'counterexample' ? { '只改变的一项与保持不变的条件': '只改变距离\n时间条件保持不变。',
+        '什么观察结果会反驳这条规律': '需实际观察\n计划不是已发生的证据。' } : {}) }
+    for (const [label, value] of Object.entries(privateFields)) fill(label, value)
+    fill('此前的原文接触', 'seen')
+    assert(text(tree).includes('草稿缓存不可用'))
+    props.active = false; render(); assert.equal(tree, null)
+    props.active = true; render(); await settle()
+    for (const [label, value] of Object.entries(privateFields)) assert.equal(input(label).props.value, value, 'Unavailable storage must not erase in-window ' + exercise + ' drafts')
+    assert.equal(input('此前的原文接触').props.value, 'seen')
+    assert.equal(store.listLearningAttempts(document.documentId, 'taxi').length, 0, 'Retaining drafts must not save practice records')
+    for (const label of Object.keys(privateFields)) fill(label, '')
+    fill('此前的原文接触', 'unsure')
+  }
+  storageFailure = false; props.exercise = 'prediction'; render(); await settle()
   for (const [key, label] of Object.entries(fields)) fill(label, learnerResponse[key])
   fill('此前的原文接触', 'unsure')
   props.active = false; render(); assert.equal(tree, null)
