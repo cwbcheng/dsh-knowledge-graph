@@ -311,6 +311,62 @@ try {
   assert.equal(JSON.parse(storage.get(cachedReviewKey)).reflection, newerCachedReview.reflection,
     'A receipt must also preserve a newer cached draft when memory still matches the submitted content')
   assert.equal(JSON.stringify(store.getDocument(document.documentId)), beforeHiddenGraph)
+  click('另开一次预测')
+  for (const [key, label] of Object.entries(fields)) fill(label, learnerResponse[key])
+  loseSave = true; click('保存预测'); await settle()
+  assert(text(tree).includes('Lost save response'))
+  const recoverablePrediction = store.listLearningAttempts(document.documentId, 'taxi').find(item => !item.revealedAt)
+  assert(recoverablePrediction)
+  const normalRead = props.call; let releasePredictionRead
+  props.call = (args, signal) => args.action === 'get' ? new Promise((resolve, reject) => {
+    releasePredictionRead = () => normalRead(args, signal).then(resolve, reject)
+  }) : normalRead(args, signal)
+  render(); click('重新读取学习记录'); await settle(); assert(releasePredictionRead)
+  storageFailure = true
+  const newerPrediction = '重读尚未返回时新写的私人预测\n仍需核对边界和附加费用。'
+  fill('我的预测', newerPrediction)
+  releasePredictionRead(); await settle()
+  assert.equal(input('我的预测').props.value, newerPrediction, 'A late save-recovery read must not clear a newer prediction draft')
+  assert.equal(store.getLearningAttempt(recoverablePrediction.attemptId).response.prediction, learnerResponse.prediction)
+  props.call = normalRead; render()
+  storageFailure = false
+  for (const [key, label] of Object.entries(fields)) fill(label, learnerResponse[key])
+  loseSave = true; click('保存预测'); await settle()
+  assert(text(tree).includes('Lost save response')); remount(); await settle()
+  const recoveryReads = []
+  props.call = (args, signal) => args.action === 'get' ? new Promise((resolve, reject) => {
+    recoveryReads.push(() => normalRead(args, signal).then(resolve, reject))
+  }) : normalRead(args, signal)
+  render(); click('重新读取学习记录'); await settle()
+  click('重新读取学习记录'); await settle(); assert.equal(recoveryReads.length, 2)
+  recoveryReads[0](); await settle()
+  assert.equal(input('我的预测').props.value, learnerResponse.prediction, 'Only the newest recovery read may acknowledge the submitted draft')
+  recoveryReads[1](); await settle()
+  assert(text(tree).includes('已确认此前保存的预测'), 'An unchanged cached draft still recovers after remount')
+  props.call = normalRead; render(); click('另开一次预测')
+  for (const [key, label] of Object.entries(fields)) fill(label, learnerResponse[key])
+  loseSave = true; click('保存预测'); await settle()
+  const selectedReads = []
+  props.call = (args, signal) => args.action === 'get' ? new Promise((resolve, reject) => {
+    selectedReads.push(() => normalRead(args, signal).then(resolve, reject))
+  }) : normalRead(args, signal)
+  render(); click('重新读取学习记录'); await settle()
+  openRecord('hidden-review-a'); await settle(); assert.equal(selectedReads.length, 1)
+  selectedReads[0](); await settle()
+  assert(all(tree, el => el.type === 'button' && el.props.key === 'hidden-review-a')[0].props['aria-pressed'],
+    'A recovery read must not replace a subsequently selected history record')
+  click('返回未保存的预测草稿'); click('重新读取学习记录'); await settle()
+  const submittedCacheKey = [...storage.keys()].find(key => {
+    try { return key.startsWith('dsh-kg-model-learning:') && JSON.parse(storage.get(key)).submitted === true } catch { return false }
+  }); assert(submittedCacheKey)
+  const newerCachedPrediction = JSON.parse(storage.get(submittedCacheKey))
+  newerCachedPrediction.fields.prediction = '另一份较新的缓存预测，尚未提交。'
+  storage.set(submittedCacheKey, JSON.stringify(newerCachedPrediction))
+  selectedReads[1](); await settle()
+  assert.equal(JSON.parse(storage.get(submittedCacheKey)).fields.prediction, newerCachedPrediction.fields.prediction,
+    'Recovery cannot delete a newer cached draft even if the rendered draft has not changed')
+  props.call = normalRead; render()
+  assert.equal(JSON.stringify(store.getDocument(document.documentId)), beforeHiddenGraph)
   console.log(JSON.stringify({ ok: true, actualSqliteHttpRoutes: true, concealedUntilSavedReveal: true,
     lostResponseRetries: true, scopeRaceFenced: true, draftsPreserved: true, oldSourceExplicit: true,
     oldVersionSaveAcknowledged: true, conflictingReflectionPreserved: true }))
