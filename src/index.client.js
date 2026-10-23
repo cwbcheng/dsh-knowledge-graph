@@ -7333,6 +7333,7 @@ export default function clientPlugin() {
         const [message, setMessage] = useState(''), [error, setError] = useState(''), [reload, setReload] = useState(0)
         const scope = useRef(contextKey), sequence = useRef(0), operation = useRef(0), locked = useRef(false)
         const api = useRef(call), drafts = useRef(new Map())
+        const currentView = useRef(null), readback = useRef(0)
         // Feedback children suspend with practice, while their private drafts
         // must survive inside this owner when browser storage cannot be written.
         const feedbackDrafts = useRef(new Map())
@@ -7345,7 +7346,7 @@ export default function clientPlugin() {
         const locateInScope = useConnectionModelLocation(locationKey, canLocate)
         useEffect(() => { setLocationError('') }, [locationKey, canLocate])
         const locate = reference => locateInScope(reference, onLocate, reason => setLocationError(reason.message || '原文定位失败，请重试'))
-        api.current = call; scope.current = contextKey
+        api.current = call; scope.current = contextKey; currentView.current = { draft, opened }
         const blank = () => ({ revision, fields: Object.fromEntries(Object.keys(labels).map(field => [field, ''])), sourceExposure: 'unsure', attemptId: '', submitted: false })
         const hasDraft = value => value && (value.submitted || value.sourceExposure !== 'unsure' || Object.values(value.fields).some(text => text.trim()))
         const hasReview = value => value && (value.reflection?.trim() || value.nextCheck?.trim() || value.diagnosis !== 'unsure' || value.selfRating !== 'uncertain')
@@ -7481,19 +7482,27 @@ export default function clientPlugin() {
         }
         const open = item => { if (!busy) { setOpened(item); setMessage(''); setError('') } }
         const refresh = async () => {
+          const request = ++readback.current
           setReload(value => value + 1)
           if (locked.current) return
           const id = opened?.attemptId || (draft?.submitted ? draft.attemptId : '')
           if (!id) return
-          const capturedScope = contextKey, capturedDraft = draft
+          const capturedScope = contextKey, capturedDraft = draft, capturedOperation = operation.current, selectedId = opened?.attemptId || ''
+          const isCurrent = () => scope.current === capturedScope && operation.current === capturedOperation && readback.current === request &&
+            currentView.current.draft === capturedDraft && (currentView.current.opened?.attemptId || '') === selectedId
           try {
             const attempt = record(await api.current({ action: 'get', documentId, modelId, exercise, attemptId: id }))
-            if (scope.current !== capturedScope) return
+            if (!isCurrent()) return
+            if (attempt.attemptId !== id) throw new Error('返回的练习标识不一致；当前草稿保留。')
+            if (currentView.current.opened?.version > attempt.version) return
             if (!opened && capturedDraft?.submitted && Object.keys(labels).every(name =>
               attempt.response[name] === capturedDraft.fields[name].trim()) && attempt.response.sourceExposure === capturedDraft.sourceExposure) {
+              const submittedContent = JSON.stringify(capturedDraft), cached = globalThis.sessionStorage?.getItem(storageKey)
+              if (JSON.stringify(readDraft(storageKey)) !== submittedContent ||
+                  cached && JSON.stringify(JSON.parse(cached)) !== submittedContent) return
               remember(storageKey, null); setDraft(blank()); setOpened(attempt); setMessage('已确认此前保存的预测；原版本保持不变')
             } else setOpened(current => current?.attemptId === id ? attempt : current)
-          } catch (reason) { if (scope.current === capturedScope) setError(reason.message || '记录读取失败') }
+          } catch (reason) { if (isCurrent()) setError(reason.message || '记录读取失败') }
         }
         const field = name => h('label', { key: name }, labels[name], h('textarea', { value: draft.fields[name], maxLength: limits[name],
           'aria-label': labels[name], disabled: busy, onChange: event => change(name, event.target.value) }))
