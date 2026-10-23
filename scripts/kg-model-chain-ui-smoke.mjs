@@ -416,6 +416,20 @@ try {
   storageFailure = true; fill('推测目标', '缓存失败也保留页面文字')
   assert(text(tree).includes('标签页草稿未缓存'))
   assert.equal(input('推测目标').props.value, '缓存失败也保留页面文字')
+  const privateFields = () => all(tree, el => ['textarea', 'select'].includes(el.type)).map(el => [el.props['aria-label'], el.props.value])
+  const uncachedFields = privateFields()
+  props.modelId = 'budget-model'; render(); await settle()
+  assert.equal(input('推测目标').props.value, '', 'Another model must not display the private chain')
+  props.modelId = 'taxi'; render(); await settle()
+  assert.equal(input('推测目标').props.value, '缓存失败也保留页面文字', 'Returning to a model retains newer memory instead of the older browser cache')
+  assert.deepEqual(privateFields(), uncachedFields, 'All branch, binding, condition and prediction fields survive scope changes')
+  assert(text(tree).includes('标签页草稿未缓存'))
+  props.modelId = 'budget-model'; render(); await settle()
+  props.modelId = 'taxi'; props.revision = 3; render(); await settle()
+  assert(text(tree).includes('草稿来源版本 2') && text(tree).includes('请求模型版本 3'))
+  assert.equal(input('推测目标').props.value, '缓存失败也保留页面文字', 'Restoring memory must not rebase its source version')
+  assert(button('检查推测缺口').props.disabled)
+  props.revision = 2; render(); await settle(); assert.deepEqual(privateFields(), uncachedFields)
   storageFailure = false
   await importFile(exchange()); await settle(); click('确认替换为导入草稿'); await settle()
   assert(text(tree).includes('草稿来源版本 1，当前版本 2'))
@@ -438,6 +452,10 @@ try {
   mount({ ...basicProps, revision: 2 }); await settle()
   assert(text(tree).includes('原缓存未覆盖')); assert.equal(storage.get(storedKey), '{broken')
   fill('具体情境', '暂时编辑的情境'); assert.equal(storage.get(storedKey), '{broken')
+  props.modelId = 'budget-model'; render(); await settle()
+  props.modelId = 'taxi'; render(); await settle()
+  assert.equal(input('具体情境').props.value, '暂时编辑的情境', 'A private edit survives even when the original cache is malformed')
+  assert(text(tree).includes('原缓存未覆盖')); assert.equal(storage.get(storedKey), '{broken')
   confirm = false; click('重新建立标签页草稿'); assert.equal(storage.get(storedKey), '{broken')
   confirm = true; click('重新建立标签页草稿'); assert.notEqual(storage.get(storedKey), '{broken')
   assert.deepEqual(store.getDocumentSourceUnits(document.documentId), unitsBefore)
@@ -565,6 +583,9 @@ try {
     deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
     storage.set(storedKey, JSON.stringify(savedWork))
   }
+  mount({ ...basicProps, revision: 2, modelId: '', active: false }); await settle()
+  assert.equal(tree, null)
+  assert(!storage.has('dsh-kg-model-chain:' + JSON.stringify([document.documentId, ''])), 'An unselected retained owner does not write an invalid blank-model cache')
   Component = context.window.KGViewer.ConnectionModelPanel
   oldHost = true
   mount({ documentId: document.documentId, revision: 2, load,
@@ -583,5 +604,12 @@ try {
   chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
   assert.equal(chainChild.props.modelId, 'taxi')
   assert(chainChild.props.active, 'return restores the chain tab, not just the previous model identity')
-  console.log('model chain UI: actual production route, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
+  paused = true; click('重新读取模型')
+  chainChild = all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0]
+  assert(chainChild, 'Detail reads keep the private chain owner mounted')
+  assert.equal(chainChild.props.active, false, 'No chain reads or hidden focus while parent details are unavailable')
+  assert.equal(chainChild.props.modelId, 'taxi')
+  deferred.splice(0).forEach(item => item.resolve()); paused = false; await settle()
+  assert(all(tree, el => el.type === context.window.KGViewer.ConnectionModelChain)[0].props.active)
+  console.log('model chain UI: actual production route, window memory fallback by document/model, retained owner through detail reads, uncached source revision and malformed-cache private edits preserved, readable private steps through pending/failed/rejected model reads, source/request versions and first-render isolation, inactive input text and old slots, persistent candidate paging and focus, independent catalogue/model retries, single-flight and eight retired retry contexts, preserved checks, explicit selection, draft export/import preview and confirmation, untrusted receipts, import races, mode-preserving cache, stale guards, source CAS rebase, malformed cache and no learner writes passed')
 } finally { owner.slots.forEach(state => state.cleanup?.()); harness.stop() }
