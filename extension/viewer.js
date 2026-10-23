@@ -4770,13 +4770,6 @@
                     'aria-pressed': exercise === id, onClick: () => setExercise(id) }, label))) : null,
                 h(ModelLearningHistoryPanel, { documentId, revision, modelId, active: active && tab === 'history' && detail.modelLearningHistoryVersion === 1, call: learningCall,
                   onOpen: item => { setExercise(item.exercise); setPracticeRequest({ ...item, nonce: Date.now() + Math.random() }); setTab('learn') } }),
-                h(ModelLearningPanel, { documentId, revision, modelId, exercise, active: active && tab === 'learn', call: learningCall,
-                  focusRequest: practiceRequest?.modelId === modelId ? practiceRequest : null,
-                  feedbackSupported: detail.modelFeedbackVersion === 1,
-                  onUnderstanding: detail.modelUnderstandingVersion === 1 ? item => {
-                    setUnderstandingRequest(item ? { attemptId: item.attemptId, exercise: item.task.exercise || 'prediction', modelId, nonce: Date.now() + Math.random() } : null)
-                    setTab('understanding')
-                  } : undefined, onLocate: locate }),
                 tab === 'materials' ? h('div', null,
                   detail.structure ? h(ModelPairedExamples, { documentId, revision, structure: detail.structure, selectedSlot, selectedExample,
                     onSlot: (slotId, exampleId) => { setSelectedSlot(slotId); setSelectedExample(exampleId) },
@@ -4806,7 +4799,14 @@
                     h('button', { type: 'button', className: 'kg-primary', disabled: saving || busy, onClick: () => reviewRoles(true) }, saving ? '保存中…' : '确认保存方向'),
                     h('button', { type: 'button', className: 'kg-secondary', disabled: saving, onClick: () => setPreview(null) }, '取消预览')) : null) : null) : !modelId && !detailLoading ? h('p', null, '选择一个联结模型') : null,
               // Detail reads may temporarily unmount their facts. Keep the private
-              // editor owner alive so unavailable browser storage cannot erase it.
+              // draft owners alive so unavailable browser storage cannot erase them.
+              h(ModelLearningPanel, { documentId, revision, modelId, exercise, active: active && !!detail && tab === 'learn', call: learningCall,
+                focusRequest: practiceRequest?.modelId === modelId ? practiceRequest : null,
+                feedbackSupported: detail?.modelFeedbackVersion === 1,
+                onUnderstanding: detail?.modelUnderstandingVersion === 1 ? item => {
+                  setUnderstandingRequest(item ? { attemptId: item.attemptId, exercise: item.task.exercise || 'prediction', modelId, nonce: Date.now() + Math.random() } : null)
+                  setTab('understanding')
+                } : undefined, onLocate: locate }),
               h(ModelUnderstandingPanel, { documentId, revision, modelId, active: active && tab === 'understanding' && detail?.modelUnderstandingVersion === 1, call: learningCall,
                 practiceRequest: understandingRequest?.modelId === modelId ? understandingRequest : null,
                 onLocate: locate, onPractice: value => { setExercise(value); setTab('learn') } }),
