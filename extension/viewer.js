@@ -5084,6 +5084,20 @@
         const checkSequence = useRef(0), checkAbort = useRef(null), checkPending = useRef(false)
         const workRef = useRef(work)
         workRef.current = work
+        const hasPrivateDraft = value => {
+          const draft = value?.draft
+          return draft && (draft.scenario.trim() || draft.goal.trim() || draft.steps.some(step => step.branchId
+            || step.conditions.trim() || step.reasoning.trim() || step.outputs.some(output => output.value.trim())
+            || step.inputs.some(input => input.source === 'link' || ['value', 'basis', 'fromSlotId', 'meaning', 'unit', 'timeState', 'objectScope'].some(key => input[key].trim()))))
+        }
+        useEffect(() => {
+          const warn = event => {
+            if (!hasPrivateDraft(workRef.current) && !Array.from(drafts.current.values()).some(hasPrivateDraft)) return
+            event.preventDefault(); event.returnValue = ''
+          }
+          window.addEventListener?.('beforeunload', warn)
+          return () => window.removeEventListener?.('beforeunload', warn)
+        }, [])
         api.current = { load, onLocate, onOpen, onStructure }
         const current = work.scope === scope ? work : empty(), peerId = current.peerId, draft = current.draft
         const catalogKey = JSON.stringify([scope, revision, search, candidatesOnly, offset, reload, catalogRetry])
