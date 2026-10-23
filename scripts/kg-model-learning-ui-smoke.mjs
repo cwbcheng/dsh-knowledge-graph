@@ -252,6 +252,38 @@ try {
   confirmAllowed = true; click('重开当前版本练习')
   assert.equal(input('此前的原文接触').props.value, 'unsure')
   assert(!closingWarned(), 'Explicitly discarded drafts no longer warn')
+  const latestPlan = await post({ action: 'plan', documentId: document.documentId, modelId: 'taxi', expectedRevision: 4 })
+  for (const attemptId of ['hidden-review-a', 'hidden-review-b']) {
+    await post({ action: 'save', documentId: document.documentId, modelId: 'taxi', expectedRevision: 4,
+      taskId: latestPlan.tasks[0].id, attemptId, selfRating: 'uncertain', response: learnerResponse })
+    await post({ action: 'reveal', documentId: document.documentId, modelId: 'taxi', attemptId, expectedVersion: 1 })
+  }
+  const beforeHiddenGraph = JSON.stringify(store.getDocument(document.documentId))
+  const beforeHiddenLearning = JSON.stringify(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all())
+  click('重新读取学习记录'); await settle()
+  const openRecord = id => { const found = all(tree, el => el.type === 'button' && el.props.key === id)[0]; assert(found, id); found.props.onClick(); render() }
+  storageFailure = true
+  openRecord('hidden-review-a'); await settle(); fill('复盘判断', 'boundary')
+  assert(closingWarned())
+  openRecord('hidden-review-b'); await settle()
+  assert.equal(input('复盘判断').props.value, 'unsure', 'Review choices never cross prediction identities')
+  assert(closingWarned(), 'A hidden uncached review must remain protected before closing')
+  openRecord('hidden-review-a'); await settle()
+  assert.equal(input('复盘判断').props.value, 'boundary')
+  fill('保留或修改的理由', '仍待核对的私人复盘\n只适用于上述条件。')
+  openRecord('hidden-review-b'); await settle(); assert(closingWarned(), 'Hidden review text is also protected')
+  openRecord('hidden-review-a'); await settle()
+  assert.equal(input('保留或修改的理由').props.value, '仍待核对的私人复盘\n只适用于上述条件。')
+  fill('复盘判断', 'unsure'); fill('保留或修改的理由', '')
+  openRecord('hidden-review-b'); await settle(); assert(!closingWarned(), 'Restored defaults in all drafts do not warn')
+  click('另开一次预测'); fill('此前的原文接触', 'seen')
+  props.modelId = 'unknown'; render(); await settle()
+  assert(closingWarned(), 'The window also protects a remembered prediction when another model is selected')
+  props.modelId = 'taxi'; render(); await settle(); fill('此前的原文接触', 'unsure')
+  assert(!closingWarned())
+  assert.equal(JSON.stringify(store.getDocument(document.documentId)), beforeHiddenGraph)
+  assert.equal(JSON.stringify(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()), beforeHiddenLearning,
+    'History navigation and close protection never save or revise personal records')
   console.log(JSON.stringify({ ok: true, actualSqliteHttpRoutes: true, concealedUntilSavedReveal: true,
     lostResponseRetries: true, scopeRaceFenced: true, draftsPreserved: true, oldSourceExplicit: true,
     oldVersionSaveAcknowledged: true, conflictingReflectionPreserved: true }))

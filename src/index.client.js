@@ -7400,7 +7400,8 @@ export default function clientPlugin() {
         }, [documentId, modelId, revision, exercise, active, reload, focusRequest?.nonce])
         useEffect(() => {
           const warn = event => {
-            if (hasDraft(draft) || !opened?.review && hasReview(review)
+            const remembered = Array.from(drafts.current.values()).some(value => value?.fields ? hasDraft(value) : hasReview(value))
+            if (remembered || hasDraft(draft) || !opened?.review && hasReview(review)
               || opened?.review && readDraft(storageKey + ':' + opened.attemptId)) {
               event.preventDefault(); event.returnValue = ''
             }
