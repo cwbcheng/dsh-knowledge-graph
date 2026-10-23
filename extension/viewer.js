@@ -5543,7 +5543,7 @@
           try {
             if (value) globalThis.sessionStorage?.setItem(name, JSON.stringify(value))
             else globalThis.sessionStorage?.removeItem(name)
-          } catch { setError('本标签页草稿缓存不可用；未保存的表述只保留在当前窗口。') }
+          } catch { /* Cache status is rendered independently of record read and save errors. */ }
         }
         const validDraft = value => value && Number.isInteger(value.revision) && value.revision > 0 &&
           typeof value.parentAttemptId === 'string' && value.parentAttemptId.length <= 120 &&
@@ -5614,6 +5614,11 @@
         const latest = records[0]
         const task = plan?.documentId === documentId && plan.modelId === modelId && plan.revision === revision ? plan.tasks[0] : null
         const changed = draft && Object.values(draft.fields).some(value => value.trim())
+        const uncachedDraft = (() => {
+          if (!changed && !draft?.practiceIds.length && !draft?.submitted) return false
+          try { return globalThis.sessionStorage?.getItem(storageKey) !== JSON.stringify(draft) }
+          catch { return true }
+        })()
         const change = patch => {
           const next = { ...draft, ...patch, attemptId: uuid(), submitted: false }
           setDraft(next); remember(storageKey, next); setMessage('个人草稿 · 尚未保存')
@@ -5680,6 +5685,7 @@
               disabled: busy || loading, onClick: () => { setError(''); setReload(value => value + 1) } }, '↻')),
           loading ? h('p', { role: 'status' }, '正在读取个人表述与练习…') : null,
           error ? h('p', { role: 'alert' }, error) : null, message ? h('p', { role: 'status' }, message) : null,
+          uncachedDraft ? h('p', { role: 'alert' }, '本标签页草稿缓存不可用；未保存的表述只保留在当前窗口。') : null,
           practiceTarget ? h('div', { className: 'kg-model-record-result' },
             h('strong', null, '待关联的预测 · 图谱第 ' + practiceTarget.baseRevision + ' 版'),
             h('p', null, practiceTarget.response.scenario), h('p', null, '最初预测：' + practiceTarget.response.prediction),
