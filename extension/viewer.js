@@ -6089,6 +6089,8 @@
         const locate = reference => locateInScope(reference, onLocate, reason => setLocationError(reason.message || '原文定位失败，请重试'))
         api.current = call; scope.current = contextKey
         const blank = () => ({ revision, fields: Object.fromEntries(Object.keys(labels).map(field => [field, ''])), sourceExposure: 'unsure', attemptId: '', submitted: false })
+        const hasDraft = value => value && (value.submitted || value.sourceExposure !== 'unsure' || Object.values(value.fields).some(text => text.trim()))
+        const hasReview = value => value && (value.reflection?.trim() || value.nextCheck?.trim() || value.diagnosis !== 'unsure' || value.selfRating !== 'uncertain')
         const readDraft = name => {
           if (drafts.current.has(name)) return drafts.current.get(name)
           try { return JSON.parse(globalThis.sessionStorage?.getItem(name) || 'null') } catch { return null }
@@ -6109,7 +6111,7 @@
           operation.current++; locked.current = false; setBusy(false)
         }, [documentId, modelId, exercise])
         useEffect(() => {
-          setDraft(current => current && !current.submitted && !Object.values(current.fields).some(value => value.trim())
+          setDraft(current => current && !hasDraft(current)
             && current.revision !== revision ? blank() : current)
         }, [revision])
         useEffect(() => {
@@ -6140,7 +6142,7 @@
         }, [documentId, modelId, revision, exercise, active, reload, focusRequest?.nonce])
         useEffect(() => {
           const warn = event => {
-            if (draft && Object.values(draft.fields).some(value => value.trim()) || !opened?.review && (review?.reflection?.trim() || review?.nextCheck?.trim())
+            if (hasDraft(draft) || !opened?.review && hasReview(review)
               || opened?.review && readDraft(storageKey + ':' + opened.attemptId)) {
               event.preventDefault(); event.returnValue = ''
             }
@@ -6170,8 +6172,7 @@
           try { return globalThis.sessionStorage?.getItem(name) !== JSON.stringify(value) }
           catch { return true }
         }
-        const uncachedDraft = draft && (draft.submitted || draft.sourceExposure !== 'unsure' || Object.values(draft.fields).some(value => value.trim()))
-          && differsFromCache(storageKey, draft)
+        const uncachedDraft = hasDraft(draft) && differsFromCache(storageKey, draft)
         const uncachedReview = opened && differsFromCache(storageKey + ':' + opened.attemptId, readDraft(storageKey + ':' + opened.attemptId))
         const record = result => {
           const attempt = result?.attempt
@@ -6205,7 +6206,7 @@
           finally { if (token === operation.current) { locked.current = false; setBusy(false) } }
         }
         const start = () => {
-          const dirty = draft && Object.values(draft.fields).some(value => value.trim()) || pendingReview || review && !opened?.review && (review.reflection?.trim() || review.nextCheck?.trim())
+          const dirty = hasDraft(draft) || pendingReview || !opened?.review && hasReview(review)
           if (busy || dirty && !window.confirm('放弃当前未保存的练习草稿，另开一次预测？')) return
           remember(storageKey, null)
           if (opened) remember(storageKey + ':' + opened.attemptId, null)
@@ -6243,7 +6244,7 @@
             h('span', { className: 'kg-model-meta' }, '个人理解与练习 · 不写入已保存的知识图'),
             h('button', { type: 'button', className: 'kg-secondary', 'aria-label': '重新读取学习记录', title: '重新读取学习记录', disabled: busy || loading, onClick: refresh }, '↻'),
             opened ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: start }, '另开一次预测') : null,
-            opened && draft && (draft.submitted || Object.values(draft.fields).some(value => value.trim())) ?
+            opened && hasDraft(draft) ?
               h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => { setOpened(null); setMessage('已返回原预测草稿，内容未被替换。') } }, '返回未保存的预测草稿') : null,
             opened && onUnderstanding ? h('button', { type: 'button', className: 'kg-secondary', disabled: busy, onClick: () => onUnderstanding(opened) }, '修订我的理解') : null),
           uncachedDraft || uncachedReview ? h('p', { role: 'alert' }, '本标签页的草稿缓存不可用；未保存的内容请保留在当前窗口。') : null,
