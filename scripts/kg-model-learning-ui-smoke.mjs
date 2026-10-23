@@ -113,6 +113,12 @@ try {
   assert.equal(store.listLearningAttempts(document.documentId, 'taxi').length, 1)
   assert(!text(tree).includes('2 km 对应 10 元'))
   assert(text(tree).includes('最初的预测'))
+  const feedback = () => all(tree, el => el.type === context.window.KGViewer.ModelFeedbackPanel)[0]
+  const feedbackMemory = feedback().props.draftMemory
+  assert(feedbackMemory && typeof feedbackMemory.get === 'function', 'Practice owns the fallback for feedback children')
+  props.active = false; render(); assert.equal(tree, null)
+  props.active = true; render(); await settle()
+  assert.equal(feedback().props.draftMemory, feedbackMemory, 'Suspended feedback children resume the same private draft memory')
   click('展开原文对照'); await settle()
   assert(text(tree).includes('Lost reveal response'))
   assert(!text(tree).includes('2 km 对应 10 元'), 'failed reveal is not falsely acknowledged')

@@ -7024,7 +7024,7 @@ export default function clientPlugin() {
               new Date(item.createdAt).toLocaleString('zh-CN') + ' · 图谱第 ' + item.baseRevision + ' 版' + (item.attemptId === latest?.attemptId ? ' · 最新' : '')))))
       }
 
-      function ModelFeedbackPanel({ documentId, modelId, revision, prediction, supported, onLocate, onUnderstanding, focusRequest,
+      function ModelFeedbackPanel({ documentId, modelId, revision, prediction, supported, onLocate, onUnderstanding, focusRequest, draftMemory,
         call = (args, signal) => host.call('learning-mode', args, { signal }) }) {
         const limits = { content: 4000, context: 2000, observedOn: 10, observedTimeZone: 100, sourceName: 500, sourceUrl: 2000, sourceLocator: 1000, rationale: 2000, revisionReason: 2000 }
         const diagnoses = MODEL_FEEDBACK_DIAGNOSES
@@ -7034,7 +7034,7 @@ export default function clientPlugin() {
         const [error, setError] = useState(''), [message, setMessage] = useState(''), [reload, setReload] = useState(0), [ready, setReady] = useState(false)
         const [locationError, setLocationError] = useState('')
         const [materials, setMaterials] = useState(false), [focusedHeads, setFocusedHeads] = useState([]), [resultFocus, setResultFocus] = useState(null)
-        const api = useRef(call), scope = useRef(scopeKey), sequence = useRef(0), operation = useRef(0), lock = useRef(false), drafts = useRef(new Map())
+        const api = useRef(call), scope = useRef(scopeKey), sequence = useRef(0), operation = useRef(0), lock = useRef(false), drafts = useRef(draftMemory || new Map())
         const appliedResultFocus = useRef('')
         api.current = call; scope.current = scopeKey
         const uuid = () => globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random()
@@ -7318,6 +7318,9 @@ export default function clientPlugin() {
         const [message, setMessage] = useState(''), [error, setError] = useState(''), [reload, setReload] = useState(0)
         const scope = useRef(contextKey), sequence = useRef(0), operation = useRef(0), locked = useRef(false)
         const api = useRef(call), drafts = useRef(new Map())
+        // Feedback children suspend with practice, while their private drafts
+        // must survive inside this owner when browser storage cannot be written.
+        const feedbackDrafts = useRef(new Map())
         const appliedFocus = useRef(null)
         const [locationError, setLocationError] = useState('')
         const locationKey = JSON.stringify([contextKey, opened?.attemptId, opened?.version, opened?.baseRevision, opened?.revealedAt,
@@ -7531,6 +7534,7 @@ export default function clientPlugin() {
                   h('p', null, '已保存的复盘不能覆盖；下面这份草稿尚未保存。'),
                   h('p', null, pendingReview.reflection), h('p', null, pendingReview.nextCheck)) : null)) : null,
           opened ? h(ModelFeedbackPanel, { key: JSON.stringify([documentId, modelId, opened.attemptId]), documentId, modelId, revision, prediction: opened,
+            draftMemory: feedbackDrafts.current,
             supported: feedbackSupported && plan?.modelFeedbackVersion === 1, call, onLocate, onUnderstanding,
             focusRequest: focusRequest?.attemptId === opened.attemptId ? focusRequest : null }) : null,
           h('div', { className: 'kg-learning-history' }, h('strong', null, '当前模型的学习记录 · 最近 ' + attempts.length + ' 条'),

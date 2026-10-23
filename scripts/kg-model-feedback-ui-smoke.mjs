@@ -15,7 +15,7 @@ for (const attemptId of ['prediction', 'other-prediction']) await post({ ...base
 let owner = { slots: [], effects: [] }, cursor = 0, tree
 const updates = [], storage = new Map(), events = new Map(), requests = [], deferred = []
 let paused = false, loseSave = true, legacy = false, forged = false, confirm = true
-let diagnosisTransform = null
+let diagnosisTransform = null, storageFailure = false
 const slot = init => { const index = cursor++; return owner.slots[index] ||= init() }
 const React = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -33,7 +33,10 @@ const React = {
 }
 const context = { window: { React, confirm: () => confirm, addEventListener: (key, fn) => events.set(key, fn), removeEventListener: key => events.delete(key) },
   console, URL, AbortController, setTimeout, clearTimeout, crypto: { randomUUID },
-  sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } }
+  sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => {
+    if (storageFailure) throw new Error('QuotaExceededError')
+    storage.set(key, value)
+  }, removeItem: key => storage.delete(key) } }
 runInNewContext(readFileSync(new URL('../extension/viewer.js', import.meta.url), 'utf8'), context)
 let Component = context.window.KGViewer.ModelFeedbackPanel
 assert.equal(typeof Component, 'function')
@@ -76,6 +79,33 @@ const remount = () => { owner.slots.forEach(state => state.cleanup?.()); updates
 const draftKey = () => 'dsh-kg-model-feedback:' + JSON.stringify([props.documentId, props.modelId, props.prediction.attemptId])
 try {
   const before = store.getDocument(document.documentId), unitsBefore = store.getDocumentSourceUnits(document.documentId)
+  const memoryRows = JSON.stringify(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all())
+  props.draftMemory = new Map(); storageFailure = true
+  render(); await settle()
+  fill('反馈来源', 'reflection')
+  const privateFields = { '个人复盘内容': '未提交的私人复盘\n附加收费仍须核对。', '对照情境与前提（可选）': '仅限白天行程\n夜间费用未知。',
+    '比较依据与局限': '尚无实际观察\n不能据此证明预测成立。' }
+  for (const [label, value] of Object.entries(privateFields)) fill(label, value)
+  fill('与最初预测的比较', 'inconclusive'); fill('结果诊断', 'condition')
+  assert(text(tree).includes('结果草稿缓存不可用'))
+  const quotaPrediction = props.prediction
+  remount(); await settle()
+  assert.equal(input('反馈来源').props.value, 'reflection', 'Uncached result source survives child remount inside the same practice owner')
+  for (const [label, value] of Object.entries(privateFields)) assert.equal(input(label).props.value, value)
+  assert.equal(input('与最初预测的比较').props.value, 'inconclusive'); assert.equal(input('结果诊断').props.value, 'condition')
+  props.prediction = store.getLearningAttempt('other-prediction'); remount(); await settle()
+  assert.equal(input('反馈来源').props.value, 'observation'); assert.equal(input('实际观察结果').props.value, '', 'Result drafts cannot cross prediction identity')
+  props.prediction = quotaPrediction; remount(); await settle()
+  for (const [label, value] of Object.entries(privateFields)) assert.equal(input(label).props.value, value)
+  const retained = props.draftMemory.get(draftKey())
+  assert.equal(retained.expectedVersion, quotaPrediction.version); assert.equal(retained.expectedRevision, quotaPrediction.baseRevision)
+  props.prediction = { ...quotaPrediction, version: quotaPrediction.version + 1 }; remount(); await settle()
+  for (const [label, value] of Object.entries(privateFields)) assert.equal(input(label).props.value, value)
+  assert(text(tree).includes('草稿对照的是预测版本 ' + quotaPrediction.version), 'Recovery must not silently adopt a new prediction version')
+  assert(button('保存结果记录').props.disabled)
+  assert.equal(props.draftMemory.get(draftKey()).expectedVersion, quotaPrediction.version)
+  assert.equal(JSON.stringify(store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()), memoryRows, 'Memory recovery never commits result records')
+  props.prediction = quotaPrediction; storageFailure = false; delete props.draftMemory; remount(); await settle()
   render(); await settle()
   // Switching source must not silently discard an undated observation confirmation.
   const sourceSwitchRows = store.db.prepare('SELECT * FROM learning_attempts ORDER BY attempt_id').all()
