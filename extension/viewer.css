@@ -699,6 +699,9 @@
 .kg-minimap { position: absolute; right: 10px; width: 168px; height: 118px; z-index: 6; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-edge-label-bg); box-shadow: 0 4px 14px rgba(0,0,0,.12); cursor: crosshair; touch-action: none; }
 .kg-minimap:hover { border-color: rgba(59,130,246,.55); }
 @media (max-width: 720px) { .kg-minimap { display: none; } }
+/* 折叠的章节节点：虚线描边 + 轻微底纹，读作“这里是一整节”，不是普通概念。 */
+.kg-node-folded > rect { stroke-dasharray: 5 3; fill: rgba(100,116,139,.10) !important; }
+.kg-node-folded .kg-node-name { font-weight: 700; }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
 .kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }

@@ -740,6 +740,9 @@ export default function clientPlugin() {
 .kg-minimap { position: absolute; right: 10px; width: 168px; height: 118px; z-index: 6; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-edge-label-bg); box-shadow: 0 4px 14px rgba(0,0,0,.12); cursor: crosshair; touch-action: none; }
 .kg-minimap:hover { border-color: rgba(59,130,246,.55); }
 @media (max-width: 720px) { .kg-minimap { display: none; } }
+/* 折叠的章节节点：虚线描边 + 轻微底纹，读作“这里是一整节”，不是普通概念。 */
+.kg-node-folded > rect { stroke-dasharray: 5 3; fill: rgba(100,116,139,.10) !important; }
+.kg-node-folded .kg-node-name { font-weight: 700; }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
 .kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }
@@ -9775,6 +9778,72 @@ export default function clientPlugin() {
         }
         return tag + ' · ' + head
       }
+      // 按章节折叠：把同一 sectionId 的节点收成一个合成节点（只影响显示）。
+      // 返回映射后的节点/边、合成节点元数据，以及可折叠章节列表；成员数
+      // 少于 2 的章节不值得折叠，直接被忽略。未折叠节点保持原对象身份，
+      // 便于下游的 memo 缓存继续复用。
+      function foldGraphBySection(nodes, edges, foldedSectionIds) {
+        const list = Array.isArray(nodes) ? nodes : []
+        const requested = foldedSectionIds instanceof Set ? foldedSectionIds : new Set(foldedSectionIds || [])
+        const counts = new Map(), titles = new Map()
+        for (const node of list) {
+          const sectionId = node && node.sectionId
+          if (!sectionId) continue
+          counts.set(sectionId, (counts.get(sectionId) || 0) + 1)
+          if (!titles.has(sectionId) && node.sectionTitle) titles.set(sectionId, node.sectionTitle)
+        }
+        const foldable = [...counts.entries()].filter(([, count]) => count >= 2).map(([id]) => id).sort()
+        const active = new Set(foldable.filter(id => requested.has(id)))
+        if (!active.size) {
+          return { nodes: list, edges: Array.isArray(edges) ? edges : [], map: null, sections: new Map(),
+            foldable, foldedSections: active }
+        }
+        const map = new Map(), sections = new Map(), outNodes = [], emitted = new Set()
+        const seenIds = new Set()
+        for (const node of list) {
+          if (!node || typeof node.id !== 'string' || !node.id || seenIds.has(node.id)) continue
+          seenIds.add(node.id)
+          const sectionId = node.sectionId
+          if (!sectionId || !active.has(sectionId)) {
+            map.set(node.id, node.id)
+            outNodes.push(node)
+            continue
+          }
+          const key = 'section:' + sectionId
+          map.set(node.id, key)
+          if (emitted.has(key)) continue
+          emitted.add(key)
+          const count = counts.get(sectionId) || 0
+          const title = titles.get(sectionId) || sectionId
+          const section = { id: key, sectionId, title, count, members: [] }
+          sections.set(key, section)
+          outNodes.push({ id: key, type: 'concept', text: title + ' · ' + count + ' 个节点',
+            sectionId, sectionTitle: title, folded: true, foldedCount: count })
+          seenIds.add(key)
+        }
+        for (const node of list) {
+          const key = node && map.get(node.id)
+          const section = key ? sections.get(key) : null
+          if (section && key !== node.id) section.members.push(node.id)
+        }
+        const outEdges = [], seen = new Set(), live = new Set(outNodes.map(node => node.id))
+        for (const edge of Array.isArray(edges) ? edges : []) {
+          if (!edge) continue
+          const from = map.get(edge.fromNodeId) || edge.fromNodeId
+          const to = map.get(edge.toNodeId) || edge.toNodeId
+          // 章节内部的关系不再显示：两头都落在同一个合成节点上。
+          if (from === to) continue
+          // 端点必须真实存在（非法输入不能凭空造出悬空关系）。
+          if (!live.has(from) || !live.has(to)) continue
+          const identity = from + '\u0000' + to + '\u0000' + edge.relation
+          if (seen.has(identity)) continue
+          seen.add(identity)
+          outEdges.push(from === edge.fromNodeId && to === edge.toNodeId ? edge
+            : { ...edge, fromNodeId: from, toNodeId: to, foldedEdge: true })
+        }
+        return { nodes: outNodes, edges: outEdges, map, sections, foldable, foldedSections: active }
+      }
+
       function computeNodeSizes(nodes, edges, preparedDegree) {
         const canvas = document.createElement('canvas')
         const g = canvas.getContext('2d')
@@ -12348,24 +12417,50 @@ export default function clientPlugin() {
         const { nodes, edges, layoutMode, height, loading } = props
         const [state, setState] = useState(null)
         const [attempt, setAttempt] = useState(0)
-        const matches = value => value && value.nodes === nodes && value.edges === edges && value.layoutMode === layoutMode && value.attempt === attempt
+        // 按章节折叠只改变显示层：布局、命中、路径、小地图都跑在折叠后的图上。
+        const [foldedSections, setFoldedSections] = useState(() => new Set())
+        const fold = useMemo(() => foldGraphBySection(nodes, edges, foldedSections), [nodes, edges, foldedSections])
+        const viewNodes = fold.nodes, viewEdges = fold.edges
+        const toggleSection = useCallback((sectionId) => {
+          setFoldedSections(previous => {
+            const next = new Set(previous)
+            if (next.has(sectionId)) next.delete(sectionId)
+            else next.add(sectionId)
+            return next
+          })
+        }, [])
+        const foldAllSections = useCallback(() => {
+          setFoldedSections(previous => previous.size ? new Set() : new Set(fold.foldable))
+        }, [fold.foldable])
+        // 换了图（文档或窗口）就恢复成展开状态。
+        useEffect(() => { setFoldedSections(new Set()) }, [nodes])
+        // 外部要求定位某个节点时，先展开它所在的章节，否则会定位不到。
+        useEffect(() => {
+          const id = props.focusReq?.nodeId
+          if (!id || !foldedSections.size) return
+          const target = (nodes || []).find(node => node.id === id)
+          if (target?.sectionId && foldedSections.has(target.sectionId)) toggleSection(target.sectionId)
+        }, [props.focusReq?.seq])
+        const matches = value => value && value.nodes === viewNodes && value.edges === viewEdges && value.layoutMode === layoutMode && value.attempt === attempt
         const current = matches(state) ? state : null
         useEffect(() => {
           const controller = new AbortController()
-          const identity = { nodes, edges, layoutMode, attempt }
+          const identity = { nodes: viewNodes, edges: viewEdges, layoutMode, attempt }
           const update = patch => { if (!controller.signal.aborted) setState(previous => ({ ...(matches(previous) ? previous : identity), ...patch })) }
           update({ progress: { stage: 0, title: '准备节点' }, prepared: null, done: false, error: null })
-          prepareGraphScene(nodes, edges, layoutMode || 'layered', controller.signal, progress => update({ progress }))
+          prepareGraphScene(viewNodes, viewEdges, layoutMode || 'layered', controller.signal, progress => update({ progress }))
             .then(prepared => { if (!controller.signal.aborted) { props.onPrepared?.(prepared); update({ prepared }) } })
             .catch(error => { if (error.name !== 'AbortError') update({ error: error.message || '无法绘制知识图' }) })
           return () => controller.abort()
-        }, [nodes, edges, layoutMode, attempt])
+        }, [viewNodes, viewEdges, layoutMode, attempt])
         const onReady = useCallback(() => {
           setState(previous => matches(previous) ? { ...previous, done: true } : previous)
-        }, [nodes, edges, layoutMode, attempt])
+        }, [viewNodes, viewEdges, layoutMode, attempt])
         const busy = loading || !current || !current.done
         return h('div', { className: 'kg-graph-stage', 'aria-busy': !!busy, style: { height: (height || 560) + 'px' } },
-          current && current.prepared ? h(GraphScene, { ...props, prepared: current.prepared, onReady }) : null,
+          current && current.prepared ? h(GraphScene, { ...props, nodes: viewNodes, edges: viewEdges,
+            foldedSections, foldableSections: fold.foldable, onToggleSection: toggleSection,
+            onFoldAllSections: foldAllSections, prepared: current.prepared, onReady }) : null,
           busy ? h(GraphLoading, { overlay: true, progress: loading ? null : current && current.progress, error: current && current.error,
             onRetry: () => setAttempt(value => value + 1) }) : null)
       }
@@ -12636,7 +12731,7 @@ export default function clientPlugin() {
         return String(value == null ? '' : value).replace(/["\\]/g, '\\$&')
       }
 
-      function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
+      function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom, foldedSections, foldableSections, onToggleSection, onFoldAllSections }) {
         useEffect(() => {
           const controller = new AbortController()
           graphPaint(controller.signal).then(onReady).catch(() => {})
@@ -12820,8 +12915,9 @@ export default function clientPlugin() {
           }
           return { ids, edgeIdx }
         }, [focus, relationIndex])
-        const sceneEdges = useMemo(() => overview
-          ? [...related.edgeIdx].sort((a, b) => a - b).map(index => relationIndex.entries[index])
+        // 折叠视图的边是重连后的聚合边，不能映射回原始关系索引。
+        const foldingActive = useMemo(() => (edges || []).some(edge => edge && edge.foldedEdge), [edges])
+        const sceneEdges = useMemo(() => overview          ? [...related.edgeIdx].sort((a, b) => a - b).map(index => relationIndex.entries[index])
           : relationIndex.entries, [overview, related, relationIndex])
 
         // Hover focus: a pointer-level preview of the selection highlight.
@@ -13478,10 +13574,16 @@ export default function clientPlugin() {
             'data-from-node': edge.fromNodeId, 'data-to-node': edge.toNodeId,
             'aria-pressed': parallelGroup.get(edge)?.length > 1 ? undefined : sel,
             'aria-label': '关系边：' + rel + '（' + edge.fromNodeId + ' → ' + edge.toNodeId + '）',
-            style: { cursor: 'pointer' },
+            style: { cursor: foldingActive ? 'default' : 'pointer' },
             ...interaction,
-            onClick: (e) => { e.stopPropagation(); onSelectEdge(i) },
-            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectEdge(i) } },
+            // 折叠视图里的边是按章节重连出来的，索引对不上原始图，禁用选择以免
+            // 把编辑/校验动作落到另一条真实关系上。
+            onClick: (e) => { e.stopPropagation(); if (!foldingActive) onSelectEdge(i) },
+            onKeyDown: (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              if (!foldingActive) onSelectEdge(i)
+            },
           },
             h('title', null, rel + '：' + edge.fromNodeId + ' → ' + edge.toNodeId),
             h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 14 }),
@@ -13566,7 +13668,7 @@ export default function clientPlugin() {
             next.set(node.id, { node, labels: [
               h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + (node.type === 'image' ? s.h - 40 : 25), textAnchor: 'middle', fontSize: node.type === 'image' ? 12 : (hub ? 13.5 : 13), fontWeight: hub ? 700 : 600 },
                 s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
-              h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
+              h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, node.folded ? '章节' : meta.label),
             ] })
           }
           nodeLabelCache.entries = next
@@ -13603,7 +13705,8 @@ export default function clientPlugin() {
         // nodes still dispatch through the current actions, including badges.
         const nodeActions = useRef(null), nodeCache = useRef(new Map())
         nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail,
-          hoverNode: hoverFocusNode, pickPathNode, pathMode }
+          hoverNode: hoverFocusNode, pickPathNode, pathMode,
+          unfoldSection: onToggleSection }
         const nodeEls = useMemo(() => {
           const next = new Map()
           const elements = visibleNodes.map((node) => {
@@ -13625,7 +13728,7 @@ export default function clientPlugin() {
               return cached.element
             }
             const element = h('g', {
-              key: node.id, className: 'kg-node', role: 'button', tabIndex: 0, 'data-node-id': node.id,
+              key: node.id, className: 'kg-node' + (node.folded ? ' kg-node-folded' : ''), role: 'button', tabIndex: 0, 'data-node-id': node.id,
               'aria-pressed': sel, 'aria-label': aria,
               style: { cursor: 'pointer', opacity: dim ? 0.22 : 1 },
               onPointerDown: (e) => { e.stopPropagation(); nodeActions.current.startPress(e, node) },
@@ -13643,6 +13746,11 @@ export default function clientPlugin() {
                 // Alt+点击 或 路径模式下点击，都是在选路径端点。
                 if ((e.altKey || actions.pathMode) && typeof actions.pickPathNode === 'function') {
                   actions.pickPathNode(node.id)
+                  return
+                }
+                // 折叠的章节节点：点击即展开，不进入选中/编辑流程。
+                if (node.folded && typeof actions.unfoldSection === 'function') {
+                  actions.unfoldSection(node.sectionId)
                   return
                 }
                 actions.onSelectNode(node.id)
@@ -13800,6 +13908,10 @@ export default function clientPlugin() {
             h('button', { type: 'button', title: '返回上一位置', 'aria-label': '返回上一位置', disabled: !navigation.length, onClick: goBack }, '←'),
             onGather ? h('button', { type: 'button', title: '查看选中节点的相关节点', 'aria-label': '查看选中节点的相关节点',
               disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
+            h('button', { type: 'button', title: '按章节折叠：把同一节的节点收成一个节点（再点恢复）',
+              'aria-label': '按章节折叠', 'aria-pressed': !!(foldedSections && foldedSections.size),
+              disabled: !(foldableSections && foldableSections.length),
+              onClick: () => { if (typeof onFoldAllSections === 'function') onFoldAllSections() } }, '▤'),
             h('button', { type: 'button', title: '两点最短关系链：点击后依次选两个节点（也可 Alt+点击第二个节点）',
               'aria-label': '路径', 'aria-pressed': !!pathMode,
               onClick: () => {
