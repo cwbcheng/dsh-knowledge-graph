@@ -406,13 +406,28 @@ assert.equal(captured.size, 0)
 
 // Touchpads send many small Ctrl-wheel deltas. Zero/horizontal-only events do
 // not zoom; ordinary two-finger scrolling and detail panels remain independent.
-for (const input of [{ctrlKey:false,deltaY:20}, {ctrlKey:true,deltaY:0}, {ctrlKey:true,deltaY:NaN},
-  {ctrlKey:true,deltaY:20,target:detailsTarget}]) {
+// A plain wheel over the canvas zooms (Shift keeps page scrolling), so those
+// gestures are asserted separately below instead of being ignored.
+for (const input of [{ctrlKey:true,deltaY:0}, {ctrlKey:true,deltaY:NaN},
+  {ctrlKey:true,deltaY:20,target:detailsTarget}, {shiftKey:true,deltaY:20}]) {
   const before = camera()
   listeners.get('wheel')({ clientX:550,clientY:460,target:nodeTarget,
     preventDefault() { assert.fail('An unrelated wheel event was consumed') }, ...input })
   render()
   assert.equal(camera(), before)
+}
+// Plain wheel is a zoom gesture on the canvas, not a page scroll.
+{
+  const before = cameraValues().k
+  let consumed = false
+  listeners.get('wheel')({ clientX:550,clientY:460,target:nodeTarget, deltaY:-100,
+    preventDefault() { consumed = true } })
+  render()
+  assert(consumed, 'A plain wheel over the canvas is consumed by the graph')
+  assert(cameraValues().k > before, 'A plain wheel zooms the graph in')
+  listeners.get('wheel')({ clientX:550,clientY:460,target:nodeTarget, deltaY:100, preventDefault() {} })
+  render()
+  assert(Math.abs(cameraValues().k - before) < 1e-8, 'Opposite plain-wheel deltas round trip')
 }
 const wheelAtNode = deltaY => {
   listeners.get('wheel')({ctrlKey:true,deltaY,clientX:550,clientY:460,target:nodeTarget,preventDefault(){}})

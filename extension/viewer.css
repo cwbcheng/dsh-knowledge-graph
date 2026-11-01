@@ -668,6 +668,15 @@
 @keyframes kg-graph-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .kg-graph-spinner { animation: none; } }
 .kg-panning .kg-node, .kg-panning .kg-edge { pointer-events: none; }
+/* 悬停聚焦：指针停在一个节点上时，只保留它和一跳邻居的实色，其余淡出。
+   用 class + !important 覆盖元素上的内联透明度，悬停不触发 React 重渲染。 */
+.kg-graph-viewport.kg-hover-focus .kg-node { transition: opacity .12s ease; }
+.kg-graph-viewport.kg-hover-focus .kg-node:not(.kg-hover-near) { opacity: .16 !important; }
+.kg-graph-viewport.kg-hover-focus .kg-edge:not(.kg-hover-near) > path { opacity: .1 !important; }
+.kg-graph-viewport.kg-hover-focus .kg-edge:not(.kg-hover-near) .kg-edge-label { opacity: .1 !important; }
+.kg-graph-viewport.kg-hover-focus .kg-edge.kg-hover-near > path { opacity: 1 !important; }
+.kg-graph-viewport.kg-hover-focus .kg-node.kg-hover-center > rect { filter: drop-shadow(0 0 7px rgba(59,130,246,.85)) !important; }
+@media (prefers-reduced-motion: reduce) { .kg-graph-viewport.kg-hover-focus .kg-node { transition: none; } }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
 .kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }

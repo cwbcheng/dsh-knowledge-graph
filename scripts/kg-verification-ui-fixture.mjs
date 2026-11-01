@@ -27,7 +27,9 @@ const clientSnapshot = clientCommit ? execFileSync('git', ['show', clientCommit 
 if (clientCommit) console.log('CLIENT_REF=' + clientCommit)
 
 const directory = mkdtempSync(join(tmpdir(), 'kg-verification-ui-'))
-process.env.DSH_KG_DB = join(directory, 'fixture.sqlite')
+// A caller may point the fixture at an existing store (for example a copy of a
+// real document's database) instead of the throwaway fixture database.
+process.env.DSH_KG_DB = process.env.DSH_KG_DB || join(directory, 'fixture.sqlite')
 const store = await openSqliteStore(process.env.DSH_KG_DB)
 const documentId = 'verification-fixture'
 const workPackagesMode = process.argv.includes('--work-packages')
@@ -464,6 +466,16 @@ ctx.provide('llm', { stream(request) {
   return stream
 } })
 ctx.provide('webServer', { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } })
+// Serve real canonical images when the caller points the fixture at an
+// attachment object store (used to review image-node rendering locally).
+if (process.env.KG_FIXTURE_ATTACHMENT_STORE && !markdownImageMode) {
+  const attachmentRoot = process.env.KG_FIXTURE_ATTACHMENT_STORE
+  ctx.provide('attachments', { async readImage(ref) {
+    const hex = String(ref?.attachmentId || '').replace(/^sha256:/, '')
+    if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('unsupported fixture attachment id')
+    return { ref, data: readFileSync(join(attachmentRoot, hex.slice(0, 2), hex)) }
+  } })
+}
 if (markdownImageMode) {
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   ctx.provide('attachments', { async readImage(ref) {
@@ -539,8 +551,9 @@ new MutationObserver(observeResponse).observe(document.getElementById('root'),{s
 <script>
 window.fixtureErrors=[];window.addEventListener('error',event=>fixtureErrors.push(event.message));
 async function control(action){await fetch('/fixture/'+action,{method:'POST'})}
-localStorage.setItem('dsh-kg-result-v2',JSON.stringify({documentId:'verification-fixture',title:'Verification fixture'}));
-localStorage.setItem('dsh-kg-traj-result-v2:fixture',JSON.stringify({documentId:'verification-fixture'}));
+const fixtureDoc=new URLSearchParams(location.search).get('doc')||'verification-fixture';
+localStorage.setItem('dsh-kg-result-v2',JSON.stringify({documentId:fixtureDoc,title:'Verification fixture'}));
+localStorage.setItem('dsh-kg-traj-result-v2:fixture',JSON.stringify({documentId:fixtureDoc}));
 window.__ModuleLoader__={load({factory}){
  const client=factory(name=>{if(name==='react')return React;throw new Error('Unexpected module '+name)});
  const slots={inject(){},register(){}};

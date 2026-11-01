@@ -8472,6 +8472,20 @@
         if (lines.length > 4) { lines.length = 4; lines[3] = lines[3].slice(0, 36) + '…' }
         return lines.length > 0 ? lines : ['']
       }
+      // 图片节点的图内标签：图注往往是一整句话，画在卡片里会挤成三行。
+      // 图内只保留「图 N · 短名」，完整图注留给详情卡和悬停提示。
+      function imageCardLabel(node) {
+        const caption = String(node && node.text ? node.text : '').replace(/\s+/g, ' ').trim()
+        const match = /figure-(\d+)$/.exec(String(node && node.id ? node.id : ''))
+        const tag = match ? '图 ' + match[1] : '插图'
+        let head = caption.split(/[：:，,。；;（(]/)[0].trim()
+        if (!head) return tag
+        if (head.length > 12) {
+          const cut = head.lastIndexOf(' ', 12)
+          head = head.slice(0, cut > 6 ? cut : 12).trim() + '…'
+        }
+        return tag + ' · ' + head
+      }
       function computeNodeSizes(nodes, edges, preparedDegree) {
         const canvas = document.createElement('canvas')
         const g = canvas.getContext('2d')
@@ -8484,7 +8498,8 @@
         const out = new Map()
         for (const node of nodes) {
           if (node.type === 'image') {
-            out.set(node.id, { w: 208, h: 194, lines: wrapText(g, node.text, 174).slice(0, 2) })
+            // 比概念卡更矮更窄：缩略图 + 一行短名，避免十几张图占满画布。
+            out.set(node.id, { w: 176, h: 136, lines: wrapText(g, imageCardLabel(node), 150).slice(0, 2), imageCard: true })
             continue
           }
           const meta = TYPE_META[node.type] || { label: '未知' }
@@ -11198,6 +11213,43 @@
         }
       }
 
+      // 悬停聚焦要用的节点集合：被悬停的节点 + 一跳邻居 + 相连的边。
+      // 传 relationIndex.incident 的一页条目，避免每次都线性扫全量关系。
+      function hoverFocusTargets(incidentEntries, nodeId) {
+        const ids = new Set([nodeId])
+        const links = []
+        const seen = new Set()
+        for (const entry of incidentEntries || []) {
+          const edge = entry && entry.edge
+          if (!edge) continue
+          ids.add(edge.fromNodeId)
+          ids.add(edge.toNodeId)
+          const key = edge.fromNodeId + '\u0000' + edge.toNodeId
+          if (seen.has(key)) continue
+          seen.add(key)
+          links.push({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId })
+        }
+        return { ids: [...ids], links }
+      }
+
+      // 画布内的滚轮手势：默认为缩放，Shift 保留页面滚动，Ctrl/Cmd 走高精度
+      // 步长以兼容触控板捏合。返回 null 表示这次事件不该由画布处理。
+      function wheelZoomFactor(event, viewportHeight, clamp) {
+        const deltaY = event && event.deltaY
+        if (!Number.isFinite(deltaY) || deltaY === 0) return null
+        if (event.shiftKey && !event.ctrlKey && !event.metaKey) return null
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (viewportHeight || 0) : 1
+        const speed = (event.ctrlKey || event.metaKey) ? 0.002 : 0.0018
+        return Math.exp(-clamp(deltaY * unit, -100, 100) * speed)
+      }
+
+      // Node ids contain ':' and other selector metacharacters; quotes and
+      // backslashes are the only characters that need escaping inside an
+      // attribute selector's double-quoted value.
+      function cssAttributeValue(value) {
+        return String(value == null ? '' : value).replace(/["\\]/g, '\\$&')
+      }
+
       function GraphScene({ nodes, edges, anchors, visualSource, renderSourceImage, selectedNodeId, selectedEdgeId, focusReq, onSelectNode, onSelectEdge, ctx, height, layoutMode, onLayoutModeChange, issueReport, onQuestionNode, onQuestionEdge, onDeleteEdge, onOpenNodeIssues, exportTitle, prepared, onReady, onGather, transitionFrom }) {
         useEffect(() => {
           const controller = new AbortController()
@@ -11380,6 +11432,49 @@
           ? [...related.edgeIdx].sort((a, b) => a - b).map(index => relationIndex.entries[index])
           : relationIndex.entries, [overview, related, relationIndex])
 
+        // Hover focus: a pointer-level preview of the selection highlight.
+        // Applied by class toggles instead of React state, so sweeping the
+        // pointer across a graph never rebuilds hundreds of SVG nodes.
+        const hoverMarked = useRef({ nodes: [], edges: [] })
+        const clearHoverFocus = useCallback(() => {
+          const el = containerRef.current
+          const marked = hoverMarked.current
+          for (const node of marked.nodes) node.classList.remove('kg-hover-near', 'kg-hover-center')
+          for (const edge of marked.edges) edge.classList.remove('kg-hover-near')
+          marked.nodes = []
+          marked.edges = []
+          if (el && el.classList) el.classList.remove('kg-hover-focus')
+        }, [])
+        const hoverFocusNode = useCallback((nodeId) => {
+          const el = containerRef.current
+          if (!el || !el.classList || typeof el.querySelector !== 'function') return
+          clearHoverFocus()
+          if (!nodeId || selectedNodeId) return
+          const center = el.querySelector('.kg-node[data-node-id="' + cssAttributeValue(nodeId) + '"]')
+          if (!center) return
+          el.classList.add('kg-hover-focus')
+          center.classList.add('kg-hover-near', 'kg-hover-center')
+          hoverMarked.current.nodes.push(center)
+          const targets = hoverFocusTargets(relationIndex.incident.get(nodeId), nodeId)
+          for (const id of targets.ids) {
+            if (id === nodeId) continue
+            const target = el.querySelector('.kg-node[data-node-id="' + cssAttributeValue(id) + '"]')
+            if (target && !target.classList.contains('kg-hover-near')) {
+              target.classList.add('kg-hover-near')
+              hoverMarked.current.nodes.push(target)
+            }
+          }
+          for (const link of targets.links) {
+            for (const group of el.querySelectorAll('.kg-edge[data-from-node="' + cssAttributeValue(link.fromNodeId)
+              + '"][data-to-node="' + cssAttributeValue(link.toNodeId) + '"]')) {
+              group.classList.add('kg-hover-near')
+              hoverMarked.current.edges.push(group)
+            }
+          }
+        }, [clearHoverFocus, relationIndex, selectedNodeId])
+        // A selection or a fresh layout owns the highlight from now on.
+        useEffect(() => () => clearHoverFocus(), [clearHoverFocus, selectedNodeId, layoutMode, prepared])
+
         // Fan-out curvature: for every source node with 2+ outgoing edges,
         // sort them by target angle and give each a signed perpendicular bend.
         // This spreads the arrows instead of letting them overlap in a bundle.
@@ -11526,13 +11621,14 @@
           const el = containerRef.current
           if (!el) return
           const onWheel = (e) => {
-            if (!e.ctrlKey && !e.metaKey) return
             if (e.target?.closest?.('.kg-graph-controls, .kg-node-detail')) return
-            if (!Number.isFinite(e.deltaY) || e.deltaY === 0) return
+            // 画布内滚轮直接缩放；Ctrl/Cmd 组合继续可用，按住 Shift 时把滚动
+            // 交还页面，避免长文档里在图上滚动就必须先移开指针。
+            const factor = wheelZoomFactor(e, el.clientHeight, clamp)
+            if (factor == null) return
             e.preventDefault()
             const rect = el.getBoundingClientRect()
-            const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1
-            zoomAt(Math.exp(-clamp(e.deltaY * unit, -100, 100) * 0.002), e.clientX - rect.left, e.clientY - rect.top)
+            zoomAt(factor, e.clientX - rect.left, e.clientY - rect.top)
           }
           el.addEventListener('wheel', onWheel, { passive: false })
           return () => el.removeEventListener('wheel', onWheel)
@@ -11859,6 +11955,7 @@
           return h(GraphEdgeInteraction, { key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i, render: (hover, interaction) => h('g', {
             key: edge.fromNodeId + '>' + edge.toNodeId + ':' + i,
             className: 'kg-edge', role: parallelGroup.get(edge)?.length > 1 ? 'group' : 'button', tabIndex: 0,
+            'data-from-node': edge.fromNodeId, 'data-to-node': edge.toNodeId,
             'aria-pressed': parallelGroup.get(edge)?.length > 1 ? undefined : sel,
             'aria-label': '关系边：' + rel + '（' + edge.fromNodeId + ' → ' + edge.toNodeId + '）',
             style: { cursor: 'pointer' },
@@ -11947,7 +12044,7 @@
             const meta = TYPE_META[node.type] || { label: '未知', color: '#6b7280' }
             const y = p.y - s.h / 2, hub = (nodeDegree.get(node.id) || 0) >= 4
             next.set(node.id, { node, labels: [
-              h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + (node.type === 'image' ? 142 : 25), textAnchor: 'middle', fontSize: hub ? 13.5 : 13, fontWeight: hub ? 700 : 600 },
+              h('text', { key: 'name', className: 'kg-node-name', x: p.x, y: y + (node.type === 'image' ? s.h - 40 : 25), textAnchor: 'middle', fontSize: node.type === 'image' ? 12 : (hub ? 13.5 : 13), fontWeight: hub ? 700 : 600 },
                 s.lines.map((ln, li) => h('tspan', { key: li, x: p.x, dy: li === 0 ? 0 : 20 }, ln))),
               h('text', { key: 'type', x: p.x, y: y + s.h - 8, textAnchor: 'middle', fontSize: 10, fill: meta.color, fontWeight: 500 }, meta.label),
             ] })
@@ -11985,7 +12082,7 @@
         // A parent may replace its callbacks on every selection. Cached SVG
         // nodes still dispatch through the current actions, including badges.
         const nodeActions = useRef(null), nodeCache = useRef(new Map())
-        nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail }
+        nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail, hoverNode: hoverFocusNode }
         const nodeEls = useMemo(() => {
           const next = new Map()
           const elements = visibleNodes.map((node) => {
@@ -12012,7 +12109,11 @@
               style: { cursor: 'pointer', opacity: dim ? 0.22 : 1 },
               onPointerDown: (e) => { e.stopPropagation(); nodeActions.current.startPress(e, node) },
               onPointerUp: () => nodeActions.current.cancelPress(),
-              onPointerLeave: () => nodeActions.current.cancelPress(),
+              // 鼠标/触控笔悬停即高亮一跳邻居；手指点击不算悬停。
+              onPointerEnter: (e) => {
+                if (e.pointerType === 'mouse' || e.pointerType === 'pen') nodeActions.current.hoverNode(node.id)
+              },
+              onPointerLeave: () => { nodeActions.current.cancelPress(); nodeActions.current.hoverNode(null) },
               onClick: (e) => { e.stopPropagation(); const actions = nodeActions.current; actions.cancelPress(); actions.setTooltip(null); actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) },
               onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const actions = nodeActions.current; actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) } },
             },
@@ -12025,9 +12126,9 @@
                 style: (sel || flash || neighbor || issueSev || hub) ? { filter: flash ? 'drop-shadow(0 0 8px rgba(245,158,11,0.9))' : (hub && !sel && !neighbor && !issueSev ? 'drop-shadow(0 2px 5px rgba(15,23,42,0.22))' : 'drop-shadow(0 0 6px rgba(59,130,246,0.8))') } : undefined,
               }),
               sourceImage && renderSourceImage && showNodeDetails ? h('foreignObject', {
-                x: x + 8, y: y + 8, width: s.w - 16, height: 116, 'data-image-node': node.id,
+                x: x + 8, y: y + 8, width: s.w - 16, height: Math.max(60, s.h - 56), 'data-image-node': node.id,
                 onPointerDown: event => event.stopPropagation(), onClick: event => event.stopPropagation(),
-              }, renderSourceImage(sourceImage, true)) : null,
+              }, renderSourceImage(sourceImage, true, Math.max(60, s.h - 56))) : null,
               issueCount > 0
                 ? h('g', {
                     className: 'kg-node-issue-badge',
@@ -12151,7 +12252,7 @@
           className: 'kg-graph' + (dragging ? ' kg-panning' : ''),
           role: 'group',
           style: height ? { height: height + 'px' } : undefined,
-          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，双指捏合或 Ctrl+滚轮缩放，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
+          'aria-label': '知识图，共 ' + (nodes || []).length + ' 个节点、' + (edges || []).length + ' 条关系。拖拽平移，滚轮缩放（按住 Shift 滚动页面），悬停节点高亮一跳邻居，点击节点查看完整内容并定位原文，点击段落聚焦节点。',
         },
           h('div', { className: 'kg-graph-toolbar', role: 'group', 'aria-label': '图谱浏览' },
             h('button', { type: 'button', ref: searchButton, title: '查找当前视图节点', 'aria-label': '查找节点', 'aria-expanded': searchOpen,
