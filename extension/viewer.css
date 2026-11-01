@@ -695,6 +695,10 @@
 .kg-path-hint { color: var(--kg-text-dim); }
 .kg-path-close { margin-left: auto; flex: none; min-width: 26px; height: 24px; border: 1px solid var(--kg-border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .kg-path-close:hover { border-color: rgba(245,158,11,.7); color: #b45309; }
+/* 小地图：右下角缩略图，点击或拖动可移动相机。 */
+.kg-minimap { position: absolute; right: 10px; width: 168px; height: 118px; z-index: 6; border: 1px solid var(--kg-border); border-radius: 8px; background: var(--kg-edge-label-bg); box-shadow: 0 4px 14px rgba(0,0,0,.12); cursor: crosshair; touch-action: none; }
+.kg-minimap:hover { border-color: rgba(59,130,246,.55); }
+@media (max-width: 720px) { .kg-minimap { display: none; } }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
 .kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }

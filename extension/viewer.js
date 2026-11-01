@@ -10488,6 +10488,33 @@
         const hgt = Math.max(y1 - y0, 1)
         return { w, h: hgt, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, key: Math.round(w) + 'x' + Math.round(hgt) }
       }
+      // 小地图：世界坐标（图坐标）与小地图画布之间的等比映射，居中留白。
+      function minimapTransform(bbox, width, height, padding = 8) {
+        const innerW = Math.max(1, width - padding * 2)
+        const innerH = Math.max(1, height - padding * 2)
+        const scale = Math.min(innerW / Math.max(bbox.w, 1), innerH / Math.max(bbox.h, 1))
+        return { scale, offsetX: width / 2 - bbox.cx * scale, offsetY: height / 2 - bbox.cy * scale }
+      }
+      function worldToMinimap(transform, x, y) {
+        return [x * transform.scale + transform.offsetX, y * transform.scale + transform.offsetY]
+      }
+      function minimapToWorld(transform, x, y) {
+        return { x: (x - transform.offsetX) / transform.scale, y: (y - transform.offsetY) / transform.scale }
+      }
+      // 当前相机视口落在小地图上的矩形，按画布边界裁剪。
+      function minimapViewportRect(view, viewportWidth, viewportHeight, transform, width, height) {
+        if (!view || !(view.k > 0) || !(viewportWidth > 0) || !(viewportHeight > 0)) return { x: 0, y: 0, w: 1, h: 1 }
+        const screenToWorld = (sx, sy) => [(sx - view.tx) / view.k, (sy - view.ty) / view.k]
+        const [wx0, wy0] = screenToWorld(0, 0)
+        const [wx1, wy1] = screenToWorld(viewportWidth, viewportHeight)
+        const [mx0, my0] = worldToMinimap(transform, wx0, wy0)
+        const [mx1, my1] = worldToMinimap(transform, wx1, wy1)
+        const x0 = Math.max(0, Math.min(width, Math.min(mx0, mx1)))
+        const y0 = Math.max(0, Math.min(height, Math.min(my0, my1)))
+        const x1 = Math.max(0, Math.min(width, Math.max(mx0, mx1)))
+        const y1 = Math.max(0, Math.min(height, Math.max(my0, my1)))
+        return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) }
+      }
       function intersectDist(size, ux, uy) {
         let t = Infinity
         if (ux !== 0) t = Math.min(t, size.w / 2 / Math.abs(ux))
@@ -11416,6 +11443,8 @@
         const [pathMode, setPathMode] = useState(false)
         const [pathPick, setPathPick] = useState(null)
         const [path, setPath] = useState(null)
+        const miniRef = useRef(null)
+        const miniDragRef = useRef(null)
         const pressTimer = useRef(null)
         const panRef = useRef(null)
         const touchRef = useRef({ points: new Map(), base: null, moved: false, background: false })
@@ -11606,6 +11635,76 @@
             return null
           })
         }, [edges])
+
+        // 小地图：缩略显示全部节点位置与当前视口，点击/拖动移动相机。
+        // 总览模式本身就是全图视图，不再叠一个小地图。
+        const showMinimap = !overview && nodes.length >= 30
+        useEffect(() => {
+          const canvas = miniRef.current
+          const el = containerRef.current
+          if (!canvas || !el || !showMinimap) return
+          const width = canvas.clientWidth, height = canvas.clientHeight
+          if (!width || !height) return
+          const dpr = Math.min(2, window.devicePixelRatio || 1)
+          if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+            canvas.width = Math.round(width * dpr)
+            canvas.height = Math.round(height * dpr)
+          }
+          const g = canvas.getContext('2d')
+          if (!g) return
+          g.setTransform(dpr, 0, 0, dpr, 0, 0)
+          g.clearRect(0, 0, width, height)
+          const transform = minimapTransform(bbox, width, height, 7)
+          for (const node of nodes) {
+            const p = layout.pos.get(node.id)
+            if (!p) continue
+            const [x, y] = worldToMinimap(transform, p.x, p.y)
+            if (x < 0 || y < 0 || x > width || y > height) continue
+            g.globalAlpha = node.type === 'image' ? 0.5 : 0.75
+            g.fillStyle = (TYPE_META[node.type] || {}).color || '#94a3b8'
+            g.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2)
+          }
+          const rect = minimapViewportRect(view, el.clientWidth, el.clientHeight, transform, width, height)
+          g.globalAlpha = 1
+          g.fillStyle = 'rgba(59,130,246,0.12)'
+          g.fillRect(rect.x, rect.y, rect.w, rect.h)
+          g.strokeStyle = '#3b82f6'
+          g.lineWidth = 1.2
+          g.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(1, rect.w - 1), Math.max(1, rect.h - 1))
+        }, [showMinimap, nodes, layout, bbox, view])
+        const minimapJump = useCallback((event) => {
+          const canvas = miniRef.current
+          const el = containerRef.current
+          if (!canvas || !el) return
+          const rect = canvas.getBoundingClientRect()
+          if (!rect.width || !rect.height) return
+          const world = minimapToWorld(minimapTransform(bbox, rect.width, rect.height, 7),
+            event.clientX - rect.left, event.clientY - rect.top)
+          setView(v => ({ ...v, tx: el.clientWidth / 2 - world.x * v.k, ty: el.clientHeight / 2 - world.y * v.k }))
+        }, [bbox, setView])
+        const onMinimapDown = useCallback((event) => {
+          if (event.button !== 0) return
+          event.stopPropagation()
+          event.preventDefault()
+          miniDragRef.current = event.pointerId
+          // 先移动相机再抓取指针：捕获失败也不该吞掉这次点击。
+          minimapJump(event)
+          try {
+            if (event.currentTarget.setPointerCapture) event.currentTarget.setPointerCapture(event.pointerId)
+          } catch (error) {}
+        }, [minimapJump])
+        const onMinimapMove = useCallback((event) => {
+          if (miniDragRef.current !== event.pointerId) return
+          event.stopPropagation()
+          minimapJump(event)
+        }, [minimapJump])
+        const onMinimapUp = useCallback((event) => {
+          if (miniDragRef.current !== event.pointerId) return
+          miniDragRef.current = null
+          if (event.currentTarget.releasePointerCapture) {
+            try { event.currentTarget.releasePointerCapture(event.pointerId) } catch (error) {}
+          }
+        }, [])
 
         // Fan-out curvature: for every source node with 2+ outgoing edges,
         // sort them by target angle and give each a signed perpendicular bend.
@@ -12507,6 +12606,15 @@
               h('button', { type: 'button', className: 'kg-path-close', 'aria-label': '退出路径模式', title: '退出路径模式',
                 onClick: clearPath }, '×'),
             ) : null,
+          showMinimap ? h('canvas', {
+            ref: miniRef, className: 'kg-minimap', role: 'img',
+            'aria-label': '小地图：点击或拖动可移动视图', title: '小地图：点击或拖动可移动视图',
+            style: { bottom: (path || pathPick ? 52 : 10) + 'px' },
+            onPointerDown: onMinimapDown,
+            onPointerMove: onMinimapMove,
+            onPointerUp: onMinimapUp,
+            onPointerCancel: onMinimapUp,
+          }) : null,
           h('div', { className: 'kg-graph-controls' },
           searchOpen ? h('section', { className: 'kg-node-search', 'aria-label': '查找当前视图节点', onKeyDown: event => {
             if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSearch() }
