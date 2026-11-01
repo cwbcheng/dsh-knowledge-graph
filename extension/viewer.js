@@ -11213,6 +11213,76 @@
         }
       }
 
+      // 方向键导航：在当前节点的邻居里挑一个最贴近按键方向的。
+      // 打分偏向“沿按键方向走得更远、偏离更小”，退化为最近的邻居。
+      function neighborInDirection(positions, neighborIds, fromId, direction) {
+        const from = positions && positions.get ? positions.get(fromId) : null
+        const vector = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[direction]
+        if (!from || !vector) return null
+        let best = null
+        let bestScore = Infinity
+        for (const id of neighborIds || []) {
+          if (id === fromId) continue
+          const p = positions.get(id)
+          if (!p) continue
+          const dx = p.x - from.x
+          const dy = p.y - from.y
+          const along = dx * vector[0] + dy * vector[1]
+          if (along <= 4) continue
+          const across = Math.abs(dx * vector[1] - dy * vector[0])
+          const score = along + across * 2.2
+          if (score < bestScore) { bestScore = score; best = id }
+        }
+        return best
+      }
+
+      // 两个节点之间最短关系链（按无向边做 BFS，最多 maxHops 跳）。
+      // 返回沿路径的节点序列与逐跳关系，供图谱高亮与文字链使用；
+      // reversed 标记这一跳是逆着边的方向走的。
+      function shortestPathBetween(edges, fromId, toId, maxHops = 8) {
+        if (!fromId || !toId) return null
+        if (fromId === toId) return { nodes: [fromId], links: [], hops: 0 }
+        const adjacency = new Map()
+        const push = (id, entry) => {
+          const list = adjacency.get(id)
+          if (list) list.push(entry)
+          else adjacency.set(id, [entry])
+        }
+        for (const edge of edges || []) {
+          if (!edge || !edge.fromNodeId || !edge.toNodeId) continue
+          push(edge.fromNodeId, { edge, next: edge.toNodeId, reversed: false })
+          push(edge.toNodeId, { edge, next: edge.fromNodeId, reversed: true })
+        }
+        if (!adjacency.has(fromId) || !adjacency.has(toId)) return null
+        const parent = new Map([[fromId, null]])
+        let frontier = [fromId]
+        for (let hop = 0; hop < maxHops && frontier.length; hop++) {
+          const next = []
+          for (const id of frontier) {
+            for (const step of adjacency.get(id) || []) {
+              if (parent.has(step.next)) continue
+              parent.set(step.next, { from: id, edge: step.edge, reversed: step.reversed })
+              if (step.next === toId) {
+                const nodes = [toId]
+                const links = []
+                let cursor = toId
+                while (parent.get(cursor)) {
+                  const stepBack = parent.get(cursor)
+                  nodes.unshift(stepBack.from)
+                  links.unshift({ fromNodeId: stepBack.from, toNodeId: cursor,
+                    relation: stepBack.edge.relation, reversed: stepBack.reversed })
+                  cursor = stepBack.from
+                }
+                return { nodes, links, hops: links.length }
+              }
+              next.push(step.next)
+            }
+          }
+          frontier = next
+        }
+        return null
+      }
+
       // 悬停聚焦要用的节点集合：被悬停的节点 + 一跳邻居 + 相连的边。
       // 传 relationIndex.incident 的一页条目，避免每次都线性扫全量关系。
       function hoverFocusTargets(incidentEntries, nodeId) {
@@ -11342,6 +11412,10 @@
           }
         }, [detail, searchOpen])
         const [flashId, setFlashId] = useState(null)
+        // 路径模式：先点起点、再点终点，得到两点之间的最短关系链。
+        const [pathMode, setPathMode] = useState(false)
+        const [pathPick, setPathPick] = useState(null)
+        const [path, setPath] = useState(null)
         const pressTimer = useRef(null)
         const panRef = useRef(null)
         const touchRef = useRef({ points: new Map(), base: null, moved: false, background: false })
@@ -11449,7 +11523,7 @@
           const el = containerRef.current
           if (!el || !el.classList || typeof el.querySelector !== 'function') return
           clearHoverFocus()
-          if (!nodeId || selectedNodeId) return
+          if (!nodeId || selectedNodeId || pathRef.current) return
           const center = el.querySelector('.kg-node[data-node-id="' + cssAttributeValue(nodeId) + '"]')
           if (!center) return
           el.classList.add('kg-hover-focus')
@@ -11474,6 +11548,64 @@
         }, [clearHoverFocus, relationIndex, selectedNodeId])
         // A selection or a fresh layout owns the highlight from now on.
         useEffect(() => () => clearHoverFocus(), [clearHoverFocus, selectedNodeId, layoutMode, prepared])
+
+        // 路径高亮与悬停高亮互斥：路径存在时，悬停只更新提示，不再改淡出。
+        const pathRef = useRef(null)
+        pathRef.current = path
+        const pathMarked = useRef({ nodes: [], edges: [] })
+        const clearPathHighlight = useCallback(() => {
+          const el = containerRef.current
+          for (const node of pathMarked.current.nodes) node.classList.remove('kg-path-near', 'kg-path-start', 'kg-path-end')
+          for (const edge of pathMarked.current.edges) edge.classList.remove('kg-path-near')
+          pathMarked.current = { nodes: [], edges: [] }
+          if (el && el.classList) el.classList.remove('kg-path-focus')
+        }, [])
+        const applyPathHighlight = useCallback((result) => {
+          const el = containerRef.current
+          clearPathHighlight()
+          if (!el || !el.classList || !result || !result.links || !result.links.length) return
+          el.classList.add('kg-path-focus')
+          for (const id of result.nodes) {
+            const node = el.querySelector('.kg-node[data-node-id="' + cssAttributeValue(id) + '"]')
+            if (!node) continue
+            node.classList.add('kg-path-near')
+            if (id === result.fromId) node.classList.add('kg-path-start')
+            if (id === result.toId) node.classList.add('kg-path-end')
+            pathMarked.current.nodes.push(node)
+          }
+          for (const link of result.links) {
+            // 边的 DOM 属性始终按原始方向记录；路径可能逆向穿过某条边。
+            for (const selector of [
+              '.kg-edge[data-from-node="' + cssAttributeValue(link.fromNodeId) + '"][data-to-node="' + cssAttributeValue(link.toNodeId) + '"]',
+              '.kg-edge[data-from-node="' + cssAttributeValue(link.toNodeId) + '"][data-to-node="' + cssAttributeValue(link.fromNodeId) + '"]',
+            ]) {
+              for (const group of el.querySelectorAll(selector)) {
+                if (group.classList.contains('kg-path-near')) continue
+                group.classList.add('kg-path-near')
+                pathMarked.current.edges.push(group)
+              }
+            }
+          }
+        }, [clearPathHighlight])
+        useEffect(() => {
+          applyPathHighlight(path)
+        }, [applyPathHighlight, path, layoutMode, prepared])
+        const clearPath = useCallback(() => {
+          setPathMode(false)
+          setPathPick(null)
+          setPath(null)
+        }, [])
+        const pickPathNode = useCallback((nodeId) => {
+          setPath(null)
+          setPathPick(previous => {
+            if (!previous || previous === nodeId) return nodeId
+            const found = shortestPathBetween(edges, previous, nodeId)
+            setPath(found
+              ? { ...found, fromId: previous, toId: nodeId }
+              : { nodes: [], links: [], hops: 0, fromId: previous, toId: nodeId, missing: true })
+            return null
+          })
+        }, [edges])
 
         // Fan-out curvature: for every source node with 2+ outgoing edges,
         // sort them by target angle and give each a signed perpendicular bend.
@@ -12082,7 +12214,8 @@
         // A parent may replace its callbacks on every selection. Cached SVG
         // nodes still dispatch through the current actions, including badges.
         const nodeActions = useRef(null), nodeCache = useRef(new Map())
-        nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail, hoverNode: hoverFocusNode }
+        nodeActions.current = { startPress, cancelPress, onSelectNode, onOpenNodeIssues, setTooltip, setDetail,
+          hoverNode: hoverFocusNode, pickPathNode, pathMode }
         const nodeEls = useMemo(() => {
           const next = new Map()
           const elements = visibleNodes.map((node) => {
@@ -12114,8 +12247,27 @@
                 if (e.pointerType === 'mouse' || e.pointerType === 'pen') nodeActions.current.hoverNode(node.id)
               },
               onPointerLeave: () => { nodeActions.current.cancelPress(); nodeActions.current.hoverNode(null) },
-              onClick: (e) => { e.stopPropagation(); const actions = nodeActions.current; actions.cancelPress(); actions.setTooltip(null); actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) },
-              onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const actions = nodeActions.current; actions.onSelectNode(node.id); actions.setDetail((d) => (d && d.id === node.id ? null : node)) } },
+              onClick: (e) => {
+                e.stopPropagation()
+                const actions = nodeActions.current
+                actions.cancelPress()
+                actions.setTooltip(null)
+                // Alt+点击 或 路径模式下点击，都是在选路径端点。
+                if ((e.altKey || actions.pathMode) && typeof actions.pickPathNode === 'function') {
+                  actions.pickPathNode(node.id)
+                  return
+                }
+                actions.onSelectNode(node.id)
+                actions.setDetail((d) => (d && d.id === node.id ? null : node))
+              },
+              onKeyDown: (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault()
+                const actions = nodeActions.current
+                if (actions.pathMode && typeof actions.pickPathNode === 'function') { actions.pickPathNode(node.id); return }
+                actions.onSelectNode(node.id)
+                actions.setDetail((d) => (d && d.id === node.id ? null : node))
+              },
             },
               h('rect', {
                 x, y, width: s.w, height: s.h, rx: 10,
@@ -12260,6 +12412,13 @@
             h('button', { type: 'button', title: '返回上一位置', 'aria-label': '返回上一位置', disabled: !navigation.length, onClick: goBack }, '←'),
             onGather ? h('button', { type: 'button', title: '查看选中节点的相关节点', 'aria-label': '查看选中节点的相关节点',
               disabled: !selectedNodeId, onClick: () => { setDetail(null); onGather(selectedNodeId) } }, '◎') : null,
+            h('button', { type: 'button', title: '两点最短关系链：点击后依次选两个节点（也可 Alt+点击第二个节点）',
+              'aria-label': '路径', 'aria-pressed': !!pathMode,
+              onClick: () => {
+                setPathMode(value => !value)
+                setPathPick(null)
+                setPath(null)
+              } }, '↝'),
             layoutMode !== 'neighborhood' && !overview ? h('select', {
               className: 'kg-layout-select',
               value: layoutMode || 'layered',
@@ -12281,6 +12440,31 @@
           onPointerUpCapture: (e) => endTouch(e, false),
           onPointerCancelCapture: (e) => endTouch(e, true),
           onClickCapture: (e) => { if (suppressClickRef.current && e.detail !== 0) { e.preventDefault(); e.stopPropagation() } },
+          // 路径模式下按 Esc 只退出路径，不把整个工作台窗口关掉；方向键沿关系走。
+          onKeyDown: (e) => {
+            if (e.key === 'Escape' && (path || pathPick)) {
+              e.preventDefault()
+              e.stopPropagation()
+              clearPath()
+              return
+            }
+            if (!e.key || e.key.slice(0, 5) !== 'Arrow' || e.altKey || e.ctrlKey || e.metaKey) return
+            const el = containerRef.current
+            if (!el || !el.contains?.(e.target)) return
+            if (!selectedNodeId) return
+            const neighbors = new Set()
+            for (const { edge } of relationIndex.incident.get(selectedNodeId) || []) {
+              neighbors.add(edge.fromNodeId)
+              neighbors.add(edge.toNodeId)
+            }
+            const next = neighborInDirection(layout.pos, neighbors, selectedNodeId, e.key)
+            if (!next) return
+            e.preventDefault()
+            e.stopPropagation()
+            onSelectNode(next)
+            const target = el.querySelector('.kg-node[data-node-id="' + cssAttributeValue(next) + '"]')
+            if (target && typeof target.focus === 'function') target.focus()
+          },
           onPointerDown: onBgPointerDown,
           onPointerMove: onBgPointerMove,
           onPointerUp: (e) => endPan(e, false),
@@ -12303,6 +12487,26 @@
               },
             }, edgeEls, nodeEls),
           ),
+          // 路径结果条：显示逐跳关系，点 × 退出路径模式。
+          path || pathPick ? h('div', { className: 'kg-path-bar', role: 'status' },
+              pathPick && !path ? h('span', { className: 'kg-path-hint' },
+                '已选起点「' + (nodeById.get(pathPick)?.text || pathPick) + '」，再点一个节点作为终点') : null,
+              path && path.missing ? h('span', { className: 'kg-path-hint' },
+                '这两个节点在 8 跳内没有连线') : null,
+              path && !path.missing && path.nodes.length ? h('div', { className: 'kg-path-chain' },
+                path.nodes.map((id, index) => {
+                  const link = index > 0 ? path.links[index - 1] : null
+                  const label = nodeById.get(id)?.text || id
+                  return h(React.Fragment, { key: id + ':' + index },
+                    link ? h('span', { className: 'kg-path-hop' },
+                      h('span', { className: 'kg-path-rel' },
+                        (link.reversed ? '◀ ' : '') + (REL_LABEL[link.relation] || link.relation) + (link.reversed ? '' : ' ▶'))) : null,
+                    h('span', { className: 'kg-path-node' + (id === path.fromId ? ' start' : id === path.toId ? ' end' : ''), title: label },
+                      label.length > 16 ? label.slice(0, 16) + '…' : label)) 
+                })) : null,
+              h('button', { type: 'button', className: 'kg-path-close', 'aria-label': '退出路径模式', title: '退出路径模式',
+                onClick: clearPath }, '×'),
+            ) : null,
           h('div', { className: 'kg-graph-controls' },
           searchOpen ? h('section', { className: 'kg-node-search', 'aria-label': '查找当前视图节点', onKeyDown: event => {
             if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSearch() }

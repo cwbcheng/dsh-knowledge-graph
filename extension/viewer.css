@@ -677,6 +677,24 @@
 .kg-graph-viewport.kg-hover-focus .kg-edge.kg-hover-near > path { opacity: 1 !important; }
 .kg-graph-viewport.kg-hover-focus .kg-node.kg-hover-center > rect { filter: drop-shadow(0 0 7px rgba(59,130,246,.85)) !important; }
 @media (prefers-reduced-motion: reduce) { .kg-graph-viewport.kg-hover-focus .kg-node { transition: none; } }
+/* 路径高亮：起点、终点与整条关系链用琥珀色描边，其余保持淡出。 */
+.kg-graph-viewport.kg-path-focus .kg-node:not(.kg-path-near) { opacity: .14 !important; }
+.kg-graph-viewport.kg-path-focus .kg-edge:not(.kg-path-near) > path { opacity: .08 !important; }
+.kg-graph-viewport.kg-path-focus .kg-edge:not(.kg-path-near) .kg-edge-label { opacity: .08 !important; }
+.kg-graph-viewport.kg-path-focus .kg-edge.kg-path-near > path { stroke: #f59e0b !important; stroke-width: 3 !important; opacity: 1 !important; }
+.kg-graph-viewport.kg-path-focus .kg-edge.kg-path-near .kg-edge-label { opacity: 1 !important; }
+.kg-graph-viewport.kg-path-focus .kg-node.kg-path-near > rect { stroke: #f59e0b !important; stroke-width: 2.6 !important; filter: drop-shadow(0 0 6px rgba(245,158,11,.55)) !important; }
+.kg-graph-viewport.kg-path-focus .kg-node.kg-path-start > rect,
+.kg-graph-viewport.kg-path-focus .kg-node.kg-path-end > rect { stroke: #f97316 !important; stroke-width: 3.4 !important; }
+.kg-path-bar { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 6; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 9px; border: 1px solid rgba(245,158,11,.45); border-radius: 9px; background: var(--kg-edge-label-bg); color: var(--kg-text); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 12px; }
+.kg-path-chain { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.kg-path-node { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 7px; border-radius: 999px; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35); }
+.kg-path-node.start { background: rgba(249,115,22,.22); border-color: rgba(249,115,22,.55); }
+.kg-path-node.end { background: rgba(249,115,22,.22); border-color: rgba(249,115,22,.55); }
+.kg-path-hop .kg-path-rel { font-size: 11px; color: #b45309; margin-right: 5px; white-space: nowrap; }
+.kg-path-hint { color: var(--kg-text-dim); }
+.kg-path-close { margin-left: auto; flex: none; min-width: 26px; height: 24px; border: 1px solid var(--kg-border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.kg-path-close:hover { border-color: rgba(245,158,11,.7); color: #b45309; }
 .kg-graph-controls { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; max-height: calc(100% - 20px); }
 .kg-graph-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; border-bottom: 1px solid var(--kg-border); }
 .kg-graph-toolbar .kg-layout-select { min-width: 0; max-width: 100%; }
